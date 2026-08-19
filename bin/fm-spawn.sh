@@ -136,6 +136,11 @@
 #   git worktree root distinct from the primary project checkout.
 #   Before a fresh ship or scout worker starts, its clean task worktree fetches
 #   origin, resolves the current remote default branch, and resets to its tip.
+#   When origin is a repository on this filesystem, firstmate never pushes to it,
+#   so bin/fm-merge-local.sh's landings only ever advance the clone's LOCAL
+#   default branch; the base then resolves to that local branch whenever it is a
+#   strict descendant of origin's tip, and a genuine divergence between the two
+#   refuses the spawn instead of silently picking one. A real remote is unaffected.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
 #   refuses the spawn rather than risking a PR based on stale history.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
@@ -1727,8 +1732,22 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+# True when origin resolves to a repository on this filesystem rather than a
+# pushable remote. Only the absolute and file:// forms count: an unrecognized
+# form keeps the origin-based behavior below, which is the safe direction.
+spawn_origin_is_local_repository() {  # <worktree>
+  local worktree=$1 url origin_path
+  url=$(git -C "$worktree" remote get-url origin 2>/dev/null) || return 1
+  case "$url" in
+    file://*) origin_path=${url#file://} ;;
+    /*) origin_path=$url ;;
+    *) return 1 ;;
+  esac
+  [ -d "$origin_path" ] && git -C "$origin_path" rev-parse --git-dir >/dev/null 2>&1
+}
+
 freshen_spawn_worktree_base() {  # <worktree>
-  local worktree=$1 default target expected actual status
+  local worktree=$1 default target expected actual status local_ref local_head
   if ! git -C "$worktree" fetch --quiet origin; then
     echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
@@ -1750,6 +1769,33 @@ freshen_spawn_worktree_base() {  # <worktree>
     echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   }
+  # Which ref actually carries already-landed work depends on the PROJECT's
+  # remote topology, not on the per-task --mode: bin/fm-merge-local.sh lands
+  # approved work on the clone's LOCAL default branch, and when origin is a
+  # repository on this filesystem firstmate never pushes there, so origin's tip
+  # freezes while the local branch advances with every landing. Basing a task on
+  # the frozen tip drops that work silently - the tree still looks healthy, so
+  # nothing surfaces until a worker delivers something built on a stale base.
+  # Keying on --mode instead would be wrong in both directions: a local-only task
+  # in a real-remote project must still base on origin, and a PR-mode task in a
+  # local-origin project is affected just the same.
+  if spawn_origin_is_local_repository "$worktree"; then
+    local_ref="refs/heads/$default"
+    local_head=$(git -C "$worktree" rev-parse --verify --quiet "$local_ref^{commit}" 2>/dev/null || true)
+    if [ -n "$local_head" ] && [ "$local_head" != "$expected" ]; then
+      if git -C "$worktree" merge-base --is-ancestor "$expected" "$local_head"; then
+        # A strict descendant already contains everything origin published, so
+        # moving the base forward to it can never lose remote history. That
+        # makes the choice deterministic for every backend rather than a guess.
+        target=$local_ref
+        expected=$local_head
+      elif ! git -C "$worktree" merge-base --is-ancestor "$local_head" "$expected"; then
+        echo "error: local '$default' ('$local_head') and '$target' ('$expected') have diverged in worktree '$worktree', whose origin is a local repository; neither is a safe base, so refusing to launch rather than silently dropping landed or published work" >&2
+        return 1
+      fi
+      # A local branch that is merely behind origin keeps the origin tip below.
+    fi
+  fi
   status=$(git -C "$worktree" status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
