@@ -166,8 +166,10 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
-# A captain-held or paused crew whose agent has confidently exited uses the same
-# bounded cadence, while a live or ambiguously read agent still surfaces once.
+# A paused crew whose agent has confidently exited uses the same bounded cadence,
+# while a live or ambiguously read agent still surfaces once. A verified
+# captain-held transfer takes that cadence on its own, because the decision it
+# names is already durable in the backlog (see pause_state_class).
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
@@ -399,10 +401,28 @@ clear_pause_tracking() {  # <window>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# A worker-declared pause may only recover paused classification from a
+# confidently dead ordinary crew after fm-crew-state has fallen back to stopped
+# or unknown; a verified captain-held transfer needs no such corroboration.
+#
+# The two declarations are not the same kind of claim. `paused:` is free text the
+# crew wrote about ITSELF, so a live or ambiguously read agent may still be
+# sitting at a decision gate that the long cadence would silence - it keeps
+# requiring the agent read, and any verdict short of dead still surfaces exactly
+# as before. `captain-held` is not a worker claim at all: bin/fm-decision-hold.sh
+# appends it only after verifying that the matching durable backlog hold exists,
+# so the decision has already moved off the pane and into the backlog, where the
+# wake drain's OPEN DECISIONS section keeps it visible no matter what the pane
+# does. No agent read can add anything that hold does not already record, and
+# requiring one strands the whole class of finished, captain-held work on the
+# per-poll stale path whenever the harness leaves no confidently dead verdict
+# behind - pi under herdr is the observed case: herdr's protocol-19 agent_status
+# enum carries `unknown` as a first-class member, meaning detection is
+# inconclusive, which is correctly NOT proof that the pane is agent-free.
+# busy_turn_bound_check already absorbs the same verb on the busy path without an
+# agent read; this keeps the idle path from disagreeing with it.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive
+  local win=$1 task=$2 key last recheck_file class agent_alive held_transfer=1
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
@@ -413,8 +433,9 @@ pause_state_class() {  # <window> <task>
     crew_absorb_class "$task"
     return
   fi
+  status_is_paused "$last" && held_transfer=0
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$(window_kind "$win")" != secondmate ]; then
+    if [ "$held_transfer" -eq 0 ] && [ "$(window_kind "$win")" != secondmate ]; then
       agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
       if [ "$agent_alive" != dead ]; then
         rm -f "$recheck_file"
@@ -431,7 +452,7 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if [ "$(window_kind "$win")" != secondmate ]; then
+  if [ "$held_transfer" -eq 0 ] && [ "$(window_kind "$win")" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"
@@ -439,7 +460,7 @@ pause_state_class() {  # <window> <task>
       return
     fi
   fi
-  [ "$class" = none ] && [ "${agent_alive:-unknown}" = dead ] && class=paused
+  [ "$class" = none ] && { [ "${agent_alive:-unknown}" = dead ] || [ "$held_transfer" -eq 1 ]; } && class=paused
   case "$class" in
     paused) date +%s > "$recheck_file" ;;
     *) rm -f "$recheck_file" ;;
