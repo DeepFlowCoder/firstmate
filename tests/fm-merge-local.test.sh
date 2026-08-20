@@ -267,41 +267,73 @@ test_switch_carries_uncommitted_work_and_the_note_says_so() {
 
 # A git ref may legally contain `;`, `&`, `$`, `>` and backticks, and this block
 # is pasted verbatim into the captain's shell, so an unquoted branch name would
-# run as extra commands - the exact damage the block exists to prevent. The name
-# below is built so that, left unquoted, it creates three files whose presence
-# afterwards is the proof that something extra ran.
-HOSTILE_BRANCH='p;>hackeado;q$x&`>h3`>h2'
+# run as extra commands - the exact damage the block exists to prevent. Both
+# names below are built so that, left unquoted, each creates three files whose
+# presence afterwards is the proof that something extra ran.
+#
+# The branch reaches the captain's shell through two different emission shapes,
+# and quoting is applied separately at each, so both need a hostile name run
+# through them: a name short enough to fit the paste cap is emitted inline as
+# `git switch '<name>'`, and a longer one is routed through the fmb variable.
+# Each case asserts WHICH shape it received, because the shape depends on the
+# chain's own length - adding a flag to the pull once already moved the long name
+# off the inline path, silently leaving that path with no hostile coverage.
+HOSTILE_BRANCH_INLINE='v;>hx1;q&`>h3`>h2'
+HOSTILE_BRANCH_FMB='p;>hackeado;q$x&`>h3`>h2'
 
-test_hostile_branch_name_cannot_inject_commands() {
+# hostile_branch_case <name> <branch> <shape: inline|fmb> <dirlabel> <marker...>
+hostile_branch_case() {
+  local name=$1 branch=$2 shape=$3 dirlabel=$4
+  shift 4
   local out err block run_dir marker
-  make_case hostil nota "" "un-directorio-con-comilla'simple" "$HOSTILE_BRANCH"
+  make_case "$name" nota "" "$dirlabel" "$branch"
   # Park the copy elsewhere so the switch step is emitted too, not only the pull.
   git -C "$CASE_COPY" checkout -q -b aparcado
-  out="$TMP_ROOT/hostil.out"; err="$TMP_ROOT/hostil.err"
+  out="$TMP_ROOT/$name.out"; err="$TMP_ROOT/$name.err"
   run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
-    || fail "merge failed"$'\n'"$(cat "$err")"
+    || fail "merge failed for the $shape branch"$'\n'"$(cat "$err")"
 
   block=$(block_of "$out")
   [ -n "$block" ] || fail "no captain command block was emitted"$'\n'"$(cat "$out")"
-  assert_paste_safe "$block" "landing command for a hostile branch name"
+  assert_paste_safe "$block" "landing command for a hostile $shape branch name"
 
-  run_dir="$TMP_ROOT/hostil-run"; mkdir -p "$run_dir"
-  ( cd "$run_dir" && eval "$block" ) > "$TMP_ROOT/hostil.run" 2>&1 \
-    || fail "the emitted block failed to run for a branch name full of shell metacharacters"$'\n'"$(cat "$TMP_ROOT/hostil.run")"
+  case "$shape" in
+    inline)
+      has_line "$block" "git switch '$branch' &&" \
+        || fail "expected the branch inline and quoted in the switch; this case no longer covers the inline path"$'\n'"$block"
+      has_line "$block" "git pull --ff-only \"\$fmc\" '$branch'" \
+        || fail "expected the branch inline and quoted in the pull; this case no longer covers the inline path"$'\n'"$block"
+      ;;
+    fmb)
+      has_line "$block" 'git switch "$fmb" &&' \
+        || fail "expected the branch routed through fmb; this case no longer covers the fmb path"$'\n'"$block"
+      has_line "$block" 'git pull --ff-only "$fmc" "$fmb"' \
+        || fail "expected the branch routed through fmb; this case no longer covers the fmb path"$'\n'"$block"
+      ;;
+  esac
+
+  run_dir="$TMP_ROOT/$name-run"; mkdir -p "$run_dir"
+  ( cd "$run_dir" && eval "$block" ) > "$TMP_ROOT/$name.run" 2>&1 \
+    || fail "the emitted block failed to run for a $shape branch name full of shell metacharacters"$'\n'"$(cat "$TMP_ROOT/$name.run")"
 
   # Nothing beyond the chain may have executed, in either directory the block
   # touches: the run directory it starts in and the copy it cd's into.
-  for marker in hackeado h2 h3; do
+  for marker in "$@"; do
     [ ! -e "$run_dir/$marker" ] \
-      || fail "the branch name executed an extra command: $run_dir/$marker was created"
+      || fail "the $shape branch name executed an extra command: $run_dir/$marker was created"
     [ ! -e "$CASE_COPY/$marker" ] \
-      || fail "the branch name executed an extra command: $CASE_COPY/$marker was created"
+      || fail "the $shape branch name executed an extra command: $CASE_COPY/$marker was created"
   done
   assert_contains "$(git -C "$CASE_COPY" log --oneline)" "trabajo aterrizado" \
-    "quoting the hostile branch name broke the landing it was supposed to perform"
-  assert_contains "$(git -C "$CASE_COPY" symbolic-ref --short HEAD)" "$HOSTILE_BRANCH" \
+    "quoting the hostile $shape branch name broke the landing it was supposed to perform"
+  assert_contains "$(git -C "$CASE_COPY" symbolic-ref --short HEAD)" "$branch" \
     "the block did not switch the captain's copy to the landing branch"
-  pass "fm-merge-local: a branch name full of shell metacharacters cannot run anything extra"
+}
+
+test_hostile_branch_name_cannot_inject_commands() {
+  hostile_branch_case hostilinline "$HOSTILE_BRANCH_INLINE" inline "" hx1 h3 h2
+  hostile_branch_case hostil "$HOSTILE_BRANCH_FMB" fmb "un-directorio-con-comilla'simple" hackeado h3 h2
+  pass "fm-merge-local: a branch name full of shell metacharacters cannot run anything extra, inline or through fmb"
 }
 
 test_non_node_manifest_is_covered_too() {
