@@ -15,8 +15,8 @@
 # "off" preferences propagate as files. Primary config/update-remote converges
 # byte-exact so the captain's update-source decision is visible fleet-wide, but it
 # never makes a home resolve upstream on its own: a checkout carrying the
-# .fm-secondmate-home marker reports the inherited value and follows its own
-# origin instead (bin/fm-update.sh owns that resolution). Primary
+# .fm-secondmate-home marker notes that it is ignoring the inherited file and
+# follows its own origin instead (bin/fm-update.sh owns that resolution). Primary
 # config/trace-context is copied at the launch convergence point as part of the
 # default-off W3C trace-context setup, while live convergence leaves it unchanged.
 # The primary passes its frozen home-session decision into a newly launched

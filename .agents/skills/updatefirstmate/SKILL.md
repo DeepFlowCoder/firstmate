@@ -28,7 +28,8 @@ Where the improvements come from is the home's own choice, not an assumption: lo
 A home whose `origin` is the captain's own mirror needs that file, or the update advances it to its own published state and reports success while never seeing an upstream commit.
 A configured source that is missing from this checkout refuses that target and the whole run exits non-zero; it is never retried against `origin`.
 That proof is asked of a primary checkout only, never of a secondmate home: local homes follow the commit the primary just landed, and a home running the updater on itself uses its own `origin` even though it inherited the file.
-For a standalone-clone or remote home that `origin` is the checkout it was seeded from; a linked-worktree home shares the primary's remotes and is leased at a detached HEAD, so its own self-update is skipped there and it advances through the primary's run instead.
+A standalone-clone home is the one that advances that way, because its `origin` is the primary checkout it was seeded from and it stays on its default branch.
+A linked-worktree home is leased at a detached HEAD, and a remote home is detached by its own guarded sync once that sync advances it, so either one's self-update is skipped there: the linked worktree advances through the primary's run, and the remote home through the manual command above.
 A run whose firstmate target was refused advances no secondmate at all.
 The fleet inherits the result of the captain's decision rather than re-deciding it.
 [`docs/configuration.md`](../../../docs/configuration.md) "Update source" owns the field.

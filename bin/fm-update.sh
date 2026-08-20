@@ -40,12 +40,13 @@
 #   - Running here, in a checkout carrying the .fm-secondmate-home marker, the
 #     firstmate target uses base_mode origin no matter what the inherited
 #     config/update-remote says: asking a home to carry a remote only its primary
-#     was told about would refuse that home forever instead. For a standalone-clone
-#     or a remote home, that origin IS the checkout it was seeded from - the primary
-#     checkout, or that host's code root. A linked-worktree home shares the
-#     primary's remote config, so its origin is the primary's own origin, and it is
-#     leased at a detached HEAD: its self-update fetches origin and then stops at
-#     the detached-HEAD guard without advancing anything.
+#     was told about would refuse that home forever instead. A standalone-clone
+#     home is the one that genuinely advances that way: its origin IS the primary
+#     checkout it was seeded from, and it stays on its default branch. A
+#     linked-worktree home is leased at a detached HEAD, and a remote home is
+#     detached by its own guarded sync the first time that sync advances it, so
+#     either one fetches origin and then stops at the detached-HEAD guard without
+#     advancing anything.
 #   - Local secondmate targets of a primary's run advance to the primary's
 #     default-branch commit, resolved AFTER the firstmate target moved, so a linked
 #     worktree or a standalone clone that never carries the source remote still

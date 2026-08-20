@@ -130,9 +130,9 @@ A run whose own firstmate target was refused advances no secondmate either, so a
 A remote secondmate route is refused before any contact, because that code root resolves its own file on a host this one cannot read.
 That refusal stands for every run from this home; what still advances a remote home is a manual `bin/fm-on.sh <id> fm-remote-secondmate-control.sh update <id>`, which updates that code root from whatever that host resolves - its own `config/update-remote`, or that host's `origin` when it has none - and then fast-forwards the home to the code-root commit.
 The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md), so the captain's decision converges byte-exact across the fleet.
-An inherited copy does not make that home resolve upstream on its own: a checkout carrying the `.fm-secondmate-home` marker reports the inherited value and uses its own `origin` instead.
-For a standalone-clone or remote home that `origin` is the checkout it was seeded from - the primary checkout, or that host's code root.
-A linked-worktree home shares the primary's remotes, so its `origin` is the primary's own `origin`, and its self-update stops at the detached-HEAD guard without advancing anything; that home advances through the primary's run, not its own.
+An inherited copy does not make that home resolve upstream on its own: a checkout carrying the `.fm-secondmate-home` marker notes that it is ignoring the inherited file and uses its own `origin` instead.
+A standalone-clone home is the one that advances that way, because its `origin` is the primary checkout it was seeded from and it stays on its default branch.
+A linked-worktree home is leased at a detached HEAD, and a remote home is detached by its own guarded sync the first time that sync advances it, so either one stops at the detached-HEAD guard without advancing; a linked worktree advances through the primary's run, and a remote home through the manual command named above.
 [`bin/fm-update.sh`](../bin/fm-update.sh)'s header owns the exact resolution and refusal mechanics.
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
