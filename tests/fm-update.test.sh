@@ -21,6 +21,10 @@
 #     the pull comes from origin exactly as before, with one it comes from the
 #     named remote, and a configured source that is missing or malformed refuses
 #     the run instead of silently pulling origin and reporting success.
+#   - That source is proven only against the checkout that owns it: a local
+#     secondmate home follows the primary's post-update commit instead of having
+#     to carry the source remote itself, while a remote route - whose code root
+#     resolves a source this host cannot read - refuses before any contact.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -388,8 +392,9 @@ test_configured_source_is_pulled() {
     || fail "firstmate did not land on the configured source's commit"
   [ "$(git -C "$w/main" rev-parse HEAD)" != "$origin_tip" ] \
     || fail "firstmate landed on origin's commit instead of the configured source's"
-  # The secondmate home follows the same resolved source in the same run.
-  assert_contains "$OUT" "secondmate sm1: updated " "secondmate advanced from the configured source"
+  # The secondmate home ends on that same commit in the same run, reached by
+  # following the primary's post-update HEAD rather than the source remote.
+  assert_contains "$OUT" "secondmate sm1: updated " "secondmate advanced with the primary"
   assert_contains "$OUT" "nudge-secondmates: fm-sm1" "advanced secondmate is nudged"
   [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$upstream_tip" ] \
     || fail "secondmate did not land on the configured source's commit"
@@ -482,18 +487,21 @@ test_update_source_is_inherited() {
   pass "T17 the update source is inherited into secondmate homes and mirrors absence"
 }
 
-# --- T18: a secondmate home missing the source refuses too -----------------
-# A standalone-clone home has its own remotes, so the configured source can be
-# missing there while the firstmate repo advances fine. That home must refuse
-# and fail the run rather than quietly advancing from its own origin.
-test_secondmate_missing_configured_source_refuses() {
-  local w upstream_tip before
+# --- T18: a standalone-clone home follows the updated primary --------------
+# fm-home-seed.sh provisions an explicitly-pathed home as a clone of the primary
+# checkout, so its only remote is that primary and it never carries the captain's
+# configured source. It must not be refused for that: the primary decides where
+# improvements come from and the home inherits the RESULT - the commit the
+# primary just landed - not the source.
+test_standalone_clone_home_follows_the_primary() {
+  local w upstream_tip origin_tip before
   w=$(new_world t18)
   add_upstream_source "$w"
   upstream_tip=$(bump_upstream "$w")
-  bump_origin "$w" instr
-  # A standalone clone of the mirror: it knows origin, and nothing else.
-  git clone -q "$w/origin.git" "$w/sm-clone"
+  bump_origin "$w" instr           # the captain's mirror moves on its own
+  origin_tip=$(git -C "$w/origin.git" rev-parse main)
+  # A standalone clone of the primary: it knows the primary, and nothing else.
+  git clone -q "$w/main" "$w/sm-clone"
   printf 'sm-clone\n' > "$w/sm-clone/.fm-secondmate-home"
   {
     printf 'window=main:fm-sm-clone\n'
@@ -505,16 +513,59 @@ test_secondmate_missing_configured_source_refuses() {
 
   run_update_rc "$w"
 
-  [ "$RC" -ne 0 ] || fail "a refused secondmate home still exited 0"
-  assert_contains "$OUT" "secondmate sm-clone: refused: configured update source 'upstream' is not a remote here" \
-    "secondmate refusal names the configured source"
-  assert_not_contains "$OUT" "nudge-secondmates: fm-sm-clone" "a refused secondmate is not nudged"
-  [ "$(git -C "$w/sm-clone" rev-parse HEAD)" = "$before" ] \
-    || fail "refused secondmate home advanced from its own origin"
-  # The firstmate repo, which does have the source, still advanced correctly.
+  [ "$RC" -eq 0 ] || fail "a standalone-clone home exited $RC, expected 0"
+  assert_not_contains "$OUT" "secondmate sm-clone: refused" \
+    "a home that does not carry the configured source must not be refused"
+  assert_contains "$OUT" "secondmate sm-clone: updated " "standalone-clone home advanced"
+  assert_contains "$OUT" "nudge-secondmates: fm-sm-clone" "an advanced live home is nudged"
+  # The firstmate repo, which does have the source, advanced from it.
   [ "$(git -C "$w/main" rev-parse HEAD)" = "$upstream_tip" ] \
     || fail "firstmate did not advance from the configured source"
-  pass "T18 a secondmate home without the configured source refuses and fails the run"
+  # The home landed on that same post-update commit, by way of the primary.
+  [ "$(git -C "$w/sm-clone" rev-parse HEAD)" != "$before" ] \
+    || fail "standalone-clone home never advanced"
+  [ "$(git -C "$w/sm-clone" rev-parse HEAD)" = "$upstream_tip" ] \
+    || fail "standalone-clone home did not land on the primary's post-update commit"
+  [ "$(git -C "$w/sm-clone" rev-parse HEAD)" != "$origin_tip" ] \
+    || fail "standalone-clone home followed the captain's mirror instead of the primary"
+  pass "T18 a standalone-clone home follows the updated primary instead of being refused"
+}
+
+# --- T19: a remote route refuses under a configured source -----------------
+# A remote code root resolves its OWN config/update-remote, which this host can
+# neither read nor prove. The route must refuse before any contact rather than
+# delegate and report whatever that host happened to pull.
+test_remote_route_refuses_under_configured_source() {
+  local w fakebin
+  w=$(new_world t19)
+  add_upstream_source "$w"
+  bump_upstream "$w" >/dev/null
+  printf -- '- rem1 - remote report (host: sm-host; root: /srv/firstmate; home: /srv/homes/rem1; scope: x; projects: p; added 2026-06-23)\n' \
+    > "$w/home/data/secondmates.md"
+  set_update_remote "$w" upstream
+  # Reaching that host has to go through ssh; this shim records any attempt.
+  fakebin=$(fm_fakebin "$w")
+  cat > "$fakebin/ssh" <<SH
+#!/usr/bin/env bash
+printf 'contacted\n' >> "$w/ssh-attempts"
+exit 0
+SH
+  chmod +x "$fakebin/ssh"
+
+  PATH="$fakebin:$PATH" run_update_rc "$w"
+
+  [ "$RC" -ne 0 ] || fail "an unprovable remote route exited 0, expected a loud failure"
+  assert_contains "$OUT" "remote secondmate rem1: refused on sm-host: this run pulls from the configured update source 'upstream'" \
+    "refusal names the secondmate, the host, and the configured source"
+  assert_contains "$OUT" "set config/update-remote in that host's code root /srv/firstmate" \
+    "refusal says exactly what that code root is missing"
+  assert_not_contains "$OUT" "remote secondmate rem1: updated" "a refused route reported no update"
+  assert_not_contains "$OUT" "remote secondmate rem1: skipped on" "a refused route never delegated"
+  assert_absent "$w/ssh-attempts" "a refused remote route still contacted its host"
+  # The summary lines callers parse are still printed before the run fails.
+  assert_contains "$OUT" "reread-firstmate: " "refused run still prints the reread summary"
+  assert_contains "$OUT" "nudge-secondmates:" "refused run still prints the nudge summary"
+  pass "T19 a remote route refuses before contact when an update source is configured"
 }
 
 test_updates_main_and_secondmate
@@ -532,6 +583,7 @@ test_missing_configured_source_refuses
 test_malformed_configured_source_refuses
 test_configured_source_ignores_comments_and_blanks
 test_update_source_is_inherited
-test_secondmate_missing_configured_source_refuses
+test_standalone_clone_home_follows_the_primary
+test_remote_route_refuses_under_configured_source
 
 echo "# all fm-update tests passed"

@@ -23,20 +23,32 @@
 # commit. The local, gitignored config/update-remote file names the git remote
 # the update pulls FROM. Absent, empty, or comment-only means origin, which is
 # byte-identical to the behavior before this file existed. A configured remote
-# that does not exist in a checkout is REFUSED there, never retried against
-# origin, and the run exits non-zero: an update that cannot prove where it is
-# pulling from must stop rather than report a success it did not perform.
+# that does not exist in the checkout this run must prove it against is REFUSED
+# there, never retried against origin, and the run exits non-zero: an update that
+# cannot prove where it is pulling from must stop rather than report a success it
+# did not perform.
 # Format: the first non-empty, non-comment line, trimmed, holding one git remote
 # name made of [A-Za-z0-9._-] and not starting with "-" or "."; anything else is
-# a hard error, not a fallback. The value the running home resolves applies to
-# every target this run advances, and secondmate homes inherit the file itself
-# through the primary-authoritative contract in bin/fm-config-inherit-lib.sh, so
-# a secondmate running its own /updatefirstmate resolves the same source.
+# a hard error, not a fallback. Secondmate homes inherit the file itself through
+# the primary-authoritative contract in bin/fm-config-inherit-lib.sh, so a
+# secondmate running its own /updatefirstmate resolves the same source.
+#
+# WHO THE RESOLVED SOURCE IS PROVEN AGAINST. Only the checkout that owns the
+# decision - the primary one this run advances first. A local secondmate home
+# inherits the RESULT, not the source: once a configured source is in play, those
+# homes advance to the primary's default-branch commit, resolved AFTER the
+# firstmate target moved, so a linked worktree or a standalone clone that never
+# carries the source remote still lands on exactly what the primary just pulled.
+# A remote secondmate route is REFUSED before any network call instead: this host
+# cannot prove what a code root on another host pulls from, and that code root has
+# its own config/update-remote to set. With no configured source every target
+# keeps following origin exactly as before.
 #
 # The fast-forward mechanics live in bin/fm-ff-lib.sh (base_mode "origin" or
-# "remote:<name>" here); the same library drives the local-HEAD secondmate sync
-# used by fm-spawn.sh and fm-bootstrap.sh, so there is one ff implementation,
-# not several.
+# "remote:<name>" here, and the local-HEAD commit mode for local homes under a
+# configured source); the same library drives the local-HEAD secondmate sync used
+# by fm-spawn.sh and fm-bootstrap.sh, so there is one ff implementation, not
+# several.
 #
 # It does NOT re-read AGENTS.md or nudge secondmates itself - those are LLM /
 # tmux actions the skill performs. The script's job is the safe git mechanics
@@ -113,13 +125,33 @@ fi
 # An updated live secondmate is nudged whenever it advanced (nudge_requires_instr
 # is "no" here): /updatefirstmate's nudge is a gentle re-read steer, kept on the
 # same condition it has always used.
+#
+# Local homes follow the primary's RESULT under a configured source (see header):
+# the base is the primary's default-branch commit read now, after the firstmate
+# target advanced, so a home inherits the new state rather than the previous one.
+# FF_LOCAL_BASE_FETCH_FROM lets a standalone-clone home, which has its own object
+# store, obtain that commit from the primary. Unconfigured runs pass the origin
+# base mode straight through, unchanged.
 
 FF_NUDGE_WINDOWS=""
 FF_SEEN_HOMES=""
 
+SECONDMATE_BASE_MODE=$BASE_MODE
+case "$BASE_MODE" in
+  remote:*)
+    if primary_commit=$(primary_head_commit "$FM_ROOT"); then
+      SECONDMATE_BASE_MODE=$primary_commit
+      FF_LOCAL_BASE_FETCH_FROM=$FM_ROOT
+    else
+      SECONDMATE_BASE_MODE=""
+      echo "secondmates: skipped: the primary checkout has no default-branch commit to follow" >&2
+    fi
+    ;;
+esac
+
 # Live direct reports first: state/<id>.meta with kind=secondmate carries the
 # authoritative home= path.
-sweep_live_secondmate_metas "$STATE" "$BASE_MODE" no
+[ -z "$SECONDMATE_BASE_MODE" ] || sweep_live_secondmate_metas "$STATE" "$SECONDMATE_BASE_MODE" no
 
 # Registry backstop: a secondmate registered in data/secondmates.md but without
 # a live meta (e.g. between restarts) is still its persistent on-disk home.
@@ -136,6 +168,16 @@ if [ -f "$SECONDMATES_MD" ]; then
     id=$SECONDMATE_REGISTRY_ID
     home=$SECONDMATE_REGISTRY_HOME
     if [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ]; then
+      # A remote code root resolves its OWN update source, which this host can
+      # neither read nor prove. Refuse before any network call rather than
+      # delegate and report whatever that host happened to pull.
+      case "$BASE_MODE" in
+        remote:*)
+          FF_REFUSALS=$((FF_REFUSALS + 1))
+          echo "remote secondmate $id: refused on $SECONDMATE_REGISTRY_HOST: this run pulls from the configured update source '${BASE_MODE#remote:}', which cannot be proven there; set config/update-remote in that host's code root $SECONDMATE_REGISTRY_ROOT"
+          continue
+          ;;
+      esac
       if remote_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh update "$id" < /dev/null 2>&1); then
         remote_result=$(printf '%s\n' "$remote_out" | tail -1)
         case "$remote_result" in
@@ -152,7 +194,7 @@ if [ -f "$SECONDMATES_MD" ]; then
         echo "remote secondmate $id: skipped on $SECONDMATE_REGISTRY_HOST: ${remote_out%%$'\n'*}" >&2
       fi
     else
-      process_secondmate "$id" "$home" "" "$BASE_MODE" no
+      [ -z "$SECONDMATE_BASE_MODE" ] || process_secondmate "$id" "$home" "" "$SECONDMATE_BASE_MODE" no
     fi
   done < "$SECONDMATES_MD"
 fi
@@ -162,8 +204,8 @@ fi
 echo "reread-firstmate: $reread_firstmate"
 echo "nudge-secondmates:${FF_NUDGE_WINDOWS:- none}"
 
-# A target refused for an unresolvable configured update source is a failed run,
+# A target refused for an unprovable configured update source is a failed run,
 # not a quiet skip: nothing was pulled from origin in its place.
 if [ "$FF_REFUSALS" -gt 0 ]; then
-  die "$FF_REFUSALS target(s) refused: ${BASE_MODE#remote:} is the configured update source (config/update-remote) but is not a remote there; nothing was updated from another source instead"
+  die "$FF_REFUSALS target(s) refused: ${BASE_MODE#remote:} is the configured update source (config/update-remote) but could not be proven there; nothing was updated from another source instead"
 fi

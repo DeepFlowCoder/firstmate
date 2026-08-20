@@ -17,14 +17,16 @@ Only `AGENTS.md`, `bin/`, and `.agents/skills/` are a running firstmate instruct
 This skill performs that pull for the running main firstmate and every secondmate, without disturbing any in-flight work.
 
 The update is **fast-forward only** - the same sanctioned self-write as the fleet sync firstmate already runs.
-For a remote route, it updates the configured Firstmate code root on that host from that code root's own update source, then guardedly fast-forwards the persistent home to that code-root commit.
+For a remote route with no configured update source here, it updates the Firstmate code root on that host from that code root's own update source, then guardedly fast-forwards the persistent home to that code-root commit.
+When a source is configured here, that remote route is refused before any contact and the run exits non-zero, because this host cannot prove what a code root on another host pulls from; it resumes once that host's code root has its own `config/update-remote`.
 It never forces, never creates a merge commit, never stashes, and advances a target only on a clean fast-forward; anything dirty, diverged, offline, or on the wrong branch is skipped and reported.
 A tracked-files fast-forward leaves the gitignored operational dirs (data/, state/, config/, projects/, .no-mistakes/) untouched, so a secondmate's in-flight work is never disrupted.
 This touches only the firstmate repo and its own worktrees, never anything under `projects/`.
 
 Where the improvements come from is the home's own choice, not an assumption: local `config/update-remote` names the git remote to pull from, and an absent file means `origin`.
 A home whose `origin` is the captain's own mirror needs that file, or the update advances it to its own published state and reports success while never seeing an upstream commit.
-A configured source that is missing from a checkout refuses that target and the whole run exits non-zero; it is never retried against `origin`.
+A configured source that is missing from this checkout refuses that target and the whole run exits non-zero; it is never retried against `origin`.
+Local secondmate homes are not asked to carry that remote: they follow the commit the primary just landed, so the fleet inherits the result of the captain's decision rather than re-deciding it.
 [`docs/configuration.md`](../../../docs/configuration.md) "Update source" owns the field.
 
 ## What it does
@@ -65,8 +67,8 @@ A configured source that is missing from a checkout refuses that target and the 
 - **Only the firstmate repo and its worktrees** are touched, never `projects/`.
   It is the same sanctioned self-write as the fleet sync.
 - **The update source is proven, not assumed.**
-  A configured source that is not a remote in a checkout, or a malformed `config/update-remote`, refuses and exits non-zero instead of quietly pulling `origin` and reporting success.
-  Report that refusal to the captain as a blocked update naming the source, not as a completed one.
+  A configured source that is not a remote in this checkout, a malformed `config/update-remote`, or a remote route whose code root resolves its own source on another host, refuses and exits non-zero instead of quietly pulling `origin` and reporting success.
+  Report that refusal to the captain as a blocked update naming the source and the target, not as a completed one.
 - **Secondmates are never disrupted.**
   A local or remote secondmate gets a tracked-files fast-forward only when its own checkout is safe to advance, plus a gentle re-read nudge when it changed.
   It is never torn down, interrupted, or forced.

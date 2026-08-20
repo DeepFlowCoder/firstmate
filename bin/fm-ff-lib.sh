@@ -11,14 +11,19 @@
 #     resolution). The two differ only in what a MISSING remote means: the
 #     legacy default skips that target, while a configured source refuses it,
 #     so an unreachable configured source can never quietly become an origin pull.
+#     A configured source is only ever resolved against the checkout that owns
+#     the decision - the PRIMARY one; local secondmate homes follow the primary's
+#     post-update commit through the local-HEAD mode below, so a home is never
+#     refused for not carrying a remote its primary alone was asked to know.
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
 #     base_mode is that local commit, with NO fetch and no origin dependency.
 #
 # A linked-worktree secondmate home already holds the primary's commit in the
 # shared object store, so its local-HEAD sync is a purely local fast-forward that
-# never touches the network. A standalone clone moves through that path only when
-# it already has the target; otherwise it is skipped until the origin path updates it.
+# never touches the network. A standalone clone has its own object store and can
+# lack that commit entirely: it is skipped, unless the caller opted into
+# FF_LOCAL_BASE_FETCH_FROM (below) and the commit can be obtained from there.
 # A tracked-files fast-forward never touches the gitignored operational dirs
 # (data/, state/, config/, projects/, .no-mistakes/), so it cannot disturb a
 # secondmate's backlog, projects, or in-flight work.
@@ -199,6 +204,14 @@ validate_secondmate_home() {
 # each distinct git-common-dir at most once PER REMOTE. Used ONLY by the remote
 # base modes; the local-HEAD sync never fetches.
 FETCHED=""
+
+# Opt-in for the local-HEAD base mode ONLY: the path of a checkout to obtain the
+# base commit from when the target does not already have it. /updatefirstmate sets
+# it to the primary checkout so a standalone-clone home can still follow the
+# primary's post-update commit; the offline local-HEAD sync (fm-spawn.sh,
+# fm-bootstrap.sh) leaves it unset and keeps its no-network guarantee.
+FF_LOCAL_BASE_FETCH_FROM="${FF_LOCAL_BASE_FETCH_FROM:-}"
+
 fetch_once() {
   local dir=$1 remote=$2 common key
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
@@ -273,11 +286,12 @@ live_secondmate_meta_records() {
 #                   silently retried against origin: an update that cannot prove
 #                   where it is pulling from must stop instead of reporting a
 #                   success it did not perform.
-#   <commit-ish>  - advance to that LOCAL commit with NO fetch and no remote
-#                   dependency (the local-HEAD secondmate sync). The commit must
-#                   already exist in the target's object store, which it always does
-#                   for a worktree of this same repo; a standalone clone that lacks
-#                   it is skipped rather than fetched.
+#   <commit-ish>  - advance to that LOCAL commit with NO remote dependency (the
+#                   local-HEAD secondmate sync). The commit must already exist in
+#                   the target's object store, which it always does for a worktree
+#                   of this same repo; a standalone clone that lacks it is skipped,
+#                   unless FF_LOCAL_BASE_FETCH_FROM names a checkout to obtain it
+#                   from, which only /updatefirstmate sets.
 # Guards are identical in every mode: ff-only (never force/merge/stash); skip a
 # dirty, diverged, or wrong-branch target and leave its work untouched.
 FF_STATUS=""
@@ -330,6 +344,10 @@ ff_target() {
     base="$remote/$default"
   else
     base="$base_mode"
+    if [ -n "$FF_LOCAL_BASE_FETCH_FROM" ] \
+      && ! git -C "$dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
+      git -C "$dir" fetch --quiet "$FF_LOCAL_BASE_FETCH_FROM" "refs/heads/$default" 2>/dev/null || true
+    fi
   fi
 
   if ! git -C "$dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
