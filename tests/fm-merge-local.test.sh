@@ -228,6 +228,43 @@ test_parked_copy_is_warned_and_switched_before_the_pull() {
   pass "fm-merge-local: a parked copy is warned about and the pull stops if it cannot switch"
 }
 
+# The other half of the parked case, and the reason the note cannot promise a
+# clean tree: git only refuses the switch when it would overwrite an uncommitted
+# change. An untracked file is carried onto the destination branch and the pull
+# lands on top, so the captain ends up holding half-finished work on the wrong
+# branch. The block does not check for this - it never acts on the captain's copy
+# - so the note is what has to name the case.
+test_switch_carries_uncommitted_work_and_the_note_says_so() {
+  local out err block run_dir
+  make_case arrastre nota
+  git -C "$CASE_COPY" checkout -q -b trabajo-a-medias
+  printf 'a medias\n' > "$CASE_COPY/aparte.txt"
+  git_in "$CASE_COPY" add aparte.txt
+  git_in "$CASE_COPY" commit -qm "trabajo a medias"
+  printf 'sin guardar\n' > "$CASE_COPY/sin-seguimiento.txt"
+
+  out="$TMP_ROOT/arrastre.out"; err="$TMP_ROOT/arrastre.err"
+  run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+    || fail "merge failed"$'\n'"$(cat "$err")"
+
+  block=$(block_of "$out")
+  assert_paste_safe "$block" "landing command for a parked copy with a dirty tree"
+  run_dir="$TMP_ROOT/arrastre-run"; mkdir -p "$run_dir"
+  ( cd "$run_dir" && eval "$block" ) > "$TMP_ROOT/arrastre.run" 2>&1 \
+    || fail "the block failed on a non-conflicting dirty tree"$'\n'"$(cat "$TMP_ROOT/arrastre.run")"
+
+  # This is what git actually does, and why the note may not claim otherwise.
+  assert_contains "$(git -C "$CASE_COPY" symbolic-ref --short HEAD)" "main" \
+    "the switch did not happen, so this case no longer covers what it was written for"
+  [ -f "$CASE_COPY/sin-seguimiento.txt" ] \
+    || fail "the untracked file vanished; this case no longer covers the carry-over it was written for"
+  assert_contains "$(cat "$out")" "uncommitted" \
+    "the note must tell the captain a dirty tree comes along, not imply the switch protects it"
+  assert_contains "$(cat "$out")" "commit or stash" \
+    "the note must say whose job the dirty tree is before pasting"
+  pass "fm-merge-local: the note states the uncommitted work the switch carries, instead of promising it cannot"
+}
+
 # A git ref may legally contain `;`, `&`, `$`, `>` and backticks, and this block
 # is pasted verbatim into the captain's shell, so an unquoted branch name would
 # run as extra commands - the exact damage the block exists to prevent. The name
@@ -299,13 +336,16 @@ test_evidence_in_the_repo_unlocks_the_install_step() {
   pass "fm-merge-local: in-repo evidence is what unlocks the install step"
 }
 
-# The class property, not one manifest's behavior: for EVERY recognized
-# manifest, a landing with no in-repo evidence must report the change and never
-# invent a command. The list is stated here independently of the script so that
-# adding a manifest to the guard without an evidence rule fails here. The
-# requirements.txt row is the one that can never have evidence: it says which
-# packages, never into which interpreter, and a bare `pip install` with nothing
-# active lands in the captain's system Python.
+# What actually closes the class is structural, not this test: every command the
+# block can emit is a row in the script's rules table with a mandatory evidence
+# column, and that table is the only place a command can be named, so a row whose
+# evidence file is absent - including a row added later with no evidence at all -
+# names nothing. This test pins that property for the manifests recognized today;
+# it iterates its own list, so a seventh manifest added to the script is not
+# exercised here until it is added below too.
+# requirements.txt is the one that can never have evidence: it names which
+# packages, never which interpreter, and a bare `pip install` with nothing active
+# lands in the captain's system Python.
 LANDING_MANIFESTS=(package.json requirements.txt pyproject.toml Cargo.toml go.mod Gemfile)
 
 test_no_manifest_invents_a_command_without_repo_evidence() {
@@ -327,8 +367,22 @@ test_no_manifest_invents_a_command_without_repo_evidence() {
       "$manifest with no evidence in the repo still handed the captain a fetch command"
     assert_not_contains "$block" "download" \
       "$manifest with no evidence in the repo still handed the captain a download command"
-    assert_contains "$(cat "$out")" "names a package manager" \
-      "$manifest with no evidence must still be reported to the captain, not go silent"
+    case "$manifest" in
+      requirements.txt)
+        # The generic "nothing names a package manager" reason reads as an
+        # invitation to reach for pip, which is the command this guard refuses.
+        assert_contains "$(cat "$out")" "never which interpreter" \
+          "the requirements.txt note must name the missing environment, not a missing package manager"
+        assert_contains "$(cat "$out")" "system Python" \
+          "the requirements.txt note must name the damage a bare pip install does"
+        assert_not_contains "$(cat "$out")" "names a package manager" \
+          "the requirements.txt note must not give the reason that steers the captain back to pip"
+        ;;
+      *)
+        assert_contains "$(cat "$out")" "names a package manager" \
+          "$manifest with no evidence must still be reported to the captain, not go silent"
+        ;;
+    esac
     assert_contains "$(cat "$out")" "$manifest" \
       "the note must name the manifest that changed"
   done
@@ -410,6 +464,7 @@ test_install_step_follows_the_repo_not_a_default
 test_unknown_package_manager_invents_no_command
 test_untouched_manifest_gets_no_install_step
 test_parked_copy_is_warned_and_switched_before_the_pull
+test_switch_carries_uncommitted_work_and_the_note_says_so
 test_hostile_branch_name_cannot_inject_commands
 test_non_node_manifest_is_covered_too
 test_evidence_in_the_repo_unlocks_the_install_step

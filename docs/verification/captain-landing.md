@@ -29,7 +29,11 @@ A long path is built up across several short `var=$var'...'` assignment lines, s
 Every value interpolated into the block is single-quoted, including the branch name, so a ref containing `;`, `&`, `$`, a quote, or a backtick cannot execute as an extra command in the captain's shell.
 
 The steps run as one `&&` chain, so a step that cannot run stops the ones after it instead of running in the wrong directory or on the wrong branch.
-That is what makes a copy parked on another branch safe: the switch is chained ahead of the pull, and the pull never runs if the switch is refused.
+A copy parked on another branch therefore gets its switch chained ahead of the pull, and the pull never runs if git refuses that switch.
+
+What the chain does not give is a clean-tree guarantee, and the emitted note says so rather than implying one.
+`git switch` refuses only when the checkout would overwrite an uncommitted change; an edit to a file that is byte-identical on both branches, or an untracked file, is carried across and lands on the destination branch with the captain.
+The block deliberately does not check for that, because it reads the captain's copy and never acts on it; the note names the case instead, so a dirty tree is a decision the captain makes before pasting.
 
 The pull is `--ff-only`, which holds the emitted command to the same rule the script applies to its own merge.
 A captain's copy carrying commits the clone does not have then gets a readable refusal, instead of a merge-commit editor opening in a 56-column terminal or a conflicted merge left half-pasted.

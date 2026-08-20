@@ -160,6 +160,19 @@ go.mod|go.sum|go mod download
 Gemfile|Gemfile.lock|bundle install
 '
 
+# landing_unnamed_reason <manifest>: why no command was named, in the captain's
+# terms. requirements.txt gets its own reason because the generic one - "nothing
+# names a package manager" - reads as an invitation to reach for pip, which is
+# the command this guard refuses to hand over.
+landing_unnamed_reason() {
+  case "$1" in
+    requirements.txt)
+      printf '%s' "which names which packages but never which interpreter; with no environment active a bare pip install goes into the captain's system Python, so the captain must activate the project's environment first and install there themselves." ;;
+    *)
+      printf '%s' "but nothing in $PROJ names a package manager for it, so the captain must install dependencies themselves." ;;
+  esac
+}
+
 landing_declared_install_cmd() {  # package.json's own packageManager field
   local declared
   [ -f "$PROJ/package.json" ] || return 1
@@ -292,17 +305,18 @@ done
 
 if [ "$COPY_BRANCH" != "$DEFAULT" ]; then
   if [ -n "$COPY_BRANCH" ]; then
-    echo "note: the captain's copy is parked on '$COPY_BRANCH', not '$DEFAULT'; the command switches it first and stops if that is not possible."
+    echo "note: the captain's copy is parked on '$COPY_BRANCH', not '$DEFAULT'; the command switches it first and the pull stops if git refuses that switch."
   else
-    echo "note: the captain's copy is not on a branch (detached HEAD); the command switches to '$DEFAULT' first and stops if that is not possible."
+    echo "note: the captain's copy is not on a branch (detached HEAD); the command switches to '$DEFAULT' first and the pull stops if git refuses that switch."
   fi
+  echo "note: git only refuses the switch when it would overwrite an uncommitted change; anything it can carry across - an edit to a file that matches on both branches, or an untracked file - lands on '$DEFAULT' with the captain. A dirty tree is the captain's to commit or stash before pasting."
 fi
 if [ "${#INSTALL_CMDS[@]}" -gt 0 ]; then
   echo "note: this landing changed the dependency manifest, so the command installs dependencies with $(join_quoted "${INSTALL_CMDS[@]}")."
 fi
-if [ "${#UNNAMED_MANIFESTS[@]}" -gt 0 ]; then
-  echo "note: this landing changed the dependency manifest $(join_quoted "${UNNAMED_MANIFESTS[@]}"), but nothing in $PROJ names a package manager for it, so the captain must install dependencies themselves."
-fi
+for manifest in ${UNNAMED_MANIFESTS[@]+"${UNNAMED_MANIFESTS[@]}"}; do
+  echo "note: this landing changed the dependency manifest '$manifest', $(landing_unnamed_reason "$manifest")"
+done
 
 if [ "$LANDING_OK" != 1 ]; then
   echo "warning: no paste-ready landing command could be emitted within $FM_LANDING_LINE_MAX characters per line for $PROJ; give the captain the pull another way rather than a command that breaks on paste." >&2
