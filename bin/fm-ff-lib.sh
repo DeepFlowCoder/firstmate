@@ -5,7 +5,12 @@
 # This is the one implementation of "advance a firstmate checkout to a base by a
 # clean fast-forward, never forcing, merging, or stashing" used by every sync
 # path:
-#   - /updatefirstmate (bin/fm-update.sh) pulls from origin: base_mode "origin".
+#   - /updatefirstmate (bin/fm-update.sh) pulls from the update source: base_mode
+#     "origin" for the unconfigured default, or "remote:<name>" for the source
+#     the captain configured in config/update-remote (bin/fm-update.sh owns that
+#     resolution). The two differ only in what a MISSING remote means: the
+#     legacy default skips that target, while a configured source refuses it,
+#     so an unreachable configured source can never quietly become an origin pull.
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
 #     base_mode is that local commit, with NO fetch and no origin dependency.
@@ -191,19 +196,20 @@ validate_secondmate_home() {
 }
 
 # A single fetch refreshes every worktree that shares an object store, so fetch
-# each distinct git-common-dir at most once. Used ONLY by the origin base mode;
-# the local-HEAD sync never fetches.
+# each distinct git-common-dir at most once PER REMOTE. Used ONLY by the remote
+# base modes; the local-HEAD sync never fetches.
 FETCHED=""
 fetch_once() {
-  local dir=$1 common
+  local dir=$1 remote=$2 common key
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  key="$common|$remote"
   if [ -n "$common" ]; then
     case " $FETCHED " in
-      *" $common "*) return 0 ;;
+      *" $key "*) return 0 ;;
     esac
   fi
-  if git -C "$dir" fetch origin --prune --quiet 2>/dev/null; then
-    [ -n "$common" ] && FETCHED="$FETCHED $common"
+  if git -C "$dir" fetch "$remote" --prune --quiet 2>/dev/null; then
+    [ -n "$common" ] && FETCHED="$FETCHED $key"
     return 0
   fi
   return 1
@@ -255,21 +261,30 @@ live_secondmate_meta_records() {
 
 # Fast-forward one target to a base. Prints its status line. Sets globals for the
 # caller:
-#   FF_STATUS = updated|current|skipped
+#   FF_STATUS = updated|current|skipped|refused
 #   FF_INSTR  = comma list of changed instruction paths (only when updated)
+# and increments FF_REFUSALS once per refused target.
 #
 # base_mode selects where the fast-forward base comes from:
-#   origin       - fetch origin and advance to origin/<default> (the /updatefirstmate
-#                  path); requires an origin remote and network reachability.
-#   <commit-ish> - advance to that LOCAL commit with NO fetch and no origin
-#                  dependency (the local-HEAD secondmate sync). The commit must
-#                  already exist in the target's object store, which it always does
-#                  for a worktree of this same repo; a standalone clone that lacks
-#                  it is skipped rather than fetched.
-# Guards are identical in both modes: ff-only (never force/merge/stash); skip a
+#   origin        - fetch origin and advance to origin/<default> (the unconfigured
+#                   /updatefirstmate path); an absent origin remote is skipped.
+#   remote:<name> - fetch <name> and advance to <name>/<default> (the CONFIGURED
+#                   update source). An absent <name> remote is REFUSED, never
+#                   silently retried against origin: an update that cannot prove
+#                   where it is pulling from must stop instead of reporting a
+#                   success it did not perform.
+#   <commit-ish>  - advance to that LOCAL commit with NO fetch and no remote
+#                   dependency (the local-HEAD secondmate sync). The commit must
+#                   already exist in the target's object store, which it always does
+#                   for a worktree of this same repo; a standalone clone that lacks
+#                   it is skipped rather than fetched.
+# Guards are identical in every mode: ff-only (never force/merge/stash); skip a
 # dirty, diverged, or wrong-branch target and leave its work untouched.
 FF_STATUS=""
 FF_INSTR=""
+# Refused targets since the caller last reset this. A caller that drives a whole
+# sweep resets it before the run and treats a non-zero count as a failed run.
+FF_REFUSALS=0
 ff_target() {
   local dir=$1 label=$2 base_mode=$3 allow_detached=${4:-no} ignore_seed_marker=${5:-no}
   FF_STATUS="skipped"
@@ -284,23 +299,35 @@ ff_target() {
     return 0
   fi
 
-  local default base cur instr local_rev base_rev before after out
+  local default base cur instr local_rev base_rev before after out remote configured
   default=$(default_branch "$dir") || {
     echo "$label: skipped: cannot determine default branch"
     return 0
   }
 
   # Resolve the fast-forward base from base_mode (see header).
-  if [ "$base_mode" = origin ]; then
-    if ! git -C "$dir" remote get-url origin >/dev/null 2>&1; then
-      echo "$label: skipped: no origin remote"
+  remote=""
+  configured=no
+  case "$base_mode" in
+    origin) remote=origin ;;
+    remote:*) remote=${base_mode#remote:}; configured=yes ;;
+  esac
+  if [ "$configured" = yes ] || [ -n "$remote" ]; then
+    if ! git -C "$dir" remote get-url "$remote" >/dev/null 2>&1; then
+      if [ "$configured" = yes ]; then
+        FF_STATUS="refused"
+        FF_REFUSALS=$((FF_REFUSALS + 1))
+        echo "$label: refused: configured update source '$remote' is not a remote here"
+      else
+        echo "$label: skipped: no origin remote"
+      fi
       return 0
     fi
-    if ! fetch_once "$dir"; then
+    if ! fetch_once "$dir" "$remote"; then
       echo "$label: skipped: fetch failed"
       return 0
     fi
-    base="origin/$default"
+    base="$remote/$default"
   else
     base="$base_mode"
   fi

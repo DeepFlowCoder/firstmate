@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Self-update a running firstmate and its secondmates to the latest origin.
+# Self-update a running firstmate and its secondmates from their update source.
 #
 # Mechanical half of the /updatefirstmate skill. Fast-forwards the running
-# firstmate repo's default branch from origin, then fast-forwards every
+# firstmate repo's default branch from the update source, then fast-forwards every
 # registered secondmate home. Local homes are treehouse worktrees or standalone
 # clones; remote routes update their configured code root on that host and then
 # fast-forward the persistent home to that root. FAST-FORWARD ONLY, exactly like
@@ -16,9 +16,27 @@
 # default branch, so a fast-forward there advances HEAD only and never touches
 # any other worktree's checkout or the shared `main` branch.
 #
-# The fast-forward mechanics live in bin/fm-ff-lib.sh (base_mode "origin" here);
-# the same library drives the local-HEAD secondmate sync used by fm-spawn.sh and
-# fm-bootstrap.sh, so there is one ff implementation, not several.
+# UPDATE SOURCE. The repo this home ships its own work to is not necessarily the
+# repo firstmate's improvements come from: a captain who keeps a private mirror
+# has origin pointing at that mirror, so pulling origin would advance a home to
+# its own published state and report success while never seeing an upstream
+# commit. The local, gitignored config/update-remote file names the git remote
+# the update pulls FROM. Absent, empty, or comment-only means origin, which is
+# byte-identical to the behavior before this file existed. A configured remote
+# that does not exist in a checkout is REFUSED there, never retried against
+# origin, and the run exits non-zero: an update that cannot prove where it is
+# pulling from must stop rather than report a success it did not perform.
+# Format: the first non-empty, non-comment line, trimmed, holding one git remote
+# name made of [A-Za-z0-9._-] and not starting with "-" or "."; anything else is
+# a hard error, not a fallback. The value the running home resolves applies to
+# every target this run advances, and secondmate homes inherit the file itself
+# through the primary-authoritative contract in bin/fm-config-inherit-lib.sh, so
+# a secondmate running its own /updatefirstmate resolves the same source.
+#
+# The fast-forward mechanics live in bin/fm-ff-lib.sh (base_mode "origin" or
+# "remote:<name>" here); the same library drives the local-HEAD secondmate sync
+# used by fm-spawn.sh and fm-bootstrap.sh, so there is one ff implementation,
+# not several.
 #
 # It does NOT re-read AGENTS.md or nudge secondmates itself - those are LLM /
 # tmux actions the skill performs. The script's job is the safe git mechanics
@@ -34,6 +52,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+UPDATE_REMOTE_FILE="$CONFIG/update-remote"
 SECONDMATES_MD="$FM_HOME/data/secondmates.md"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
@@ -48,10 +68,43 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 fi
 [ $# -eq 0 ] || { usage; exit 1; }
 
+die() { printf 'fm-update: %s\n' "$1" >&2; exit 1; }
+
+# --- update source ---------------------------------------------------------
+# Echo the ff-lib base mode for this run: "origin" when config/update-remote is
+# absent or holds nothing, "remote:<name>" when it names a source. Refuses a
+# malformed or unsafe file rather than falling back to origin (see header).
+resolve_update_base_mode() {
+  local line value=""
+  [ -e "$UPDATE_REMOTE_FILE" ] || { printf 'origin\n'; return 0; }
+  [ -f "$UPDATE_REMOTE_FILE" ] && [ ! -L "$UPDATE_REMOTE_FILE" ] \
+    || die "config/update-remote is not a regular file; refusing to guess the update source"
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    case "$line" in
+      '#'*) continue ;;
+    esac
+    value=$line
+    break
+  done < "$UPDATE_REMOTE_FILE"
+  [ -n "$value" ] || { printf 'origin\n'; return 0; }
+  case "$value" in
+    -*|.*|*[!A-Za-z0-9._-]*)
+      die "config/update-remote: '$value' is not a valid git remote name; refusing to fall back to origin"
+      ;;
+  esac
+  printf 'remote:%s\n' "$value"
+}
+
+BASE_MODE=$(resolve_update_base_mode) || exit 1
+
 # --- main firstmate repo ---------------------------------------------------
 
+FF_REFUSALS=0
 reread_firstmate="no"
-ff_target "$FM_ROOT" "firstmate" origin no no
+ff_target "$FM_ROOT" "firstmate" "$BASE_MODE" no no
 if [ "$FF_STATUS" = "updated" ] && [ -n "$FF_INSTR" ]; then
   reread_firstmate="yes"
 fi
@@ -66,7 +119,7 @@ FF_SEEN_HOMES=""
 
 # Live direct reports first: state/<id>.meta with kind=secondmate carries the
 # authoritative home= path.
-sweep_live_secondmate_metas "$STATE" origin no
+sweep_live_secondmate_metas "$STATE" "$BASE_MODE" no
 
 # Registry backstop: a secondmate registered in data/secondmates.md but without
 # a live meta (e.g. between restarts) is still its persistent on-disk home.
@@ -99,7 +152,7 @@ if [ -f "$SECONDMATES_MD" ]; then
         echo "remote secondmate $id: skipped on $SECONDMATE_REGISTRY_HOST: ${remote_out%%$'\n'*}" >&2
       fi
     else
-      process_secondmate "$id" "$home" "" origin no
+      process_secondmate "$id" "$home" "" "$BASE_MODE" no
     fi
   done < "$SECONDMATES_MD"
 fi
@@ -108,3 +161,9 @@ fi
 
 echo "reread-firstmate: $reread_firstmate"
 echo "nudge-secondmates:${FF_NUDGE_WINDOWS:- none}"
+
+# A target refused for an unresolvable configured update source is a failed run,
+# not a quiet skip: nothing was pulled from origin in its place.
+if [ "$FF_REFUSALS" -gt 0 ]; then
+  die "$FF_REFUSALS target(s) refused: ${BASE_MODE#remote:} is the configured update source (config/update-remote) but is not a remote there; nothing was updated from another source instead"
+fi
