@@ -150,8 +150,11 @@ landing_install_cmd() {
       if [ -f "$PROJ/bun.lockb" ] || [ -f "$PROJ/bun.lock" ]; then printf 'bun install\n'; return 0; fi
       if [ -f "$PROJ/package-lock.json" ]; then printf 'npm install\n'; return 0; fi
       ;;
-    # requirements.txt names its own installer; the file IS the argument.
-    requirements.txt) printf 'pip install -r requirements.txt\n'; return 0 ;;
+    # A requirements.txt says which packages, never which interpreter or
+    # environment, and a bare `pip install` with nothing active installs into
+    # the captain's system Python. No repo evidence names that environment, so
+    # this manifest gets the note and never a command.
+    requirements.txt) ;;
     # A pyproject alone does not say who installs it, so only a lockfile in the
     # repo answers; otherwise the captain gets the note, not an invented command.
     pyproject.toml)
@@ -213,7 +216,10 @@ fi
 
 # Build the block: every path lands in a variable first, then one `&&` chain, so
 # a step that cannot run stops the ones after it instead of running in the wrong
-# directory or on the wrong branch.
+# directory or on the wrong branch. The pull is `--ff-only` for the same reason
+# this script refuses a diverged branch: a captain's copy holding commits the
+# clone does not have must get a readable refusal, never a merge-commit editor
+# in a 56-column terminal or a half-pasted conflicted merge.
 LANDING_OK=1
 landing_assign fmw "$CAPTAIN_COPY" || LANDING_OK=0
 landing_assign fmc "$PROJ" || LANDING_OK=0
@@ -231,7 +237,7 @@ landing_chain() {
   local cmd
   CHAIN=('cd "$fmw"')
   [ "$COPY_BRANCH" = "$DEFAULT" ] || CHAIN+=("git switch $1")
-  CHAIN+=("git pull \"\$fmc\" $1")
+  CHAIN+=("git pull --ff-only \"\$fmc\" $1")
   for cmd in ${INSTALL_CMDS[@]+"${INSTALL_CMDS[@]}"}; do CHAIN+=("$cmd"); done
 }
 

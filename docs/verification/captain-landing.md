@@ -31,13 +31,20 @@ Every value interpolated into the block is single-quoted, including the branch n
 The steps run as one `&&` chain, so a step that cannot run stops the ones after it instead of running in the wrong directory or on the wrong branch.
 That is what makes a copy parked on another branch safe: the switch is chained ahead of the pull, and the pull never runs if the switch is refused.
 
+The pull is `--ff-only`, which holds the emitted command to the same rule the script applies to its own merge.
+A captain's copy carrying commits the clone does not have then gets a readable refusal, instead of a merge-commit editor opening in a 56-column terminal or a conflicted merge left half-pasted.
+
 Two further failures the block closes, both paid for before this guard existed:
 
 - A landing that changed the dependency manifest left the captain's installed dependencies behind, and that failure surfaced much later and disguised (`ERR_MODULE_NOT_FOUND`, mid-way through a six-step production sequence), so the install step is emitted with the pull.
 - Telling a captain whose copy sits on a work branch to "just run git pull" is harmful advice, so the branch that copy is parked on is read and reported.
 
-The install step is only ever a command the repository itself names: a `packageManager` field, a lockfile, or a manifest whose canonical installer is unambiguous.
+The install step is only ever a command the repository itself names: a `packageManager` field, a lockfile, or a manifest whose canonical installer both is unambiguous and stays inside the project.
 When the repository names nothing, the manifest change is reported and no command is invented, because a captain told to run a package manager their project does not use is a new failure rather than a closed one.
 The manifest names recognized are `package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`, and `Gemfile`.
+
+`requirements.txt` is deliberately reported without a command.
+It states which packages to install but never into which interpreter, and nothing in a repository carrying it names the environment, so a bare `pip install` with none active installs into the captain's system Python - damage already paid for on this machine.
+`pyproject.toml` likewise names a command only through `uv.lock`, `poetry.lock`, or `pdm.lock`.
 
 The emitted block is pinned end to end by `tests/fm-merge-local.test.sh`, which runs it the way the captain would.

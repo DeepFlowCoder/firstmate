@@ -269,20 +269,77 @@ test_hostile_branch_name_cannot_inject_commands() {
 
 test_non_node_manifest_is_covered_too() {
   local out err block
+  make_case gomod go.mod
+  out="$TMP_ROOT/gomod.out"; err="$TMP_ROOT/gomod.err"
+  run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+    || fail "merge failed"$'\n'"$(cat "$err")"
+
+  block=$(block_of "$out")
+  assert_paste_safe "$block" "landing command for a non-Node manifest"
+  has_line "$block" "go mod download" \
+    || fail "a landing that changed go.mod must carry its install step"$'\n'"$block"
+  ! has_line "$block" "npm install" \
+    || fail "the install step must follow the manifest that changed, not another one present in the repo"$'\n'"$block"
+  assert_contains "$(cat "$out")" "changed the dependency manifest" \
+    "the manifest change must be stated, not only encoded in the command"
+  pass "fm-merge-local: a non-Node manifest gets its own install step"
+}
+
+# A requirements.txt says which packages, never into which interpreter. With no
+# environment active `pip install` lands in the captain's system Python, so the
+# manifest must be reported and the command must not be invented.
+test_requirements_txt_is_reported_but_never_installed() {
+  local out err block
   make_case python requirements.txt
   out="$TMP_ROOT/python.out"; err="$TMP_ROOT/python.err"
   run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
     || fail "merge failed"$'\n'"$(cat "$err")"
 
   block=$(block_of "$out")
-  assert_paste_safe "$block" "landing command for a python manifest"
-  has_line "$block" "pip install -r requirements.txt" \
-    || fail "a landing that changed requirements.txt must carry its install step"$'\n'"$block"
-  ! has_line "$block" "npm install" \
-    || fail "the install step must follow the manifest that changed, not another one present in the repo"$'\n'"$block"
-  assert_contains "$(cat "$out")" "changed the dependency manifest" \
-    "the manifest change must be stated, not only encoded in the command"
-  pass "fm-merge-local: a non-Node manifest gets its own install step"
+  assert_not_contains "$block" "pip" \
+    "a bare pip install may never be handed to the captain: with no environment active it installs into the system Python"
+  assert_not_contains "$block" "install" \
+    "no install command may be invented for a manifest whose environment the repo does not name"
+  assert_contains "$(cat "$out")" "names a package manager" \
+    "a requirements.txt change must still be reported to the captain"
+  assert_contains "$(cat "$out")" "requirements.txt" \
+    "the note must name the manifest that changed"
+  pass "fm-merge-local: requirements.txt is reported without inventing a pip command"
+}
+
+# The captain's copy holding commits the clone does not have is the shape
+# finanzas-control and job-search have today. The pasted pull must refuse
+# readably rather than open a merge-commit editor or leave a conflicted merge.
+test_diverged_copy_gets_a_refusal_not_a_merge() {
+  local out err block before_head after_head run_dir
+  make_case divergida nota
+  # The reported dangerous configuration: a plain `git pull` here would merge.
+  git -C "$CASE_COPY" config pull.rebase false
+  printf 'trabajo local del capitan\n' > "$CASE_COPY/local.txt"
+  git_in "$CASE_COPY" add -A
+  git_in "$CASE_COPY" commit -qm "trabajo local del capitan"
+  before_head=$(git -C "$CASE_COPY" rev-parse HEAD)
+
+  out="$TMP_ROOT/divergida.out"; err="$TMP_ROOT/divergida.err"
+  run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+    || fail "merge failed"$'\n'"$(cat "$err")"
+
+  block=$(block_of "$out")
+  assert_paste_safe "$block" "landing command for a diverged copy"
+  run_dir="$TMP_ROOT/divergida-run"; mkdir -p "$run_dir"
+  ( cd "$run_dir" && eval "$block" ) > "$TMP_ROOT/divergida.run" 2>&1 \
+    && fail "the pasted pull merged into a diverged copy instead of refusing"$'\n'"$(cat "$TMP_ROOT/divergida.run")"
+
+  after_head=$(git -C "$CASE_COPY" rev-parse HEAD)
+  [ "$after_head" = "$before_head" ] \
+    || fail "the refused pull still moved the captain's copy from $before_head to $after_head"
+  [ ! -e "$CASE_COPY/.git/MERGE_HEAD" ] \
+    || fail "the refused pull left the captain's copy in a half-finished merge state"
+  assert_not_contains "$(git -C "$CASE_COPY" log --oneline)" "trabajo aterrizado" \
+    "a refused pull must not have brought the landing in anyway"
+  assert_contains "$(tr 'A-Z' 'a-z' < "$TMP_ROOT/divergida.run")" "fast-forward" \
+    "the refusal must say why it refused, not fail cryptically"
+  pass "fm-merge-local: a diverged captain copy gets a readable refusal instead of a merge"
 }
 
 test_manifest_without_a_nameable_command_still_warns() {
@@ -327,5 +384,7 @@ test_untouched_manifest_gets_no_install_step
 test_parked_copy_is_warned_and_switched_before_the_pull
 test_hostile_branch_name_cannot_inject_commands
 test_non_node_manifest_is_covered_too
+test_requirements_txt_is_reported_but_never_installed
 test_manifest_without_a_nameable_command_still_warns
+test_diverged_copy_gets_a_refusal_not_a_merge
 test_non_local_origin_gets_no_command
