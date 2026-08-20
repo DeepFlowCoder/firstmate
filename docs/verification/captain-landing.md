@@ -41,6 +41,9 @@ A captain's copy carrying commits the clone does not have then gets a readable r
 Two further failures the block closes, both paid for before this guard existed:
 
 - A landing that changed the dependency manifest left the captain's installed dependencies behind, and that failure surfaced much later and disguised (`ERR_MODULE_NOT_FOUND`, mid-way through a six-step production sequence), so the install step is emitted with the pull.
+  The step covers the span the pull actually delivers - the captain's copy's own default branch up to the landed tip - not the landing just performed.
+  Landings accumulate while the captain has not pulled, which is the normal state this guard exists for, so keying the step to a single landing would let a dependency change land in one landing and be pulled silently with the next.
+  When that ref cannot be read, or names a commit this clone does not have, the current landing is the fallback span.
 - Telling a captain whose copy sits on a work branch to "just run git pull" is harmful advice, so the branch that copy is parked on is read and reported.
 
 The install step is only ever a command the repository's own evidence names: package.json's `packageManager` field, or a lockfile the repository carries.

@@ -416,11 +416,15 @@ fm_send_delivered_payload() {  # <text> <result-var>
 }
 
 fm_send_refuse_oversized() {  # <text>
-  local text=$1 payload bytes
+  local text=$1 payload bytes text_bytes breakdown=
   fm_send_delivered_payload "$text" payload
   bytes=$(printf '%s' "$payload" | LC_ALL=C wc -c | tr -d '[:space:]')
   [ "$bytes" -gt "$FM_SEND_MAX_BYTES" ] || return 0
-  echo "error: message is $bytes bytes, over the $FM_SEND_MAX_BYTES-byte limit for one send; nothing was sent. Past that size the text arrives scrambled while the send still reports success, so it is refused rather than truncated. Write the long instruction to a file and send its path instead." >&2
+  if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
+    text_bytes=$(printf '%s' "$text" | LC_ALL=C wc -c | tr -d '[:space:]')
+    breakdown=" as delivered ($text_bytes bytes of your text plus the $(( bytes - text_bytes ))-byte from-firstmate routing marker this target requires)"
+  fi
+  echo "error: message is $bytes bytes$breakdown, over the $FM_SEND_MAX_BYTES-byte limit for one send; nothing was sent. Past that size the text arrives scrambled while the send still reports success, so it is refused rather than truncated. Write the long instruction to a file and send its path instead." >&2
   return 1
 }
 

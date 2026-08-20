@@ -457,6 +457,115 @@ test_non_local_origin_gets_no_command() {
   pass "fm-merge-local: a project without a local working copy origin gets no invented command"
 }
 
+# A relative origin means two different directories: this script resolves it
+# against its own working directory, the pasted `cd` against the captain's.
+# `git clone` records an absolute path, but `git remote set-url` keeps what it is
+# given, so the case is reachable and the block must refuse to emit rather than
+# hand over a path whose meaning depends on where it is pasted.
+test_relative_origin_gets_no_command() {
+  local out err case_dir
+  make_case relativo nota
+  # The dangerous shape, not merely an unresolvable one: the relative origin
+  # DOES resolve from the directory fm-merge-local runs in, so every topology
+  # check passes. Only the pasted `cd` would resolve somewhere else.
+  case_dir=$(dirname "$CASE_COPY")
+  git -C "$CASE_PROJ" remote set-url origin "$(basename "$CASE_COPY")"
+  [ -d "$case_dir/$(basename "$CASE_COPY")" ] \
+    || fail "the fixture no longer builds a relative origin that resolves from the script's directory"
+
+  out="$TMP_ROOT/relativo.out"; err="$TMP_ROOT/relativo.err"
+  ( cd "$case_dir" && FM_HOME="$CASE_HOME" FM_ROOT_OVERRIDE="$CASE_HOME" "$MERGE" "$CASE_ID" ) \
+    > "$out" 2> "$err" \
+    || fail "merge failed"$'\n'"$(cat "$err")"
+
+  assert_contains "$(cat "$out")" "merged fm/$CASE_ID" "the merge itself must still be reported"
+  assert_not_contains "$(cat "$out")" "CAPTAIN COMMAND" \
+    "a relative origin must not produce a cd whose meaning depends on the pasting shell"
+  assert_contains "$(cat "$out")" "absolute path" \
+    "the missing command must be explained rather than left silent"
+  pass "fm-merge-local: a relative origin gets no command instead of a path that moves"
+}
+
+# The install step must cover what the PULL delivers, not the landing just
+# performed. Landings accumulate while the captain has not pulled - the guard's
+# own premise - so a dependency change landed in A and never pulled must still
+# carry its install step when the captain pastes B's block.
+test_install_step_covers_landings_the_captain_has_not_pulled() {
+  local out err block
+  make_case acumulada package.json package-lock.json
+
+  # Landing A: touches the manifest, and the captain does not pull it.
+  out="$TMP_ROOT/acumulada-a.out"; err="$TMP_ROOT/acumulada-a.err"
+  run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+    || fail "landing A failed"$'\n'"$(cat "$err")"
+  has_line "$(block_of "$out")" "npm install" \
+    || fail "landing A should have carried the install step"$'\n'"$(block_of "$out")"
+
+  # Landing B: source only, landed on top while A is still unpulled.
+  local id_b="$CASE_ID-b"
+  git -C "$CASE_PROJ" checkout -q -b "fm/$id_b"
+  printf 'solo fuente\n' >> "$CASE_PROJ/nota.txt"
+  git_in "$CASE_PROJ" add -A
+  git_in "$CASE_PROJ" commit -qm "solo fuente"
+  git -C "$CASE_PROJ" checkout -q "$CASE_BRANCH"
+  printf 'project=%s\nmode=local-only\n' "$CASE_PROJ" > "$CASE_HOME/state/$id_b.meta"
+
+  out="$TMP_ROOT/acumulada-b.out"; err="$TMP_ROOT/acumulada-b.err"
+  run_merge "$CASE_HOME" "$id_b" "$out" "$err" \
+    || fail "landing B failed"$'\n'"$(cat "$err")"
+
+  block=$(block_of "$out")
+  assert_paste_safe "$block" "landing command covering an unpulled manifest change"
+  has_line "$block" "npm install" \
+    || fail "B's block dropped the install step A's unpulled manifest change still needs"$'\n'"$block"
+  assert_contains "$(cat "$out")" "changed the dependency manifest" \
+    "the accumulated manifest change must be stated, not only encoded in the command"
+
+  # And the block must actually work, bringing both landings across. npm is
+  # stubbed rather than dropped: removing the step would leave the chain's `&&`
+  # dangling, and this test is about the pull, not about running a real install.
+  ( cd "$TMP_ROOT"; npm() { return 0; }; eval "$block" ) \
+    > "$TMP_ROOT/acumulada.run" 2>&1 \
+    || fail "the emitted block failed to run"$'\n'"$(cat "$TMP_ROOT/acumulada.run")"
+  assert_contains "$(git -C "$CASE_COPY" log --oneline)" "trabajo aterrizado" \
+    "the pull did not bring landing A across"
+  assert_contains "$(git -C "$CASE_COPY" log --oneline)" "solo fuente" \
+    "the pull did not bring landing B across"
+  pass "fm-merge-local: the install step covers every landing the pull delivers, not just the last one"
+}
+
+# Once the captain is current, a source-only landing carries no install step:
+# the span is the pull delta, so it must shrink as well as grow.
+test_install_step_stops_once_the_captain_is_current() {
+  local out err block
+  make_case aldia package.json package-lock.json
+  out="$TMP_ROOT/aldia-a.out"; err="$TMP_ROOT/aldia-a.err"
+  run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+    || fail "landing A failed"$'\n'"$(cat "$err")"
+
+  # The captain pastes A's block, so the manifest change is now in their copy.
+  ( cd "$TMP_ROOT"; npm() { return 0; }; eval "$(block_of "$out")" ) \
+    > "$TMP_ROOT/aldia.run" 2>&1 \
+    || fail "landing A's block failed to run"$'\n'"$(cat "$TMP_ROOT/aldia.run")"
+
+  local id_b="$CASE_ID-b"
+  git -C "$CASE_PROJ" checkout -q -b "fm/$id_b"
+  printf 'solo fuente\n' >> "$CASE_PROJ/nota.txt"
+  git_in "$CASE_PROJ" add -A
+  git_in "$CASE_PROJ" commit -qm "solo fuente"
+  git -C "$CASE_PROJ" checkout -q "$CASE_BRANCH"
+  printf 'project=%s\nmode=local-only\n' "$CASE_PROJ" > "$CASE_HOME/state/$id_b.meta"
+
+  out="$TMP_ROOT/aldia-b.out"; err="$TMP_ROOT/aldia-b.err"
+  run_merge "$CASE_HOME" "$id_b" "$out" "$err" \
+    || fail "landing B failed"$'\n'"$(cat "$err")"
+
+  block=$(block_of "$out")
+  assert_not_contains "$block" "install" \
+    "a source-only landing must carry no install step once the captain has pulled the manifest change"
+  pass "fm-merge-local: the install step drops away once the captain has pulled the manifest change"
+}
+
 test_emitted_command_is_paste_safe_and_actually_works
 test_paths_with_spaces_still_produce_a_working_command
 test_manifest_change_carries_the_declared_install_step
@@ -471,4 +580,7 @@ test_evidence_in_the_repo_unlocks_the_install_step
 test_no_manifest_invents_a_command_without_repo_evidence
 test_manifest_without_a_nameable_command_still_warns
 test_diverged_copy_gets_a_refusal_not_a_merge
+test_install_step_covers_landings_the_captain_has_not_pulled
+test_install_step_stops_once_the_captain_is_current
 test_non_local_origin_gets_no_command
+test_relative_origin_gets_no_command

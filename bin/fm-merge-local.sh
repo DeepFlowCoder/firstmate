@@ -228,19 +228,37 @@ landing_touched_manifests() {
 # firstmate never pushes there, which is why the landing is invisible until they
 # pull. Anything else (a real remote, a bare repo, a missing path) means this
 # topology does not hold, and then no command is emitted at all.
+#
+# A relative origin is rejected with the rest: this script resolves it against
+# its own working directory while the emitted `cd` would resolve it against the
+# captain's, so the two would name different directories. `git clone` records an
+# absolute path, but `git remote set-url origin ../copy` keeps what it was given.
 CAPTAIN_COPY=$(git -C "$PROJ" remote get-url origin 2>/dev/null || true)
 case "$CAPTAIN_COPY" in file://*) CAPTAIN_COPY=${CAPTAIN_COPY#file://} ;; esac
+case "$CAPTAIN_COPY" in /*) ;; *) CAPTAIN_COPY= ;; esac
 if [ -z "$CAPTAIN_COPY" ] || [ ! -d "$CAPTAIN_COPY" ] \
   || [ "$(git -C "$CAPTAIN_COPY" rev-parse --is-bare-repository 2>/dev/null || echo true)" != false ]; then
-  echo "note: origin of $PROJ is not a local working copy, so no paste-ready landing command was emitted."
+  echo "note: origin of $PROJ is not a local working copy at an absolute path, so no paste-ready landing command was emitted."
   exit 0
 fi
 COPY_BRANCH=$(git -C "$CAPTAIN_COPY" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
+# The install step has to cover what the PULL brings, not what this landing
+# added. Landings accumulate while the captain has not pulled - that is the
+# normal state this guard exists for - so a landing that touched no manifest can
+# still deliver one that an earlier unpulled landing did. The span is therefore
+# the captain's copy's own default branch; when that ref cannot be read, or names
+# a commit this clone does not have, this landing is the honest fallback.
+PULL_FROM=$before
+copy_default=$(git -C "$CAPTAIN_COPY" rev-parse --verify --quiet "refs/heads/$DEFAULT" 2>/dev/null || true)
+if [ -n "$copy_default" ] && git -C "$PROJ" cat-file -e "$copy_default^{commit}" 2>/dev/null; then
+  PULL_FROM=$copy_default
+fi
+
 TOUCHED_MANIFESTS=()
 INSTALL_CMDS=()
 UNNAMED_MANIFESTS=()
-if landing_touched_manifests "$before" "$after"; then
+if landing_touched_manifests "$PULL_FROM" "$after"; then
   for manifest in "${TOUCHED_MANIFESTS[@]}"; do
     cmd=$(landing_install_cmd "$manifest" || true)
     if [ -n "$cmd" ]; then

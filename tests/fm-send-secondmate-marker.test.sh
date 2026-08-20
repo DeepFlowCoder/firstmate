@@ -281,6 +281,13 @@ test_secondmate_cap_measures_the_marked_payload() {
   [ "$rc" -ne 0 ] || fail "a message whose marked payload exceeds the cap reported success"
   assert_contains "$(cat "$err")" "message is $(( FM_TEST_SEND_CAP + 1 )) bytes" \
     "the refusal should state the size of the payload that would actually be delivered"
+  # The delivered size is 44 bytes larger than what the operator typed, so the
+  # refusal has to break it down or the number cannot be reconciled with the
+  # text they wrote.
+  assert_contains "$(cat "$err")" "$(( FM_TEST_SEND_CAP - FM_TEST_MARKER_BYTES + 1 )) bytes of your text" \
+    "the refusal should state the operator's own byte count, not only the delivered one"
+  assert_contains "$(cat "$err")" "$FM_TEST_MARKER_BYTES-byte from-firstmate routing marker" \
+    "the refusal should name the marker that accounts for the difference"
   [ ! -s "$log" ] || fail "the refused message still reached the endpoint"
   [ ! -d "$(fm_pending_reply_dir "$home/state")" ] \
     || [ -z "$(ls -A "$(fm_pending_reply_dir "$home/state")" 2>/dev/null)" ] \
