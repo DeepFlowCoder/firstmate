@@ -12,9 +12,11 @@
 # preference - an absent primary file and an absent destination file both mean
 # the same unconfigured default, so the generic absence mirror below converges
 # a secondmate without deciding the release-dependent floor; explicit "on" and
-# "off" preferences propagate as files. Primary config/update-remote makes that
-# home's own /updatefirstmate pull firstmate's improvements from the same source
-# the primary uses instead of from its own origin. Primary
+# "off" preferences propagate as files. Primary config/update-remote converges
+# byte-exact so the captain's update-source decision is visible fleet-wide, but it
+# never makes a home resolve upstream on its own: a checkout carrying the
+# .fm-secondmate-home marker reports the inherited value and follows its own
+# origin instead (bin/fm-update.sh owns that resolution). Primary
 # config/trace-context is copied at the launch convergence point as part of the
 # default-off W3C trace-context setup, while live convergence leaves it unchanged.
 # The primary passes its frozen home-session decision into a newly launched

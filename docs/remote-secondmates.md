@@ -218,7 +218,13 @@ Local secondmates retain their generation-specific local pointer contract; remot
 
 With no update source configured in this home, `/updatefirstmate` updates each remote code root from that code root's own update source, then guardedly fast-forwards the persistent remote home to that code-root commit.
 With one configured here, every remote route is refused before any contact and the run exits non-zero, because this host cannot prove where a code root on another host pulls from.
-That refusal stands for every run from here; what advances such a home is `/updatefirstmate` run on the remote host itself, once that code root has its own `config/update-remote`.
+That refusal stands for every run from here; what still advances such a home is running the same host-local step by hand:
+
+```sh
+bin/fm-on.sh <id> fm-remote-secondmate-control.sh update <id>
+```
+
+That updates the remote code root from whatever that host resolves - its own `config/update-remote`, or that host's `origin` when it has none - and then guardedly fast-forwards the home to the code-root commit.
 Dirty, diverged, unavailable, or otherwise unsafe targets are reported and left untouched.
 
 Retire a remote second mate with the normal guarded command:

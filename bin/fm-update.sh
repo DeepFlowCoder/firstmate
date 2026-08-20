@@ -38,20 +38,27 @@
 # not itself a seeded secondmate home. Everywhere else a home inherits the RESULT,
 # not the source:
 #   - Running here, in a checkout carrying the .fm-secondmate-home marker, the
-#     firstmate target follows this home's own origin no matter what the inherited
-#     config/update-remote says. That origin IS what this home follows: the primary
-#     checkout a standalone clone was seeded from, the code root a remote home was
-#     seeded from, or the primary's own object store for a linked worktree. Asking
-#     a home to carry a remote only its primary was told about would refuse it
-#     forever instead.
+#     firstmate target uses base_mode origin no matter what the inherited
+#     config/update-remote says: asking a home to carry a remote only its primary
+#     was told about would refuse that home forever instead. For a standalone-clone
+#     or a remote home, that origin IS the checkout it was seeded from - the primary
+#     checkout, or that host's code root. A linked-worktree home shares the
+#     primary's remote config, so its origin is the primary's own origin, and it is
+#     leased at a detached HEAD: its self-update fetches origin and then stops at
+#     the detached-HEAD guard without advancing anything.
 #   - Local secondmate targets of a primary's run advance to the primary's
 #     default-branch commit, resolved AFTER the firstmate target moved, so a linked
 #     worktree or a standalone clone that never carries the source remote still
-#     lands on exactly what the primary just pulled.
+#     lands on exactly what the primary just pulled. A run whose firstmate target
+#     was REFUSED advances no secondmate at all: a refused run must not report a
+#     refusal and an update in the same breath.
 #   - A remote secondmate route is REFUSED before any network call: this host
-#     cannot prove what a code root on another host pulls from. That refusal stands
-#     for every run from here; what advances such a home is /updatefirstmate run on
-#     the remote host itself.
+#     cannot prove what a code root on another host pulls from, and that refusal
+#     stands for every run from here. What still advances such a home is a manual
+#     bin/fm-on.sh <id> fm-remote-secondmate-control.sh update <id>, which updates
+#     that code root from whatever THAT host resolves - its own config/update-remote,
+#     or that host's origin when it has none - and then guardedly fast-forwards the
+#     home to the code-root commit.
 # With no configured source every target keeps following origin exactly as before.
 #
 # The fast-forward mechanics live in bin/fm-ff-lib.sh (base_mode "origin" or
@@ -138,6 +145,7 @@ BASE_MODE=$(resolve_update_base_mode) || exit 1
 FF_REFUSALS=0
 reread_firstmate="no"
 ff_target "$FM_ROOT" "firstmate" "$BASE_MODE" no no
+firstmate_status=$FF_STATUS
 if [ "$FF_STATUS" = "updated" ] && [ -n "$FF_INSTR" ]; then
   reread_firstmate="yes"
 fi
@@ -153,22 +161,32 @@ fi
 # FF_LOCAL_BASE_FETCH_FROM lets a standalone-clone home, which has its own object
 # store, obtain that commit from the primary. Unconfigured runs pass the origin
 # base mode straight through, unchanged.
+#
+# A refused firstmate target stops the local sweep entirely, so a run that could
+# not prove where it pulls from never prints an update next to its own refusal.
+# Only "refused" gates this; a skipped or already-current firstmate is unchanged,
+# and the unconfigured path cannot refuse at all.
 
 FF_NUDGE_WINDOWS=""
 FF_SEEN_HOMES=""
 
 SECONDMATE_BASE_MODE=$BASE_MODE
-case "$BASE_MODE" in
-  remote:*)
-    if primary_commit=$(primary_head_commit "$FM_ROOT"); then
-      SECONDMATE_BASE_MODE=$primary_commit
-      FF_LOCAL_BASE_FETCH_FROM=$FM_ROOT
-    else
-      SECONDMATE_BASE_MODE=""
-      echo "secondmates: skipped: the primary checkout has no default-branch commit to follow" >&2
-    fi
-    ;;
-esac
+if [ "$firstmate_status" = "refused" ]; then
+  SECONDMATE_BASE_MODE=""
+  echo "secondmates: skipped: the firstmate target was refused, so this run advances nothing" >&2
+else
+  case "$BASE_MODE" in
+    remote:*)
+      if primary_commit=$(primary_head_commit "$FM_ROOT"); then
+        SECONDMATE_BASE_MODE=$primary_commit
+        FF_LOCAL_BASE_FETCH_FROM=$FM_ROOT
+      else
+        SECONDMATE_BASE_MODE=""
+        echo "secondmates: skipped: the primary checkout has no default-branch commit to follow" >&2
+      fi
+      ;;
+  esac
+fi
 
 # Live direct reports first: state/<id>.meta with kind=secondmate carries the
 # authoritative home= path.

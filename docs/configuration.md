@@ -126,10 +126,13 @@ Without it, an update against a mirror advances the home to its own published st
 The file holds the first non-empty, non-comment line, trimmed: one git remote name made of `A-Za-z0-9._-` that does not start with `-` or `.`.
 A malformed value, or a configured remote that does not exist in a checkout, refuses that update and exits non-zero rather than falling back to `origin`; nothing is fetched from another source in its place.
 The value is proven only against the checkout that owns the decision, the primary one: a local secondmate home follows the commit that primary just landed instead of having to carry the source remote itself, so a linked worktree and a standalone clone both advance without one.
+A run whose own firstmate target was refused advances no secondmate either, so a refusal never appears next to an update in the same output.
 A remote secondmate route is refused before any contact, because that code root resolves its own file on a host this one cannot read.
-That refusal stands for every run from this home; what advances a remote home is `/updatefirstmate` run on the remote host itself, against that host's own code root and file.
+That refusal stands for every run from this home; what still advances a remote home is a manual `bin/fm-on.sh <id> fm-remote-secondmate-control.sh update <id>`, which updates that code root from whatever that host resolves - its own `config/update-remote`, or that host's `origin` when it has none - and then fast-forwards the home to the code-root commit.
 The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md), so the captain's decision converges byte-exact across the fleet.
-An inherited copy does not make that home resolve upstream on its own: a checkout carrying the `.fm-secondmate-home` marker follows its own `origin` - the primary checkout or code root it was seeded from - and reports the inherited value instead of acting on it.
+An inherited copy does not make that home resolve upstream on its own: a checkout carrying the `.fm-secondmate-home` marker reports the inherited value and uses its own `origin` instead.
+For a standalone-clone or remote home that `origin` is the checkout it was seeded from - the primary checkout, or that host's code root.
+A linked-worktree home shares the primary's remotes, so its `origin` is the primary's own `origin`, and its self-update stops at the detached-HEAD guard without advancing anything; that home advances through the primary's run, not its own.
 [`bin/fm-update.sh`](../bin/fm-update.sh)'s header owns the exact resolution and refusal mechanics.
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)

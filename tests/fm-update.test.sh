@@ -23,9 +23,13 @@
 #     the run instead of silently pulling origin and reporting success.
 #   - That source is proven only against a primary checkout: a local secondmate
 #     home follows the primary's post-update commit instead of having to carry the
-#     source remote itself, a seeded home running the updater on itself follows its
-#     own origin despite the inherited file, and a remote route - whose code root
-#     resolves a source this host cannot read - refuses before any contact.
+#     source remote itself, a seeded home running the updater on itself uses its
+#     own origin despite the inherited file (advancing from it as a standalone
+#     clone, stopping at its detached HEAD as a leased worktree), and a remote
+#     route - whose code root resolves a source this host cannot read - refuses
+#     before any contact.
+#   - A refused firstmate target advances no secondmate, so one run never reports
+#     a refusal and an update together.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -612,6 +616,67 @@ test_secondmate_home_updating_itself_follows_its_primary() {
   pass "T20 a secondmate home updating itself follows its primary, not the inherited source"
 }
 
+# --- T21: a linked-worktree home updating itself stops at its detached HEAD -
+# A treehouse home is a detached worktree of the primary and shares its remotes,
+# so its own origin is the captain's mirror, not the primary. It is not refused
+# for the inherited source, and it does not advance either: the detached-HEAD
+# guard stops it, and it stays current through the primary's run.
+test_linked_worktree_home_updating_itself_is_skipped() {
+  local w before
+  w=$(new_world t21)
+  add_sm "$w" sm-wt
+  add_upstream_source "$w"
+  bump_upstream "$w" >/dev/null
+  bump_origin "$w" instr
+  before=$(git -C "$w/sm-wt" rev-parse HEAD)
+  mkdir -p "$w/sm-wt/config"
+  printf 'upstream\n' > "$w/sm-wt/config/update-remote"
+
+  RC=0
+  FM_ROOT_OVERRIDE="$w/sm-wt" FM_HOME="$w/sm-wt" "$UPDATE" > "$w/wt-update.out" 2>&1 || RC=$?
+  OUT=$(cat "$w/wt-update.out")
+
+  [ "$RC" -eq 0 ] || fail "a linked-worktree home's own update exited $RC, expected 0"
+  assert_not_contains "$OUT" "firstmate: refused" \
+    "an inherited source must not refuse a linked-worktree home either"
+  assert_contains "$OUT" "firstmate: skipped: detached HEAD" \
+    "a leased home's own update stops at the detached-HEAD guard"
+  [ "$(git -C "$w/sm-wt" rev-parse HEAD)" = "$before" ] \
+    || fail "a detached leased home advanced under its own update"
+  pass "T21 a linked-worktree home's own update is skipped at its detached HEAD"
+}
+
+# --- T22: a refused firstmate target advances no secondmate ----------------
+# A run that cannot prove where it pulls from must not print a refusal and an
+# update in the same breath: the local sweep is off entirely when the firstmate
+# target was refused, so every home keeps the commit it had.
+test_refused_firstmate_advances_no_secondmate() {
+  local w before primary_tip
+  w=$(new_world t22)
+  add_sm "$w" sm1
+  # The primary already carries a commit the leased home does not, so the home is
+  # genuinely advanceable: only the refusal may keep it where it is.
+  bump_origin "$w" instr
+  git -C "$w/main" fetch -q origin main
+  git -C "$w/main" merge -q --ff-only origin/main
+  primary_tip=$(git -C "$w/main" rev-parse HEAD)
+  before=$(git -C "$w/sm1" rev-parse HEAD)
+  [ "$before" != "$primary_tip" ] || fail "fixture home is already at the primary's commit"
+  set_update_remote "$w" nowhere   # configured, but not a remote in this checkout
+
+  run_update_rc "$w"
+
+  [ "$RC" -ne 0 ] || fail "a refused run exited 0, expected a loud failure"
+  assert_contains "$OUT" "firstmate: refused: configured update source 'nowhere'" \
+    "the primary itself is refused"
+  assert_not_contains "$OUT" "secondmate sm1: updated" \
+    "a refused run must not report a secondmate update"
+  assert_contains "$OUT" "nudge-secondmates: none" "nothing advanced, so nothing is nudged"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$before" ] \
+    || fail "a secondmate home advanced on a refused run"
+  pass "T22 a refused firstmate target advances no secondmate at all"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -630,5 +695,7 @@ test_update_source_is_inherited
 test_standalone_clone_home_follows_the_primary
 test_remote_route_refuses_under_configured_source
 test_secondmate_home_updating_itself_follows_its_primary
+test_linked_worktree_home_updating_itself_is_skipped
+test_refused_firstmate_advances_no_secondmate
 
 echo "# all fm-update tests passed"
