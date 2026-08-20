@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 # fm-merge-local's landing command for the captain.
 #
-# Landing on a local-only project is invisible to the captain until they pull
-# from the clone by hand, and the command that reaches them over chat has
-# already caused three separate failures: a paste that breaks a long line in
-# two (their terminal is ~56 columns and inserts a REAL newline, so a
-# `git pull <long path>` split inside the path fetches the WRONG repository), a
-# missing dependency install after a landing that changed the manifest, and a
-# bare "git pull" sent while their copy sits on another branch.
+# The failures this block closes, and the measurements behind its rules, are
+# owned by docs/verification/captain-landing.md.
 #
 # These tests drive the real merge and pin the emitted block: every line stays
-# within the paste-safe cap, the block actually works when run, the install step
-# appears exactly when the landing changed the manifest and names the manager
-# the repo itself declares, a parked copy gets its switch and its warning, and a
-# project whose origin is not a local working copy gets no invented command.
+# within the paste-safe cap, the block actually works when run, a hostile branch
+# name cannot execute anything extra, the install step appears exactly when the
+# landing changed a manifest and names only what the repo itself declares, a
+# parked copy gets its switch and its warning, and a project whose origin is not
+# a local working copy gets no invented command.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -32,14 +28,17 @@ git_in() {  # <dir> <git args...>
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' "$@"
 }
 
-# make_case <name> <landing: nota|manifiesto> [lockfile]: build the local-only
+# make_case <name> <landing> [lockfile] [dirlabel] [branch]: build the local-only
 # topology - the captain's working copy, a clone of it that is firstmate's
-# project, and a landed fm/<id> branch in that clone. Paths are deliberately
-# long so the emitted command cannot fit on one paste-safe line by accident.
-# Sets CASE_HOME, CASE_COPY, CASE_PROJ, CASE_ID.
+# project, and a landed fm/<id> branch in that clone. <landing> is either `nota`
+# (the landing touches an ordinary file) or the name of the dependency manifest
+# the landing changes. Paths are deliberately long so the emitted command cannot
+# fit on one paste-safe line by accident.
+# Sets CASE_HOME, CASE_COPY, CASE_PROJ, CASE_ID, CASE_BRANCH.
 make_case() {
   local name=$1 landing=$2 lockfile=${3:-} case_dir
   local dirlabel=${4:-un-directorio-deliberadamente-largo-de-prueba}
+  CASE_BRANCH=${5:-main}
   case_dir="$TMP_ROOT/$name/$dirlabel"
   CASE_ID="tarea-$name"
   CASE_HOME="$case_dir/home"
@@ -52,7 +51,7 @@ make_case() {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$CASE_HOME/bin/fm-guard.sh"
   chmod +x "$CASE_HOME/bin/fm-guard.sh"
 
-  git -C "$CASE_COPY" init -q -b main
+  git -C "$CASE_COPY" init -q -b "$CASE_BRANCH"
   printf '{"name":"proyecto"}\n' > "$CASE_COPY/package.json"
   printf 'inicial\n' > "$CASE_COPY/nota.txt"
   [ -z "$lockfile" ] || printf 'lock\n' > "$CASE_COPY/$lockfile"
@@ -61,14 +60,14 @@ make_case() {
 
   git clone -q "$CASE_COPY" "$CASE_PROJ"
   git -C "$CASE_PROJ" checkout -q -b "fm/$CASE_ID"
-  if [ "$landing" = manifiesto ]; then
-    printf '{"name":"proyecto","dependencies":{"@vercel/blob":"1"}}\n' > "$CASE_PROJ/package.json"
-  else
-    printf 'aterrizado\n' >> "$CASE_PROJ/nota.txt"
-  fi
+  case "$landing" in
+    nota) printf 'aterrizado\n' >> "$CASE_PROJ/nota.txt" ;;
+    package.json) printf '{"name":"proyecto","dependencies":{"@vercel/blob":"1"}}\n' > "$CASE_PROJ/package.json" ;;
+    *) printf 'dependencia-nueva\n' >> "$CASE_PROJ/$landing" ;;
+  esac
   git_in "$CASE_PROJ" add -A
   git_in "$CASE_PROJ" commit -qm "trabajo aterrizado"
-  git -C "$CASE_PROJ" checkout -q main
+  git -C "$CASE_PROJ" checkout -q "$CASE_BRANCH"
 
   printf 'project=%s\nmode=local-only\n' "$CASE_PROJ" > "$CASE_HOME/state/$CASE_ID.meta"
 }
@@ -141,7 +140,7 @@ test_paths_with_spaces_still_produce_a_working_command() {
 
 test_manifest_change_carries_the_declared_install_step() {
   local out err block
-  make_case manifiesto manifiesto package-lock.json
+  make_case manifiesto package.json package-lock.json
   out="$TMP_ROOT/manifiesto.out"; err="$TMP_ROOT/manifiesto.err"
   run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
     || fail "merge failed"$'\n'"$(cat "$err")"
@@ -157,7 +156,7 @@ test_manifest_change_carries_the_declared_install_step() {
 
 test_install_step_follows_the_repo_not_a_default() {
   local out err block
-  make_case gestor manifiesto pnpm-lock.yaml
+  make_case gestor package.json pnpm-lock.yaml
   out="$TMP_ROOT/gestor.out"; err="$TMP_ROOT/gestor.err"
   run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
     || fail "merge failed"$'\n'"$(cat "$err")"
@@ -172,7 +171,7 @@ test_install_step_follows_the_repo_not_a_default() {
 
 test_unknown_package_manager_invents_no_command() {
   local out err block
-  make_case sinlock manifiesto
+  make_case sinlock package.json
   out="$TMP_ROOT/sinlock.out"; err="$TMP_ROOT/sinlock.err"
   run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
     || fail "merge failed"$'\n'"$(cat "$err")"
@@ -216,7 +215,7 @@ test_parked_copy_is_warned_and_switched_before_the_pull() {
   assert_paste_safe "$block" "landing command for a parked copy"
   assert_contains "$(cat "$out")" "parked on 'trabajo-a-medias'" \
     "a copy parked on another branch must be reported"
-  has_line "$block" 'git switch main &&' \
+  has_line "$block" "git switch 'main' &&" \
     || fail "the pull must be chained behind a switch so it cannot land on the wrong branch"$'\n'"$block"
 
   # The chain must stop, not continue, when the switch cannot happen.
@@ -227,6 +226,80 @@ test_parked_copy_is_warned_and_switched_before_the_pull() {
   assert_not_contains "$(git -C "$CASE_COPY" log --oneline)" "trabajo aterrizado" \
     "a blocked switch still pulled the landing into the wrong branch"
   pass "fm-merge-local: a parked copy is warned about and the pull stops if it cannot switch"
+}
+
+# A git ref may legally contain `;`, `&`, `$`, `>` and backticks, and this block
+# is pasted verbatim into the captain's shell, so an unquoted branch name would
+# run as extra commands - the exact damage the block exists to prevent. The name
+# below is built so that, left unquoted, it creates three files whose presence
+# afterwards is the proof that something extra ran.
+HOSTILE_BRANCH='p;>hackeado;q$x&`>h3`>h2'
+
+test_hostile_branch_name_cannot_inject_commands() {
+  local out err block run_dir marker
+  make_case hostil nota "" "un-directorio-con-comilla'simple" "$HOSTILE_BRANCH"
+  # Park the copy elsewhere so the switch step is emitted too, not only the pull.
+  git -C "$CASE_COPY" checkout -q -b aparcado
+  out="$TMP_ROOT/hostil.out"; err="$TMP_ROOT/hostil.err"
+  run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+    || fail "merge failed"$'\n'"$(cat "$err")"
+
+  block=$(block_of "$out")
+  [ -n "$block" ] || fail "no captain command block was emitted"$'\n'"$(cat "$out")"
+  assert_paste_safe "$block" "landing command for a hostile branch name"
+
+  run_dir="$TMP_ROOT/hostil-run"; mkdir -p "$run_dir"
+  ( cd "$run_dir" && eval "$block" ) > "$TMP_ROOT/hostil.run" 2>&1 \
+    || fail "the emitted block failed to run for a branch name full of shell metacharacters"$'\n'"$(cat "$TMP_ROOT/hostil.run")"
+
+  # Nothing beyond the chain may have executed, in either directory the block
+  # touches: the run directory it starts in and the copy it cd's into.
+  for marker in hackeado h2 h3; do
+    [ ! -e "$run_dir/$marker" ] \
+      || fail "the branch name executed an extra command: $run_dir/$marker was created"
+    [ ! -e "$CASE_COPY/$marker" ] \
+      || fail "the branch name executed an extra command: $CASE_COPY/$marker was created"
+  done
+  assert_contains "$(git -C "$CASE_COPY" log --oneline)" "trabajo aterrizado" \
+    "quoting the hostile branch name broke the landing it was supposed to perform"
+  assert_contains "$(git -C "$CASE_COPY" symbolic-ref --short HEAD)" "$HOSTILE_BRANCH" \
+    "the block did not switch the captain's copy to the landing branch"
+  pass "fm-merge-local: a branch name full of shell metacharacters cannot run anything extra"
+}
+
+test_non_node_manifest_is_covered_too() {
+  local out err block
+  make_case python requirements.txt
+  out="$TMP_ROOT/python.out"; err="$TMP_ROOT/python.err"
+  run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+    || fail "merge failed"$'\n'"$(cat "$err")"
+
+  block=$(block_of "$out")
+  assert_paste_safe "$block" "landing command for a python manifest"
+  has_line "$block" "pip install -r requirements.txt" \
+    || fail "a landing that changed requirements.txt must carry its install step"$'\n'"$block"
+  ! has_line "$block" "npm install" \
+    || fail "the install step must follow the manifest that changed, not another one present in the repo"$'\n'"$block"
+  assert_contains "$(cat "$out")" "changed the dependency manifest" \
+    "the manifest change must be stated, not only encoded in the command"
+  pass "fm-merge-local: a non-Node manifest gets its own install step"
+}
+
+test_manifest_without_a_nameable_command_still_warns() {
+  local out err block
+  make_case pyproject pyproject.toml
+  out="$TMP_ROOT/pyproject.out"; err="$TMP_ROOT/pyproject.err"
+  run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+    || fail "merge failed"$'\n'"$(cat "$err")"
+
+  block=$(block_of "$out")
+  assert_not_contains "$block" "install" \
+    "no install command may be invented for a manifest the repo does not resolve"
+  assert_contains "$(cat "$out")" "names a package manager" \
+    "a manifest with no nameable command must still be reported to the captain"
+  assert_contains "$(cat "$out")" "pyproject.toml" \
+    "the note must name the manifest that changed"
+  pass "fm-merge-local: a manifest with no nameable install command still warns instead of going silent"
 }
 
 test_non_local_origin_gets_no_command() {
@@ -252,4 +325,7 @@ test_install_step_follows_the_repo_not_a_default
 test_unknown_package_manager_invents_no_command
 test_untouched_manifest_gets_no_install_step
 test_parked_copy_is_warned_and_switched_before_the_pull
+test_hostile_branch_name_cannot_inject_commands
+test_non_node_manifest_is_covered_too
+test_manifest_without_a_nameable_command_still_warns
 test_non_local_origin_gets_no_command

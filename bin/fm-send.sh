@@ -97,19 +97,20 @@
 # home), and with an empty message.
 #
 # Size limit: a text send larger than FM_SEND_MAX_BYTES is refused before the
-# backend is touched and before any durable record is created. Above roughly
-# 6-8 KB a pane text injection stops arriving intact and, worse than truncating,
-# arrives OUT OF ORDER with the start of the message embedded in the middle of
-# the payload - while the send call still reports success. Measured 2026-08-19 on
-# herdr 0.8.0 `pane send-text`: 6000 bytes arrived exact, 8000 / 12000 / 16000
-# bytes never ran the command, rc=0 every time. So a steer that big is not a slow
-# steer, it is a corrupted one that nothing reports. The cap sits well under the
-# measured cliff, which also absorbs the fixed marker a secondmate request adds
-# after this check. AGENTS.md section 7 already says to put long instructions in
-# a file and send the path; this refuses rather than trusting that it was
-# remembered, and it never truncates - a shortened instruction that looks
-# delivered is the same silent failure in another costume. There is no override:
-# the file-and-path route is always available and always intact.
+# backend is touched and before any durable record is created. Past that size a
+# pane text injection stops arriving intact and, worse than truncating, arrives
+# OUT OF ORDER while the send call still reports success, so a steer that big is
+# not a slow steer, it is a corrupted one that nothing reports. The dated
+# measurements, the margin, and the file-and-path route are owned by
+# docs/verification/runtime-backends.md, "Pane text size limit".
+#
+# The cap is measured at ONE point: the bytes that will actually reach the pane,
+# marker and correlation token included. A remote secondmate send is this same
+# script running host-locally on an already-marked message, so measuring the
+# marked payload on both legs is what keeps one leg from accepting a message the
+# other refuses. The refusal never truncates - a shortened instruction that looks
+# delivered is the same silent failure in another costume - and there is no
+# override.
 #
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
@@ -377,14 +378,47 @@ while :; do
   esac
 done
 
+# Classify a from-firstmate -> secondmate request. Only a task selector resolved
+# through this home's meta whose authoritative kind is secondmate is marked: the
+# secondmate then routes its reply via the status path (see fm-marker-lib.sh).
+# An explicit backend target (the escape hatch for endpoints outside this home)
+# and any crewmate/scout target are left unmarked, and so is the --key path.
+# This classification is pure reads and runs first because the size cap below
+# has to know whether the marker will be added.
+MARK_FROM_FIRSTMATE=0
+PENDING_REPLY_CORR=
+PENDING_REPLY_CREATED=0
+TARGET_TASK_ID=
+if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ] && [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ]; then
+  MARK_FROM_FIRSTMATE=1
+  TARGET_TASK_ID=$(fm_send_id_from_meta "$TARGET_META")
+fi
+
 # Refuse an oversized steer before the backend is touched and before any durable
 # record exists, so an instruction too big to arrive intact fails loudly here
 # instead of arriving scrambled with a success status (see the header).
 FM_SEND_MAX_BYTES=4096
 
+# The cap measures the payload that will actually reach the pane. A marked
+# secondmate request grows by the carrier plus a correlation token, and every
+# correlation id is the same width, so applying the real embedding with a
+# placeholder id gives the exact delivered size without creating the durable
+# expectation that owns the real id.
+FM_SEND_CORR_PLACEHOLDER=0000000000000000
+
+fm_send_delivered_payload() {  # <text> <result-var>
+  local text=$1 result_var=$2
+  if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
+    fm_pending_reply_embed_corr "$text" "$FM_SEND_CORR_PLACEHOLDER" "$result_var"
+  else
+    printf -v "$result_var" '%s' "$text"
+  fi
+}
+
 fm_send_refuse_oversized() {  # <text>
-  local text=$1 bytes
-  bytes=$(printf '%s' "$text" | LC_ALL=C wc -c | tr -d '[:space:]')
+  local text=$1 payload bytes
+  fm_send_delivered_payload "$text" payload
+  bytes=$(printf '%s' "$payload" | LC_ALL=C wc -c | tr -d '[:space:]')
   [ "$bytes" -gt "$FM_SEND_MAX_BYTES" ] || return 0
   echo "error: message is $bytes bytes, over the $FM_SEND_MAX_BYTES-byte limit for one send; nothing was sent. Past that size the text arrives scrambled while the send still reports success, so it is refused rather than truncated. Write the long instruction to a file and send its path instead." >&2
   return 1
@@ -396,20 +430,6 @@ fi
 
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
-fi
-
-# Classify a from-firstmate -> secondmate request. Only a task selector resolved
-# through this home's meta whose authoritative kind is secondmate is marked: the
-# secondmate then routes its reply via the status path (see fm-marker-lib.sh).
-# An explicit backend target (the escape hatch for endpoints outside this home)
-# and any crewmate/scout target are left unmarked, and so is the --key path.
-MARK_FROM_FIRSTMATE=0
-PENDING_REPLY_CORR=
-PENDING_REPLY_CREATED=0
-TARGET_TASK_ID=
-if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ] && [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ]; then
-  MARK_FROM_FIRSTMATE=1
-  TARGET_TASK_ID=$(fm_send_id_from_meta "$TARGET_META")
 fi
 
 # Validate the answerer-closes request before any durable mutation or send: the

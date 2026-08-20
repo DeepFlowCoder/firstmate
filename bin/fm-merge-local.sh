@@ -12,27 +12,12 @@
 #
 # After a successful landing it PRINTS the captain's pull command, ready to
 # paste. It never runs anything in the captain's copy and never changes it; the
-# only thing it reads there is which branch that copy is parked on. The three
-# failures that command has already caused, all measured 2026-08-19:
-#   - The captain's terminal is about 56 columns wide, and a paste inserts a
-#     REAL newline at the last space that fits, so zsh runs two commands: a
-#     mutilated first half that silently drops flags, and a second half that
-#     fails on its own. One `git pull` broke at 53 and at 18 characters across
-#     three attempts. Worst recorded case: a `git pull <long path>` split INSIDE
-#     the path becomes a fetch against the WRONG repository. So every emitted
-#     line stays at or under FM_LANDING_LINE_MAX characters, a long path is
-#     built up across several short assignment lines instead of being wrapped,
-#     and the block is verified against that cap before it is printed - an
-#     over-long line suppresses the block loudly rather than shipping a command
-#     that breaks where nobody is looking.
-#   - "just run git pull" is harmful advice when the captain's copy is parked on
-#     another branch, so the command switches first and the `&&` chain stops if
-#     that switch cannot happen.
-#   - A landing that changed the dependency manifest leaves the captain's
-#     node_modules behind, and that failure surfaces much later and disguised
-#     (ERR_MODULE_NOT_FOUND, mid-way through a six-step production sequence), so
-#     the install step is emitted with the pull. Which package manager to name
-#     is read from the repo; when the repo does not say, no command is invented.
+# only thing it reads there is which branch that copy is parked on. Every emitted
+# line stays at or under FM_LANDING_LINE_MAX characters, every interpolated value
+# is single-quoted, a long path is built up across several short assignment
+# lines, and the block is verified against the cap before it is printed. The
+# dated measurements behind those rules, and the three failures they close, are
+# owned by docs/verification/captain-landing.md.
 # Usage: fm-merge-local.sh <task-id>
 set -eu
 
@@ -92,7 +77,8 @@ after=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 echo "merged $BRANCH into local $DEFAULT ($before -> $after) in $PROJ"
 
 # --- the captain's landing command ------------------------------------------
-# See this script's header for the three failures every rule below closes.
+# See docs/verification/captain-landing.md for the failures every rule below
+# closes and the measurements behind them.
 
 # Widest line the captain's terminal can take from a paste without breaking it.
 FM_LANDING_LINE_MAX=50
@@ -101,6 +87,15 @@ LANDING_LINES=()
 
 landing_quote() {  # <string> -> LANDING_QUOTED: single-quoted for a shell line
   LANDING_QUOTED="'${1//\'/\'\\\'\'}'"
+}
+
+join_quoted() {  # <item...> -> "'a', 'b'" for a human-readable note
+  local out= item
+  for item in "$@"; do
+    [ -z "$out" ] || out="$out, "
+    out="$out'$item'"
+  done
+  printf '%s' "$out"
 }
 
 # landing_assign <var> <value>: append assignment lines that build <value> in
@@ -132,30 +127,61 @@ landing_assign() {
   done
 }
 
-# landing_install_cmd: the install command this repo itself names, or nothing.
-# A missing answer stays missing: guessing a package manager is how the captain
-# gets told to run a command their project does not use.
+# The dependency manifests this guard recognizes. The list is closed on purpose:
+# a name that is not here is not a manifest as far as the landing command is
+# concerned, and nothing about the project is inferred by any other means.
+FM_LANDING_MANIFESTS='package.json requirements.txt pyproject.toml Cargo.toml go.mod Gemfile'
+
+# landing_install_cmd <manifest>: the install command this repo itself names for
+# that manifest, or nothing. A missing answer stays missing: guessing is how the
+# captain gets told to run a command their project does not use.
 landing_install_cmd() {
   local declared=
-  [ -f "$PROJ/package.json" ] || return 1
-  declared=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([a-z]*\)@.*/\1/p' "$PROJ/package.json" | head -1)
-  case "$declared" in
-    npm|pnpm|yarn|bun) printf '%s install\n' "$declared"; return 0 ;;
+  # A manifest the landing deleted has no install step to name.
+  [ -f "$PROJ/$1" ] || return 1
+  case "$1" in
+    package.json)
+      declared=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([a-z]*\)@.*/\1/p' "$PROJ/package.json" | head -1)
+      case "$declared" in
+        npm|pnpm|yarn|bun) printf '%s install\n' "$declared"; return 0 ;;
+      esac
+      if [ -f "$PROJ/pnpm-lock.yaml" ]; then printf 'pnpm install\n'; return 0; fi
+      if [ -f "$PROJ/yarn.lock" ]; then printf 'yarn install\n'; return 0; fi
+      if [ -f "$PROJ/bun.lockb" ] || [ -f "$PROJ/bun.lock" ]; then printf 'bun install\n'; return 0; fi
+      if [ -f "$PROJ/package-lock.json" ]; then printf 'npm install\n'; return 0; fi
+      ;;
+    # requirements.txt names its own installer; the file IS the argument.
+    requirements.txt) printf 'pip install -r requirements.txt\n'; return 0 ;;
+    # A pyproject alone does not say who installs it, so only a lockfile in the
+    # repo answers; otherwise the captain gets the note, not an invented command.
+    pyproject.toml)
+      if [ -f "$PROJ/uv.lock" ]; then printf 'uv sync\n'; return 0; fi
+      if [ -f "$PROJ/poetry.lock" ]; then printf 'poetry install\n'; return 0; fi
+      if [ -f "$PROJ/pdm.lock" ]; then printf 'pdm install\n'; return 0; fi
+      ;;
+    Cargo.toml) printf 'cargo fetch\n'; return 0 ;;
+    go.mod) printf 'go mod download\n'; return 0 ;;
+    Gemfile) printf 'bundle install\n'; return 0 ;;
   esac
-  if [ -f "$PROJ/pnpm-lock.yaml" ]; then printf 'pnpm install\n'; return 0; fi
-  if [ -f "$PROJ/yarn.lock" ]; then printf 'yarn install\n'; return 0; fi
-  if [ -f "$PROJ/bun.lockb" ] || [ -f "$PROJ/bun.lock" ]; then printf 'bun install\n'; return 0; fi
-  if [ -f "$PROJ/package-lock.json" ]; then printf 'npm install\n'; return 0; fi
   return 1
 }
 
-landing_touched_manifest() {  # <from> <to>
-  local f
+# landing_touched_manifests <from> <to>: fill TOUCHED_MANIFESTS with the
+# recognized manifest names this landing changed, in first-seen order.
+landing_touched_manifests() {
+  local f m
+  TOUCHED_MANIFESTS=()
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    case "${f##*/}" in package.json) return 0 ;; esac
+    for m in $FM_LANDING_MANIFESTS; do
+      [ "${f##*/}" = "$m" ] || continue
+      case " ${TOUCHED_MANIFESTS[*]-} " in
+        *" $m "*) ;;
+        *) TOUCHED_MANIFESTS+=("$m") ;;
+      esac
+    done
   done < <(git -C "$PROJ" diff --name-only "$1" "$2" 2>/dev/null || true)
-  return 1
+  [ "${#TOUCHED_MANIFESTS[@]}" -gt 0 ]
 }
 
 # The captain's working copy IS this clone's origin on a local-only project;
@@ -171,11 +197,18 @@ if [ -z "$CAPTAIN_COPY" ] || [ ! -d "$CAPTAIN_COPY" ] \
 fi
 COPY_BRANCH=$(git -C "$CAPTAIN_COPY" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-INSTALL_CMD=
-TOUCHED_MANIFEST=0
-if landing_touched_manifest "$before" "$after"; then
-  TOUCHED_MANIFEST=1
-  INSTALL_CMD=$(landing_install_cmd || true)
+TOUCHED_MANIFESTS=()
+INSTALL_CMDS=()
+UNNAMED_MANIFESTS=()
+if landing_touched_manifests "$before" "$after"; then
+  for manifest in "${TOUCHED_MANIFESTS[@]}"; do
+    cmd=$(landing_install_cmd "$manifest" || true)
+    if [ -n "$cmd" ]; then
+      INSTALL_CMDS+=("$cmd")
+    else
+      UNNAMED_MANIFESTS+=("$manifest")
+    fi
+  done
 fi
 
 # Build the block: every path lands in a variable first, then one `&&` chain, so
@@ -186,18 +219,25 @@ landing_assign fmw "$CAPTAIN_COPY" || LANDING_OK=0
 landing_assign fmc "$PROJ" || LANDING_OK=0
 
 # landing_chain <branch-expression>: the steps the captain pastes, in order.
+# <branch-expression> must already be quoted for the captain's shell: a git ref
+# may contain `;`, `&`, `$`, a quote, or a backtick, and this block is pasted
+# verbatim, so an unquoted branch name would execute as extra commands - exactly
+# the damage the block exists to prevent.
 # The `$fmw` / `$fmc` references stay literal on purpose - they are text for the
 # captain's shell, not expansions for this one, and they are what keeps a long
 # path off a line that would break on paste.
 # shellcheck disable=SC2016
 landing_chain() {
+  local cmd
   CHAIN=('cd "$fmw"')
   [ "$COPY_BRANCH" = "$DEFAULT" ] || CHAIN+=("git switch $1")
   CHAIN+=("git pull \"\$fmc\" $1")
-  [ -z "$INSTALL_CMD" ] || CHAIN+=("$INSTALL_CMD")
+  for cmd in ${INSTALL_CMDS[@]+"${INSTALL_CMDS[@]}"}; do CHAIN+=("$cmd"); done
 }
 
-landing_chain "$DEFAULT"
+landing_quote "$DEFAULT"
+DEFAULT_QUOTED=$LANDING_QUOTED
+landing_chain "$DEFAULT_QUOTED"
 # A branch name long enough to push a chain line over the cap goes into its own
 # variable too, rather than being emitted as a line that will break on paste.
 for line in "${CHAIN[@]}"; do
@@ -227,10 +267,11 @@ if [ "$COPY_BRANCH" != "$DEFAULT" ]; then
     echo "note: the captain's copy is not on a branch (detached HEAD); the command switches to '$DEFAULT' first and stops if that is not possible."
   fi
 fi
-if [ -n "$INSTALL_CMD" ]; then
-  echo "note: this landing changed the dependency manifest, so the command installs dependencies with '$INSTALL_CMD'."
-elif [ "$TOUCHED_MANIFEST" = 1 ]; then
-  echo "note: this landing changed package.json, but nothing in $PROJ names a package manager, so the captain must install dependencies themselves."
+if [ "${#INSTALL_CMDS[@]}" -gt 0 ]; then
+  echo "note: this landing changed the dependency manifest, so the command installs dependencies with $(join_quoted "${INSTALL_CMDS[@]}")."
+fi
+if [ "${#UNNAMED_MANIFESTS[@]}" -gt 0 ]; then
+  echo "note: this landing changed the dependency manifest $(join_quoted "${UNNAMED_MANIFESTS[@]}"), but nothing in $PROJ names a package manager for it, so the captain must install dependencies themselves."
 fi
 
 if [ "$LANDING_OK" != 1 ]; then

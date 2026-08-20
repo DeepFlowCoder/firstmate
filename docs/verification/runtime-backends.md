@@ -233,7 +233,7 @@ The CLI matrix was checked directly:
 | Guarantee | Command shape | Result |
 | --- | --- | --- |
 | Explicit session routing | `herdr <verb> ... --session <name>` | Reached the named session even while another server was running. |
-| Literal send | `herdr pane send-text <pane> <text> --session <name>` | Left text unsubmitted until Enter. |
+| Literal send | `herdr pane send-text <pane> <text> --session <name>` | Left text unsubmitted until Enter; intact only below the size cliff recorded under "Pane text size limit". |
 | Keys | `herdr pane send-keys <pane> enter|escape|ctrl+c --session <name>` | Enter and Escape worked; Ctrl-C interrupted foreground work. |
 | Capture | `herdr pane read <pane> --source recent --lines N` | Small N could return empty below viewport height; a 200-line request plus local trim was stable. |
 | Native state | `herdr agent get <pane>` | Working and done transitions were visible; native `busy` remains positive activity evidence, while native `idle` cannot close a turn and the adapter's semantic lifecycle decides worker state. |
@@ -242,6 +242,26 @@ The CLI matrix was checked directly:
 
 All destructive verification used `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and a byte-identical default-session tripwire.
 No ambient `herdr server stop` command is a supported test operation.
+
+### Pane text size limit
+
+`herdr pane send-text` stops delivering intact above roughly 6-8 KB, and it fails silently: the call still reports success.
+Measured on 2026-08-19 against herdr 0.8.0 by sending payloads of increasing size to a live pane and reading back what ran.
+
+| Payload bytes | Observed |
+| --- | --- |
+| 6000 | Arrived exact and the command ran. |
+| 8000 | Never ran the command, rc=0. |
+| 12000 | Never ran the command, rc=0. |
+| 16000 | Never ran the command, rc=0. |
+
+Past that cliff the bytes arrive OUT OF ORDER, with the start of the message embedded in the middle of the payload, so an oversized steer is not a slow steer, it is a corrupted one that nothing reports.
+
+`bin/fm-send.sh` therefore refuses a text send over `FM_SEND_MAX_BYTES` = 4096 bytes before the backend is touched and before any durable record exists, and never truncates.
+The cap is measured on the bytes that will actually reach the pane, which for a from-firstmate secondmate request includes the 44-byte carrier and correlation token that `bin/fm-pending-reply-lib.sh` prepends; measuring the same point on the local and remote legs is what keeps one limit from accepting a message that the other refuses.
+4096 sits deliberately below the 6000-byte figure measured as safe: the margin is the distance from a cliff whose exact location is vendor-controlled and moves between releases.
+There is no override, because the route for anything longer is always available and always intact - write the long instruction to a file and send its path (`AGENTS.md` section 7).
+The refusal itself is pinned by `tests/fm-send-strict.test.sh`.
 
 ### Prune and respawn
 

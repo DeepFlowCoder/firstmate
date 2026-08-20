@@ -226,14 +226,12 @@ test_key_send_exit_status_follows_delivery() {
   pass "fm-send --key: exit status follows delivery, and an undelivered key never reports success"
 }
 
-# Past roughly 6-8 KB a pane text injection stops arriving intact: the bytes are
-# delivered OUT OF ORDER, with the start of the message embedded in the middle
-# of the payload, while the send still reports success (measured on herdr 0.8.0:
-# 6000 bytes exact, 8000/12000/16000 never ran, rc=0 every time). A steer that
-# size is not slow, it is corrupted with nothing to show for it, so fm-send has
-# to refuse before the endpoint is touched. Both directions are asserted from
-# one stub: a message at the cap must still be typed in full, or the refusal
-# could pass while quietly blocking ordinary steers.
+# Past the size cliff a pane text injection stops arriving intact and is
+# delivered OUT OF ORDER while the send still reports success; the dated
+# measurements and the cap they justify are owned by
+# docs/verification/runtime-backends.md, "Pane text size limit". Both directions
+# are asserted from one stub: a message at the cap must still be typed in full,
+# or the refusal could pass while quietly blocking ordinary steers.
 test_oversized_message_is_refused_before_it_reaches_the_endpoint() {
   local dir fb home err log rc big at_cap
   dir="$TMP_ROOT/oversize"; mkdir -p "$dir"

@@ -253,8 +253,54 @@ test_marked_send_preserves_trailing_newlines() {
   pass "fm-send: marked secondmate payload preserves trailing newline bytes"
 }
 
+# The size cap and the marker meet here. The remote-secondmate leg is fm-send
+# running host-locally on an ALREADY-marked message, so it measures the marker
+# bytes; if the local leg measured only the operator's text, the same message
+# would pass one leg and be refused by the other, after the durable pending-reply
+# record had already been created. The cap is therefore measured on the payload
+# that will actually be delivered, marker and corr included, and both directions
+# are asserted so the reservation cannot silently swallow ordinary steers.
+FM_TEST_SEND_CAP=4096
+FM_TEST_MARKER_BYTES=44
+
+test_secondmate_cap_measures_the_marked_payload() {
+  local dir fb log home err rc body got
+  dir="$TMP_ROOT/sm-cap"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_home smcap)
+  fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-pending-reply-lib.sh"
+
+  # One byte of body too many once the marker is added: under the cap unmarked,
+  # over it as delivered.
+  : > "$log"
+  body=$(head -c "$(( FM_TEST_SEND_CAP - FM_TEST_MARKER_BYTES + 1 ))" /dev/zero | tr '\0' a)
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" \
+    FM_SEND_SETTLE=0 "$SEND" "fm-domain" "$body" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a message whose marked payload exceeds the cap reported success"
+  assert_contains "$(cat "$err")" "message is $(( FM_TEST_SEND_CAP + 1 )) bytes" \
+    "the refusal should state the size of the payload that would actually be delivered"
+  [ ! -s "$log" ] || fail "the refused message still reached the endpoint"
+  [ ! -d "$(fm_pending_reply_dir "$home/state")" ] \
+    || [ -z "$(ls -A "$(fm_pending_reply_dir "$home/state")" 2>/dev/null)" ] \
+    || fail "the refusal left a durable pending-reply record behind"
+
+  # Exactly at the cap once marked: ordinary traffic, must still be typed whole.
+  : > "$log"
+  body=$(head -c "$(( FM_TEST_SEND_CAP - FM_TEST_MARKER_BYTES ))" /dev/zero | tr '\0' b)
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" \
+    FM_SEND_SETTLE=0 "$SEND" "fm-domain" "$body" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a marked payload exactly at the cap should still send"
+  got=$(LC_ALL=C wc -c < "$log" | tr -d '[:space:]')
+  [ "$got" = "$FM_TEST_SEND_CAP" ] \
+    || fail "a marked payload at the cap should be typed whole: typed $got bytes, expected $FM_TEST_SEND_CAP"
+  pass "fm-send: the size cap measures the marked payload, so both legs enforce the same limit"
+}
+
 test_secondmate_target_is_marked
 test_exact_secondmate_task_id_is_marked
+test_secondmate_cap_measures_the_marked_payload
 test_crewmate_target_is_not_marked
 test_explicit_window_is_not_marked
 test_key_path_is_not_marked
