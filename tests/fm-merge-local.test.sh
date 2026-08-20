@@ -269,7 +269,7 @@ test_hostile_branch_name_cannot_inject_commands() {
 
 test_non_node_manifest_is_covered_too() {
   local out err block
-  make_case gomod go.mod
+  make_case gomod go.mod go.sum
   out="$TMP_ROOT/gomod.out"; err="$TMP_ROOT/gomod.err"
   run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
     || fail "merge failed"$'\n'"$(cat "$err")"
@@ -285,26 +285,54 @@ test_non_node_manifest_is_covered_too() {
   pass "fm-merge-local: a non-Node manifest gets its own install step"
 }
 
-# A requirements.txt says which packages, never into which interpreter. With no
-# environment active `pip install` lands in the captain's system Python, so the
-# manifest must be reported and the command must not be invented.
-test_requirements_txt_is_reported_but_never_installed() {
+test_evidence_in_the_repo_unlocks_the_install_step() {
   local out err block
-  make_case python requirements.txt
-  out="$TMP_ROOT/python.out"; err="$TMP_ROOT/python.err"
+  make_case ruby Gemfile Gemfile.lock
+  out="$TMP_ROOT/ruby.out"; err="$TMP_ROOT/ruby.err"
   run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
     || fail "merge failed"$'\n'"$(cat "$err")"
 
   block=$(block_of "$out")
-  assert_not_contains "$block" "pip" \
-    "a bare pip install may never be handed to the captain: with no environment active it installs into the system Python"
-  assert_not_contains "$block" "install" \
-    "no install command may be invented for a manifest whose environment the repo does not name"
-  assert_contains "$(cat "$out")" "names a package manager" \
-    "a requirements.txt change must still be reported to the captain"
-  assert_contains "$(cat "$out")" "requirements.txt" \
-    "the note must name the manifest that changed"
-  pass "fm-merge-local: requirements.txt is reported without inventing a pip command"
+  assert_paste_safe "$block" "landing command backed by a lockfile"
+  has_line "$block" "bundle install" \
+    || fail "a manifest whose evidence the repo does carry must get its install step"$'\n'"$block"
+  pass "fm-merge-local: in-repo evidence is what unlocks the install step"
+}
+
+# The class property, not one manifest's behavior: for EVERY recognized
+# manifest, a landing with no in-repo evidence must report the change and never
+# invent a command. The list is stated here independently of the script so that
+# adding a manifest to the guard without an evidence rule fails here. The
+# requirements.txt row is the one that can never have evidence: it says which
+# packages, never into which interpreter, and a bare `pip install` with nothing
+# active lands in the captain's system Python.
+LANDING_MANIFESTS=(package.json requirements.txt pyproject.toml Cargo.toml go.mod Gemfile)
+
+test_no_manifest_invents_a_command_without_repo_evidence() {
+  local manifest name out err block i=0
+  for manifest in "${LANDING_MANIFESTS[@]}"; do
+    i=$((i + 1))
+    name="sinevidencia$i"
+    make_case "$name" "$manifest"
+    out="$TMP_ROOT/$name.out"; err="$TMP_ROOT/$name.err"
+    run_merge "$CASE_HOME" "$CASE_ID" "$out" "$err" \
+      || fail "merge failed for $manifest"$'\n'"$(cat "$err")"
+
+    block=$(block_of "$out")
+    assert_not_contains "$block" "install" \
+      "$manifest with no evidence in the repo still handed the captain an install command"
+    assert_not_contains "$block" "sync" \
+      "$manifest with no evidence in the repo still handed the captain a sync command"
+    assert_not_contains "$block" "fetch" \
+      "$manifest with no evidence in the repo still handed the captain a fetch command"
+    assert_not_contains "$block" "download" \
+      "$manifest with no evidence in the repo still handed the captain a download command"
+    assert_contains "$(cat "$out")" "names a package manager" \
+      "$manifest with no evidence must still be reported to the captain, not go silent"
+    assert_contains "$(cat "$out")" "$manifest" \
+      "the note must name the manifest that changed"
+  done
+  pass "fm-merge-local: no manifest names an install command without in-repo evidence"
 }
 
 # The captain's copy holding commits the clone does not have is the shape
@@ -384,7 +412,8 @@ test_untouched_manifest_gets_no_install_step
 test_parked_copy_is_warned_and_switched_before_the_pull
 test_hostile_branch_name_cannot_inject_commands
 test_non_node_manifest_is_covered_too
-test_requirements_txt_is_reported_but_never_installed
+test_evidence_in_the_repo_unlocks_the_install_step
+test_no_manifest_invents_a_command_without_repo_evidence
 test_manifest_without_a_nameable_command_still_warns
 test_diverged_copy_gets_a_refusal_not_a_merge
 test_non_local_origin_gets_no_command

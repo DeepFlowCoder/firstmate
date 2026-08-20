@@ -39,12 +39,23 @@ Two further failures the block closes, both paid for before this guard existed:
 - A landing that changed the dependency manifest left the captain's installed dependencies behind, and that failure surfaced much later and disguised (`ERR_MODULE_NOT_FOUND`, mid-way through a six-step production sequence), so the install step is emitted with the pull.
 - Telling a captain whose copy sits on a work branch to "just run git pull" is harmful advice, so the branch that copy is parked on is read and reported.
 
-The install step is only ever a command the repository itself names: a `packageManager` field, a lockfile, or a manifest whose canonical installer both is unambiguous and stays inside the project.
-When the repository names nothing, the manifest change is reported and no command is invented, because a captain told to run a package manager their project does not use is a new failure rather than a closed one.
-The manifest names recognized are `package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`, and `Gemfile`.
+The install step is only ever a command the repository's own evidence names: package.json's `packageManager` field, or a lockfile the repository carries.
+When the repository carries no such evidence, the manifest change is reported and no command is invented, because a captain told to run a package manager their project does not use is a new failure rather than a closed one.
 
-`requirements.txt` is deliberately reported without a command.
+That rule is held at one decision point rather than per manifest, after the same defect appeared in three separate manifests in a row.
+Every command the block can emit is a row of `<manifest>|<evidence>|<command>` that no manifest may bypass, so a manifest whose evidence is absent - and any manifest added later without an evidence column - gets the note by construction.
+
+| Manifest | Evidence required | Command |
+| --- | --- | --- |
+| `package.json` | `packageManager` field | the manager it declares |
+| `package.json` | `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, `bun.lock`, `package-lock.json` | that manager's `install` |
+| `pyproject.toml` | `uv.lock`, `poetry.lock`, `pdm.lock` | `uv sync`, `poetry install`, `pdm install` |
+| `Cargo.toml` | `Cargo.lock` | `cargo fetch` |
+| `go.mod` | `go.sum` | `go mod download` |
+| `Gemfile` | `Gemfile.lock` | `bundle install` |
+| `requirements.txt` | none possible | never a command |
+
+`requirements.txt` carries no row on purpose.
 It states which packages to install but never into which interpreter, and nothing in a repository carrying it names the environment, so a bare `pip install` with none active installs into the captain's system Python - damage already paid for on this machine.
-`pyproject.toml` likewise names a command only through `uv.lock`, `poetry.lock`, or `pdm.lock`.
 
 The emitted block is pinned end to end by `tests/fm-merge-local.test.sh`, which runs it the way the captain would.

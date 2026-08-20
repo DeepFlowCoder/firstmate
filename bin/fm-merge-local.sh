@@ -132,40 +132,64 @@ landing_assign() {
 # concerned, and nothing about the project is inferred by any other means.
 FM_LANDING_MANIFESTS='package.json requirements.txt pyproject.toml Cargo.toml go.mod Gemfile'
 
-# landing_install_cmd <manifest>: the install command this repo itself names for
-# that manifest, or nothing. A missing answer stays missing: guessing is how the
-# captain gets told to run a command their project does not use.
-landing_install_cmd() {
-  local declared=
-  # A manifest the landing deleted has no install step to name.
-  [ -f "$PROJ/$1" ] || return 1
-  case "$1" in
-    package.json)
-      declared=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([a-z]*\)@.*/\1/p' "$PROJ/package.json" | head -1)
-      case "$declared" in
-        npm|pnpm|yarn|bun) printf '%s install\n' "$declared"; return 0 ;;
-      esac
-      if [ -f "$PROJ/pnpm-lock.yaml" ]; then printf 'pnpm install\n'; return 0; fi
-      if [ -f "$PROJ/yarn.lock" ]; then printf 'yarn install\n'; return 0; fi
-      if [ -f "$PROJ/bun.lockb" ] || [ -f "$PROJ/bun.lock" ]; then printf 'bun install\n'; return 0; fi
-      if [ -f "$PROJ/package-lock.json" ]; then printf 'npm install\n'; return 0; fi
-      ;;
-    # A requirements.txt says which packages, never which interpreter or
-    # environment, and a bare `pip install` with nothing active installs into
-    # the captain's system Python. No repo evidence names that environment, so
-    # this manifest gets the note and never a command.
-    requirements.txt) ;;
-    # A pyproject alone does not say who installs it, so only a lockfile in the
-    # repo answers; otherwise the captain gets the note, not an invented command.
-    pyproject.toml)
-      if [ -f "$PROJ/uv.lock" ]; then printf 'uv sync\n'; return 0; fi
-      if [ -f "$PROJ/poetry.lock" ]; then printf 'poetry install\n'; return 0; fi
-      if [ -f "$PROJ/pdm.lock" ]; then printf 'pdm install\n'; return 0; fi
-      ;;
-    Cargo.toml) printf 'cargo fetch\n'; return 0 ;;
-    go.mod) printf 'go mod download\n'; return 0 ;;
-    Gemfile) printf 'bundle install\n'; return 0 ;;
+# Every install command the landing block may ever name, and the in-repo
+# evidence that has to be present before it is named. Rows are
+# <manifest>|<evidence>|<command>, tried top to bottom. Evidence is a file the
+# repo carries, except the token `packageManager`, which is package.json's own
+# declaration of its manager.
+#
+# A manifest with no row here, or whose rows find no evidence, gets the
+# manifest-touched note and never a command. That is the whole rule, held in one
+# place: an existing manifest cannot drift out of it and a new one cannot be
+# added without an evidence column, because there is nowhere else to name a
+# command. requirements.txt has no row on purpose - it says which packages, never
+# into which interpreter, and a bare `pip install` with nothing active installs
+# into the captain's system Python.
+FM_LANDING_INSTALL_RULES='
+package.json|packageManager|
+package.json|pnpm-lock.yaml|pnpm install
+package.json|yarn.lock|yarn install
+package.json|bun.lockb|bun install
+package.json|bun.lock|bun install
+package.json|package-lock.json|npm install
+pyproject.toml|uv.lock|uv sync
+pyproject.toml|poetry.lock|poetry install
+pyproject.toml|pdm.lock|pdm install
+Cargo.toml|Cargo.lock|cargo fetch
+go.mod|go.sum|go mod download
+Gemfile|Gemfile.lock|bundle install
+'
+
+landing_declared_install_cmd() {  # package.json's own packageManager field
+  local declared
+  [ -f "$PROJ/package.json" ] || return 1
+  declared=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([a-z]*\)@.*/\1/p' "$PROJ/package.json" | head -1)
+  case "$declared" in
+    npm|pnpm|yarn|bun) printf '%s install\n' "$declared"; return 0 ;;
   esac
+  return 1
+}
+
+# landing_install_cmd <manifest>: the install command the repo's own evidence
+# names, or nothing. This is the single point that decides; no manifest answers
+# for itself. A missing answer stays missing, because guessing is how the captain
+# gets told to run a command their project does not use.
+landing_install_cmd() {
+  local manifest=$1 m evidence cmd
+  # A manifest the landing deleted has no install step to name.
+  [ -f "$PROJ/$manifest" ] || return 1
+  while IFS='|' read -r m evidence cmd; do
+    [ "$m" = "$manifest" ] || continue
+    if [ "$evidence" = packageManager ]; then
+      landing_declared_install_cmd && return 0
+      continue
+    fi
+    [ -f "$PROJ/$evidence" ] || continue
+    printf '%s\n' "$cmd"
+    return 0
+  done <<RULES
+$FM_LANDING_INSTALL_RULES
+RULES
   return 1
 }
 
