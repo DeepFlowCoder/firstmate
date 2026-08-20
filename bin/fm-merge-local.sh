@@ -93,7 +93,7 @@ landing_quote() {  # <string> -> LANDING_QUOTED: single-quoted for a shell line
 }
 
 join_quoted() {  # <item...> -> "'a', 'b'" for a human-readable note
-  local out= item
+  local out='' item
   for item in "$@"; do
     [ -z "$out" ] || out="$out, "
     out="$out'$item'"

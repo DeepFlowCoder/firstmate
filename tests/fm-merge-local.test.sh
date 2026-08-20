@@ -278,7 +278,9 @@ test_switch_carries_uncommitted_work_and_the_note_says_so() {
 # Each case asserts WHICH shape it received, because the shape depends on the
 # chain's own length - adding a flag to the pull once already moved the long name
 # off the inline path, silently leaving that path with no hostile coverage.
+# shellcheck disable=SC2016 # Literal metacharacters: they must reach the captain's shell unexpanded.
 HOSTILE_BRANCH_INLINE='v;>hx1;q&`>h3`>h2'
+# shellcheck disable=SC2016 # Literal metacharacters: they must reach the captain's shell unexpanded.
 HOSTILE_BRANCH_FMB='p;>hackeado;q$x&`>h3`>h2'
 
 # hostile_branch_case <name> <branch> <shape: inline|fmb> <dirlabel> <marker...>
@@ -305,8 +307,10 @@ hostile_branch_case() {
         || fail "expected the branch inline and quoted in the pull; this case no longer covers the inline path"$'\n'"$block"
       ;;
     fmb)
+      # shellcheck disable=SC2016 # The expected emitted line is literal: $fmb must stay unexpanded here.
       has_line "$block" 'git switch "$fmb" &&' \
         || fail "expected the branch routed through fmb; this case no longer covers the fmb path"$'\n'"$block"
+      # shellcheck disable=SC2016 # The expected emitted line is literal: $fmc and $fmb must stay unexpanded here.
       has_line "$block" 'git pull --ff-only "$fmc" "$fmb"' \
         || fail "expected the branch routed through fmb; this case no longer covers the fmb path"$'\n'"$block"
       ;;
@@ -451,7 +455,7 @@ test_diverged_copy_gets_a_refusal_not_a_merge() {
     || fail "the refused pull left the captain's copy in a half-finished merge state"
   assert_not_contains "$(git -C "$CASE_COPY" log --oneline)" "trabajo aterrizado" \
     "a refused pull must not have brought the landing in anyway"
-  assert_contains "$(tr 'A-Z' 'a-z' < "$TMP_ROOT/divergida.run")" "fast-forward" \
+  assert_contains "$(tr '[:upper:]' '[:lower:]' < "$TMP_ROOT/divergida.run")" "fast-forward" \
     "the refusal must say why it refused, not fail cryptically"
   pass "fm-merge-local: a diverged captain copy gets a readable refusal instead of a merge"
 }
@@ -562,6 +566,7 @@ test_install_step_covers_landings_the_captain_has_not_pulled() {
   # And the block must actually work, bringing both landings across. npm is
   # stubbed rather than dropped: removing the step would leave the chain's `&&`
   # dangling, and this test is about the pull, not about running a real install.
+  # shellcheck disable=SC2329 # Invoked indirectly: the eval'd block runs `npm install`.
   ( cd "$TMP_ROOT"; npm() { return 0; }; eval "$block" ) \
     > "$TMP_ROOT/acumulada.run" 2>&1 \
     || fail "the emitted block failed to run"$'\n'"$(cat "$TMP_ROOT/acumulada.run")"
@@ -582,6 +587,7 @@ test_install_step_stops_once_the_captain_is_current() {
     || fail "landing A failed"$'\n'"$(cat "$err")"
 
   # The captain pastes A's block, so the manifest change is now in their copy.
+  # shellcheck disable=SC2329 # Invoked indirectly: the eval'd block runs `npm install`.
   ( cd "$TMP_ROOT"; npm() { return 0; }; eval "$(block_of "$out")" ) \
     > "$TMP_ROOT/aldia.run" 2>&1 \
     || fail "landing A's block failed to run"$'\n'"$(cat "$TMP_ROOT/aldia.run")"
