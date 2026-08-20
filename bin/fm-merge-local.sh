@@ -11,8 +11,11 @@
 # project management, and task lifecycle.
 #
 # After a successful landing it PRINTS the captain's pull command, ready to
-# paste. It never runs anything in the captain's copy and never changes it; the
-# only thing it reads there is which branch that copy is parked on. Every emitted
+# paste. It never runs anything in the captain's copy and never changes it. What
+# it reads there is read-only and limited to three things: whether that copy is a
+# bare repository, which branch it is parked on, and where its own copy of the
+# destination branch points. Keep this list current: it is the access surface a
+# maintainer checks before adding a fourth read. Every emitted
 # line stays at or under FM_LANDING_LINE_MAX characters, every interpolated value
 # is single-quoted, a long path is built up across several short assignment
 # lines, and the block is verified against the cap before it is printed. The
@@ -330,10 +333,10 @@ if [ "$COPY_BRANCH" != "$DEFAULT" ]; then
   echo "note: git only refuses the switch when it would overwrite an uncommitted change; anything it can carry across - an edit to a file that matches on both branches, or an untracked file - lands on '$DEFAULT' with the captain. A dirty tree is the captain's to commit or stash before pasting."
 fi
 if [ "${#INSTALL_CMDS[@]}" -gt 0 ]; then
-  echo "note: this landing changed the dependency manifest, so the command installs dependencies with $(join_quoted "${INSTALL_CMDS[@]}")."
+  echo "note: this pull brings a change to the dependency manifest, so the command installs dependencies with $(join_quoted "${INSTALL_CMDS[@]}")."
 fi
 for manifest in ${UNNAMED_MANIFESTS[@]+"${UNNAMED_MANIFESTS[@]}"}; do
-  echo "note: this landing changed the dependency manifest '$manifest', $(landing_unnamed_reason "$manifest")"
+  echo "note: this pull brings a change to the dependency manifest '$manifest', $(landing_unnamed_reason "$manifest")"
 done
 
 if [ "$LANDING_OK" != 1 ]; then

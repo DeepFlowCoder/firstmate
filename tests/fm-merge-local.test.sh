@@ -7,7 +7,7 @@
 # These tests drive the real merge and pin the emitted block: every line stays
 # within the paste-safe cap, the block actually works when run, a hostile branch
 # name cannot execute anything extra, the install step appears exactly when the
-# landing changed a manifest and names only what the repo itself declares, a
+# pull delivers a manifest change and names only what the repo itself declares, a
 # parked copy gets its switch and its warning, and a project whose origin is not
 # a local working copy gets no invented command.
 set -u
@@ -149,7 +149,7 @@ test_manifest_change_carries_the_declared_install_step() {
   assert_paste_safe "$block" "landing command with an install step"
   has_line "$block" "npm install" \
     || fail "a landing that changed package.json must carry the install step"$'\n'"$block"
-  assert_contains "$(cat "$out")" "changed the dependency manifest" \
+  assert_contains "$(cat "$out")" "this pull brings a change to the dependency manifest" \
     "the manifest change must be stated, not only encoded in the command"
   pass "fm-merge-local: a manifest change carries the install step the repo's lockfile names"
 }
@@ -317,7 +317,7 @@ test_non_node_manifest_is_covered_too() {
     || fail "a landing that changed go.mod must carry its install step"$'\n'"$block"
   ! has_line "$block" "npm install" \
     || fail "the install step must follow the manifest that changed, not another one present in the repo"$'\n'"$block"
-  assert_contains "$(cat "$out")" "changed the dependency manifest" \
+  assert_contains "$(cat "$out")" "this pull brings a change to the dependency manifest" \
     "the manifest change must be stated, not only encoded in the command"
   pass "fm-merge-local: a non-Node manifest gets its own install step"
 }
@@ -518,8 +518,14 @@ test_install_step_covers_landings_the_captain_has_not_pulled() {
   assert_paste_safe "$block" "landing command covering an unpulled manifest change"
   has_line "$block" "npm install" \
     || fail "B's block dropped the install step A's unpulled manifest change still needs"$'\n'"$block"
-  assert_contains "$(cat "$out")" "changed the dependency manifest" \
-    "the accumulated manifest change must be stated, not only encoded in the command"
+  # The note must describe the PULL, not landing B: the manifest change came
+  # from A, which B never touched. A note saying "this landing changed the
+  # dependency manifest" would send the captain to B's diff to find a dependency
+  # move that is not in it.
+  assert_contains "$(cat "$out")" "this pull brings a change to the dependency manifest" \
+    "the accumulated manifest change must be attributed to the pull, not to this landing"
+  assert_not_contains "$(cat "$out")" "this landing changed the dependency manifest" \
+    "the note must not claim a manifest change this landing did not make"
 
   # And the block must actually work, bringing both landings across. npm is
   # stubbed rather than dropped: removing the step would leave the chain's `&&`
