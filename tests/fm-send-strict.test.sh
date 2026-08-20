@@ -5,7 +5,8 @@
 # well-formed backend target must fail loudly. These tests pin the historical
 # silent-fallback failures: missing FM_HOME, unresolved selectors, prefixless
 # herdr pane ids, dead explicit endpoints, and the healthy exact/fm-id paths.
-# They also verify that a key send reports whether delivery actually succeeded.
+# They also verify that a key send reports whether delivery actually succeeded,
+# and that a message too large to arrive intact is refused rather than sent.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -225,8 +226,60 @@ test_key_send_exit_status_follows_delivery() {
   pass "fm-send --key: exit status follows delivery, and an undelivered key never reports success"
 }
 
+# Past roughly 6-8 KB a pane text injection stops arriving intact: the bytes are
+# delivered OUT OF ORDER, with the start of the message embedded in the middle
+# of the payload, while the send still reports success (measured on herdr 0.8.0:
+# 6000 bytes exact, 8000/12000/16000 never ran, rc=0 every time). A steer that
+# size is not slow, it is corrupted with nothing to show for it, so fm-send has
+# to refuse before the endpoint is touched. Both directions are asserted from
+# one stub: a message at the cap must still be typed in full, or the refusal
+# could pass while quietly blocking ordinary steers.
+test_oversized_message_is_refused_before_it_reaches_the_endpoint() {
+  local dir fb home err log rc big at_cap
+  dir="$TMP_ROOT/oversize"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home oversize); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-big.meta" "window=sess:fm-lane-big" "kind=ship"
+
+  big=$(head -c 5000 /dev/zero | tr '\0' a)
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" lane-big "$big" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "an oversized message reported success"
+  assert_contains "$(cat "$err")" "message is 5000 bytes" "the refusal should state the real size"
+  assert_contains "$(cat "$err")" "4096-byte limit" "the refusal should state the limit it enforces"
+  assert_contains "$(cat "$err")" "nothing was sent" "the refusal should say the message did not go out"
+  assert_contains "$(cat "$err")" "send its path instead" "the refusal should name the file route for long instructions"
+  [ ! -s "$log" ] || fail "an oversized message still reached the endpoint"$'\n'"$(head -c 200 "$log")"
+
+  # A message at the cap is ordinary traffic and must still be typed in full,
+  # never quietly shortened.
+  : > "$log"
+  at_cap=$(head -c 4096 /dev/zero | tr '\0' b)
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" lane-big "$at_cap" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a message at the cap should still send"
+  assert_contains "$(cat "$log")" "arg=$at_cap" "a message at the cap must be typed whole, not truncated"
+  pass "fm-send: an oversized message is refused loudly before the endpoint, and a message at the cap still sends whole"
+}
+
+# The cap is about typed text, so it must not reach the key path: an interrupt
+# is how a runaway worker gets stopped and has no message to measure.
+test_key_send_is_not_size_capped() {
+  local dir fb home err log rc
+  dir="$TMP_ROOT/key-nocap"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home keynocap); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-nocap.meta" "window=sess:fm-lane-nocap" "kind=ship"
+
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" lane-nocap --key Enter >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "a --key send should not be affected by the message size cap"
+  assert_contains "$(cat "$log")" "target=sess:fm-lane-nocap literal=0 arg=Enter" "the key should still be delivered"
+  pass "fm-send: the message size cap leaves the --key interrupt path alone"
+}
+
 test_exact_lane_id_send_still_works
 test_key_send_exit_status_follows_delivery
+test_oversized_message_is_refused_before_it_reaches_the_endpoint
+test_key_send_is_not_size_capped
 test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
 test_prefixless_herdr_pane_id_fails

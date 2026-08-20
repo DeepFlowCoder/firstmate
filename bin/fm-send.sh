@@ -96,6 +96,21 @@
 # refused with --key, with an explicit backend target (no task ledger in this
 # home), and with an empty message.
 #
+# Size limit: a text send larger than FM_SEND_MAX_BYTES is refused before the
+# backend is touched and before any durable record is created. Above roughly
+# 6-8 KB a pane text injection stops arriving intact and, worse than truncating,
+# arrives OUT OF ORDER with the start of the message embedded in the middle of
+# the payload - while the send call still reports success. Measured 2026-08-19 on
+# herdr 0.8.0 `pane send-text`: 6000 bytes arrived exact, 8000 / 12000 / 16000
+# bytes never ran the command, rc=0 every time. So a steer that big is not a slow
+# steer, it is a corrupted one that nothing reports. The cap sits well under the
+# measured cliff, which also absorbs the fixed marker a secondmate request adds
+# after this check. AGENTS.md section 7 already says to put long instructions in
+# a file and send the path; this refuses rather than trusting that it was
+# remembered, and it never truncates - a shortened instruction that looks
+# delivered is the same silent failure in another costume. There is no override:
+# the file-and-path route is always available and always intact.
+#
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
 # accepted, but the harness needs a beat to spin up the turn before its busy
@@ -361,6 +376,23 @@ while :; do
     *) break ;;
   esac
 done
+
+# Refuse an oversized steer before the backend is touched and before any durable
+# record exists, so an instruction too big to arrive intact fails loudly here
+# instead of arriving scrambled with a success status (see the header).
+FM_SEND_MAX_BYTES=4096
+
+fm_send_refuse_oversized() {  # <text>
+  local text=$1 bytes
+  bytes=$(printf '%s' "$text" | LC_ALL=C wc -c | tr -d '[:space:]')
+  [ "$bytes" -gt "$FM_SEND_MAX_BYTES" ] || return 0
+  echo "error: message is $bytes bytes, over the $FM_SEND_MAX_BYTES-byte limit for one send; nothing was sent. Past that size the text arrives scrambled while the send still reports success, so it is refused rather than truncated. Write the long instruction to a file and send its path instead." >&2
+  return 1
+}
+
+if [ "${1:-}" != "--key" ]; then
+  fm_send_refuse_oversized "$*" || exit 1
+fi
 
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
