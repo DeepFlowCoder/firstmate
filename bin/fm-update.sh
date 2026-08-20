@@ -30,19 +30,29 @@
 # Format: the first non-empty, non-comment line, trimmed, holding one git remote
 # name made of [A-Za-z0-9._-] and not starting with "-" or "."; anything else is
 # a hard error, not a fallback. Secondmate homes inherit the file itself through
-# the primary-authoritative contract in bin/fm-config-inherit-lib.sh, so a
-# secondmate running its own /updatefirstmate resolves the same source.
+# the primary-authoritative contract in bin/fm-config-inherit-lib.sh, so the
+# captain's decision converges byte-exact across the fleet, but an inherited copy
+# never makes a home resolve upstream on its own (see below).
 #
-# WHO THE RESOLVED SOURCE IS PROVEN AGAINST. Only the checkout that owns the
-# decision - the primary one this run advances first. A local secondmate home
-# inherits the RESULT, not the source: once a configured source is in play, those
-# homes advance to the primary's default-branch commit, resolved AFTER the
-# firstmate target moved, so a linked worktree or a standalone clone that never
-# carries the source remote still lands on exactly what the primary just pulled.
-# A remote secondmate route is REFUSED before any network call instead: this host
-# cannot prove what a code root on another host pulls from, and that code root has
-# its own config/update-remote to set. With no configured source every target
-# keeps following origin exactly as before.
+# WHO THE RESOLVED SOURCE IS PROVEN AGAINST. Only a PRIMARY checkout - one that is
+# not itself a seeded secondmate home. Everywhere else a home inherits the RESULT,
+# not the source:
+#   - Running here, in a checkout carrying the .fm-secondmate-home marker, the
+#     firstmate target follows this home's own origin no matter what the inherited
+#     config/update-remote says. That origin IS what this home follows: the primary
+#     checkout a standalone clone was seeded from, the code root a remote home was
+#     seeded from, or the primary's own object store for a linked worktree. Asking
+#     a home to carry a remote only its primary was told about would refuse it
+#     forever instead.
+#   - Local secondmate targets of a primary's run advance to the primary's
+#     default-branch commit, resolved AFTER the firstmate target moved, so a linked
+#     worktree or a standalone clone that never carries the source remote still
+#     lands on exactly what the primary just pulled.
+#   - A remote secondmate route is REFUSED before any network call: this host
+#     cannot prove what a code root on another host pulls from. That refusal stands
+#     for every run from here; what advances such a home is /updatefirstmate run on
+#     the remote host itself.
+# With no configured source every target keeps following origin exactly as before.
 #
 # The fast-forward mechanics live in bin/fm-ff-lib.sh (base_mode "origin" or
 # "remote:<name>" here, and the local-HEAD commit mode for local homes under a
@@ -69,6 +79,8 @@ UPDATE_REMOTE_FILE="$CONFIG/update-remote"
 SECONDMATES_MD="$FM_HOME/data/secondmates.md"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
+# shellcheck source=bin/fm-primary-scope-lib.sh
+. "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 
 "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -86,8 +98,17 @@ die() { printf 'fm-update: %s\n' "$1" >&2; exit 1; }
 # Echo the ff-lib base mode for this run: "origin" when config/update-remote is
 # absent or holds nothing, "remote:<name>" when it names a source. Refuses a
 # malformed or unsafe file rather than falling back to origin (see header).
+# A seeded secondmate home resolves origin before reading the file at all: it
+# follows the checkout it was seeded from, so there is no upstream decision to
+# prove here and an inherited value is reported rather than acted on.
 resolve_update_base_mode() {
   local line value=""
+  if fm_root_is_secondmate_home "$FM_ROOT" || fm_root_is_secondmate_home "$FM_HOME"; then
+    [ ! -e "$UPDATE_REMOTE_FILE" ] \
+      || echo "update source: this is a secondmate home; following its own origin instead of resolving config/update-remote" >&2
+    printf 'origin\n'
+    return 0
+  fi
   [ -e "$UPDATE_REMOTE_FILE" ] || { printf 'origin\n'; return 0; }
   [ -f "$UPDATE_REMOTE_FILE" ] && [ ! -L "$UPDATE_REMOTE_FILE" ] \
     || die "config/update-remote is not a regular file; refusing to guess the update source"

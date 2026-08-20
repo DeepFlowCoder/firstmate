@@ -21,9 +21,10 @@
 #     the pull comes from origin exactly as before, with one it comes from the
 #     named remote, and a configured source that is missing or malformed refuses
 #     the run instead of silently pulling origin and reporting success.
-#   - That source is proven only against the checkout that owns it: a local
-#     secondmate home follows the primary's post-update commit instead of having
-#     to carry the source remote itself, while a remote route - whose code root
+#   - That source is proven only against a primary checkout: a local secondmate
+#     home follows the primary's post-update commit instead of having to carry the
+#     source remote itself, a seeded home running the updater on itself follows its
+#     own origin despite the inherited file, and a remote route - whose code root
 #     resolves a source this host cannot read - refuses before any contact.
 set -u
 
@@ -568,6 +569,49 @@ SH
   pass "T19 a remote route refuses before contact when an update source is configured"
 }
 
+# --- T20: a secondmate home updating itself follows its primary ------------
+# The captain's source is inherited into every home, so a secondmate that runs
+# the updater in its OWN home reads a source its clone has no remote for. It must
+# follow what it was seeded from - its origin, the primary checkout - instead of
+# refusing itself out of every future update.
+test_secondmate_home_updating_itself_follows_its_primary() {
+  local w home upstream_tip before
+  w=$(new_world t20)
+  home="$w/sm-self"
+  # Seeded exactly like an explicitly-pathed home: a clone of the primary whose
+  # only remote is that primary, with the operational dirs and marker ignored the
+  # way the tracked root .gitignore ignores them in a real home.
+  git clone -q "$w/main" "$home"
+  printf '%s\n' "state/" "config/" "data/" ".fm-secondmate-home" \
+    > "$home/.git/info/exclude"
+  mkdir -p "$home/state" "$home/config" "$home/data"
+  touch "$home/state/.last-watcher-beat"
+  printf 'sm-self\n' > "$home/.fm-secondmate-home"
+  before=$(git -C "$home" rev-parse HEAD)
+  # The captain configures the source and their primary lands it; the home has
+  # inherited the file but has no such remote of its own.
+  add_upstream_source "$w"
+  upstream_tip=$(bump_upstream "$w")
+  git -C "$w/main" fetch -q upstream main
+  git -C "$w/main" merge -q --ff-only "$upstream_tip"
+  printf 'upstream\n' > "$home/config/update-remote"
+  git -C "$home" remote get-url upstream >/dev/null 2>&1 \
+    && fail "fixture home unexpectedly carries the configured source remote"
+
+  RC=0
+  FM_ROOT_OVERRIDE="$home" FM_HOME="$home" "$UPDATE" > "$w/self-update.out" 2>&1 || RC=$?
+  OUT=$(cat "$w/self-update.out")
+
+  [ "$RC" -eq 0 ] || fail "a secondmate home updating itself exited $RC, expected 0"
+  assert_not_contains "$OUT" "firstmate: refused" \
+    "an inherited source must not refuse a secondmate home's own update"
+  assert_contains "$OUT" "firstmate: updated " "the home advanced by following its primary"
+  [ "$(git -C "$home" rev-parse HEAD)" != "$before" ] || fail "the home never advanced"
+  [ "$(git -C "$home" rev-parse HEAD)" = "$upstream_tip" ] \
+    || fail "the home did not land on the commit its primary carries"
+  pass "T20 a secondmate home updating itself follows its primary, not the inherited source"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -585,5 +629,6 @@ test_configured_source_ignores_comments_and_blanks
 test_update_source_is_inherited
 test_standalone_clone_home_follows_the_primary
 test_remote_route_refuses_under_configured_source
+test_secondmate_home_updating_itself_follows_its_primary
 
 echo "# all fm-update tests passed"

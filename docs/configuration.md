@@ -126,8 +126,10 @@ Without it, an update against a mirror advances the home to its own published st
 The file holds the first non-empty, non-comment line, trimmed: one git remote name made of `A-Za-z0-9._-` that does not start with `-` or `.`.
 A malformed value, or a configured remote that does not exist in a checkout, refuses that update and exits non-zero rather than falling back to `origin`; nothing is fetched from another source in its place.
 The value is proven only against the checkout that owns the decision, the primary one: a local secondmate home follows the commit that primary just landed instead of having to carry the source remote itself, so a linked worktree and a standalone clone both advance without one.
-A remote secondmate route is refused before any contact, because that code root resolves its own file on a host this one cannot read; it updates again once that host's code root has its own `config/update-remote`.
-The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md), so a secondmate running its own update resolves the same source.
+A remote secondmate route is refused before any contact, because that code root resolves its own file on a host this one cannot read.
+That refusal stands for every run from this home; what advances a remote home is `/updatefirstmate` run on the remote host itself, against that host's own code root and file.
+The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md), so the captain's decision converges byte-exact across the fleet.
+An inherited copy does not make that home resolve upstream on its own: a checkout carrying the `.fm-secondmate-home` marker follows its own `origin` - the primary checkout or code root it was seeded from - and reports the inherited value instead of acting on it.
 [`bin/fm-update.sh`](../bin/fm-update.sh)'s header owns the exact resolution and refusal mechanics.
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
@@ -201,7 +203,7 @@ Each seed writes an `.fm-secondmate-home` identity marker at the home root, alon
 The tracked root `.gitignore` ignores both markers, so validation can read them without making a freshly seeded home appear dirty to porcelain-based safety checks.
 This does not relax protection for any other untracked file.
 An existing linked-worktree home that predates this rule advances through its marker-only state during its next bootstrap or spawn local sync, after which Git ignores the marker normally.
-A standalone-clone home cannot receive a primary-local commit through that no-fetch sync, so it receives the rule through `/updatefirstmate`'s origin refresh instead.
+A standalone-clone home cannot receive a primary-local commit through that no-fetch sync, so it receives the rule the next time `/updatefirstmate` advances it: by following the primary's post-update commit under a configured update source, or through its own `origin` refresh when none is configured.
 
 ## FM_HOME
 
