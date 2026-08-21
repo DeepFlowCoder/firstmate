@@ -998,6 +998,7 @@ new_world() {
     [ "$dispatch_ignore" = no ] || printf 'config/crew-dispatch.json\n'
     printf 'config/crew-harness\nconfig/secondmate-harness\nconfig/backlog-backend\n'
     printf 'config/backend\nconfig/herdr-presentation-spaces\nconfig/startup-memory-budget\n'
+    printf 'config/update-remote\n'
   } > "$w/main/.gitignore"
   printf 'v1\n' > "$w/main/AGENTS.md"
   printf 'r1\n' > "$w/main/README.md"
@@ -2546,6 +2547,53 @@ test_spawn_fallback_chain_and_crew_scout_unaffected
 test_bootstrap_sweep_propagates_and_reconverges
 test_bootstrap_sweep_propagates_when_tracked_current
 test_bootstrap_sweep_defers_dispatch_on_stale_unignored_home
+# The captain's update source converges into every home but must NEVER be inlined
+# into the "re-read and apply their exact contents" instruction: a secondmate
+# home's own updater ignores that value and follows its own origin, so an agent
+# obeying the instruction would pull a remote its clone may not have, or fetch and
+# merge outside the fast-forward-only guards.
+test_config_reread_never_inlines_the_update_source() {
+  local w head out status report instr
+  w=$(new_world config-reread-update-source)
+  head=$(git -C "$w/main" rev-parse HEAD)
+  add_sm_worktree "$w" sm "$head"
+  mkdir -p "$w/sm/config" "$w/sm/state"
+
+  # Only the update source changes: it must propagate, and send nothing.
+  printf 'upstream\n' > "$w/home/config/update-remote"
+  out=$(run_config_push "$w" "$w/update-source-only.tmux.log" 2>/dev/null); status=$?
+  expect_code 0 "$status" "a push whose only change is the update source must succeed"
+  [ "$(cat "$w/sm/config/update-remote" 2>/dev/null)" = upstream ] \
+    || fail "update source did not converge into the secondmate home"
+  assert_not_contains "$out" "config-reread: sent" "the update source must not trigger a reread send"
+  [ ! -s "$w/update-source-only.tmux.log" ] \
+    || fail "the update source was sent to a live agent: $(cat "$w/update-source-only.tmux.log")"
+  assert_no_reread_instructions "$w/sm"
+
+  # With another item changing too, the instruction carries that item and never
+  # the update source - neither its path nor its value.
+  report="$w/update-source.report"
+  printf '%s\n' $'crew-harness\tpushed\t' > "$report"
+  printf '%s\n' $'update-remote\tpushed\t' >> "$report"
+  printf 'codex\n' > "$w/sm/config/crew-harness"
+  instr="$w/sm/state/.fm-inherited-config-reread-update-source"
+  fm_config_write_reread_instruction "$w/sm" "$report" "$instr" \
+    || fail "mixed-change instruction write failed"
+  assert_contains "$(cat "$instr")" "config/crew-harness" "instruction must carry the other changed item"
+  assert_not_contains "$(cat "$instr")" "config/update-remote" "instruction must not name the update source"
+  assert_not_contains "$(cat "$instr")" "upstream" "instruction must not inline the update source value"
+
+  # A report whose only pushed item is the update source builds no instruction at
+  # all, so there is nothing to deliver rather than an empty one.
+  printf '%s\n' $'update-remote\tpushed\t' > "$report"
+  rm -f "$instr"
+  if fm_config_write_reread_instruction "$w/sm" "$report" "$instr"; then
+    fail "an update-source-only report must not produce an instruction"
+  fi
+  [ ! -e "$instr" ] || fail "an update-source-only report left an instruction file behind"
+  pass "the update source converges but is never inlined into a reread instruction"
+}
+
 test_bootstrap_sweep_materializes_and_inherits_memory_default
 test_backend_inheritance_present_and_absent
 test_presentation_inheritance_default_on_and_opt_out
@@ -2565,6 +2613,7 @@ test_config_reread_full_retry_queue_drains_before_new_push
 test_config_reread_cleanup_runs_after_mixed_delivery_failure
 test_config_reread_stops_after_failed_generation
 test_config_reread_skips_when_unchanged_and_reads_after_push
+test_config_reread_never_inlines_the_update_source
 test_config_reread_bootstrap_path_and_spawn_flexibility
 test_bootstrap_respawns_before_config_reread
 test_spawn_quarantines_pending_rereads_on_cleanup_failure

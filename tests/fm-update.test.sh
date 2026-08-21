@@ -639,6 +639,12 @@ test_linked_worktree_home_updating_itself_is_skipped() {
   [ "$RC" -eq 0 ] || fail "a linked-worktree home's own update exited $RC, expected 0"
   assert_not_contains "$OUT" "firstmate: refused" \
     "an inherited source must not refuse a linked-worktree home either"
+  # A linked worktree SHARES the primary's remotes, so the detached-HEAD skip
+  # below happens with or without the marker short-circuit. The notice is the
+  # only observable output that distinguishes them: without the short-circuit
+  # the run resolves the inherited source instead of reporting that it ignored it.
+  assert_contains "$OUT" "this is a secondmate home; following its own origin instead of resolving config/update-remote" \
+    "a marked home must report that it ignored the inherited source"
   assert_contains "$OUT" "firstmate: skipped: detached HEAD" \
     "a leased home's own update stops at the detached-HEAD guard"
   [ "$(git -C "$w/sm-wt" rev-parse HEAD)" = "$before" ] \

@@ -16,7 +16,9 @@
 # byte-exact so the captain's update-source decision is visible fleet-wide, but it
 # never makes a home resolve upstream on its own: a checkout carrying the
 # .fm-secondmate-home marker notes that it is ignoring the inherited file and
-# follows its own origin instead (bin/fm-update.sh owns that resolution). Primary
+# follows its own origin instead (bin/fm-update.sh owns that resolution), which
+# is also why it is the one item excluded from the reread instruction below.
+# Primary
 # config/trace-context is copied at the launch convergence point as part of the
 # default-off W3C trace-context setup, while live convergence leaves it unchanged.
 # The primary passes its frozen home-session decision into a newly launched
@@ -80,6 +82,26 @@ FM_SESSION_SCOPED_INHERITABLE_CONFIG="trace-context"
 fm_config_inherit_item_session_scoped() {  # <item>
   local item=$1 candidate
   for candidate in $FM_SESSION_SCOPED_INHERITABLE_CONFIG; do
+    [ "$candidate" = "$item" ] && return 0
+  done
+  return 1
+}
+
+# Items that converge downstream like any other inheritable item but are NEVER
+# inlined into the config-reread instruction a live secondmate agent is told to
+# "re-read and apply". config/update-remote is one: a secondmate home's own
+# updater deliberately ignores the inherited value and follows its own origin
+# (bin/fm-update.sh), so handing the agent that remote name as a rule to apply
+# would instruct it to do what the machinery refuses to do - pull a remote its
+# standalone clone does not have, or fetch and merge outside the ff-only guards.
+# This is only about the instruction text; propagation, byte-exact convergence,
+# absence mirroring, and the pushed/unchanged report are unchanged.
+FM_NON_INSTRUCTED_INHERITABLE_CONFIG="update-remote"
+
+# True when <item> converges downstream but is never inlined into an instruction.
+fm_config_inherit_item_not_instructed() {  # <item>
+  local item=$1 candidate
+  for candidate in $FM_NON_INSTRUCTED_INHERITABLE_CONFIG; do
     [ "$candidate" = "$item" ] && return 0
   done
   return 1
@@ -557,10 +579,12 @@ FM_CONFIG_REREAD_FRAMING='These inherited config files changed. Re-read and appl
 
 # fm_config_reread_is_allowlisted_item <item>
 # True only for the declared inheritable config allowlist (bare item name as
-# recorded in FM_CONFIG_INHERIT_REPORT). data/captain-shared.md is never
-# allowlisted here and must never be inlined into a reread instruction.
+# recorded in FM_CONFIG_INHERIT_REPORT), minus the non-instructed items above.
+# data/captain-shared.md is never allowlisted here and must never be inlined
+# into a reread instruction.
 fm_config_reread_is_allowlisted_item() {
   local item=$1 candidate
+  fm_config_inherit_item_not_instructed "$item" && return 1
   for candidate in $FM_INHERITABLE_CONFIG; do
     [ "$candidate" = "$item" ] && return 0
   done
@@ -570,10 +594,14 @@ fm_config_reread_is_allowlisted_item() {
 # fm_config_reread_changed_items <report>
 # Print bare allowlisted config item names whose report status is "pushed",
 # in FM_INHERITABLE_CONFIG order (deterministic path order). Empty when none.
+# A non-instructed item never appears, so a convergence whose only change was
+# such an item writes no instruction and sends nothing - it is an ordinary
+# no-op success, not a failure to build one.
 fm_config_reread_changed_items() {
   local report=$1 item status
   [ -n "$report" ] && [ -f "$report" ] || return 0
   for item in $FM_INHERITABLE_CONFIG; do
+    fm_config_inherit_item_not_instructed "$item" && continue
     status=$(awk -F '\t' -v item="$item" '$1 == item { print $2; exit }' "$report" 2>/dev/null) || status=""
     [ "$status" = pushed ] || continue
     printf '%s\n' "$item"
