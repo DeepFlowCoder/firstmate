@@ -18,6 +18,12 @@
 # failure filled a volume that still had several gigabytes free when the work
 # started. 5 GB leaves room for concurrent validation pipelines plus the
 # temporary files firstmate itself needs to stay able to report a failure.
+#
+# config/disk-space-min-gb sets it per home, and the FM_DISK_SPACE_MIN_GB
+# environment variable overrides that file for one run, the way FM_BACKEND
+# overrides config/backend and FM_TRACE_CONTEXT overrides config/trace-context.
+# Both accept one whole number of gigabytes and both read 0 as "retire the
+# guard"; unset or empty defers to the file.
 FM_DISK_SPACE_MIN_GB_FILE="disk-space-min-gb"
 FM_DISK_SPACE_MIN_GB_DEFAULT=5
 
@@ -27,33 +33,45 @@ FM_DISK_SPACE_CONFIG_ERROR=""
 
 # fm_disk_space_threshold_gb <config-dir>
 # Publishes FM_DISK_SPACE_THRESHOLD_GB and FM_DISK_SPACE_CONFIG_ERROR, and
-# prints the effective threshold in whole gigabytes. An absent file means the
-# default. A present but unreadable or malformed file also resolves to the
-# default - a guard that disables itself on a typo is worse than useless - and
-# names the problem in FM_DISK_SPACE_CONFIG_ERROR so the caller can report the
-# typo. `0` is the captain's explicit off switch and is not an error.
+# prints the effective threshold in whole gigabytes. A non-empty
+# FM_DISK_SPACE_MIN_GB wins; otherwise config/disk-space-min-gb decides, and an
+# absent file means the default. A present but unreadable or malformed source
+# also resolves to the default - a guard that disables itself on a typo is worse
+# than useless - and FM_DISK_SPACE_CONFIG_ERROR carries the whole sentence
+# naming which source was rejected, why, and that the default is still guarding,
+# so both consumers report one wording instead of composing their own. `0` is
+# the captain's explicit off switch and is not an error.
 # It publishes rather than only printing because a caller reading it through
 # command substitution would lose the error in that subshell.
 fm_disk_space_threshold_gb() {
-  local config_dir=$1 path value
+  local config_dir=$1 path source="" value="" reason=""
   FM_DISK_SPACE_CONFIG_ERROR=""
   FM_DISK_SPACE_THRESHOLD_GB=$FM_DISK_SPACE_MIN_GB_DEFAULT
   path="$config_dir/$FM_DISK_SPACE_MIN_GB_FILE"
-  if [ -e "$path" ]; then
+  if [ -n "${FM_DISK_SPACE_MIN_GB:-}" ]; then
+    source="FM_DISK_SPACE_MIN_GB"
+    value=$(printf '%s' "$FM_DISK_SPACE_MIN_GB" | tr -d '[:space:]')
+  elif [ -e "$path" ]; then
+    source="config/$FM_DISK_SPACE_MIN_GB_FILE"
     if [ ! -f "$path" ] || [ -L "$path" ]; then
-      FM_DISK_SPACE_CONFIG_ERROR="not a regular file"
+      reason="not a regular file"
     else
       value=$(tr -d '[:space:]' < "$path" 2>/dev/null) || value=
-      # The upper bound is not a policy on how much headroom is reasonable; it
-      # keeps an absurd value out of shell arithmetic, where an overflow would
-      # wrap negative and silently switch the guard off.
-      case "$value" in
-        ''|*[!0-9]*|??????????*)
-          FM_DISK_SPACE_CONFIG_ERROR="value must be one whole number of gigabytes"
-          ;;
-        *) FM_DISK_SPACE_THRESHOLD_GB=$((10#$value)) ;;
-      esac
     fi
+  fi
+  if [ -n "$source" ] && [ -z "$reason" ]; then
+    # The upper bound is not a policy on how much headroom is reasonable; it
+    # keeps an absurd value out of shell arithmetic, where an overflow would
+    # wrap negative and silently switch the guard off.
+    case "$value" in
+      ''|*[!0-9]*|??????????*)
+        reason="value must be one whole number of gigabytes"
+        ;;
+      *) FM_DISK_SPACE_THRESHOLD_GB=$((10#$value)) ;;
+    esac
+  fi
+  if [ -n "$reason" ]; then
+    FM_DISK_SPACE_CONFIG_ERROR="invalid $source - $reason; guarding at the default $FM_DISK_SPACE_MIN_GB_DEFAULT GB"
   fi
   printf '%s\n' "$FM_DISK_SPACE_THRESHOLD_GB"
 }

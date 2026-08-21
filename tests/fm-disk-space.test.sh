@@ -12,6 +12,12 @@
 # Silence above the threshold is asserted as hard as the warning below it: a
 # routine line in the session-start output is what trains a captain to skip the
 # section, so it is a contract, not an accident.
+#
+# tests/lib.sh exports FM_DISK_SPACE_MIN_GB=0 to retire the guard for the rest of
+# the suite, which would make every case here vacuous. So both run helpers pin
+# that variable explicitly per run: empty defers to config/disk-space-min-gb,
+# which is what most cases want, and the harness-wide neutralizer can never leak
+# in. This file is the one place the real guard runs end to end.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -57,11 +63,12 @@ new_home() {
 # Bootstrap's local detect-only pass: no network, no mutating sweeps, so a case
 # pays for the disk check alone. Prints only the guard's own lines.
 run_bootstrap() {
-  local home=$1 avail=$2
+  local home=$1 avail=$2 min_gb=${3:-}
   (
     cd "$home" || exit 1
     PATH="$home/fakebin:$PATH" \
     FM_FAKE_DF_AVAIL_KB="$avail" \
+    FM_DISK_SPACE_MIN_GB="$min_gb" \
     FM_HOME="$home" \
     FM_BOOTSTRAP_DETECT_ONLY=1 \
     FM_BOOTSTRAP_NETWORK=skip \
@@ -73,11 +80,12 @@ run_bootstrap() {
 # worktree, endpoint, and metadata write, so a case that clears it stops at the
 # next ordinary refusal instead of launching anything.
 run_spawn() {
-  local home=$1 id=$2 avail=$3 allow_low=${4:-}
+  local home=$1 id=$2 avail=$3 allow_low=${4:-} min_gb=${5:-}
   (
     cd "$home" || exit 1
     PATH="$home/fakebin:$PATH" \
     FM_FAKE_DF_AVAIL_KB="$avail" \
+    FM_DISK_SPACE_MIN_GB="$min_gb" \
     FM_SPAWN_ALLOW_LOW_DISK="$allow_low" \
     FM_HOME="$home" \
       "$SPAWN" "$id" "$home/project" --scout 2>&1
@@ -130,6 +138,10 @@ test_zero_threshold_retires_the_guard() {
   case "$out" in
     *"refusing to dispatch"*) fail "a 0 threshold still refused the spawn: $out" ;;
   esac
+  case "$out" in
+    *"no brief at"*) : ;;
+    *) fail "the spawn did not reach its own brief preflight: $out" ;;
+  esac
   pass "config/disk-space-min-gb=0 retires both surfaces of the guard"
 }
 
@@ -171,6 +183,10 @@ test_unmeasurable_filesystem_stays_silent() {
   case "$out" in
     *"refusing to dispatch"*) fail "an unmeasurable filesystem refused a spawn: $out" ;;
   esac
+  case "$out" in
+    *"no brief at"*) : ;;
+    *) fail "the spawn did not reach its own brief preflight: $out" ;;
+  esac
   pass "an unmeasurable filesystem is reported as nothing and blocks nothing"
 }
 
@@ -210,6 +226,67 @@ test_spawn_proceeds_above_threshold() {
   pass "a spawn above the threshold runs on to its own ordinary preflight"
 }
 
+test_env_override_beats_the_file() {
+  local home out rc=0
+  home=$(new_home env-override)
+  # The file retires the guard; the run's own FM_DISK_SPACE_MIN_GB puts it back.
+  printf '0\n' > "$home/config/disk-space-min-gb"
+  out=$(run_bootstrap "$home" "$DF_TEN_GB" 20)
+  case "$out" in
+    *"10.0 GB free on $home (threshold 20 GB)"*) : ;;
+    *) fail "FM_DISK_SPACE_MIN_GB did not take precedence over the file: $out" ;;
+  esac
+  # And the other way round: the file asks for 20 GB, the run retires the guard.
+  printf '20\n' > "$home/config/disk-space-min-gb"
+  out=$(run_bootstrap "$home" "$DF_TEN_GB" 0)
+  [ -z "$out" ] || fail "FM_DISK_SPACE_MIN_GB=0 did not retire the bootstrap report: $out"
+  out=$(run_spawn "$home" env-override-a1 "$DF_LOW" "" 0) || rc=$?
+  [ "$rc" -ne 0 ] || fail "the spawn fixture unexpectedly succeeded"
+  case "$out" in
+    *"refusing to dispatch"*) fail "FM_DISK_SPACE_MIN_GB=0 still refused the spawn: $out" ;;
+  esac
+  case "$out" in
+    *"no brief at"*) : ;;
+    *) fail "the spawn did not reach its own brief preflight: $out" ;;
+  esac
+  pass "FM_DISK_SPACE_MIN_GB overrides config/disk-space-min-gb on both surfaces"
+}
+
+test_malformed_env_override_reports_and_keeps_guarding() {
+  local home out
+  home=$(new_home malformed-env)
+  out=$(run_bootstrap "$home" "$DF_LOW" "0 GB")
+  case "$out" in
+    *"invalid FM_DISK_SPACE_MIN_GB"*) : ;;
+    *) fail "a malformed env override was accepted silently: $out" ;;
+  esac
+  case "$out" in
+    *"1.9 GB free on $home (threshold 5 GB)"*) : ;;
+    *) fail "a malformed env override disabled the guard instead of falling back: $out" ;;
+  esac
+  pass "a malformed FM_DISK_SPACE_MIN_GB is reported and the default keeps guarding"
+}
+
+test_spawn_refusal_names_a_malformed_threshold() {
+  local home out rc=0
+  home=$(new_home spawn-malformed)
+  # The captain's trap: "0 GB" reads as retired, parses as malformed, and the
+  # default threshold keeps refusing. The refusal has to say so, or the file
+  # they can see says 0 while the refusal tells them to set it to 0.
+  printf '0 GB\n' > "$home/config/disk-space-min-gb"
+  out=$(run_spawn "$home" spawn-malformed-a1 "$DF_LOW") || rc=$?
+  [ "$rc" -ne 0 ] || fail "a malformed threshold let the spawn through with 1.9 GB free"
+  case "$out" in
+    *"refusing to dispatch spawn-malformed-a1"*) : ;;
+    *) fail "a malformed threshold was not refused at the default: $out" ;;
+  esac
+  case "$out" in
+    *"invalid config/disk-space-min-gb"*) : ;;
+    *) fail "the refusal hides that the configured threshold was rejected: $out" ;;
+  esac
+  pass "a spawn refusal names a malformed threshold instead of hiding it"
+}
+
 test_spawn_override_dispatches_anyway() {
   local home out rc=0
   home=$(new_home spawn-override)
@@ -231,6 +308,9 @@ test_configured_threshold_moves_the_verdict
 test_zero_threshold_retires_the_guard
 test_malformed_config_reports_and_keeps_guarding
 test_unmeasurable_filesystem_stays_silent
+test_env_override_beats_the_file
+test_malformed_env_override_reports_and_keeps_guarding
 test_spawn_refuses_below_threshold
+test_spawn_refusal_names_a_malformed_threshold
 test_spawn_proceeds_above_threshold
 test_spawn_override_dispatches_anyway

@@ -10,6 +10,12 @@ set -u
 # which the no-mistakes gate runs from a gate worktree, must be exempt).
 export FM_GATE_REFUSE_BYPASS=1
 
+# Same reasoning for the free-disk-space guard (bin/fm-disk-space-lib.sh): these
+# suites spawn onto the runner's real filesystem, and without this their verdict
+# would depend on how full that machine is rather than on what they assert (see
+# tests/lib.sh, which retires it the same way for the suites that source it).
+export FM_DISK_SPACE_MIN_GB=0
+
 HERDR_TEST_SAFETY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$HERDR_TEST_SAFETY_DIR/bin/fm-herdr-lab.sh"

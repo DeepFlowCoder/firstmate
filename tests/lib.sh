@@ -34,6 +34,16 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Retire the free-disk-space guard (bin/fm-disk-space-lib.sh) for the same
+# reason. Fixture homes live on the developer's or the runner's real filesystem,
+# so with the guard live every suite that drives a real fm-spawn or fm-bootstrap
+# would refuse or print a warning purely because of how full that machine
+# happened to be - the same commit passing or failing by time of day. 0 is the
+# captain's own off switch, not a test-only escape hatch, so the guard's real
+# behavior is untouched. tests/fm-disk-space.test.sh pins this value per run so
+# it still drives the real guard end to end.
+export FM_DISK_SPACE_MIN_GB=0
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

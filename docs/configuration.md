@@ -122,7 +122,10 @@ See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`veri
 Firstmate checks free space on the filesystem holding this home, so a volume that is filling up is visible before it takes work down with it.
 The default threshold is **5 GB**, and the local, gitignored `config/disk-space-min-gb` file overrides it with one whole number of gigabytes.
 Set it to `0` to retire the guard entirely.
-A present but malformed file is reported and the default threshold still applies, because a guard that switches itself off on a typo is worse than no guard.
+The `FM_DISK_SPACE_MIN_GB` environment variable overrides that file for a single run, the way `FM_BACKEND` overrides `config/backend`, and takes the same values: one whole number of gigabytes, with `0` retiring the guard.
+Leaving it unset or empty defers to the file.
+A malformed value from either source is reported and the default threshold still applies, because a guard that switches itself off on a typo is worse than no guard.
+The report names which source was rejected, so `0 GB` written where `0` was meant does not read as a retired guard that keeps refusing.
 
 Above the threshold nothing is printed and nothing changes.
 Below it, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, and the threshold, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a worker.
@@ -565,6 +568,7 @@ FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_SPAWN_ALLOW_LOW_DISK=  # non-empty dispatches one spawn despite the low-disk refusal; see "Disk space guard"
+FM_DISK_SPACE_MIN_GB=   # optional free-space threshold override in whole gigabytes, ahead of config/disk-space-min-gb; 0 retires the guard; see "Disk space guard"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline

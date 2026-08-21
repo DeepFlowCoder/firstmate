@@ -11,7 +11,7 @@
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "DISK_SPACE: <n.n> GB free on <home> (threshold <n> GB)" or
-#                 "DISK_SPACE: invalid config/disk-space-min-gb - <reason>; guarding at the default <n> GB",
+#                 "DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
 #                 "TANGLE: <remediation>",
@@ -53,8 +53,9 @@
 #          A DISK_SPACE line means free space on this home's filesystem is below
 #          the configured threshold; above it, and when the space cannot be
 #          measured, the check is silent. bin/fm-disk-space-lib.sh owns the
-#          threshold, its config/disk-space-min-gb override, and the wording,
-#          which bin/fm-spawn.sh's dispatch refusal shares.
+#          threshold, its config/disk-space-min-gb and FM_DISK_SPACE_MIN_GB
+#          overrides, and the wording, which bin/fm-spawn.sh's dispatch refusal
+#          shares.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
@@ -1182,7 +1183,7 @@ disk_space_detect() {
       && echo "DISK_SPACE: $summary"
   fi
   if [ -n "$FM_DISK_SPACE_CONFIG_ERROR" ]; then
-    echo "DISK_SPACE: invalid config/$FM_DISK_SPACE_MIN_GB_FILE - $FM_DISK_SPACE_CONFIG_ERROR; guarding at the default ${FM_DISK_SPACE_MIN_GB_DEFAULT} GB"
+    echo "DISK_SPACE: $FM_DISK_SPACE_CONFIG_ERROR"
   fi
 }
 
