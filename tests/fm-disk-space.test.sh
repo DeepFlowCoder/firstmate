@@ -92,6 +92,22 @@ run_spawn() {
   )
 }
 
+# A relaunch of a task this home has no record of: the guard sits ahead of the
+# relaunch adoption block, so a case that clears it stops at the missing record
+# instead of launching anything.
+run_relaunch() {
+  local home=$1 id=$2 avail=$3
+  (
+    cd "$home" || exit 1
+    PATH="$home/fakebin:$PATH" \
+    FM_FAKE_DF_AVAIL_KB="$avail" \
+    FM_DISK_SPACE_MIN_GB="" \
+    FM_SPAWN_ALLOW_LOW_DISK="" \
+    FM_HOME="$home" \
+      "$SPAWN" "$id" --relaunch 2>&1
+  )
+}
+
 test_bootstrap_silent_above_threshold() {
   local home out
   home=$(new_home silent-above)
@@ -226,6 +242,48 @@ test_spawn_proceeds_above_threshold() {
   pass "a spawn above the threshold runs on to its own ordinary preflight"
 }
 
+test_relaunch_warns_but_is_never_refused() {
+  local home out rc=0
+  home=$(new_home relaunch-below)
+  out=$(run_relaunch "$home" relaunch-below-a1 "$DF_LOW") || rc=$?
+  [ "$rc" -ne 0 ] || fail "the relaunch fixture unexpectedly succeeded"
+  case "$out" in
+    *"refusing to dispatch"*)
+      fail "a relaunch below the threshold was refused, which is how a stopped agent is lost: $out" ;;
+  esac
+  case "$out" in
+    *"1.9 GB free on $home (threshold 5 GB)"*"relaunching relaunch-below-a1 anyway"*) : ;;
+    *) fail "the relaunch warning does not name the measurement and the task: $out" ;;
+  esac
+  # Proven by contrast: the relaunch reaches its own adoption preflight, so the
+  # case cannot pass because the fixture never got past the guard at all.
+  case "$out" in
+    *"needs an existing task record"*) : ;;
+    *) fail "the relaunch did not reach its own adoption preflight: $out" ;;
+  esac
+  pass "a relaunch below the threshold warns and proceeds instead of stranding a stopped agent"
+}
+
+test_multiline_threshold_is_reported_not_concatenated() {
+  local home out
+  home=$(new_home multiline-threshold)
+  # `echo 20 >>` where `>` was meant: two lines that must not become 520.
+  printf '5\n20\n' > "$home/config/disk-space-min-gb"
+  out=$(run_bootstrap "$home" "$DF_LOW")
+  case "$out" in
+    *"invalid config/disk-space-min-gb"*) : ;;
+    *) fail "a two-line threshold was accepted silently: $out" ;;
+  esac
+  case "$out" in
+    *"(threshold 520 GB)"*) fail "a two-line threshold was concatenated into 520 GB: $out" ;;
+  esac
+  case "$out" in
+    *"1.9 GB free on $home (threshold 5 GB)"*) : ;;
+    *) fail "a two-line threshold did not fall back to the default: $out" ;;
+  esac
+  pass "a multi-line threshold is reported and the default keeps guarding"
+}
+
 test_env_override_beats_the_file() {
   local home out rc=0
   home=$(new_home env-override)
@@ -307,10 +365,12 @@ test_bootstrap_reports_below_threshold
 test_configured_threshold_moves_the_verdict
 test_zero_threshold_retires_the_guard
 test_malformed_config_reports_and_keeps_guarding
+test_multiline_threshold_is_reported_not_concatenated
 test_unmeasurable_filesystem_stays_silent
 test_env_override_beats_the_file
 test_malformed_env_override_reports_and_keeps_guarding
 test_spawn_refuses_below_threshold
+test_relaunch_warns_but_is_never_refused
 test_spawn_refusal_names_a_malformed_threshold
 test_spawn_proceeds_above_threshold
 test_spawn_override_dispatches_anyway

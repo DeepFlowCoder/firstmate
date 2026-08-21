@@ -126,16 +126,18 @@ The `FM_DISK_SPACE_MIN_GB` environment variable overrides that file for a single
 Leaving it unset or empty defers to the file.
 A malformed value from either source is reported and the default threshold still applies, because a guard that switches itself off on a typo is worse than no guard.
 The report names which source was rejected, so `0 GB` written where `0` was meant does not read as a retired guard that keeps refusing.
+The value is that single number and nothing else, so a second line appended with `>>` where `>` was meant is reported as malformed rather than concatenated into a threshold nobody wrote.
 
 Above the threshold nothing is printed and nothing changes.
 Below it, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, and the threshold, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a worker.
 The refusal is deliberate: the failure this guards against is total rather than slow, since a full volume destroys in-flight validation runs and leaves firstmate unable to write even the record of its own failure.
 To dispatch anyway without changing the threshold, re-run that one spawn with `FM_SPAWN_ALLOW_LOW_DISK=1`.
+A `--relaunch` is exempt from the refusal and only warns, because it replaces an agent the home already has rather than adding work, and [`bin/fm-control.sh`](../bin/fm-control.sh) has already stopped that agent by the time it launches the replacement, so refusing there would lose the agent instead of protecting it.
 When free space cannot be measured, the check stays silent and never refuses a spawn.
 
 The check covers one filesystem, the one holding this home's `state/`, `data/`, and temporary files; it is not a per-volume audit, so a worktree pool or `TMPDIR` on another volume is not covered.
 Each home reads its own file, and the setting is not part of secondmate inherited configuration, because a secondmate can sit on another volume or another host.
-`FM_DISK_SPACE_MIN_GB` is cleared on the secondmate launch, for the same reason: a primary's environment must not decide the guard on a volume the primary never measured.
+`FM_DISK_SPACE_MIN_GB` and `FM_SPAWN_ALLOW_LOW_DISK` are both cleared on the secondmate launch, for the same reason: a primary's environment must not decide the guard on a volume the primary never measured.
 [`bin/fm-disk-space-lib.sh`](../bin/fm-disk-space-lib.sh)'s header owns the exact measurement, parsing, and wording.
 
 ## Update source (config/update-remote)

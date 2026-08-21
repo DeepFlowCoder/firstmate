@@ -50,16 +50,22 @@ fm_disk_space_threshold_gb() {
   path="$config_dir/$FM_DISK_SPACE_MIN_GB_FILE"
   if [ -n "${FM_DISK_SPACE_MIN_GB:-}" ]; then
     source="FM_DISK_SPACE_MIN_GB"
-    value=$(printf '%s' "$FM_DISK_SPACE_MIN_GB" | tr -d '[:space:]')
+    value=$FM_DISK_SPACE_MIN_GB
   elif [ -e "$path" ]; then
     source="config/$FM_DISK_SPACE_MIN_GB_FILE"
     if [ ! -f "$path" ] || [ -L "$path" ]; then
       reason="not a regular file"
     else
-      value=$(tr -d '[:space:]' < "$path" 2>/dev/null) || value=
+      value=$(cat "$path" 2>/dev/null) || value=
     fi
   fi
   if [ -n "$source" ] && [ -z "$reason" ]; then
+    # Surrounding blanks are forgiven, interior whitespace is not: only the
+    # outer edges are trimmed, so a second line - `echo 20 >>` where `>` was
+    # meant - stays in the value and is rejected below instead of being
+    # concatenated into a 520 GB threshold nobody wrote.
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
     # The upper bound is not a policy on how much headroom is reasonable; it
     # keeps an absurd value out of shell arithmetic, where an overflow would
     # wrap negative and silently switch the guard off.
