@@ -143,6 +143,11 @@
 #   refuses the spawn instead of silently picking one. A real remote is unaffected.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
 #   refuses the spawn rather than risking a PR based on stale history.
+#   Every spawn also refuses when free space on this home's filesystem is below
+#   the configured threshold, because work dispatched onto a nearly full volume
+#   is destroyed rather than delayed. FM_SPAWN_ALLOW_LOW_DISK=1 dispatches this
+#   one spawn anyway, and config/disk-space-min-gb=0 retires the guard;
+#   bin/fm-disk-space-lib.sh owns the threshold and the measurement.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -265,6 +270,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-disk-space-lib.sh
+. "$SCRIPT_DIR/fm-disk-space-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -892,6 +899,20 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
+# Disk-space guard (bin/fm-disk-space-lib.sh). This REFUSES rather than warns,
+# because the failure it prevents is total rather than slow: a full volume took
+# out two whole validation runs at once and left firstmate unable to write even
+# the record of its own failure, so a worker launched below the threshold is
+# expected to be destroyed, not merely delayed. Refusing costs seconds and says
+# exactly what to free; the alternative costs the whole round. Both escapes are
+# in the message so a refusal never strands the captain, and an unmeasurable
+# filesystem never refuses at all. A batch dispatch re-execs this path per pair,
+# so each pair is judged on its own and the rest still launch.
+if fm_disk_space_below_threshold "$FM_HOME" "$CONFIG" \
+  && [ -z "${FM_SPAWN_ALLOW_LOW_DISK:-}" ]; then
+  echo "error: $(fm_disk_space_summary "$FM_HOME") - refusing to dispatch $ID onto a filesystem this full; free space, set config/$FM_DISK_SPACE_MIN_GB_FILE to 0 to retire this guard, or re-run with FM_SPAWN_ALLOW_LOW_DISK=1 to dispatch anyway" >&2
+  exit 1
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)

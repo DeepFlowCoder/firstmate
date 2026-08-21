@@ -117,6 +117,23 @@ An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisel
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
 See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) for active evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
+## Disk space guard (config/disk-space-min-gb)
+
+Firstmate checks free space on the filesystem holding this home, so a volume that is filling up is visible before it takes work down with it.
+The default threshold is **5 GB**, and the local, gitignored `config/disk-space-min-gb` file overrides it with one whole number of gigabytes.
+Set it to `0` to retire the guard entirely.
+A present but malformed file is reported and the default threshold still applies, because a guard that switches itself off on a typo is worse than no guard.
+
+Above the threshold nothing is printed and nothing changes.
+Below it, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, and the threshold, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a worker.
+The refusal is deliberate: the failure this guards against is total rather than slow, since a full volume destroys in-flight validation runs and leaves firstmate unable to write even the record of its own failure.
+To dispatch anyway without changing the threshold, re-run that one spawn with `FM_SPAWN_ALLOW_LOW_DISK=1`.
+When free space cannot be measured, the check stays silent and never refuses a spawn.
+
+The check covers one filesystem, the one holding this home's `state/`, `data/`, and temporary files; it is not a per-volume audit, so a worktree pool or `TMPDIR` on another volume is not covered.
+Each home reads its own file, and the setting is not part of secondmate inherited configuration, because a secondmate can sit on another volume or another host.
+[`bin/fm-disk-space-lib.sh`](../bin/fm-disk-space-lib.sh)'s header owns the exact measurement, parsing, and wording.
+
 ## Update source (config/update-remote)
 
 `/updatefirstmate` pulls firstmate's own improvements from the git remote named in the local, gitignored `config/update-remote` file.
@@ -547,6 +564,7 @@ FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
+FM_SPAWN_ALLOW_LOW_DISK=  # non-empty dispatches one spawn despite the low-disk refusal; see "Disk space guard"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline
