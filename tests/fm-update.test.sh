@@ -19,8 +19,9 @@
 #     re-processed as one of its own secondmates.
 #   - The update source is resolved, never assumed: with no config/update-remote
 #     the pull comes from origin exactly as before, with one it comes from the
-#     named remote, and a configured source that is missing or malformed refuses
-#     the run instead of silently pulling origin and reporting success.
+#     named remote, and a configured source that is missing, unreadable, or
+#     malformed refuses the run instead of silently pulling origin and reporting
+#     success.
 #   - That source is proven only against a primary checkout: a local secondmate
 #     home follows the primary's post-update commit instead of having to carry the
 #     source remote itself, a seeded home running the updater on itself uses its
@@ -683,6 +684,33 @@ test_refused_firstmate_advances_no_secondmate() {
   pass "T22 a refused firstmate target advances no secondmate at all"
 }
 
+# --- T23: an unresolvable configured source refuses, it does not read absent --
+# Whether a source was configured is decided by the PRESENCE of the file, not by
+# whether it resolves: a dangling symlink is a decision this run cannot read, and
+# treating it as absent would pull the captain's own mirror and report success -
+# the exact failure the field exists to prevent. Origin is deliberately ahead, so
+# a silent fallback would visibly move HEAD.
+test_dangling_symlink_source_refuses() {
+  local w before
+  w=$(new_world t23)
+  bump_origin "$w" instr
+  before=$(git -C "$w/main" rev-parse HEAD)
+  mkdir -p "$w/home/config"
+  ln -s "$w/home/config/no-such-source" "$w/home/config/update-remote"
+  [ -L "$w/home/config/update-remote" ] || fail "fixture did not create a symlink"
+  [ ! -e "$w/home/config/update-remote" ] || fail "fixture symlink unexpectedly resolves"
+
+  run_update_rc "$w"
+
+  [ "$RC" -ne 0 ] || fail "an unresolvable configured source exited 0, expected a loud failure"
+  assert_contains "$OUT" "config/update-remote is not a regular file" \
+    "refusal names the file it refused to guess around"
+  assert_not_contains "$OUT" "firstmate:" "an unreadable source must refuse before touching any target"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
+    || fail "an unresolvable configured source still pulled origin and moved HEAD"
+  pass "T23 a dangling config/update-remote refuses instead of resolving to origin"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -703,5 +731,6 @@ test_remote_route_refuses_under_configured_source
 test_secondmate_home_updating_itself_follows_its_primary
 test_linked_worktree_home_updating_itself_is_skipped
 test_refused_firstmate_advances_no_secondmate
+test_dangling_symlink_source_refuses
 
 echo "# all fm-update tests passed"

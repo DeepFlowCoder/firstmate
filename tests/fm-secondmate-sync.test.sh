@@ -11,7 +11,8 @@
 #     home (updated), is a no-op on an already-current home (current, no nudge),
 #     and refuses - leaving work untouched - on a dirty, diverged, or
 #     in-flight (feature-branch) home.
-#   - No origin fetch happens in the local-HEAD sync path.
+#   - No origin fetch happens in the local-HEAD sync path, and no exported
+#     FF_LOCAL_BASE_FETCH_FROM can turn the startup sweep into one.
 #   - The bootstrap sweep fast-forwards every live secondmate home and sends a
 #     reread nudge ONLY for a running secondmate whose instruction surface
 #     actually changed; a successful send is reported as BOOTSTRAP_INFO:, a
@@ -851,6 +852,43 @@ test_seed_marker_does_not_mask_real_dirt() {
   pass "T14 marker tolerance does not mask a genuinely dirty home"
 }
 
+# --- T15: the startup sweep stays offline whatever the captain's shell exports --
+# The local-HEAD sync's no-network guarantee must hold by construction, not by
+# nobody happening to export FF_LOCAL_BASE_FETCH_FROM. A standalone clone has its
+# own object store, so it can genuinely lack the primary's commit: with an
+# exported value the sweep would fetch that commit from the named checkout and
+# advance the home, which is exactly what a locked, offline startup must not do.
+test_bootstrap_sweep_ignores_ambient_local_base_fetch_from() {
+  local w c1 base before fakebin out skip_line
+  w=$(new_world boot-ambient-fetch)
+  c1=$(head_of "$w/main")
+  git clone -q "$w/main" "$w/sm-clone"
+  printf 'sm-clone\n' > "$w/sm-clone/.fm-secondmate-home"
+  {
+    printf 'window=firstmate:fm-sm-clone\n'
+    printf 'kind=secondmate\n'
+    printf 'harness=codex\n'
+    printf 'home=%s/sm-clone\n' "$w"
+  } > "$w/home/state/sm-clone.meta"
+  bump_primary "$w" instr
+  base=$(primary_head_commit "$w/main")
+  before=$(head_of "$w/sm-clone")
+  [ "$before" != "$base" ] || fail "precondition: the clone should not hold the primary's new commit"
+
+  fakebin=$(make_fake_toolchain "$w")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
+    FF_LOCAL_BASE_FETCH_FROM="$w/main" \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+
+  skip_line=$(printf '%s\n' "$out" | grep '^SECONDMATE_SYNC: secondmate sm-clone: skipped:' || true)
+  [ -n "$skip_line" ] || fail "no SECONDMATE_SYNC skip line emitted (got: $out)"
+  assert_contains "$skip_line" "does not exist" \
+    "a home lacking the primary's commit is skipped, not fetched into place"
+  [ "$(head_of "$w/sm-clone")" = "$before" ] \
+    || fail "an exported FF_LOCAL_BASE_FETCH_FROM turned the offline sweep into a fetching path"
+  pass "T15 the startup sweep ignores an ambient FF_LOCAL_BASE_FETCH_FROM and stays offline"
+}
+
 test_ff_updated
 test_ff_current
 test_ff_dirty
@@ -871,5 +909,6 @@ test_spawn_warns_when_sync_skipped_before_launch
 test_seed_marker_clean_when_gitignored
 test_seed_marker_converges_existing_home
 test_seed_marker_does_not_mask_real_dirt
+test_bootstrap_sweep_ignores_ambient_local_base_fetch_from
 
 echo "# all fm-secondmate-sync tests passed"

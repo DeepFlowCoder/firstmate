@@ -206,11 +206,14 @@ validate_secondmate_home() {
 FETCHED=""
 
 # Opt-in for the local-HEAD base mode ONLY: the path of a checkout to obtain the
-# base commit from when the target does not already have it. /updatefirstmate sets
-# it to the primary checkout so a standalone-clone home can still follow the
-# primary's post-update commit; the offline local-HEAD sync (fm-spawn.sh,
-# fm-bootstrap.sh) leaves it unset and keeps its no-network guarantee.
-FF_LOCAL_BASE_FETCH_FROM="${FF_LOCAL_BASE_FETCH_FROM:-}"
+# base commit from when the target does not already have it. Sourcing this library
+# always clears it, so the opt-in is an explicit in-process assignment by a caller
+# that wants it - /updatefirstmate sets it to the primary checkout so a
+# standalone-clone home can still follow the primary's post-update commit. It is
+# deliberately NOT read from the environment: the offline local-HEAD sync
+# (fm-spawn.sh, fm-bootstrap.sh) keeps its no-network guarantee by construction,
+# and no exported value in the calling shell can turn it into a fetching path.
+FF_LOCAL_BASE_FETCH_FROM=""
 
 fetch_once() {
   local dir=$1 remote=$2 common key

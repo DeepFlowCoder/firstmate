@@ -109,15 +109,23 @@ die() { printf 'fm-update: %s\n' "$1" >&2; exit 1; }
 # A seeded secondmate home resolves origin before reading the file at all: it
 # follows the checkout it was seeded from, so there is no upstream decision to
 # prove here and an inherited value is reported rather than acted on.
+# The file counts as PRESENT whenever the path exists at all, including a symlink
+# whose target does not: absent means nobody configured a source, and anything
+# else is a decision this run must read or refuse, never resolve away to origin.
+update_remote_file_present() {
+  [ -e "$UPDATE_REMOTE_FILE" ] || [ -L "$UPDATE_REMOTE_FILE" ]
+}
+
 resolve_update_base_mode() {
   local line value=""
   if fm_root_is_secondmate_home "$FM_ROOT" || fm_root_is_secondmate_home "$FM_HOME"; then
-    [ ! -e "$UPDATE_REMOTE_FILE" ] \
-      || echo "update source: this is a secondmate home; following its own origin instead of resolving config/update-remote" >&2
+    if update_remote_file_present; then
+      echo "update source: this is a secondmate home; following its own origin instead of resolving config/update-remote" >&2
+    fi
     printf 'origin\n'
     return 0
   fi
-  [ -e "$UPDATE_REMOTE_FILE" ] || { printf 'origin\n'; return 0; }
+  update_remote_file_present || { printf 'origin\n'; return 0; }
   [ -f "$UPDATE_REMOTE_FILE" ] && [ ! -L "$UPDATE_REMOTE_FILE" ] \
     || die "config/update-remote is not a regular file; refusing to guess the update source"
   while IFS= read -r line || [ -n "$line" ]; do
