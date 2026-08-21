@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Shared marker-or-plain-checkout predicate for tracked hooks that must act only
-# in a genuine firstmate primary home.
-# This file is sourced by hook entrypoints and has no side effects on source.
+# Shared marker-or-plain-checkout predicate for entrypoints that must act only in
+# a genuine firstmate primary home: the tracked hooks, plus /updatefirstmate,
+# which resolves a configured update source only in a primary checkout and lets a
+# marked secondmate home follow its own origin instead (bin/fm-update.sh).
+# This file is sourced by those entrypoints and has no side effects on source.
 
 # Return 0 when $1 carries a genuine secondmate-home marker.
 fm_root_is_secondmate_home() {
