@@ -9,8 +9,6 @@ if [ "${FM_OPENCODE_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=tests/live-e2e-helpers.sh
-. "$ROOT/tests/live-e2e-helpers.sh"
 unset NO_MISTAKES_GATE
 
 fail() {

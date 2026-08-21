@@ -129,16 +129,17 @@ The report names which source was rejected, so `0 GB` written where `0` was mean
 The value is that single number and nothing else, so a second line appended with `>>` where `>` was meant is reported as malformed rather than concatenated into a threshold nobody wrote.
 
 Above the threshold nothing is printed and nothing changes.
-Below it, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, the threshold, and which source set that threshold when one is configured, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a fresh worker.
+Below it, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, the threshold, and which source set that threshold when one is configured, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a fresh crewmate or scout.
+Those two are the guard's entire scope, stated as what it covers rather than as a list of exceptions: a `--relaunch`, a `--secondmate` launch including the liveness sweep's respawn of a dead one, and every remote launch never consult it at all.
+Each of those puts back or runs an agent the fleet already has instead of adding new work to this filesystem, and a remote launch lands on a volume this machine never measured.
 The refusal is deliberate: the failure this guards against is total rather than slow, since a full volume destroys in-flight validation runs and leaves firstmate unable to write even the record of its own failure.
 To dispatch anyway without changing the threshold, re-run that one spawn with `FM_SPAWN_ALLOW_LOW_DISK=1`.
 The refusal names the source a `0` must be written to, which is `FM_DISK_SPACE_MIN_GB` whenever that override is in force, so the remedy it prints is the one that will actually take effect.
-A `--relaunch` is exempt from the refusal and only warns, because it replaces an agent the home already has rather than adding work, and [`bin/fm-control.sh`](../bin/fm-control.sh) has already stopped that agent by the time it launches the replacement, so refusing there would lose the agent instead of protecting it.
 When free space cannot be measured, the check stays silent and never refuses a spawn.
 
 The check covers one filesystem, the one holding this home's `state/`, `data/`, and temporary files; it is not a per-volume audit, so a worktree pool or `TMPDIR` on another volume is not covered.
 Each home reads its own file, and the setting is not part of secondmate inherited configuration, because a secondmate can sit on another volume or another host.
-`FM_DISK_SPACE_MIN_GB` and `FM_SPAWN_ALLOW_LOW_DISK` are both cleared on the secondmate launch, for the same reason: a primary's environment must not decide the guard on a volume the primary never measured.
+That is also why no secondmate launch consults the guard: the volume a primary can measure is not the one such a home writes to.
 [`bin/fm-disk-space-lib.sh`](../bin/fm-disk-space-lib.sh)'s header owns the exact measurement, parsing, and wording.
 
 ## Update source (config/update-remote)

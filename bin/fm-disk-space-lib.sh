@@ -6,9 +6,11 @@
 # every write failed at once: hooks died, mktemp returned ENOSPC, and two
 # validation runs were lost mid-pipeline with nothing left to show for them.
 # This library owns the one cheap measurement and the one wording both the
-# session-start report (bin/fm-bootstrap.sh) and the dispatch guard
-# (bin/fm-spawn.sh, which refuses a fresh dispatch and warns on a relaunch) use,
-# so the threshold and the sentence exist exactly once.
+# session-start report (bin/fm-bootstrap.sh) and the dispatch refusal
+# (bin/fm-spawn.sh, which consults it for a fresh crewmate or scout dispatch and
+# for nothing else) use, so the threshold and the sentence exist exactly once.
+# Those two are the guard's whole surface; a caller outside them is not an
+# exception to a wider rule, it is simply not a caller.
 #
 # Scope is deliberately one filesystem: the one holding the caller's home, where
 # state/, data/, and the temporary files every script writes live. It is not a

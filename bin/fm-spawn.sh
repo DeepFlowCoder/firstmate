@@ -143,11 +143,11 @@
 #   refuses the spawn instead of silently picking one. A real remote is unaffected.
 #   An unreachable origin, unresolved default branch, or non-clean worktree
 #   refuses the spawn rather than risking a PR based on stale history.
-#   Every fresh spawn also refuses when free space on this home's filesystem is
-#   below the configured threshold, because work dispatched onto a nearly full
-#   volume is destroyed rather than delayed. A --relaunch only warns: it replaces
-#   an agent the home already has, and the caller has already stopped that agent.
-#   FM_SPAWN_ALLOW_LOW_DISK=1 dispatches this one spawn anyway, and
+#   A fresh crewmate or scout dispatch also refuses when free space on this
+#   home's filesystem is below the configured threshold, because work dispatched
+#   onto a nearly full volume is destroyed rather than delayed. That case is the
+#   guard's entire scope: a --relaunch, a --secondmate, and a remote launch never
+#   consult it. FM_SPAWN_ALLOW_LOW_DISK=1 dispatches this one spawn anyway, and
 #   config/disk-space-min-gb=0 - or FM_DISK_SPACE_MIN_GB=0 for one run - retires
 #   the guard; bin/fm-disk-space-lib.sh owns the threshold and the measurement.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
@@ -901,39 +901,37 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
-# Disk-space guard (bin/fm-disk-space-lib.sh). A FRESH dispatch REFUSES rather
-# than warns, because the failure it prevents is total rather than slow: a full
-# volume took out two whole validation runs at once and left firstmate unable to
-# write even the record of its own failure, so a worker launched below the
-# threshold is expected to be destroyed, not merely delayed. Refusing costs
-# seconds and says exactly what to free; the alternative costs the whole round.
-# Both escapes are in the message so a refusal never strands the captain, and an
-# unmeasurable filesystem never refuses at all. A batch dispatch re-execs this
-# path per pair, so each pair is judged on its own and the rest still launch.
+# Disk-space guard (bin/fm-disk-space-lib.sh). Its whole scope is the case below:
+# a fresh crewmate or scout, dispatched onto the filesystem this process is
+# measuring. That is the work whose failure mode is total rather than slow - a
+# full volume took out two whole validation runs at once and left firstmate
+# unable to write even the record of its own failure - so refusing costs seconds
+# and names exactly what to free, while dispatching costs the whole round. It
+# REFUSES rather than warns for that reason, with both escapes in the message so
+# a refusal never strands the captain, and an unmeasurable filesystem never
+# refuses at all. A batch dispatch re-execs this path per pair, so each pair is
+# judged on its own and the rest still launch.
 #
-# A RELAUNCH only warns. It replaces an agent that already exists rather than
-# adding one, so there is no new pressure to prevent, and bin/fm-control.sh has
-# already stopped the live agent by the time it calls this path: refusing there
-# would turn the documented wedged-crewmate recovery into losing the agent,
-# which is the very damage this guard exists to prevent. A full disk is exactly
-# the state that wedges a crewmate, so it is exactly when relaunch is reached
-# for.
-if fm_disk_space_below_threshold "$FM_HOME" "$CONFIG" \
-  && [ -z "${FM_SPAWN_ALLOW_LOW_DISK:-}" ]; then
-  DISK_SUMMARY=$(fm_disk_space_summary "$FM_HOME")
-  if [ "$RELAUNCH" -eq 1 ]; then
-    DISK_NOTICE="warning: $DISK_SUMMARY - relaunching $ID anyway; a relaunch replaces an agent this home already has and refusing would leave it stopped with no replacement"
-  else
-    DISK_NOTICE="error: $DISK_SUMMARY - refusing to dispatch $ID onto a filesystem this full; free space, set $(fm_disk_space_retire_target) to 0 to retire this guard, or re-run with FM_SPAWN_ALLOW_LOW_DISK=1 to dispatch anyway"
-  fi
+# Every other launch is outside the guard by construction rather than by
+# exception: a relaunch and a secondmate respawn put back an agent the fleet
+# already had instead of adding work, and a remote secondmate launch - which is
+# only ever reached under the secondmate kind - lands on a filesystem this
+# process never measured.
+DISK_GUARD_IN_SCOPE=0
+case "$RELAUNCH:$KIND" in
+  0:ship | 0:scout) DISK_GUARD_IN_SCOPE=1 ;;
+esac
+if [ "$DISK_GUARD_IN_SCOPE" -eq 1 ] && [ -z "${FM_SPAWN_ALLOW_LOW_DISK:-}" ] \
+  && fm_disk_space_below_threshold "$FM_HOME" "$CONFIG"; then
+  DISK_REFUSAL="error: $(fm_disk_space_summary "$FM_HOME") - refusing to dispatch $ID onto a filesystem this full; free space, set $(fm_disk_space_retire_target) to 0 to retire this guard, or re-run with FM_SPAWN_ALLOW_LOW_DISK=1 to dispatch anyway"
   # A rejected threshold is named here rather than only at the next session
   # start: a captain who wrote "0 GB" meaning to retire the guard would
   # otherwise read a refusal telling them to set the file to 0 while the file
   # already appears to say exactly that. The library owns the sentence.
   [ -z "$FM_DISK_SPACE_CONFIG_ERROR" ] \
-    || DISK_NOTICE="$DISK_NOTICE ($FM_DISK_SPACE_CONFIG_ERROR)"
-  echo "$DISK_NOTICE" >&2
-  [ "$RELAUNCH" -eq 1 ] || exit 1
+    || DISK_REFUSAL="$DISK_REFUSAL ($FM_DISK_SPACE_CONFIG_ERROR)"
+  echo "$DISK_REFUSAL" >&2
+  exit 1
 fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
@@ -2848,7 +2846,7 @@ if [ "$KIND" = secondmate ]; then
   # not enable them across the launch boundary (bin/fm-trace-context-lib.sh header).
   # Reuse the single frozen decision from the carrier resolution above so the
   # injected carrier and this on/off snapshot are guaranteed to agree.
-  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_DISK_SPACE_MIN_GB= FM_SPAWN_ALLOW_LOW_DISK= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
+  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
 fi
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"

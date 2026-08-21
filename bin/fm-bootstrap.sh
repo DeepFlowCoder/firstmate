@@ -54,9 +54,10 @@
 #          the configured threshold; above it, and when the space cannot be
 #          measured, the check is silent. bin/fm-disk-space-lib.sh owns the
 #          threshold, its config/disk-space-min-gb and FM_DISK_SPACE_MIN_GB
-#          overrides, and the wording, which bin/fm-spawn.sh's dispatch guard
-#          shares: it refuses a fresh dispatch below the threshold and only
-#          warns on a --relaunch.
+#          overrides, and the wording, which bin/fm-spawn.sh shares when it
+#          refuses a fresh crewmate or scout dispatch: this line and that
+#          refusal are the guard's only two surfaces, so the liveness sweep's
+#          secondmate respawn below is never refused by it.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than

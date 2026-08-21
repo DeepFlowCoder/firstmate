@@ -3,11 +3,17 @@
 #
 # The guard has exactly two surfaces, and both are driven here through their
 # real executables: bin/fm-bootstrap.sh reports the disk in the session-start
-# output, and bin/fm-spawn.sh refuses to dispatch onto a nearly full filesystem.
-# A fake `df` on PATH supplies the free-space number, so every case pins a
-# verdict against a known measurement rather than the host's actual disk. That
-# number is passed explicitly into each run rather than left in the shell's
-# environment, so one case's fixture can never decide another case's verdict.
+# output, and bin/fm-spawn.sh refuses a fresh crewmate or scout dispatch onto a
+# nearly full filesystem. A fake `df` on PATH supplies the free-space number, so
+# every case pins a verdict against a known measurement rather than the host's
+# actual disk. That number is passed explicitly into each run rather than left in
+# the shell's environment, so one case's fixture can never decide another case's
+# verdict.
+#
+# The scope is pinned from both sides. The launches the guard does NOT cover - a
+# relaunch, a secondmate launch including the liveness sweep's respawn, and the
+# remote host-local launch - each have a case asserting the guard is silent
+# there, so nobody can widen it back in silence.
 #
 # Silence above the threshold is asserted as hard as the warning below it: a
 # routine line in the session-start output is what trains a captain to skip the
@@ -94,7 +100,13 @@ assert_bootstrap_reaches_the_check() {
 # worktree, endpoint, and metadata write, so a case that clears it stops at the
 # next ordinary refusal instead of launching anything.
 run_spawn() {
-  local home=$1 id=$2 avail=$3 allow_low=${4:-} min_gb=${5:-}
+  local home=$1 id=$2 avail=$3 allow_low=${4:-} min_gb=${5:-} kind=${6:-scout}
+  local -a kind_args=()
+  if [ "$kind" = crewmate ]; then
+    kind_args=(--mode local-only --yolo off)
+  else
+    kind_args=(--scout)
+  fi
   (
     cd "$home" || exit 1
     PATH="$home/fakebin:$PATH" \
@@ -102,8 +114,45 @@ run_spawn() {
     FM_DISK_SPACE_MIN_GB="$min_gb" \
     FM_SPAWN_ALLOW_LOW_DISK="$allow_low" \
     FM_HOME="$home" \
-      "$SPAWN" "$id" "$home/project" --scout 2>&1
+      "$SPAWN" "$id" "$home/project" ${kind_args[0]+"${kind_args[@]}"} 2>&1
   )
+}
+
+# A fresh secondmate launch: the same command bin/fm-bootstrap.sh's liveness
+# sweep runs to respawn a dead secondmate, and - with <code-root> pointing
+# somewhere other than the target home - the same shape
+# bin/fm-remote-secondmate-control.sh runs on the remote host, where the measured
+# volume and the configured home are deliberately different. The target home is
+# unseeded, so a run that gets past where the guard used to sit stops at the
+# seeded-home preflight instead of launching anything.
+run_secondmate() {
+  local home=$1 id=$2 avail=$3 sm_home=$4
+  local code_root=${5:-$home}
+  mkdir -p "$sm_home" "$code_root"
+  (
+    cd "$home" || exit 1
+    PATH="$home/fakebin:$PATH" \
+    FM_FAKE_DF_AVAIL_KB="$avail" \
+    FM_DISK_SPACE_MIN_GB="" \
+    FM_SPAWN_ALLOW_LOW_DISK="" \
+    FM_HOME="$code_root" \
+    FM_CONFIG_OVERRIDE="$home/config" \
+    FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" \
+      "$SPAWN" "$id" "$sm_home" --secondmate 2>&1
+  )
+}
+
+# Every launch outside the guard's scope must be silent about the disk, not
+# merely unrefused: a measurement it never takes cannot be reported either.
+assert_disk_guard_silent() {
+  local what=$1 out=$2
+  case "$out" in
+    *"refusing to dispatch"*) fail "$what was refused by the disk guard: $out" ;;
+  esac
+  case "$out" in
+    *"GB free on"*) fail "$what consulted the disk guard: $out" ;;
+  esac
 }
 
 # A relaunch of a task this home has no record of: the guard sits ahead of the
@@ -259,26 +308,60 @@ test_spawn_proceeds_above_threshold() {
   pass "a spawn above the threshold runs on to its own ordinary preflight"
 }
 
-test_relaunch_warns_but_is_never_refused() {
+test_relaunch_is_outside_the_guard() {
   local home out rc=0
   home=$(new_home relaunch-below)
   out=$(run_relaunch "$home" relaunch-below-a1 "$DF_LOW") || rc=$?
   [ "$rc" -ne 0 ] || fail "the relaunch fixture unexpectedly succeeded"
-  case "$out" in
-    *"refusing to dispatch"*)
-      fail "a relaunch below the threshold was refused, which is how a stopped agent is lost: $out" ;;
-  esac
-  case "$out" in
-    *"1.9 GB free on $home (threshold 5 GB)"*"relaunching relaunch-below-a1 anyway"*) : ;;
-    *) fail "the relaunch warning does not name the measurement and the task: $out" ;;
-  esac
+  assert_disk_guard_silent "a relaunch below the threshold" "$out"
   # Proven by contrast: the relaunch reaches its own adoption preflight, so the
-  # case cannot pass because the fixture never got past the guard at all.
+  # case cannot pass because the fixture never got past that point at all.
   case "$out" in
     *"needs an existing task record"*) : ;;
     *) fail "the relaunch did not reach its own adoption preflight: $out" ;;
   esac
-  pass "a relaunch below the threshold warns and proceeds instead of stranding a stopped agent"
+  pass "a relaunch below the threshold never consults the guard, so a stopped agent is never stranded"
+}
+
+test_secondmate_respawn_is_outside_the_guard() {
+  local home out rc=0
+  home=$(new_home secondmate-below)
+  out=$(run_secondmate "$home" secondmate-below-a1 "$DF_LOW" "$TMP_ROOT/secondmate-below-sm") || rc=$?
+  [ "$rc" -ne 0 ] || fail "the secondmate fixture unexpectedly succeeded"
+  assert_disk_guard_silent "the liveness sweep's secondmate respawn below the threshold" "$out"
+  case "$out" in
+    *"is not a seeded secondmate home"*) : ;;
+    *) fail "the secondmate launch did not reach its own home preflight: $out" ;;
+  esac
+  pass "a secondmate respawn below the threshold never consults the guard"
+}
+
+test_remote_host_local_launch_is_outside_the_guard() {
+  local home out rc=0
+  home=$(new_home remote-below)
+  # The remote shape: the code checkout this process measures is not the home
+  # whose config it reads, so a guard running here would judge the wrong volume.
+  out=$(run_secondmate "$home" remote-below-a1 "$DF_LOW" \
+    "$TMP_ROOT/remote-below-sm" "$TMP_ROOT/remote-below-coderoot") || rc=$?
+  [ "$rc" -ne 0 ] || fail "the remote-shaped fixture unexpectedly succeeded"
+  assert_disk_guard_silent "a remote host-local launch below the threshold" "$out"
+  case "$out" in
+    *"is not a seeded secondmate home"*) : ;;
+    *) fail "the remote-shaped launch did not reach its own home preflight: $out" ;;
+  esac
+  pass "a remote host-local launch below the threshold never consults the guard"
+}
+
+test_crewmate_dispatch_is_refused_below_threshold() {
+  local home out rc=0
+  home=$(new_home crewmate-refuse)
+  out=$(run_spawn "$home" crewmate-refuse-a1 "$DF_LOW" "" "" crewmate) || rc=$?
+  [ "$rc" -ne 0 ] || fail "the crewmate spawn succeeded with 1.9 GB free"
+  case "$out" in
+    *"refusing to dispatch crewmate-refuse-a1"*) : ;;
+    *) fail "a fresh crewmate dispatch below the threshold was not refused: $out" ;;
+  esac
+  pass "a fresh crewmate dispatch below the threshold is refused, like a scout"
 }
 
 test_multiline_threshold_is_reported_not_concatenated() {
@@ -412,7 +495,10 @@ test_unmeasurable_filesystem_stays_silent
 test_env_override_beats_the_file
 test_malformed_env_override_reports_and_keeps_guarding
 test_spawn_refuses_below_threshold
-test_relaunch_warns_but_is_never_refused
+test_crewmate_dispatch_is_refused_below_threshold
+test_relaunch_is_outside_the_guard
+test_secondmate_respawn_is_outside_the_guard
+test_remote_host_local_launch_is_outside_the_guard
 test_spawn_refusal_names_the_source_that_can_retire_it
 test_spawn_refusal_names_a_malformed_threshold
 test_spawn_proceeds_above_threshold

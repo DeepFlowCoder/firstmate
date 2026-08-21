@@ -13,12 +13,14 @@
 # one place the ordinary suites inherit their environment exemptions from, which
 # is why this file exists rather than a copy of the export in each suite.
 #
-# Retire the free-disk-space guard (bin/fm-disk-space-lib.sh) for them, for the
-# same reason tests/lib.sh and tests/herdr-test-safety.sh retire it: a live lab
-# under TMPDIR or the repo root sits on the host's real filesystem, so with the
-# guard live a session start here would print an unexpected DISK_SPACE line and
-# a real dispatch would be refused, both decided by how full the machine happens
-# to be rather than by what the suite asserts. Being opt-in changes how often
-# that bites, not whether the verdict depends on host state. 0 is the captain's
-# own off switch, so nothing about the guard's real behavior is special-cased.
+# Retire the free-disk-space guard (bin/fm-disk-space-lib.sh), for the same
+# reason tests/lib.sh and tests/herdr-test-safety.sh retire it. The guard covers
+# one launch, a fresh crewmate or scout dispatch, so the suites that need this
+# are the ones that drive such a dispatch from a lab on the host's real
+# filesystem; a suite that only opens a session no longer needs it and no longer
+# sources this file. Without it that dispatch would be refused for how full the
+# machine happens to be rather than fail at what the suite asserts. Being opt-in
+# changes how often that bites, not whether the verdict depends on host state. 0
+# is the captain's own off switch, so nothing about the guard's real behavior is
+# special-cased.
 export FM_DISK_SPACE_MIN_GB=0
