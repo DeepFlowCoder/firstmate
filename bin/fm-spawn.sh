@@ -924,7 +924,7 @@ if fm_disk_space_below_threshold "$FM_HOME" "$CONFIG" \
   if [ "$RELAUNCH" -eq 1 ]; then
     DISK_NOTICE="warning: $DISK_SUMMARY - relaunching $ID anyway; a relaunch replaces an agent this home already has and refusing would leave it stopped with no replacement"
   else
-    DISK_NOTICE="error: $DISK_SUMMARY - refusing to dispatch $ID onto a filesystem this full; free space, set config/$FM_DISK_SPACE_MIN_GB_FILE to 0 to retire this guard, or re-run with FM_SPAWN_ALLOW_LOW_DISK=1 to dispatch anyway"
+    DISK_NOTICE="error: $DISK_SUMMARY - refusing to dispatch $ID onto a filesystem this full; free space, set $(fm_disk_space_retire_target) to 0 to retire this guard, or re-run with FM_SPAWN_ALLOW_LOW_DISK=1 to dispatch anyway"
   fi
   # A rejected threshold is named here rather than only at the next session
   # start: a captain who wrote "0 GB" meaning to retire the guard would

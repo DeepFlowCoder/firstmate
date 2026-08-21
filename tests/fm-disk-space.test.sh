@@ -76,6 +76,20 @@ run_bootstrap() {
   ) | grep '^DISK_SPACE:' || true
 }
 
+# Silence above the threshold looks exactly like a bootstrap that never reached
+# the check at all, so every case that asserts silence pairs it with this: the
+# SAME fixture, driven into the reporting case by a threshold high enough that
+# its measurement must trip. It is the bootstrap half of the contrast the spawn
+# allow-path cases get from reaching their own next preflight.
+assert_bootstrap_reaches_the_check() {
+  local home=$1 out
+  out=$(run_bootstrap "$home" "$DF_LOW" 5)
+  case "$out" in
+    *"GB free on $home"*) : ;;
+    *) fail "this fixture's bootstrap never reached the disk check: ${out:-<no output>}" ;;
+  esac
+}
+
 # A scout spawn is the cheapest real dispatch: the guard sits ahead of every
 # worktree, endpoint, and metadata write, so a case that clears it stops at the
 # next ordinary refusal instead of launching anything.
@@ -113,6 +127,7 @@ test_bootstrap_silent_above_threshold() {
   home=$(new_home silent-above)
   out=$(run_bootstrap "$home" "$DF_PLENTY")
   [ -z "$out" ] || fail "bootstrap reported the disk with space to spare: $out"
+  assert_bootstrap_reaches_the_check "$home"
   pass "bootstrap says nothing about the disk above the threshold"
 }
 
@@ -137,8 +152,8 @@ test_configured_threshold_moves_the_verdict() {
   printf '20\n' > "$home/config/disk-space-min-gb"
   out=$(run_bootstrap "$home" "$DF_TEN_GB")
   case "$out" in
-    *"10.0 GB free on $home (threshold 20 GB)"*) : ;;
-    *) fail "configured 20 GB threshold was not applied: $out" ;;
+    *"10.0 GB free on $home (threshold 20 GB from config/disk-space-min-gb)"*) : ;;
+    *) fail "configured 20 GB threshold was not applied or does not name its source: $out" ;;
   esac
   pass "the threshold is changed by config/disk-space-min-gb, not by editing code"
 }
@@ -149,6 +164,7 @@ test_zero_threshold_retires_the_guard() {
   printf '0\n' > "$home/config/disk-space-min-gb"
   out=$(run_bootstrap "$home" "$DF_LOW")
   [ -z "$out" ] || fail "a 0 threshold still reported the disk: $out"
+  assert_bootstrap_reaches_the_check "$home"
   out=$(run_spawn "$home" zero-threshold-a1 "$DF_LOW") || rc=$?
   [ "$rc" -ne 0 ] || fail "the spawn fixture unexpectedly succeeded"
   case "$out" in
@@ -194,6 +210,7 @@ test_unmeasurable_filesystem_stays_silent() {
   home=$(new_home unmeasurable)
   out=$(run_bootstrap "$home" unmeasurable)
   [ -z "$out" ] || fail "an unmeasurable filesystem produced a report: $out"
+  assert_bootstrap_reaches_the_check "$home"
   out=$(run_spawn "$home" unmeasurable-a1 unmeasurable) || rc=$?
   [ "$rc" -ne 0 ] || fail "the spawn fixture unexpectedly succeeded"
   case "$out" in
@@ -291,13 +308,14 @@ test_env_override_beats_the_file() {
   printf '0\n' > "$home/config/disk-space-min-gb"
   out=$(run_bootstrap "$home" "$DF_TEN_GB" 20)
   case "$out" in
-    *"10.0 GB free on $home (threshold 20 GB)"*) : ;;
-    *) fail "FM_DISK_SPACE_MIN_GB did not take precedence over the file: $out" ;;
+    *"10.0 GB free on $home (threshold 20 GB from FM_DISK_SPACE_MIN_GB)"*) : ;;
+    *) fail "FM_DISK_SPACE_MIN_GB did not take precedence over the file, or is not named as the source: $out" ;;
   esac
   # And the other way round: the file asks for 20 GB, the run retires the guard.
   printf '20\n' > "$home/config/disk-space-min-gb"
   out=$(run_bootstrap "$home" "$DF_TEN_GB" 0)
   [ -z "$out" ] || fail "FM_DISK_SPACE_MIN_GB=0 did not retire the bootstrap report: $out"
+  assert_bootstrap_reaches_the_check "$home"
   out=$(run_spawn "$home" env-override-a1 "$DF_LOW" "" 0) || rc=$?
   [ "$rc" -ne 0 ] || fail "the spawn fixture unexpectedly succeeded"
   case "$out" in
@@ -323,6 +341,30 @@ test_malformed_env_override_reports_and_keeps_guarding() {
     *) fail "a malformed env override disabled the guard instead of falling back: $out" ;;
   esac
   pass "a malformed FM_DISK_SPACE_MIN_GB is reported and the default keeps guarding"
+}
+
+test_spawn_refusal_names_the_source_that_can_retire_it() {
+  local home out rc=0
+  home=$(new_home refusal-source)
+  # The trap: the file already says 0, so a refusal telling the captain to set
+  # that file to 0 sends them to a source that cannot win while the environment
+  # override decides every run.
+  printf '0\n' > "$home/config/disk-space-min-gb"
+  out=$(run_spawn "$home" refusal-source-a1 "$DF_LOW" "" 20) || rc=$?
+  [ "$rc" -ne 0 ] || fail "the spawn succeeded with 1.9 GB free against a 20 GB threshold"
+  case "$out" in
+    *"(threshold 20 GB from FM_DISK_SPACE_MIN_GB)"*) : ;;
+    *) fail "the refusal does not name where the threshold in force was set: $out" ;;
+  esac
+  case "$out" in
+    *"set FM_DISK_SPACE_MIN_GB to 0 to retire this guard"*) : ;;
+    *) fail "the refusal does not name the source that can retire the guard: $out" ;;
+  esac
+  case "$out" in
+    *"set config/disk-space-min-gb to 0"*)
+      fail "the refusal points at a file that cannot win over the env override: $out" ;;
+  esac
+  pass "a refusal names the source actually in force, so its remedy is one that works"
 }
 
 test_spawn_refusal_names_a_malformed_threshold() {
@@ -371,6 +413,7 @@ test_env_override_beats_the_file
 test_malformed_env_override_reports_and_keeps_guarding
 test_spawn_refuses_below_threshold
 test_relaunch_warns_but_is_never_refused
+test_spawn_refusal_names_the_source_that_can_retire_it
 test_spawn_refusal_names_a_malformed_threshold
 test_spawn_proceeds_above_threshold
 test_spawn_override_dispatches_anyway

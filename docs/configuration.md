@@ -129,9 +129,10 @@ The report names which source was rejected, so `0 GB` written where `0` was mean
 The value is that single number and nothing else, so a second line appended with `>>` where `>` was meant is reported as malformed rather than concatenated into a threshold nobody wrote.
 
 Above the threshold nothing is printed and nothing changes.
-Below it, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, and the threshold, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a worker.
+Below it, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, the threshold, and which source set that threshold when one is configured, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a fresh worker.
 The refusal is deliberate: the failure this guards against is total rather than slow, since a full volume destroys in-flight validation runs and leaves firstmate unable to write even the record of its own failure.
 To dispatch anyway without changing the threshold, re-run that one spawn with `FM_SPAWN_ALLOW_LOW_DISK=1`.
+The refusal names the source a `0` must be written to, which is `FM_DISK_SPACE_MIN_GB` whenever that override is in force, so the remedy it prints is the one that will actually take effect.
 A `--relaunch` is exempt from the refusal and only warns, because it replaces an agent the home already has rather than adding work, and [`bin/fm-control.sh`](../bin/fm-control.sh) has already stopped that agent by the time it launches the replacement, so refusing there would lose the agent instead of protecting it.
 When free space cannot be measured, the check stays silent and never refuses a spawn.
 

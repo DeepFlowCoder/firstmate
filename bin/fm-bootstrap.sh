@@ -10,7 +10,7 @@
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
-#                 "DISK_SPACE: <n.n> GB free on <home> (threshold <n> GB)" or
+#                 "DISK_SPACE: <n.n> GB free on <home> (threshold <n> GB[ from <source>])" or
 #                 "DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
@@ -54,8 +54,9 @@
 #          the configured threshold; above it, and when the space cannot be
 #          measured, the check is silent. bin/fm-disk-space-lib.sh owns the
 #          threshold, its config/disk-space-min-gb and FM_DISK_SPACE_MIN_GB
-#          overrides, and the wording, which bin/fm-spawn.sh's dispatch refusal
-#          shares.
+#          overrides, and the wording, which bin/fm-spawn.sh's dispatch guard
+#          shares: it refuses a fresh dispatch below the threshold and only
+#          warns on a --relaunch.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than

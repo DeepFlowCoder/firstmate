@@ -6,8 +6,9 @@
 # every write failed at once: hooks died, mktemp returned ENOSPC, and two
 # validation runs were lost mid-pipeline with nothing left to show for them.
 # This library owns the one cheap measurement and the one wording both the
-# session-start report (bin/fm-bootstrap.sh) and the dispatch refusal
-# (bin/fm-spawn.sh) use, so the threshold and the sentence exist exactly once.
+# session-start report (bin/fm-bootstrap.sh) and the dispatch guard
+# (bin/fm-spawn.sh, which refuses a fresh dispatch and warns on a relaunch) use,
+# so the threshold and the sentence exist exactly once.
 #
 # Scope is deliberately one filesystem: the one holding the caller's home, where
 # state/, data/, and the temporary files every script writes live. It is not a
@@ -29,11 +30,16 @@ FM_DISK_SPACE_MIN_GB_DEFAULT=5
 
 FM_DISK_SPACE_FREE_MB=""
 FM_DISK_SPACE_THRESHOLD_GB=""
+FM_DISK_SPACE_THRESHOLD_SOURCE=""
 FM_DISK_SPACE_CONFIG_ERROR=""
 
 # fm_disk_space_threshold_gb <config-dir>
-# Publishes FM_DISK_SPACE_THRESHOLD_GB and FM_DISK_SPACE_CONFIG_ERROR, and
-# prints the effective threshold in whole gigabytes. A non-empty
+# Publishes FM_DISK_SPACE_THRESHOLD_GB, FM_DISK_SPACE_THRESHOLD_SOURCE and
+# FM_DISK_SPACE_CONFIG_ERROR, and prints the effective threshold in whole
+# gigabytes. FM_DISK_SPACE_THRESHOLD_SOURCE names the source the effective
+# threshold actually came from and is empty when that is the built-in default,
+# so a report can say where an unexpected number was set instead of leaving the
+# captain to guess between the file and the environment. A non-empty
 # FM_DISK_SPACE_MIN_GB wins; otherwise config/disk-space-min-gb decides, and an
 # absent file means the default. A present but unreadable or malformed source
 # also resolves to the default - a guard that disables itself on a typo is worse
@@ -46,6 +52,7 @@ FM_DISK_SPACE_CONFIG_ERROR=""
 fm_disk_space_threshold_gb() {
   local config_dir=$1 path source="" value="" reason=""
   FM_DISK_SPACE_CONFIG_ERROR=""
+  FM_DISK_SPACE_THRESHOLD_SOURCE=""
   FM_DISK_SPACE_THRESHOLD_GB=$FM_DISK_SPACE_MIN_GB_DEFAULT
   path="$config_dir/$FM_DISK_SPACE_MIN_GB_FILE"
   if [ -n "${FM_DISK_SPACE_MIN_GB:-}" ]; then
@@ -73,13 +80,31 @@ fm_disk_space_threshold_gb() {
       ''|*[!0-9]*|??????????*)
         reason="value must be one whole number of gigabytes"
         ;;
-      *) FM_DISK_SPACE_THRESHOLD_GB=$((10#$value)) ;;
+      *)
+        FM_DISK_SPACE_THRESHOLD_GB=$((10#$value))
+        FM_DISK_SPACE_THRESHOLD_SOURCE=$source
+        ;;
     esac
   fi
   if [ -n "$reason" ]; then
     FM_DISK_SPACE_CONFIG_ERROR="invalid $source - $reason; guarding at the default $FM_DISK_SPACE_MIN_GB_DEFAULT GB"
   fi
   printf '%s\n' "$FM_DISK_SPACE_THRESHOLD_GB"
+}
+
+# fm_disk_space_retire_target
+# Prints the source a captain must set to 0 to retire the guard: the
+# environment override whenever it is in force, and the config file otherwise,
+# whether or not that file exists yet. It answers from the same precedence
+# fm_disk_space_threshold_gb applies rather than from what the last call
+# adopted, so a rejected value still points at the source that will decide the
+# next run instead of at one that cannot win.
+fm_disk_space_retire_target() {
+  if [ -n "${FM_DISK_SPACE_MIN_GB:-}" ]; then
+    printf '%s\n' FM_DISK_SPACE_MIN_GB
+  else
+    printf '%s\n' "config/$FM_DISK_SPACE_MIN_GB_FILE"
+  fi
 }
 
 # fm_disk_space_free_mb <path>
@@ -115,10 +140,16 @@ fm_disk_space_below_threshold() {
 # The single wording for the measured fact, from the values the preceding
 # fm_disk_space_below_threshold call published. One decimal place, so a nearly
 # full volume reads as "0.3 GB free" rather than rounding to a reassuring "0".
+# A configured threshold also names where it was set, because an environment
+# override is invisible in a home the captain is looking at; the default says
+# nothing extra, since there is no source to go and read.
 fm_disk_space_summary() {
-  local path=$1 tenths
+  local path=$1 tenths threshold
   [ -n "$FM_DISK_SPACE_FREE_MB" ] || return 1
   tenths=$((FM_DISK_SPACE_FREE_MB * 10 / 1024))
-  printf '%s.%s GB free on %s (threshold %s GB)\n' \
-    "$((tenths / 10))" "$((tenths % 10))" "$path" "$FM_DISK_SPACE_THRESHOLD_GB"
+  threshold="threshold $FM_DISK_SPACE_THRESHOLD_GB GB"
+  [ -z "$FM_DISK_SPACE_THRESHOLD_SOURCE" ] \
+    || threshold="$threshold from $FM_DISK_SPACE_THRESHOLD_SOURCE"
+  printf '%s.%s GB free on %s (%s)\n' \
+    "$((tenths / 10))" "$((tenths % 10))" "$path" "$threshold"
 }
