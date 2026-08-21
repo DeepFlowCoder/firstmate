@@ -17,6 +17,20 @@
 #   - Secondmate homes resolve from both state/<id>.meta and the
 #     data/secondmates.md registry, deduped, and the firstmate repo is never
 #     re-processed as one of its own secondmates.
+#   - The update source is resolved, never assumed: with no config/update-remote
+#     the pull comes from origin exactly as before, with one it comes from the
+#     named remote, and a configured source that is missing, unreadable, or
+#     malformed refuses the run instead of silently pulling origin and reporting
+#     success.
+#   - That source is proven only against a primary checkout: a local secondmate
+#     home follows the primary's post-update commit instead of having to carry the
+#     source remote itself, a seeded home running the updater on itself uses its
+#     own origin despite the inherited file (advancing from it as a standalone
+#     clone, stopping at its detached HEAD as a leased worktree), and a remote
+#     route - whose code root resolves a source this host cannot read - refuses
+#     before any contact.
+#   - A refused firstmate target advances no secondmate, so one run never reports
+#     a refusal and an update together.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -90,6 +104,60 @@ bump_origin() {
 run_update() {
   local w=$1
   FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" 2>/dev/null
+}
+
+# Run the updater keeping stderr and the exit code, and publish both as OUT and
+# RC. It sets caller globals rather than echoing, because a command-substitution
+# capture would run in a subshell and lose the exit status.
+RC=0
+OUT=""
+run_update_rc() {
+  local w=$1
+  RC=0
+  FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" > "$w/update.out" 2>&1 || RC=$?
+  OUT=$(cat "$w/update.out")
+}
+
+# Turn the world's existing origin into the captain's own MIRROR and add a
+# separate SOURCE repo as the "upstream" remote of the firstmate repo. Nothing
+# is fetched yet, so the source commit is unknown to the checkout until an
+# update actually pulls from it.
+add_upstream_source() {
+  local w=$1
+  git init -q --bare "$w/upstream.git"
+  git -C "$w/upstream.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$w/upstream.git" "$w/upstream-seed" 2>/dev/null
+  # Seed the source with the same base commit the mirror already holds, so the
+  # two share history and an update from either is an honest fast-forward.
+  git -C "$w/upstream-seed" fetch -q "$w/origin.git" main
+  git -C "$w/upstream-seed" reset -q --hard FETCH_HEAD
+  git -C "$w/upstream-seed" push -q "$w/upstream.git" HEAD:refs/heads/main
+  git -C "$w/main" remote add upstream "$w/upstream.git"
+}
+
+# Advance the SOURCE repo (not the mirror) by one instruction-surface commit.
+# Echoes the new source tip.
+bump_upstream() {
+  local w=$1
+  printf 'from-upstream\n' > "$w/upstream-seed/AGENTS.md"
+  git -C "$w/upstream-seed" add -A
+  git -C "$w/upstream-seed" commit -qm upstream-work
+  git -C "$w/upstream-seed" push -q "$w/upstream.git" HEAD:refs/heads/main
+  git -C "$w/upstream-seed" rev-parse HEAD
+}
+
+set_update_remote() {
+  local w=$1 value=$2
+  mkdir -p "$w/home/config"
+  printf '%s\n' "$value" > "$w/home/config/update-remote"
+}
+
+# Run one primary-to-secondmate inherited-config push through the real
+# propagation helper, in its own process so the caller's shell is untouched.
+push_inheritance() {
+  local src_config=$1 dest_config=$2
+  bash -c '. "$1/bin/fm-config-inherit-lib.sh"; propagate_inheritable_config "$2" "$3"' \
+    _ "$ROOT" "$src_config" "$dest_config" 2>/dev/null
 }
 
 # --- T1: main + secondmate behind, instruction change; FF, not a merge ------
@@ -291,6 +359,358 @@ test_unsafe_secondmate_home_skipped_before_git_update() {
   pass "T11 unsafe secondmate home is not fast-forwarded"
 }
 
+# --- T12: no config/update-remote keeps today's origin behavior ------------
+# The captain's mirror is origin and the improvements live in a separate source
+# repo. With nothing configured, the update must behave exactly as it always
+# did: pull origin, and never reach into the other remote.
+test_unconfigured_update_pulls_origin_only() {
+  local w upstream_tip
+  w=$(new_world t12)
+  add_upstream_source "$w"
+  upstream_tip=$(bump_upstream "$w")
+
+  run_update_rc "$w"
+
+  [ "$RC" -eq 0 ] || fail "unconfigured update exited $RC, expected 0"
+  assert_contains "$OUT" "firstmate: already current" "unconfigured update follows origin"
+  [ "$(git -C "$w/main" rev-parse HEAD)" != "$upstream_tip" ] \
+    || fail "unconfigured update pulled from a remote other than origin"
+  pass "T12 with no configured source the update still follows origin"
+}
+
+# --- T13: a configured source is what the update pulls from ----------------
+test_configured_source_is_pulled() {
+  local w upstream_tip origin_tip
+  w=$(new_world t13)
+  add_sm "$w" sm1
+  add_upstream_source "$w"
+  bump_origin "$w" readme          # the captain's mirror moves on its own
+  upstream_tip=$(bump_upstream "$w")
+  origin_tip=$(git -C "$w/origin.git" rev-parse main)
+  set_update_remote "$w" upstream
+
+  run_update_rc "$w"
+
+  [ "$RC" -eq 0 ] || fail "configured update exited $RC, expected 0"
+  assert_contains "$OUT" "firstmate: updated " "firstmate advanced from the configured source"
+  assert_contains "$OUT" "reread-firstmate: yes" "configured source carried an instruction change"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$upstream_tip" ] \
+    || fail "firstmate did not land on the configured source's commit"
+  [ "$(git -C "$w/main" rev-parse HEAD)" != "$origin_tip" ] \
+    || fail "firstmate landed on origin's commit instead of the configured source's"
+  # The secondmate home ends on that same commit in the same run, reached by
+  # following the primary's post-update HEAD rather than the source remote.
+  assert_contains "$OUT" "secondmate sm1: updated " "secondmate advanced with the primary"
+  assert_contains "$OUT" "nudge-secondmates: fm-sm1" "advanced secondmate is nudged"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$upstream_tip" ] \
+    || fail "secondmate did not land on the configured source's commit"
+  pass "T13 a configured update source is pulled instead of origin, fleet-wide"
+}
+
+# --- T14: a configured source that is not a remote refuses -----------------
+# The whole point of the field: never fall back to origin in silence. Origin is
+# deliberately ahead here, so a silent fallback would visibly move HEAD.
+test_missing_configured_source_refuses() {
+  local w before
+  w=$(new_world t14)
+  add_upstream_source "$w"
+  bump_origin "$w" instr
+  before=$(git -C "$w/main" rev-parse HEAD)
+  set_update_remote "$w" nowhere
+
+  run_update_rc "$w"
+
+  [ "$RC" -ne 0 ] || fail "missing configured source exited 0, expected a loud failure"
+  assert_contains "$OUT" "firstmate: refused: configured update source 'nowhere' is not a remote here" \
+    "refusal names the configured source"
+  assert_not_contains "$OUT" "firstmate: updated " "refused run must not report an update"
+  assert_contains "$OUT" "reread-firstmate: no" "refused run changed no instructions"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
+    || fail "refused update moved HEAD (silent fallback to origin)"
+  pass "T14 a configured source that is not a remote refuses instead of pulling origin"
+}
+
+# --- T15: a malformed configured source refuses before touching anything ---
+test_malformed_configured_source_refuses() {
+  local w before
+  w=$(new_world t15)
+  bump_origin "$w" instr
+  before=$(git -C "$w/main" rev-parse HEAD)
+  set_update_remote "$w" "up stream"
+
+  run_update_rc "$w"
+
+  [ "$RC" -ne 0 ] || fail "malformed configured source exited 0, expected a loud failure"
+  assert_contains "$OUT" "config/update-remote" "refusal names the configuration file"
+  assert_contains "$OUT" "is not a valid git remote name" "refusal explains the malformed value"
+  assert_not_contains "$OUT" "firstmate:" "malformed source must refuse before touching any target"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
+    || fail "malformed configured source still moved HEAD"
+  pass "T15 a malformed configured source refuses before any target is touched"
+}
+
+# --- T16: comments and blank lines resolve to the same source --------------
+test_configured_source_ignores_comments_and_blanks() {
+  local w upstream_tip
+  w=$(new_world t16)
+  add_upstream_source "$w"
+  upstream_tip=$(bump_upstream "$w")
+  mkdir -p "$w/home/config"
+  printf '# the captain keeps a private mirror\n\nupstream\n' > "$w/home/config/update-remote"
+
+  run_update_rc "$w"
+
+  [ "$RC" -eq 0 ] || fail "commented configured source exited $RC, expected 0"
+  assert_contains "$OUT" "firstmate: updated " "commented file still resolves its source"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$upstream_tip" ] \
+    || fail "commented file did not resolve the configured source"
+  pass "T16 comment and blank lines are skipped when resolving the update source"
+}
+
+# --- T17: secondmate homes inherit the update source -----------------------
+# The same primary-authoritative push that carries crew-harness and backend
+# carries this decision, so a secondmate's own update resolves the same source.
+test_update_source_is_inherited() {
+  local src dest
+  src="$TMP_ROOT/t17/primary"
+  dest="$TMP_ROOT/t17/secondmate"
+  mkdir -p "$src/config" "$dest/config"
+  printf 'upstream\n' > "$src/config/update-remote"
+
+  push_inheritance "$src/config" "$dest/config" || fail "inheritance push failed"
+
+  [ -f "$dest/config/update-remote" ] \
+    || fail "secondmate home did not inherit config/update-remote"
+  [ "$(cat "$dest/config/update-remote")" = "upstream" ] \
+    || fail "inherited update source does not match the primary's"
+
+  # Primary-authoritative: clearing the primary value clears it downstream.
+  rm -f "$src/config/update-remote"
+  push_inheritance "$src/config" "$dest/config" \
+    || fail "inheritance push failed while mirroring absence"
+  [ ! -e "$dest/config/update-remote" ] \
+    || fail "clearing the primary update source left a stale secondmate copy"
+  pass "T17 the update source is inherited into secondmate homes and mirrors absence"
+}
+
+# --- T18: a standalone-clone home follows the updated primary --------------
+# fm-home-seed.sh provisions an explicitly-pathed home as a clone of the primary
+# checkout, so its only remote is that primary and it never carries the captain's
+# configured source. It must not be refused for that: the primary decides where
+# improvements come from and the home inherits the RESULT - the commit the
+# primary just landed - not the source.
+test_standalone_clone_home_follows_the_primary() {
+  local w upstream_tip origin_tip before
+  w=$(new_world t18)
+  add_upstream_source "$w"
+  upstream_tip=$(bump_upstream "$w")
+  bump_origin "$w" instr           # the captain's mirror moves on its own
+  origin_tip=$(git -C "$w/origin.git" rev-parse main)
+  # A standalone clone of the primary: it knows the primary, and nothing else.
+  git clone -q "$w/main" "$w/sm-clone"
+  printf 'sm-clone\n' > "$w/sm-clone/.fm-secondmate-home"
+  {
+    printf 'window=main:fm-sm-clone\n'
+    printf 'kind=secondmate\n'
+    printf 'home=%s/sm-clone\n' "$w"
+  } > "$w/home/state/sm-clone.meta"
+  before=$(git -C "$w/sm-clone" rev-parse HEAD)
+  set_update_remote "$w" upstream
+
+  run_update_rc "$w"
+
+  [ "$RC" -eq 0 ] || fail "a standalone-clone home exited $RC, expected 0"
+  assert_not_contains "$OUT" "secondmate sm-clone: refused" \
+    "a home that does not carry the configured source must not be refused"
+  assert_contains "$OUT" "secondmate sm-clone: updated " "standalone-clone home advanced"
+  assert_contains "$OUT" "nudge-secondmates: fm-sm-clone" "an advanced live home is nudged"
+  # The firstmate repo, which does have the source, advanced from it.
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$upstream_tip" ] \
+    || fail "firstmate did not advance from the configured source"
+  # The home landed on that same post-update commit, by way of the primary.
+  [ "$(git -C "$w/sm-clone" rev-parse HEAD)" != "$before" ] \
+    || fail "standalone-clone home never advanced"
+  [ "$(git -C "$w/sm-clone" rev-parse HEAD)" = "$upstream_tip" ] \
+    || fail "standalone-clone home did not land on the primary's post-update commit"
+  [ "$(git -C "$w/sm-clone" rev-parse HEAD)" != "$origin_tip" ] \
+    || fail "standalone-clone home followed the captain's mirror instead of the primary"
+  pass "T18 a standalone-clone home follows the updated primary instead of being refused"
+}
+
+# --- T19: a remote route refuses under a configured source -----------------
+# A remote code root resolves its OWN config/update-remote, which this host can
+# neither read nor prove. The route must refuse before any contact rather than
+# delegate and report whatever that host happened to pull.
+test_remote_route_refuses_under_configured_source() {
+  local w fakebin
+  w=$(new_world t19)
+  add_upstream_source "$w"
+  bump_upstream "$w" >/dev/null
+  printf -- '- rem1 - remote report (host: sm-host; root: /srv/firstmate; home: /srv/homes/rem1; scope: x; projects: p; added 2026-06-23)\n' \
+    > "$w/home/data/secondmates.md"
+  set_update_remote "$w" upstream
+  # Reaching that host has to go through ssh; this shim records any attempt.
+  fakebin=$(fm_fakebin "$w")
+  cat > "$fakebin/ssh" <<SH
+#!/usr/bin/env bash
+printf 'contacted\n' >> "$w/ssh-attempts"
+exit 0
+SH
+  chmod +x "$fakebin/ssh"
+
+  PATH="$fakebin:$PATH" run_update_rc "$w"
+
+  [ "$RC" -ne 0 ] || fail "an unprovable remote route exited 0, expected a loud failure"
+  assert_contains "$OUT" "remote secondmate rem1: refused on sm-host: this run pulls from the configured update source 'upstream'" \
+    "refusal names the secondmate, the host, and the configured source"
+  assert_contains "$OUT" "set config/update-remote in that host's code root /srv/firstmate" \
+    "refusal says exactly what that code root is missing"
+  assert_not_contains "$OUT" "remote secondmate rem1: updated" "a refused route reported no update"
+  assert_not_contains "$OUT" "remote secondmate rem1: skipped on" "a refused route never delegated"
+  assert_absent "$w/ssh-attempts" "a refused remote route still contacted its host"
+  # The summary lines callers parse are still printed before the run fails.
+  assert_contains "$OUT" "reread-firstmate: " "refused run still prints the reread summary"
+  assert_contains "$OUT" "nudge-secondmates:" "refused run still prints the nudge summary"
+  pass "T19 a remote route refuses before contact when an update source is configured"
+}
+
+# --- T20: a secondmate home updating itself follows its primary ------------
+# The captain's source is inherited into every home, so a secondmate that runs
+# the updater in its OWN home reads a source its clone has no remote for. It must
+# follow what it was seeded from - its origin, the primary checkout - instead of
+# refusing itself out of every future update.
+test_secondmate_home_updating_itself_follows_its_primary() {
+  local w home upstream_tip before
+  w=$(new_world t20)
+  home="$w/sm-self"
+  # Seeded exactly like an explicitly-pathed home: a clone of the primary whose
+  # only remote is that primary, with the operational dirs and marker ignored the
+  # way the tracked root .gitignore ignores them in a real home.
+  git clone -q "$w/main" "$home"
+  printf '%s\n' "state/" "config/" "data/" ".fm-secondmate-home" \
+    > "$home/.git/info/exclude"
+  mkdir -p "$home/state" "$home/config" "$home/data"
+  touch "$home/state/.last-watcher-beat"
+  printf 'sm-self\n' > "$home/.fm-secondmate-home"
+  before=$(git -C "$home" rev-parse HEAD)
+  # The captain configures the source and their primary lands it; the home has
+  # inherited the file but has no such remote of its own.
+  add_upstream_source "$w"
+  upstream_tip=$(bump_upstream "$w")
+  git -C "$w/main" fetch -q upstream main
+  git -C "$w/main" merge -q --ff-only "$upstream_tip"
+  printf 'upstream\n' > "$home/config/update-remote"
+  git -C "$home" remote get-url upstream >/dev/null 2>&1 \
+    && fail "fixture home unexpectedly carries the configured source remote"
+
+  RC=0
+  FM_ROOT_OVERRIDE="$home" FM_HOME="$home" "$UPDATE" > "$w/self-update.out" 2>&1 || RC=$?
+  OUT=$(cat "$w/self-update.out")
+
+  [ "$RC" -eq 0 ] || fail "a secondmate home updating itself exited $RC, expected 0"
+  assert_not_contains "$OUT" "firstmate: refused" \
+    "an inherited source must not refuse a secondmate home's own update"
+  assert_contains "$OUT" "firstmate: updated " "the home advanced by following its primary"
+  [ "$(git -C "$home" rev-parse HEAD)" != "$before" ] || fail "the home never advanced"
+  [ "$(git -C "$home" rev-parse HEAD)" = "$upstream_tip" ] \
+    || fail "the home did not land on the commit its primary carries"
+  pass "T20 a secondmate home updating itself follows its primary, not the inherited source"
+}
+
+# --- T21: a linked-worktree home updating itself stops at its detached HEAD -
+# A treehouse home is a detached worktree of the primary and shares its remotes,
+# so its own origin is the captain's mirror, not the primary. It is not refused
+# for the inherited source, and it does not advance either: the detached-HEAD
+# guard stops it, and it stays current through the primary's run.
+test_linked_worktree_home_updating_itself_is_skipped() {
+  local w before
+  w=$(new_world t21)
+  add_sm "$w" sm-wt
+  add_upstream_source "$w"
+  bump_upstream "$w" >/dev/null
+  bump_origin "$w" instr
+  before=$(git -C "$w/sm-wt" rev-parse HEAD)
+  mkdir -p "$w/sm-wt/config"
+  printf 'upstream\n' > "$w/sm-wt/config/update-remote"
+
+  RC=0
+  FM_ROOT_OVERRIDE="$w/sm-wt" FM_HOME="$w/sm-wt" "$UPDATE" > "$w/wt-update.out" 2>&1 || RC=$?
+  OUT=$(cat "$w/wt-update.out")
+
+  [ "$RC" -eq 0 ] || fail "a linked-worktree home's own update exited $RC, expected 0"
+  assert_not_contains "$OUT" "firstmate: refused" \
+    "an inherited source must not refuse a linked-worktree home either"
+  # A linked worktree SHARES the primary's remotes, so the detached-HEAD skip
+  # below happens with or without the marker short-circuit. The notice is the
+  # only observable output that distinguishes them: without the short-circuit
+  # the run resolves the inherited source instead of reporting that it ignored it.
+  assert_contains "$OUT" "this is a secondmate home; following its own origin instead of resolving config/update-remote" \
+    "a marked home must report that it ignored the inherited source"
+  assert_contains "$OUT" "firstmate: skipped: detached HEAD" \
+    "a leased home's own update stops at the detached-HEAD guard"
+  [ "$(git -C "$w/sm-wt" rev-parse HEAD)" = "$before" ] \
+    || fail "a detached leased home advanced under its own update"
+  pass "T21 a linked-worktree home's own update is skipped at its detached HEAD"
+}
+
+# --- T22: a refused firstmate target advances no secondmate ----------------
+# A run that cannot prove where it pulls from must not print a refusal and an
+# update in the same breath: the local sweep is off entirely when the firstmate
+# target was refused, so every home keeps the commit it had.
+test_refused_firstmate_advances_no_secondmate() {
+  local w before primary_tip
+  w=$(new_world t22)
+  add_sm "$w" sm1
+  # The primary already carries a commit the leased home does not, so the home is
+  # genuinely advanceable: only the refusal may keep it where it is.
+  bump_origin "$w" instr
+  git -C "$w/main" fetch -q origin main
+  git -C "$w/main" merge -q --ff-only origin/main
+  primary_tip=$(git -C "$w/main" rev-parse HEAD)
+  before=$(git -C "$w/sm1" rev-parse HEAD)
+  [ "$before" != "$primary_tip" ] || fail "fixture home is already at the primary's commit"
+  set_update_remote "$w" nowhere   # configured, but not a remote in this checkout
+
+  run_update_rc "$w"
+
+  [ "$RC" -ne 0 ] || fail "a refused run exited 0, expected a loud failure"
+  assert_contains "$OUT" "firstmate: refused: configured update source 'nowhere'" \
+    "the primary itself is refused"
+  assert_not_contains "$OUT" "secondmate sm1: updated" \
+    "a refused run must not report a secondmate update"
+  assert_contains "$OUT" "nudge-secondmates: none" "nothing advanced, so nothing is nudged"
+  [ "$(git -C "$w/sm1" rev-parse HEAD)" = "$before" ] \
+    || fail "a secondmate home advanced on a refused run"
+  pass "T22 a refused firstmate target advances no secondmate at all"
+}
+
+# --- T23: an unresolvable configured source refuses, it does not read absent --
+# Whether a source was configured is decided by the PRESENCE of the file, not by
+# whether it resolves: a dangling symlink is a decision this run cannot read, and
+# treating it as absent would pull the captain's own mirror and report success -
+# the exact failure the field exists to prevent. Origin is deliberately ahead, so
+# a silent fallback would visibly move HEAD.
+test_dangling_symlink_source_refuses() {
+  local w before
+  w=$(new_world t23)
+  bump_origin "$w" instr
+  before=$(git -C "$w/main" rev-parse HEAD)
+  mkdir -p "$w/home/config"
+  ln -s "$w/home/config/no-such-source" "$w/home/config/update-remote"
+  [ -L "$w/home/config/update-remote" ] || fail "fixture did not create a symlink"
+  [ ! -e "$w/home/config/update-remote" ] || fail "fixture symlink unexpectedly resolves"
+
+  run_update_rc "$w"
+
+  [ "$RC" -ne 0 ] || fail "an unresolvable configured source exited 0, expected a loud failure"
+  assert_contains "$OUT" "config/update-remote is not a regular file" \
+    "refusal names the file it refused to guess around"
+  assert_not_contains "$OUT" "firstmate:" "an unreadable source must refuse before touching any target"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
+    || fail "an unresolvable configured source still pulled origin and moved HEAD"
+  pass "T23 a dangling config/update-remote refuses instead of resolving to origin"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_dirty_secondmate_skipped
@@ -300,5 +720,17 @@ test_registry_backstop_dedup_and_self_exclusion
 test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
+test_unconfigured_update_pulls_origin_only
+test_configured_source_is_pulled
+test_missing_configured_source_refuses
+test_malformed_configured_source_refuses
+test_configured_source_ignores_comments_and_blanks
+test_update_source_is_inherited
+test_standalone_clone_home_follows_the_primary
+test_remote_route_refuses_under_configured_source
+test_secondmate_home_updating_itself_follows_its_primary
+test_linked_worktree_home_updating_itself_is_skipped
+test_refused_firstmate_advances_no_secondmate
+test_dangling_symlink_source_refuses
 
 echo "# all fm-update tests passed"

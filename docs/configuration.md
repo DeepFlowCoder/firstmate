@@ -117,6 +117,24 @@ An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisel
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
 See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) for active evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
+## Update source (config/update-remote)
+
+`/updatefirstmate` pulls firstmate's own improvements from the git remote named in the local, gitignored `config/update-remote` file.
+An absent, empty, or comment-only file means `origin`, which is the behavior every home had before this file existed.
+Set it when this home's `origin` is not where firstmate's improvements come from - a private mirror the captain pushes their own firstmate work to, with the source repo added as a second remote.
+Without it, an update against a mirror advances the home to its own published state and reports success while never seeing an upstream commit.
+The file holds the first non-empty, non-comment line, trimmed: one git remote name made of `A-Za-z0-9._-` that does not start with `-` or `.`.
+A malformed value, or a configured remote that does not exist in a checkout, refuses that update and exits non-zero rather than falling back to `origin`; nothing is fetched from another source in its place.
+The value is proven only against the checkout that owns the decision, the primary one: a local secondmate home follows the commit that primary just landed instead of having to carry the source remote itself, so a linked worktree and a standalone clone both advance without one.
+A run whose own firstmate target was refused advances no secondmate either, so a refusal never appears next to an update in the same output.
+A remote secondmate route is refused before any contact, because that code root resolves its own file on a host this one cannot read.
+That refusal stands for every run from this home; what still advances a remote home is a manual `bin/fm-on.sh <id> fm-remote-secondmate-control.sh update <id>`, which updates that code root from whatever that host resolves - its own `config/update-remote`, or that host's `origin` when it has none - and then fast-forwards the home to the code-root commit.
+The file is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md), so the captain's decision converges byte-exact across the fleet.
+An inherited copy does not make that home resolve upstream on its own: a checkout carrying the `.fm-secondmate-home` marker notes that it is ignoring the inherited file and uses its own `origin` instead.
+A standalone-clone home is the one that advances that way, because its `origin` is the primary checkout it was seeded from and it stays on its default branch.
+A linked-worktree home is leased at a detached HEAD, and a remote home is detached by its own guarded sync the first time that sync advances it, so either one stops at the detached-HEAD guard without advancing; a linked worktree advances through the primary's run, and a remote home through the manual command named above.
+[`bin/fm-update.sh`](../bin/fm-update.sh)'s header owns the exact resolution and refusal mechanics.
+
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
 
 The optional local, gitignored `config/trace-context` presence flag enables default-off native W3C trace-context propagation.
@@ -188,7 +206,7 @@ Each seed writes an `.fm-secondmate-home` identity marker at the home root, alon
 The tracked root `.gitignore` ignores both markers, so validation can read them without making a freshly seeded home appear dirty to porcelain-based safety checks.
 This does not relax protection for any other untracked file.
 An existing linked-worktree home that predates this rule advances through its marker-only state during its next bootstrap or spawn local sync, after which Git ignores the marker normally.
-A standalone-clone home cannot receive a primary-local commit through that no-fetch sync, so it receives the rule through `/updatefirstmate`'s origin refresh instead.
+A standalone-clone home cannot receive a primary-local commit through that no-fetch sync, so it receives the rule the next time `/updatefirstmate` advances it: by following the primary's post-update commit under a configured update source, or through its own `origin` refresh when none is configured.
 
 ## FM_HOME
 
@@ -327,8 +345,9 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync is not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `trace-context`, `update-remote`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
 When an allowlisted config item changes for an already-running local home, it sends the literal-content reread pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); unchanged allowlisted config sends no pointer unless a previous delivery is pending.
+`update-remote` is reported like any other item but is never inlined into that instruction, since a secondmate home follows its own `origin` rather than resolving the inherited value; a local push whose only change was that item sends no pointer and still succeeds.
 A changed remote home instead receives one durably recorded marked re-read instruction after the allowlisted bytes have transferred because primary-local generation paths are not meaningful on another host.
 The locked bootstrap inheritance pass uses the same placement-specific behavior; see `secondmate-provisioning` for the single contract owner.
 That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.

@@ -274,8 +274,10 @@ secondmate_sync() {
   # Placement-specific secondmate sync: local homes fast-forward to the primary
   # checkout's current default-branch commit. That path is purely LOCAL - no
   # fetch, no origin dependency: a linked-worktree home already holds the primary's
-  # commit (fm-ff-lib.sh), while a standalone clone without it is skipped until
-  # /updatefirstmate refreshes it from origin. Startup sends reread nudges only
+  # commit (fm-ff-lib.sh), while a standalone clone without it is skipped here
+  # until /updatefirstmate advances it - the one path allowed to fetch, which
+  # lands such a home on the primary's post-update commit when an update source
+  # is configured and on its own origin otherwise. Startup sends reread nudges only
   # for RUNNING secondmates whose instruction surface (AGENTS.md, bin/, or
   # .agents/skills/) actually changed, so a secondmate already on the primary's
   # version is never disturbed (AGENTS.md bootstrap + supervision). Unlike
