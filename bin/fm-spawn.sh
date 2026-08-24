@@ -913,10 +913,12 @@ fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; 
 # judged on its own and the rest still launch.
 #
 # Every other launch is outside the guard by construction rather than by
-# exception: a relaunch and a secondmate respawn put back an agent the fleet
-# already had instead of adding work, and a remote secondmate launch - which is
-# only ever reached under the secondmate kind - lands on a filesystem this
-# process never measured.
+# exception. A relaunch and the liveness sweep's respawn put back an agent the
+# fleet already had instead of adding work. EVERY secondmate launch is out,
+# including a first one for that home and the remote launch that is only ever
+# reached under the secondmate kind, because the volume this process can measure
+# is not the one that home will write to (docs/configuration.md, "Disk space
+# guard", owns that reason).
 DISK_GUARD_IN_SCOPE=0
 case "$RELAUNCH:$KIND" in
   0:ship | 0:scout) DISK_GUARD_IN_SCOPE=1 ;;
@@ -2846,7 +2848,18 @@ if [ "$KIND" = secondmate ]; then
   # not enable them across the launch boundary (bin/fm-trace-context-lib.sh header).
   # Reuse the single frozen decision from the carrier resolution above so the
   # injected carrier and this on/off snapshot are guaranteed to agree.
-  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
+  #
+  # FM_DISK_SPACE_MIN_GB= and FM_SPAWN_ALLOW_LOW_DISK= are isolation BETWEEN
+  # HOMES, not a carve-out in the disk guard: the launched secondmate is itself a
+  # primary, and its OWN fresh crewmate and scout dispatches are squarely inside
+  # that guard's scope. This prefix is typed into the pane as literal text, so
+  # the pane's environment comes from the backend daemon or login shell, and an
+  # export in the captain's shell rc would otherwise reach every secondmate pane
+  # and retire that home's guard on a volume this primary never measured. The
+  # launches the guard deliberately skips are excluded by the scope condition
+  # above and by nothing here, so deleting these two tokens narrows no scope; it
+  # only disables a child home's guard silently.
+  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_DISK_SPACE_MIN_GB= FM_SPAWN_ALLOW_LOW_DISK= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
 fi
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"

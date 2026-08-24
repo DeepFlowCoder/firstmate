@@ -140,6 +140,7 @@ When free space cannot be measured, the check stays silent and never refuses a s
 The check covers one filesystem, the one holding this home's `state/`, `data/`, and temporary files; it is not a per-volume audit, so a worktree pool or `TMPDIR` on another volume is not covered.
 Each home reads its own file, and the setting is not part of secondmate inherited configuration, because a secondmate can sit on another volume or another host.
 That is also why no secondmate launch consults the guard: the volume a primary can measure is not the one such a home writes to.
+For the same reason `FM_DISK_SPACE_MIN_GB` and `FM_SPAWN_ALLOW_LOW_DISK` are cleared on that launch, so the dispatches the secondmate later makes from its own home are decided by that home rather than by whatever the primary was started with.
 [`bin/fm-disk-space-lib.sh`](../bin/fm-disk-space-lib.sh)'s header owns the exact measurement, parsing, and wording.
 
 ## Update source (config/update-remote)
