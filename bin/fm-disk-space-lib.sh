@@ -89,6 +89,7 @@ fm_disk_space_threshold_gb() {
     esac
   fi
   if [ -n "$reason" ]; then
+    # shellcheck disable=SC2034 # Public result consumed by the caller after sourcing.
     FM_DISK_SPACE_CONFIG_ERROR="invalid $source - $reason; guarding at the default $FM_DISK_SPACE_MIN_GB_DEFAULT GB"
   fi
   printf '%s\n' "$FM_DISK_SPACE_THRESHOLD_GB"
