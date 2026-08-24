@@ -30,6 +30,8 @@ if [ "${FM_SESSIONSTART_INSTRUCTION_REFRESH_LIVE_E2E:-0}" != 1 ]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/live-e2e-helpers.sh
+. "$ROOT/tests/live-e2e-helpers.sh"
 TMUX_SOCKET="fm-sessionstart-instruction-refresh-$$"
 TMUX_SESSION="instruction-refresh"
 LAB=${TMPDIR:-/tmp}
