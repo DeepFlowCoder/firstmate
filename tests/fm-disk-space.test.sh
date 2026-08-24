@@ -13,7 +13,11 @@
 # The scope is pinned from both sides. The launches the guard does NOT cover - a
 # relaunch, a secondmate launch including the liveness sweep's respawn, and the
 # remote host-local launch - each have a case asserting the guard is silent
-# there, so nobody can widen it back in silence.
+# there, so nobody can widen it back in silence. The other side of that scope is
+# pinned too: a secondmate the primary launches guards its OWN dispatches from
+# its own home, which one case proves by launching one through a recording
+# backend and then running that home's own dispatch in the environment the
+# launch leaves its pane in.
 #
 # Silence above the threshold is asserted as hard as the warning below it: a
 # routine line in the session-start output is what trains a captain to skip the
@@ -153,6 +157,51 @@ assert_disk_guard_silent() {
   case "$out" in
     *"GB free on"*) fail "$what consulted the disk guard: $out" ;;
   esac
+}
+
+# A backend that answers a secondmate launch and records the text typed into the
+# pane, so the environment that launch leaves that pane in can be replayed.
+make_fake_tmux() {
+  local fakebin=$1
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+esac
+case "${1:-}" in
+  display-message) printf 'firstmate\n'; exit 0 ;;
+  send-keys)
+    if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
+      shift
+      skip_next=
+      for a in "$@"; do
+        if [ -n "$skip_next" ]; then skip_next=; continue; fi
+        case "$a" in
+          -t) skip_next=1; continue ;;
+          -l|Enter|C-m) continue ;;
+          *) printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG" ;;
+        esac
+      done
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+}
+
+# The value a variable actually has in the launched pane: the launch text is
+# typed into a shell that already has the captain's environment, so a variable
+# the launch does not name keeps the value exported there. Reading the launch is
+# not the assertion - it only reconstructs the environment the second spawn then
+# really runs in.
+launch_env_value() {
+  local log=$1 var=$2 inherited=$3 token
+  token=$(grep -oE "(^|[[:space:]])$var=[^[:space:]]*" "$log" | head -1) || true
+  [ -n "$token" ] || { printf '%s\n' "$inherited"; return 0; }
+  printf '%s\n' "${token#*"$var="}"
 }
 
 # A relaunch of a task this home has no record of: the guard sits ahead of the
@@ -352,6 +401,68 @@ test_remote_host_local_launch_is_outside_the_guard() {
   pass "a remote host-local launch below the threshold never consults the guard"
 }
 
+test_secondmate_home_guards_its_own_dispatches() {
+  local home sm log id_sm min allow out rc=0
+  home=$(new_home secondmate-inherit)
+  sm="$TMP_ROOT/secondmate-inherit-sm"
+  log="$TMP_ROOT/secondmate-inherit-launch.log"
+  make_fake_tmux "$home/fakebin"
+  # This is the one case that launches for real, so it is also the one that
+  # creates bin/fm-spawn.sh's per-task /tmp/fm-<id> root. The id carries this
+  # run's own temp-root suffix so concurrent runs never share that path, and the
+  # root is registered for the EXIT sweep tests/lib.sh already arms.
+  id_sm="sm-inherit-${TMP_ROOT##*.}"
+  FM_TEST_CLEANUP_DIRS+=("/tmp/fm-$id_sm")
+  # A captain who retired the guard for their own shell, the way the escape
+  # hatches invite: exported, so every pane this session opens starts with it.
+  mkdir -p "$sm/bin" "$sm/data" "$sm/config" "$sm/state" "$sm/project"
+  printf '# Firstmate\n' > "$sm/AGENTS.md"
+  printf '%s\n' "$id_sm" > "$sm/.fm-secondmate-home"
+  printf 'charter\n' > "$sm/data/charter.md"
+  printf 'claude\n' > "$home/config/crew-harness"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  touch "$home/state/.last-watcher-beat"
+  mkdir -p "$home/data/$id_sm"
+  printf 'charter brief\n' > "$home/data/$id_sm/brief.md"
+  : > "$log"
+  (
+    cd "$home" || exit 1
+    PATH="$home/fakebin:$PATH" \
+    FM_FAKE_DF_AVAIL_KB="$DF_LOW" \
+    FM_DISK_SPACE_MIN_GB=0 \
+    FM_SPAWN_ALLOW_LOW_DISK=1 \
+    FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$ROOT" \
+    FM_CONFIG_OVERRIDE="$home/config" \
+    FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/project" \
+    FM_SPAWN_NO_GUARD=1 CLAUDECODE=1 TMUX="fake,1,0" \
+    FM_FAKE_LAUNCH_LOG="$log" \
+      "$SPAWN" "$id_sm" "$sm" --secondmate >/dev/null 2>&1
+  ) || fail "the secondmate launch fixture did not launch"
+  [ -s "$log" ] || fail "the secondmate launch typed nothing into the pane"
+  # Now the secondmate's OWN fresh scout dispatch, from its own home, in exactly
+  # the environment that launch leaves its pane in.
+  min=$(launch_env_value "$log" FM_DISK_SPACE_MIN_GB 0)
+  allow=$(launch_env_value "$log" FM_SPAWN_ALLOW_LOW_DISK 1)
+  out=$(
+    cd "$sm" || exit 1
+    PATH="$home/fakebin:$PATH" \
+    FM_FAKE_DF_AVAIL_KB="$DF_LOW" \
+    FM_DISK_SPACE_MIN_GB="$min" \
+    FM_SPAWN_ALLOW_LOW_DISK="$allow" \
+    FM_HOME="$sm" \
+      "$SPAWN" sm-child-a1 "$sm/project" --scout 2>&1
+  ) || rc=$?
+  [ "$rc" -ne 0 ] || fail "the secondmate's own spawn fixture unexpectedly succeeded"
+  case "$out" in
+    *"refusing to dispatch sm-child-a1"*) : ;;
+    *) fail "the primary's retired guard followed the launch into the secondmate home: $out" ;;
+  esac
+  pass "a secondmate's own dispatches are guarded by its home, not by the primary's environment"
+}
+
 test_crewmate_dispatch_is_refused_below_threshold() {
   local home out rc=0
   home=$(new_home crewmate-refuse)
@@ -499,6 +610,7 @@ test_crewmate_dispatch_is_refused_below_threshold
 test_relaunch_is_outside_the_guard
 test_secondmate_respawn_is_outside_the_guard
 test_remote_host_local_launch_is_outside_the_guard
+test_secondmate_home_guards_its_own_dispatches
 test_spawn_refusal_names_the_source_that_can_retire_it
 test_spawn_refusal_names_a_malformed_threshold
 test_spawn_proceeds_above_threshold
