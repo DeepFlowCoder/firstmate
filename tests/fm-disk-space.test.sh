@@ -61,10 +61,21 @@ SH
 }
 
 # One isolated home per case, with the fake df ahead of the real one on PATH.
+#
+# The harness is pinned here for the same reason the free-space number is: with
+# config/crew-harness absent, bin/fm-harness.sh falls back to DETECTING the
+# harness of whatever process tree runs the suite, so on a machine with no agent
+# markers it answers "unknown" and every spawn aborts at the launch-template
+# lookup - short of the ordinary preflight the allow-path cases anchor their
+# contrast on, and short of the seeded-home preflight the out-of-scope launch
+# cases anchor on. That made those verdicts a property of the host rather than
+# of the guard. Any harness with a launch template would do; claude is the one
+# the launching case below already needed.
 new_home() {
   local name=$1 home fakebin
   home="$TMP_ROOT/$name"
   mkdir -p "$home/config" "$home/state" "$home/data" "$home/project"
+  printf 'claude\n' > "$home/config/crew-harness"
   fakebin=$(fm_fakebin "$home")
   make_fake_df "$fakebin"
   printf '%s\n' "$home"
@@ -419,7 +430,6 @@ test_secondmate_home_guards_its_own_dispatches() {
   printf '# Firstmate\n' > "$sm/AGENTS.md"
   printf '%s\n' "$id_sm" > "$sm/.fm-secondmate-home"
   printf 'charter\n' > "$sm/data/charter.md"
-  printf 'claude\n' > "$home/config/crew-harness"
   printf '%s\n' "$$" > "$home/state/.lock"
   touch "$home/state/.last-watcher-beat"
   mkdir -p "$home/data/$id_sm"
