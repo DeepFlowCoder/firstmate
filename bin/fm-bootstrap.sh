@@ -10,6 +10,8 @@
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
+#                 "DISK_SPACE: <n.n> GB free on <home> (threshold <n> GB[ from <source>])" or
+#                 "DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
 #                 "PR_CHECK_MIGRATION: <private remediation>",
 #                 "TANGLE: <remediation>",
@@ -48,6 +50,14 @@
 #          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
+#          A DISK_SPACE line means free space on this home's filesystem is below
+#          the configured threshold; above it, and when the space cannot be
+#          measured, the check is silent. bin/fm-disk-space-lib.sh owns the
+#          threshold, its config/disk-space-min-gb and FM_DISK_SPACE_MIN_GB
+#          overrides, and the wording, which bin/fm-spawn.sh shares when it
+#          refuses a fresh crewmate or scout dispatch: this line and that
+#          refusal are the guard's only two surfaces, so the liveness sweep's
+#          secondmate respawn below is never refused by it.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
@@ -136,6 +146,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-quota-axi-lib.sh"
 # shellcheck source=bin/fm-tangle-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tangle-lib.sh"
+# shellcheck source=bin/fm-disk-space-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-disk-space-lib.sh"
 # shellcheck source=bin/fm-ff-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh disable=SC1091
@@ -1162,6 +1174,21 @@ detect_local_tools() {
   fi
 }
 
+# Free space on this home's filesystem, reported only when it drops below the
+# configured threshold. Silence above it is deliberate: the session-start digest
+# is already long, and a routine "disk fine" line would train the captain to
+# skip the section that carries the warning (bin/fm-disk-space-lib.sh).
+disk_space_detect() {
+  local summary
+  if fm_disk_space_below_threshold "$FM_HOME" "$CONFIG"; then
+    summary=$(fm_disk_space_summary "$FM_HOME") \
+      && echo "DISK_SPACE: $summary"
+  fi
+  if [ -n "$FM_DISK_SPACE_CONFIG_ERROR" ]; then
+    echo "DISK_SPACE: $FM_DISK_SPACE_CONFIG_ERROR"
+  fi
+}
+
 detect_local_config() {
   # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
   # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
@@ -1189,6 +1216,7 @@ detect_local_config() {
     echo "MISSING_MANUAL: cursor-agent (instructions: $(manual_install_url cursor-agent))"
   fi
   crew_dispatch_validate
+  disk_space_detect
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
     && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
     echo "BOOTSTRAP_INFO: tasks-axi available"

@@ -5,6 +5,8 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tests/live-e2e-helpers.sh
+. "$ROOT/tests/live-e2e-helpers.sh"
 TASK="fm-test-cmux-claude-composer-$$"
 LAB=
 SPAWNED=0
