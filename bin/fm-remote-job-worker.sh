@@ -164,6 +164,20 @@ worker_acquire_lock() {
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
+    # Those three are only what a dead owner managed to publish. Every lock
+    # entry is published by renaming a mktemp sibling created in this same
+    # directory, so an owner killed in that window leaves an unpublished
+    # temporary behind - the ordinary outcome of the TERM its supervisor
+    # forwards during a replacement, which a worker cannot trap until after it
+    # owns the lock, and of the KILL fm_remote_job_stop_worker_tree escalates
+    # to. Left in place it fails the rmdir below, so every later worker exits
+    # "cannot acquire or safely reclaim worker ownership" and the account queue
+    # is stranded for good rather than for the stale grace. The dot prefix, not
+    # today's set of temporary kinds, is the rule: published ownership state
+    # never carries one, so a kind added later is swept by this same code. A
+    # PUBLISHED quarantine is ownership state and took its own recovery path
+    # above; anything else here is unaccounted for and still fails the rmdir.
+    rm -f -- "$WORKER_LOCK"/.[!.]* || return 1
     rmdir "$WORKER_LOCK" || return 1
   done
   return 1
