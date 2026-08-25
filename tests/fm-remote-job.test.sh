@@ -18,6 +18,7 @@ FAKE_PERL_LOG="$TMP_ROOT/perl.log"
 REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
+DEBRIS_WORKER_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 # worker.pid records the serving child, not its restart supervisor, so stopping
 # that pid alone leaves the supervisor to respawn - the leak
@@ -25,6 +26,7 @@ mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 cleanup_remote_job_fixture() {
   [ -z "$OTHER_PID" ] || kill "$OTHER_PID" 2>/dev/null || true
   [ -z "$RECOVERY_WORKER_PID" ] || kill "$RECOVERY_WORKER_PID" 2>/dev/null || true
+  [ -z "$DEBRIS_WORKER_PID" ] || kill "$DEBRIS_WORKER_PID" 2>/dev/null || true
   if [ -f "$STATE_ROOT/worker.pid" ]; then
     fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
   fi
@@ -620,5 +622,82 @@ kill -TERM "$RECOVERY_WORKER_PID"
 wait "$RECOVERY_WORKER_PID" 2>/dev/null || true
 RECOVERY_WORKER_PID=
 pass "quarantine clears only after recorded execution has stopped"
+
+# Every entry inside the worker lock is published by renaming a mktemp sibling
+# created in that same directory, so an owner killed in that window leaves an
+# unpublished temporary behind - the ordinary outcome of the TERM its supervisor
+# forwards during a replacement, which a worker cannot trap until after it owns
+# the lock, and of the KILL fm_remote_job_stop_worker_tree escalates to.
+# Reclaiming stale ownership has to sweep that debris, because a lock directory
+# that cannot be removed refuses every later worker for good and strands the
+# account queue instead of recovering after the stale grace.
+DEBRIS_HOME="$TMP_ROOT/debris-account"
+DEBRIS_STATE="$TMP_ROOT/debris-jobs"
+DEBRIS_LOCK="$DEBRIS_STATE/worker.lock"
+mkdir -p "$DEBRIS_HOME" "$DEBRIS_STATE/jobs" "$DEBRIS_STATE/logs"
+chmod 700 "$DEBRIS_HOME" "$DEBRIS_STATE" "$DEBRIS_STATE/jobs" "$DEBRIS_STATE/logs"
+sleep 0.01 &
+DEBRIS_OWNER_PID=$!
+wait "$DEBRIS_OWNER_PID" 2>/dev/null || true
+
+# A lock left by an owner that died holding it, plus whatever entries the caller
+# wants that owner to have left inside. The recorded start and command never
+# match a live process, so the lock reads as stale ownership rather than as a
+# still-running owner.
+stage_debris_lock() { # <lock-entry>...
+  local entry
+  rm -rf -- "$DEBRIS_LOCK"
+  mkdir "$DEBRIS_LOCK"
+  chmod 700 "$DEBRIS_LOCK"
+  printf '%s\n' "$DEBRIS_OWNER_PID" > "$DEBRIS_LOCK/pid"
+  printf 'stale\n' > "$DEBRIS_LOCK/start"
+  printf 'stale\n' > "$DEBRIS_LOCK/command"
+  for entry in "$@"; do : > "$DEBRIS_LOCK/$entry"; done
+  chmod 600 "$DEBRIS_LOCK"/* 2>/dev/null || true
+  chmod 600 "$DEBRIS_LOCK"/.[!.]* 2>/dev/null || true
+  touch -t 200001010000 "$DEBRIS_LOCK"
+}
+
+# Sweeping the debris must stay a sweep of unpublished temporaries, never a
+# blanket emptying of the lock: an entry this worker cannot account for means an
+# assumption is broken, and the reclaim has to refuse rather than delete it.
+# Served directly, because a supervisor would spend its whole restart budget
+# re-reaching the same refusal.
+stage_debris_lock stray
+set +e
+HOME="$DEBRIS_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$DEBRIS_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/debris-stray.out" 2> "$TMP_ROOT/debris-stray.err"
+DEBRIS_STRAY_RC=$?
+set -e
+[ "$DEBRIS_STRAY_RC" -ne 0 ] || fail "reclaiming stale ownership emptied a lock holding an unaccounted entry"
+assert_present "$DEBRIS_LOCK/stray" "reclaiming stale ownership deleted an unaccounted lock entry"
+assert_absent "$DEBRIS_STATE/worker.ready" "a worker served from a lock it could not safely reclaim"
+pass "stale ownership is refused when the lock holds an entry the worker cannot account for"
+
+# The dot prefix is what separates an unpublished temporary from published
+# ownership state, which never carries one, so the sweep is pinned on that rule
+# rather than on today's four temporary kinds - a fifth one must be reclaimed by
+# the same code, without a new case here.
+stage_debris_lock .pid.Ab3xY9 .command.Qz7mK2 .quarantine.Lw4nT8 .later-entry.Rj9pV5
+HOME="$DEBRIS_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$DEBRIS_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
+  > "$TMP_ROOT/debris-worker.out" 2> "$TMP_ROOT/debris-worker.err" &
+DEBRIS_WORKER_PID=$!
+for _ in $(seq 1 300); do
+  [ -f "$DEBRIS_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$DEBRIS_STATE/worker.ready" \
+  "an unpublished lock temporary stranded ownership against every replacement worker"
+[ "$(cat "$DEBRIS_LOCK/pid" 2>/dev/null || true)" != "$DEBRIS_OWNER_PID" ] \
+  || fail "the replacement worker did not take ownership of the reclaimed lock"
+assert_absent "$DEBRIS_LOCK/.quarantine.Lw4nT8" "reclaimed ownership kept an unpublished quarantine temporary"
+assert_absent "$DEBRIS_LOCK/.later-entry.Rj9pV5" "reclaimed ownership kept an unpublished temporary it did not name"
+assert_absent "$DEBRIS_LOCK/quarantine" "reclaiming a stale lock published a quarantine marker"
+kill -TERM "$DEBRIS_WORKER_PID"
+wait "$DEBRIS_WORKER_PID" 2>/dev/null || true
+DEBRIS_WORKER_PID=
+pass "stale ownership is reclaimed through an owner's unpublished lock temporaries"
 
 echo "ALL TESTS PASSED"
