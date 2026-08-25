@@ -164,19 +164,6 @@ worker_acquire_lock() {
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
-    # Those three published entries are not everything a dead owner can leave
-    # inside the lock. Every entry is written through a mktemp sibling in this
-    # same directory, so an owner killed between that mktemp and its rename -
-    # the ordinary outcome of the TERM its supervisor forwards during a
-    # replacement, or of the KILL fm_remote_job_stop_worker_tree escalates to -
-    # leaves an unpublished temporary behind. Left in place it fails the rmdir
-    # below, so every replacement worker exits "cannot acquire or safely
-    # reclaim worker ownership" and the account's queue is stranded permanently
-    # rather than for the stale grace. Only unpublished temporaries are swept:
-    # a PUBLISHED quarantine marker is ownership state with its own recovery
-    # path above, never debris.
-    rm -f -- "$WORKER_LOCK"/.pid.?????? "$WORKER_LOCK"/.start.?????? \
-      "$WORKER_LOCK"/.command.?????? "$WORKER_LOCK"/.quarantine.?????? || return 1
     rmdir "$WORKER_LOCK" || return 1
   done
   return 1
