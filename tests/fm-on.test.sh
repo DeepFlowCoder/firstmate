@@ -11,7 +11,32 @@ TMP_ROOT=$(fm_test_tmproot fm-on)
 # and physicalize macOS's /var -> /private/var alias before transport validation.
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+# shellcheck source=bin/fm-remote-job-lib.sh
+. "$ROOT/bin/fm-remote-job-lib.sh"
+
+# This fixture forces the Linux worker platform (FM_REMOTE_JOB_PLATFORM_OVERRIDE
+# below), so its worker runs under the restart supervisor, and worker.pid names
+# the serving CHILD, not that supervisor. Signalling the recorded pid alone
+# therefore only kills the child: the supervisor above it starts a replacement
+# that recreates remote-jobs/ and its worker.lock, and the fixture root is being
+# removed at that moment, so rm -rf loses the race and fails with ENOTEMPTY. The
+# library's own group-wide stop is the one owner of that shutdown; it signals
+# the whole worker tree and waits for it to be gone before returning, which is
+# what makes the removal below safe. The worker deliberately outlives a
+# briefly-missing root (FM_REMOTE_JOB_ORPHAN_GRACE_SECONDS), so waiting is the
+# fixture's job, not something to fix in the worker.
+fm_on_stop_worker_tree() {
+  local pid
+  pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid" 2>/dev/null || true)
+  case "$pid" in
+    '' | *[!0-9]*) ;;
+    *) fm_remote_job_stop_worker_tree "$pid" || true ;;
+  esac
+  # TMP_ROOT was physicalized above, so remove it here as well as through the
+  # library's registry, which recorded the pre-physicalized path.
+  rm -rf -- "$TMP_ROOT"
+}
+fm_test_exit_trap fm_on_stop_worker_tree
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
