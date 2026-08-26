@@ -124,6 +124,46 @@ trap fm_test_cleanup EXIT
 trap 'fm_test_cleanup; exit 130' INT
 trap 'fm_test_cleanup; exit 143' TERM
 
+# --- verdict-preserving EXIT trap for test files with their own teardown ------
+#
+# fm_test_exit_trap [<extra-cleanup-function>] installs the EXIT trap a test
+# file needs when it must tear down more than the registered fixture roots (a
+# spawned daemon, a worker tree, a real tmux session). It replaces the obvious
+# hand-rolled `trap 'stop_thing; rm -rf "$dir"' EXIT`, which is wrong in two
+# ways that only show up intermittently.
+#
+# First, that shape drops the library's own teardown: the file's trap REPLACES
+# the fm_test_cleanup trap armed above, so registered fixture roots and the
+# cleanup registry leak unless the file remembers to call it back.
+#
+# Second, and worse, it can invert the script's verdict. Test files run with
+# errexit active around their assertions, and under errexit a failing command
+# inside an EXIT trap becomes the script's exit status. A teardown that loses a
+# race - an `rm -rf` walking a tree a not-yet-dead child process is still
+# writing into - therefore turns a run that printed every ok line and
+# ALL TESTS PASSED into exit 1. That reads as a failing test with no failing
+# assertion, which is worse than a clean failure: it trains readers to discount
+# a red suite.
+#
+# So this captures the verdict BEFORE any teardown runs, invokes
+# <extra-cleanup-function> and fm_test_cleanup for their effect only, and exits
+# with the verdict it captured. Teardown diagnostics still reach stderr; they
+# just cannot manufacture a failure, and a real fail() still exits nonzero.
+# Teardown that must be enforced belongs in an assertion, not in the trap.
+FM_TEST_EXTRA_CLEANUP=
+
+_fm_test_exit_trap() {
+  local status=$?
+  [ -z "$FM_TEST_EXTRA_CLEANUP" ] || "$FM_TEST_EXTRA_CLEANUP" || true
+  fm_test_cleanup || true
+  exit "$status"
+}
+
+fm_test_exit_trap() {  # [<extra-cleanup-function>]
+  FM_TEST_EXTRA_CLEANUP=${1:-}
+  trap _fm_test_exit_trap EXIT
+}
+
 # fm_test_reap_orphans: best-effort sweep for fixture roots left behind by a
 # prior run that was killed hard enough to skip the traps above (e.g. a
 # SIGKILL timeout). Only removes directories carrying the .fm-test-fixture
