@@ -972,6 +972,78 @@ test_nonterminal_healthy_idle_resurfaces_on_the_long_cadence() {
   pass "an absorbed healthy-idle non-terminal stale stays quiet inside its cadence window and re-surfaces past it as a recheck"
 }
 
+# --- the cadence floor holds for a task that never wrote a status line --------
+# fm-crew-state.sh answers parked/done from the run-step source alone, which
+# never reads the status log, and a crew that starts a no-mistakes run before
+# appending its first status note has no state/<task>.status file at all. Its
+# empty last line is not captain-relevant, so it takes the NON-terminal path,
+# where the re-surface cadence is the only backstop there is. Anchoring the idle
+# age on a status file that does not exist would read as "just moved" on every
+# poll, so the window would never come due and the floor installed for this path
+# would have a hole exactly where the pane is least accountable. The age falls
+# back to the task's spawn record instead, the same anchor busy_turn_over_age
+# uses. Both phases share one 5000s-old anchor and differ only in the cadence
+# they are measured against, so neither can pass vacuously.
+test_healthy_idle_cadence_holds_without_a_status_file() {
+  local dir state fakebin out drain_out capture_file metaf window key pane_hash pid back
+  dir=$(make_case healthy-idle-no-status); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-nostatus"
+  printf 'idle, run handed off before any status note' > "$capture_file"
+  metaf="$state/nostatus.meta"
+  printf 'window=%s\nkind=ship\n' "$window" > "$metaf"
+  # The whole point of the case: NO state/nostatus.status is ever written, so the
+  # spawn record above is the only thing left to age the wait against.
+  [ ! -e "$state/nostatus.status" ] || fail "fixture wrote a status file for the no-status case"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, run handed off before any status note")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  back=$(( $(date +%s) - 5000 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$metaf"
+  else touch -m -d "@$back" "$metaf"; fi
+  export FM_FAKE_CREW_STATE='state: done · source: run-step · checks green: PR ready for review'
+
+  # Phase A: the 5000s wait is still INSIDE the cadence window, so it stays quiet
+  # across first sighting and repeat polls alike.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=99999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited for a status-less healthy-idle pane inside the cadence window: $(cat "$out")"
+  fi
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited on a repeat poll of a status-less healthy-idle pane inside the cadence window: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a status-less healthy-idle pane inside the cadence window printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "a status-less healthy-idle pane inside the cadence window enqueued a wake"
+  [ ! -e "$state/.healthy-idle-resurfaced-$key" ] || fail "a status-less healthy-idle pane re-surfaced inside its cadence window"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a status-less healthy-idle absorb armed the wedge timer"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional no-status cadence phase-A stop"
+
+  # Phase B: the same 5000s-old spawn record, the same unchanged hash, the same
+  # done verdict - only the cadence has dropped below the wait. The floor must
+  # reach this window too, as a healthy-idle recheck rather than a wedge.
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a status-less healthy-idle pane never re-surfaced past the cadence (the floor has a hole)"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the status-less healthy-idle recheck did not print a stale wake"
+  grep -F "healthy idle" "$out" >/dev/null || fail "the status-less re-surface was not labeled a healthy-idle recheck"
+  ! grep -F "possible wedge" "$out" >/dev/null 2>&1 || fail "a status-less healthy-idle recheck was mislabeled a possible wedge"
+  [ -e "$state/.healthy-idle-resurfaced-$key" ] || fail "the status-less healthy-idle throttle marker was not recorded"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a status-less healthy-idle recheck used the wedge timer"
+  [ ! -e "$state/.wedge-escalations-$key" ] || fail "a status-less healthy-idle recheck fed the wedge escalation counter"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the status-less healthy-idle recheck failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the status-less healthy-idle recheck was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a healthy-idle absorb whose task never wrote a status line still reaches its re-surface cadence"
+}
+
 # --- the authoritative source FLICKERS: an unknown read must not reclassify ----
 # Second defect, observed 2026-08-26: for the same task in the same session
 # fm-crew-state.sh answered `working · run-step` and, minutes later,
@@ -2783,6 +2855,7 @@ test_terminal_stale_done_absorbed
 test_nonterminal_stale_healthy_idle_absorbed
 test_nonterminal_stale_healthy_idle_stays_absorbed
 test_nonterminal_healthy_idle_resurfaces_on_the_long_cadence
+test_healthy_idle_cadence_holds_without_a_status_file
 test_stale_flicker_reuses_last_answered_class
 test_flicker_keeps_the_wedge_timer_for_a_working_crew
 test_declared_pause_outranks_healthy_idle_class

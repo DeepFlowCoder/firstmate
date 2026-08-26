@@ -339,15 +339,21 @@ busy_turn_over_age() {  # <task>
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
 }
 
-# Seconds since <task>'s status log last moved. This is the age every bounded
-# re-surface cadence is measured against: it is anchored on the status file
-# mtime, not a per-hash marker, so a churny idle pane (a ticking clock, a token
-# counter) cannot keep resetting the cadence the way a hash-tied timer would.
-# A missing or unreadable mtime reads as "just moved", which restarts the window
-# rather than firing a recheck on unreadable evidence.
+# Seconds since <task>'s idle anchor last moved. This is the age every bounded
+# re-surface cadence is measured against: it is anchored on a file mtime, not a
+# per-hash marker, so a churny idle pane (a ticking clock, a token counter)
+# cannot keep resetting the cadence the way a hash-tied timer would. The anchor
+# is the status log; before the task has written one, it is the task's spawn
+# record instead, the same fallback busy_turn_over_age uses, so a crew whose run
+# was classified from the run-step source alone still reaches its cadence rather
+# than reading as "just moved" on every poll and never coming due at all. Only
+# when NEITHER carries a readable mtime does the age restart the window, since
+# there is then no evidence to age at all.
 status_idle_age() {  # <task>
-  local task=$1 mtime
-  mtime=$(stat_mtime "$STATE/$task.status")
+  local task=$1 f mtime
+  f="$STATE/$task.status"
+  [ -e "$f" ] || f="$STATE/$task.meta"
+  mtime=$(stat_mtime "$f")
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
   echo $(( $(date +%s) - mtime ))
 }
