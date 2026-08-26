@@ -24,7 +24,10 @@
 #                          authoritative state is parked at a gate or done and
 #                          waiting for the merge is absorbed outright: a human holds
 #                          its next step, so its quiet pane is a healthy idle wait
-#                          and carries no wedge timer. Only when no absorb class
+#                          and carries no wedge timer - on a non-terminal log, where
+#                          the heartbeat's captain-relevant backstop cannot reach it,
+#                          that absorb takes the same long re-surface cadence a
+#                          declared pause takes. Only when no absorb class
 #                          applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. An `unknown` current-state read is
@@ -336,35 +339,91 @@ busy_turn_over_age() {  # <task>
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
 }
 
+# Seconds since <task>'s status log last moved. This is the age every bounded
+# re-surface cadence is measured against: it is anchored on the status file
+# mtime, not a per-hash marker, so a churny idle pane (a ticking clock, a token
+# counter) cannot keep resetting the cadence the way a hash-tied timer would.
+# A missing or unreadable mtime reads as "just moved", which restarts the window
+# rather than firing a recheck on unreadable evidence.
+status_idle_age() {  # <task>
+  local task=$1 mtime
+  mtime=$(stat_mtime "$STATE/$task.status")
+  case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
+  echo $(( $(date +%s) - mtime ))
+}
+
+# 0 iff an absorbed idle window is due for its once-per-window recheck: the
+# status log has been still for a whole PAUSE_RESURFACE_SECS AND <throttle-file>
+# records no re-surface inside that same window. The throttle is what turns "past
+# the window" into one wake per window instead of one per poll. PAUSE_RESURFACE_SECS
+# is the single cadence for every absorb that owns a recheck; each caller passes
+# its OWN throttle marker so the routes cannot erase one another's bookkeeping.
+resurface_due() {  # <idle-age> <throttle-file>
+  local age=$1 rf=$2 rf_age
+  rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
+  [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]
+}
+
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
 # dead-agent captain-held transfer, and re-surface it once every
 # PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
 # stale poll once pause_state_class permits the bounded cadence, so it must be
-# cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
-# status file mtime, not a per-hash marker, so a churny idle pane (a ticking
-# clock, a token counter) cannot keep resetting the cadence the way a hash-tied
-# timer would. A .paused-resurfaced-<key> throttle marker records the last
-# re-surface epoch so, once past the window, it fires once per window rather than
-# every poll. Advances the stale suppressor to <hash> and flags the key paused.
+# cheap: it NEVER re-reads crew state. A .paused-resurfaced-<key> throttle marker
+# records the last re-surface epoch, and is this route's alone.
+# Advances the stale suppressor to <hash> and flags the key paused.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
+  local win=$1 task=$2 h=$3 key age rf reason
   key=$(printf '%s' "$win" | tr ':/.' '___')
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
-  statusf="$STATE/$task.status"
-  mtime=$(stat_mtime "$statusf")
-  case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
-  age=$(( $(date +%s) - mtime ))
+  age=$(status_idle_age "$task")
   rf="$STATE/.paused-resurfaced-$key"
-  rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
+  if resurface_due "$age" "$rf"; then
     reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
     wake "$reason"
   fi
   triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
+}
+
+# Absorb a NON-terminal stale pane whose authoritative state is a healthy idle
+# class (parked at a gate, or done awaiting the merge), on the same bounded
+# PAUSE_RESURFACE_SECS recheck the declared-pause route uses.
+#
+# The cadence is the floor under this absorb's silence, and it is load-bearing
+# rather than belt-and-braces. The terminal path's healthy-idle absorb leans on
+# the heartbeat's captain-relevant backstop to deliver the status line if the
+# signal path never did; here that backstop CANNOT fire, because this path is
+# defined by the last status line NOT being captain-relevant and
+# heartbeat_scan_finds_actionable only ever iterates captain-relevant statuses.
+# So a crew whose run went green after its last `working:` note and then froze
+# before appending anything would otherwise be absorbed in permanent silence.
+# The wedge timer is the wrong instrument for that - a wait on a captain decision
+# or on a merge is legitimately long, and the STALE_ESCALATE_SECS threshold would
+# just reintroduce the per-240s churn this absorb exists to stop - so the wait
+# stays quiet for its whole legitimate window and then re-surfaces once per
+# window as a recheck, never as a possible wedge and never feeding the wedge
+# escalation counter. Carries its OWN .healthy-idle-resurfaced-<key> throttle,
+# which clear_pause_tracking deliberately does not touch: this route's status
+# line is not paused-or-captain-held, so the .paused-* bookkeeping is cleared out
+# from under it on every poll and could never hold a throttle.
+# Advances the stale suppressor to <hash> and arms no wedge timer.
+handle_healthy_idle_stale() {  # <window> <task> <hash> <class>
+  local win=$1 task=$2 h=$3 class=$4 key age rf reason
+  key=$(printf '%s' "$win" | tr ':/.' '___')
+  printf '%s' "$h" > "$STATE/.stale-$key"
+  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  age=$(status_idle_age "$task")
+  rf="$STATE/.healthy-idle-resurfaced-$key"
+  if resurface_due "$age" "$rf"; then
+    reason="stale: $win (healthy idle ${age}s, authoritative state $class - a human holds the next step, rechecked on a long cadence not a wedge; confirm the wait still holds)"
+    fm_wake_append stale "$win" "$reason" || exit 1
+    date +%s > "$rf"
+    wake "$reason"
+  fi
+  triage_log "absorbed non-terminal stale (healthy idle, a human holds the next step, $class, age ${age}s): $win"
 }
 
 # Apply the busy-pane completed-turn bound to a window whose bound has already
@@ -1233,11 +1292,14 @@ EOF
           #   - parked/done: the authoritative state says a human holds the next
           #     step (a gate awaiting a decision, or delivered work awaiting the
           #     merge), so the quiet pane is a healthy idle wait and is absorbed
-          #     with no wedge timer. The log's last line being non-terminal does
-          #     NOT contradict that: the crew's own log gets no new entry once
-          #     firstmate hands it to a validation, so a run that reached a gate
-          #     or went green after the crew's last `working:` note lands here,
-          #     not on the terminal path;
+          #     with no wedge timer, on the same bounded PAUSE_RESURFACE_SECS
+          #     recheck (see handle_healthy_idle_stale - the heartbeat's
+          #     captain-relevant backstop cannot cover this path, so that cadence
+          #     is the floor under the absorb's silence). The log's last line
+          #     being non-terminal does NOT contradict the class: the crew's own
+          #     log gets no new entry once firstmate hands it to a validation, so
+          #     a run that reached a gate or went green after the crew's last
+          #     `working:` note lands here, not on the terminal path;
           #   - none: no running pipeline, no exact busy verdict, no declared pause.
           #     Surface immediately so firstmate inspects the inconclusive state
           #     (it may be done via an interactive menu that wrote no done: status,
@@ -1245,7 +1307,8 @@ EOF
           #     wait out the timer.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             task=$(window_to_task "$w" "$STATE")
-            case "$(pause_state_class "$w" "$task")" in
+            stale_class=$(pause_state_class "$w" "$task")
+            case "$stale_class" in
               working)
                 clear_pause_tracking "$w"
                 printf '%s' "$h" > "$sf"
@@ -1257,9 +1320,7 @@ EOF
                 ;;
               parked|done)
                 clear_pause_tracking "$w"
-                printf '%s' "$h" > "$sf"
-                rm -f "$ssf" "$ewf"
-                triage_log "absorbed non-terminal stale (healthy idle, a human holds the next step): $w"
+                handle_healthy_idle_stale "$w" "$task" "$h" "$stale_class"
                 ;;
               *)
                 surface_nonterminal_stale "$w" "$h"
@@ -1289,10 +1350,13 @@ EOF
               # appends a new status line, which returns the window to normal
               # classification. A remembered `working` deliberately falls
               # through to the timer, so a genuinely frozen run still escalates.
-              case "$(remembered_absorb_class "$STATE/.absorb-class-$key" "$(last_status_line "$STATE/$task.status")")" in
+              # A remembered healthy-idle class stays on the same bounded
+              # recheck the first sighting put it on, so the absorb's silence
+              # keeps its floor for as many polls as the hash stays put.
+              stale_class=$(remembered_absorb_class "$STATE/.absorb-class-$key" "$(last_status_line "$STATE/$task.status")")
+              case "$stale_class" in
                 parked|done)
-                  rm -f "$ssf" "$ewf"
-                  triage_log "absorbed non-terminal stale (healthy idle, a human holds the next step): $w"
+                  handle_healthy_idle_stale "$w" "$task" "$h" "$stale_class"
                   ;;
                 *)
                   wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf"
