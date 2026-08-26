@@ -1277,7 +1277,27 @@ EOF
                 *)       handle_paused_stale "$w" "$task" "$h" ;;
               esac
             else
-              wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf"
+              # Repeat poll of a hash already classified on the branch above.
+              # The healthy-idle absorb arms no wedge timer, so this arm must
+              # not quietly re-arm one behind it: without consulting the record
+              # the hash is unchanged, .paused-<key> was cleared by the absorb
+              # and the last status line is non-terminal, so a parked/done crew
+              # would fall straight through and wedge-escalate every
+              # STALE_ESCALATE_SECS forever. The persisted class is a pure file
+              # read (no bounded external call, so the per-poll path stays
+              # cheap) and remembered_absorb_class drops it as soon as the crew
+              # appends a new status line, which returns the window to normal
+              # classification. A remembered `working` deliberately falls
+              # through to the timer, so a genuinely frozen run still escalates.
+              case "$(remembered_absorb_class "$STATE/.absorb-class-$key" "$(last_status_line "$STATE/$task.status")")" in
+                parked|done)
+                  rm -f "$ssf" "$ewf"
+                  triage_log "absorbed non-terminal stale (healthy idle, a human holds the next step): $w"
+                  ;;
+                *)
+                  wedge_timer_check "$w" "$ssf" "non-terminal stale" "$ewf"
+                  ;;
+              esac
             fi
           fi
         fi

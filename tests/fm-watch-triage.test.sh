@@ -824,10 +824,74 @@ test_nonterminal_stale_healthy_idle_absorbed() {
   [ ! -s "$state/.wake-queue" ] || fail "a healthy-idle non-terminal stale enqueued a wake during absorb"
   [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor not advanced on the healthy-idle non-terminal absorb"
   [ ! -e "$state/.stale-since-$key" ] || fail "a healthy-idle non-terminal absorb started a wedge escalation timer"
+  [ "$(sed -n 1p "$state/.absorb-class-$key" 2>/dev/null || true)" = "done" ] || fail "the answered done class was not recorded for the non-terminal absorb"
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional healthy-idle non-terminal stop"
   unset FM_FAKE_CREW_STATE
   pass "a non-terminal stale whose authoritative state is done is absorbed without a wedge timer"
+}
+
+# --- the healthy-idle absorb must SURVIVE the polls that follow it -----------
+# One poll cycle is not the contract: a wait on a captain decision or on a merge
+# is legitimately long, so a healthy-idle crew must stay absorbed for as many
+# polls as the hash stays put. On a repeat poll the hash is unchanged, the absorb
+# already cleared .paused-<key>, and the last status line is still non-terminal,
+# so nothing on that arm distinguishes this crew from a frozen one unless the
+# recorded absorb class is consulted - and a wedge timer armed there would just
+# reintroduce the same escalate/re-absorb churn one FM_STALE_ESCALATE_SECS later,
+# forever. FM_STALE_ESCALATE_SECS=1 collapses that window so the escalation this
+# pins would land within a couple of polls.
+test_nonterminal_stale_healthy_idle_stays_absorbed() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case nonterminal-stale-healthy-idle-repeat); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-green-repeat"
+  printf 'idle after handing off to the pipeline' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/greenrep.meta"
+  printf 'working: implementation committed\n' > "$state/greenrep.status"
+  sig=$(seen_sig "$state/greenrep.status"); printf '%s' "$sig" > "$state/.seen-greenrep_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle after handing off to the pipeline")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: done · source: run-step · checks green: PR ready for review'
+
+  # Phase A: first sighting of this hash. Absorbed, and the class is recorded.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited on the first sighting of a healthy-idle non-terminal stale: $(cat "$out")"
+  fi
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor not advanced before the repeat-poll phase"
+  [ "$(sed -n 1p "$state/.absorb-class-$key" 2>/dev/null || true)" = "done" ] || fail "the answered done class was not recorded before the repeat-poll phase"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional healthy-idle repeat phase-A stop"
+
+  # Phase B: the pane has not moved, so every poll now lands on the repeat-poll
+  # arm. Two full cycles at a 1s escalation threshold are enough for a re-armed
+  # timer to reset and then fire.
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a repeat poll of a healthy-idle crew exited the watcher: $(cat "$out")"
+  fi
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a second repeat poll of a healthy-idle crew exited the watcher: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a repeat poll of a healthy-idle crew printed a wake reason: $(cat "$out")"
+  ! grep -F "possible wedge" "$out" >/dev/null 2>&1 || fail "a repeat poll of a healthy-idle crew escalated a possible wedge"
+  [ ! -s "$state/.wake-queue" ] || fail "a repeat poll of a healthy-idle crew enqueued a wake"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a repeat poll of a healthy-idle crew re-armed the wedge escalation timer"
+  [ ! -e "$state/.wedge-escalations-$key" ] || fail "a repeat poll of a healthy-idle crew recorded a wedge escalation"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional healthy-idle repeat phase-B stop"
+  unset FM_FAKE_CREW_STATE
+  pass "a healthy-idle non-terminal stale stays absorbed across repeat polls instead of re-arming the wedge timer"
 }
 
 # --- the authoritative source FLICKERS: an unknown read must not reclassify ----
@@ -2639,6 +2703,7 @@ test_stale_terminal_status_overridden_by_active_run
 test_terminal_stale_parked_absorbed
 test_terminal_stale_done_absorbed
 test_nonterminal_stale_healthy_idle_absorbed
+test_nonterminal_stale_healthy_idle_stays_absorbed
 test_stale_flicker_reuses_last_answered_class
 test_flicker_keeps_the_wedge_timer_for_a_working_crew
 test_declared_pause_outranks_healthy_idle_class
