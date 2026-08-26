@@ -20,10 +20,18 @@
 #                          line, since the crew's own log gets no new entry once
 #                          firstmate hands it to a no-mistakes validation. A declared
 #                          external-wait pause is absorbed instead with its own long
-#                          re-surface cadence, never as a wedge. Only when neither
-#                          absorb class applies does the log's last line decide:
+#                          re-surface cadence, never as a wedge. A crew whose
+#                          authoritative state is parked at a gate or done and
+#                          waiting for the merge is absorbed outright: a human holds
+#                          its next step, so its quiet pane is a healthy idle wait
+#                          and carries no wedge timer. Only when no absorb class
+#                          applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
+#                          both surfaced at once. An `unknown` current-state read is
+#                          a non-answer, not evidence of a wedge, so it reuses this
+#                          window's last ANSWERED class while the status log has not
+#                          moved; with no such class it still surfaces.
+#                          A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
@@ -400,6 +408,58 @@ clear_pause_tracking() {  # <window>
   rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
 }
 
+# The absorb class remembered for <memo-file>, but only while <last-status-line>
+# still matches the status line that was current when it was recorded. A new
+# status append means the crew moved on, so the record is dropped and the next
+# stale is classified from a fresh read. Prints nothing when there is no usable
+# record.
+remembered_absorb_class() {  # <memo-file> <last-status-line>
+  local memo=$1 last=$2 class stored
+  [ -e "$memo" ] || return 0
+  class=$(sed -n 1p "$memo")
+  stored=$(sed -n '2,$p' "$memo")
+  [ "$stored" = "$last" ] || { rm -f "$memo"; return 0; }
+  printf '%s' "$class"
+}
+
+# The absorb class for a stale window, with hysteresis over a flickering
+# authoritative read. bin/fm-crew-state.sh answers from bounded external calls (a
+# no-mistakes status query, a backend probe, a remote endpoint), so the same crew
+# can read `working · run-step` on one poll and `unknown` minutes later while its
+# run is demonstrably live - observed 2026-08-26 on a validating task. `unknown`
+# is fm-crew-state.sh's own word for "I could not determine this", which is the
+# ABSENCE of evidence and never evidence of a wedge, so it must not flip a window
+# an ANSWERED read already classified absorbable.
+# This records the last answered class per window together with the status line
+# that justified it: an unanswered read reuses that record, any answered read
+# (including blocked and failed) replaces it, and a new status append drops it.
+# A window with no such record still surfaces on an unanswered read, so a
+# genuinely wedged crew that was never classified absorbable is never silenced by
+# a flicker, and a remembered `working` still carries its wedge timer.
+absorb_class_for_stale() {  # <window> <task>
+  local win=$1 task=$2 key memo last line class remembered
+  key=$(printf '%s' "$win" | tr ':/.' '___')
+  memo="$STATE/.absorb-class-$key"
+  last=$(last_status_line "$STATE/$task.status")
+  line=$(crew_state_line "$task")
+  class=$(absorb_class_of_state_line "$line")
+  if state_line_is_unanswered "$line"; then
+    remembered=$(remembered_absorb_class "$memo" "$last")
+    if [ -n "$remembered" ]; then
+      triage_log "current-state read unanswered, reusing the remembered $remembered class: $win"
+      printf '%s' "$remembered"
+      return
+    fi
+    printf '%s' "$class"
+    return
+  fi
+  case "$class" in
+    working|paused|parked|done) printf '%s\n%s\n' "$class" "$last" > "$memo" ;;
+    *) rm -f "$memo" ;;
+  esac
+  printf '%s' "$class"
+}
+
 # Reconcile a declared pause or captain-held status with authoritative crew state.
 # A worker-declared pause may only recover paused classification from a
 # confidently dead ordinary crew after fm-crew-state has fallen back to stopped
@@ -430,7 +490,7 @@ pause_state_class() {  # <window> <task>
   recheck_file="$STATE/.paused-rechecked-$key"
   if ! status_is_paused_or_captain_held "$last"; then
     rm -f "$recheck_file"
-    crew_absorb_class "$task"
+    absorb_class_for_stale "$win" "$task"
     return
   fi
   status_is_paused "$last" && held_transfer=0
@@ -446,7 +506,7 @@ pause_state_class() {  # <window> <task>
     printf 'paused'
     return
   fi
-  class=$(crew_absorb_class "$task")
+  class=$(absorb_class_for_stale "$win" "$task")
   if [ "$class" = working ]; then
     rm -f "$recheck_file"
     printf 'working'
@@ -460,7 +520,16 @@ pause_state_class() {  # <window> <task>
       return
     fi
   fi
-  [ "$class" = none ] && { [ "${agent_alive:-unknown}" = dead ] || [ "$held_transfer" -eq 1 ]; } && class=paused
+  # A declared pause or captain hold OUTRANKS the healthy-idle classes: parked and
+  # done both mean "a human holds the next step", which is exactly what the
+  # bounded pause cadence already owns for these two verbs, so they join `none`
+  # here rather than taking the no-cadence healthy-idle absorb below and dropping
+  # the .paused-* bookkeeping this verified path depends on.
+  case "$class" in
+    none|parked|done)
+      { [ "${agent_alive:-unknown}" = dead ] || [ "$held_transfer" -eq 1 ]; } && class=paused
+      ;;
+  esac
   case "$class" in
     paused) date +%s > "$recheck_file" ;;
     *) rm -f "$recheck_file" ;;
@@ -1115,17 +1184,32 @@ EOF
           # authoritative source fm-crew-state.sh itself already prioritizes
           # over the log) a chance to override before trusting the log.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
-            if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
-              printf '%s' "$h" > "$sf"
-              date +%s > "$ssf"
-              triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
-            else
-              fm_wake_append stale "$w" "stale: $w" || exit 1
-              printf '%s' "$h" > "$sf"
-              rm -f "$ssf"
-              mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
-              wake "stale: $w"
-            fi
+            case "$(absorb_class_for_stale "$w" "$task")" in
+              working)
+                printf '%s' "$h" > "$sf"
+                date +%s > "$ssf"
+                triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
+                ;;
+              parked|done)
+                # The authoritative state AGREES the crew stopped, and says a
+                # human holds the next step - the captain's decision at a gate,
+                # or the merge of delivered work. That wait is legitimately long,
+                # so no wedge timer is armed. Deliberately no mark_surfaced: the
+                # heartbeat's captain-relevant backstop stays free to re-surface
+                # the status line if the signal path never delivered it, which is
+                # what keeps this absorb from going blind.
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf" "$ewf"
+                triage_log "absorbed stale (healthy idle, a human holds the next step): $w"
+                ;;
+              *)
+                fm_wake_append stale "$w" "stale: $w" || exit 1
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                mark_surfaced "$STATE/$task.status"
+                wake "stale: $w"
+                ;;
+            esac
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a
             # wedge timer is running for it) - keep treating it that way
@@ -1146,6 +1230,14 @@ EOF
           #   - paused: the crew declared an external wait, or a declared pause or
           #     captain hold is paired with a confidently dead agent, so absorb on
           #     the long PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
+          #   - parked/done: the authoritative state says a human holds the next
+          #     step (a gate awaiting a decision, or delivered work awaiting the
+          #     merge), so the quiet pane is a healthy idle wait and is absorbed
+          #     with no wedge timer. The log's last line being non-terminal does
+          #     NOT contradict that: the crew's own log gets no new entry once
+          #     firstmate hands it to a validation, so a run that reached a gate
+          #     or went green after the crew's last `working:` note lands here,
+          #     not on the terminal path;
           #   - none: no running pipeline, no exact busy verdict, no declared pause.
           #     Surface immediately so firstmate inspects the inconclusive state
           #     (it may be done via an interactive menu that wrote no done: status,
@@ -1162,6 +1254,12 @@ EOF
                 ;;
               paused)
                 handle_paused_stale "$w" "$task" "$h"
+                ;;
+              parked|done)
+                clear_pause_tracking "$w"
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf" "$ewf"
+                triage_log "absorbed non-terminal stale (healthy idle, a human holds the next step): $w"
                 ;;
               *)
                 surface_nonterminal_stale "$w" "$h"

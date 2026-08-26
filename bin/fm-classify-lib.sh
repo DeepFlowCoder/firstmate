@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared wake classifier: the common source of truth for captain-relevant status
-# tests, declared-external-wait vocabulary, and the working/paused absorb
-# classification that makes no-verb signal and stale-pane wakes safe to absorb.
+# tests, declared-external-wait vocabulary, and the absorb classification that
+# makes no-verb signal and stale-pane wakes safe to absorb.
 # Sourced by BOTH the always-on watcher
 # (bin/fm-watch.sh) and the away-mode daemon (bin/fm-supervise-daemon.sh) so the
 # overlapping triage policy lives in one place instead of two copies that can
@@ -14,10 +14,11 @@
 # signatures).
 #
 # There are two documented exceptions. The absorb classification
-# (crew_absorb_class and its working/paused wrappers) is NOT a pure status-file
-# read: it reuses bin/fm-crew-state.sh, which may make a bounded no-mistakes call,
-# to decide whether a crew that just stopped its turn or went stale is working,
-# deliberately paused, or neither. Callers run it ONLY on no-verb signal handling
+# (crew_state_line, crew_absorb_class, and the working/paused wrappers) is NOT a
+# pure status-file read: it reuses bin/fm-crew-state.sh, which may make a bounded
+# no-mistakes call, to decide whether a crew that just stopped its turn or went
+# stale is working, deliberately paused, parked or done with a human holding its
+# next step, or none of those. Callers run it ONLY on no-verb signal handling
 # and first sighting of a stale hash, never on every wake, so the per-wake triage
 # stays cheap. status_open_decisions_incremental (see "incremental (cursor-backed)
 # open-decisions fold" below) also writes: it persists a per-status-file byte
@@ -1085,34 +1086,74 @@ signal_reason_is_actionable() {  # <file> ...
   return 1
 }
 
+# bin/fm-crew-state.sh's one authoritative current-state line for <id>
+# ("state: <s> · source: <src> · <detail>"), or nothing when the read produced
+# no parseable line at all.
+# NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
+# run it only on no-verb signal and first-sighting stale paths, never every wake.
+# FM_CREW_STATE_BIN lets tests stub the verdict. Split out from crew_absorb_class
+# so a caller that must ALSO know whether the source answered at all
+# (state_line_is_unanswered) pays for exactly one read, not two.
+crew_state_line() {  # <id>
+  local id=$1 line
+  [ -n "$id" ] || return 0
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) printf '%s' "$line" ;; esac
+}
+
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
-# from bin/fm-crew-state.sh's one authoritative current-state line
-# ("state: <s> · source: <src> · <detail>"). Prints exactly one token:
+# from an already-read current-state line. Prints exactly one token:
 #   working - an actively-running no-mistakes step (running/fixing/ci) or a busy
 #             pane; the crew is legitimately mid-work on a static-looking pane
 #             (e.g. waiting on CI);
 #   paused  - the crew's authoritative current state is a declared external-wait
 #             pause (paused:), which is EXPECTED to idle;
-#   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
+#   parked  - the crew is parked at a gate waiting on a human decision;
+#   done    - the crew delivered and is waiting for merge or approval;
+#   none    - neither, so the wake must surface (a stopped/failed/blocked/
 #             torn-down/unknown crew, or an unreadable verdict).
-# One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
-# authoritatively (not the status log) is what keeps run-step precedence: a crew
-# that appended paused: but then STARTED a run reports working, never paused.
-# NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it only on no-verb signal and first-sighting stale paths, never every wake.
-# FM_CREW_STATE_BIN lets tests stub the verdict.
-crew_absorb_class() {  # <id>
-  local id=$1 line state src
-  [ -n "$id" ] || { printf 'none'; return; }
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+# parked and done are authoritative healthy-idle states, not stuck and not going
+# to advance their pane while a human holds the next step, so a stale pane under
+# either must be absorbed, never surfaced as a possible wedge. The captain-relevant
+# line that put such a crew there is delivered by the signal path, and the
+# heartbeat's captain-relevant backstop re-surfaces it if it never was, so
+# absorbing the redundant stale wake loses no supervisor-actionable information.
+absorb_class_of_state_line() {  # <state-line>
+  local line=$1 state src
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
   state=${line#state: }; state=${state%% *}
-  if [ "$state" = paused ]; then printf 'paused'; return; fi
-  if [ "$state" = working ]; then
-    src=${line#*source: }; src=${src%% *}
-    case "$src" in run-step|pane) printf 'working'; return ;; esac
-  fi
+  case "$state" in
+    paused)      printf 'paused'; return ;;
+    parked|done) printf '%s' "$state"; return ;;
+    working)
+      src=${line#*source: }; src=${src%% *}
+      case "$src" in run-step|pane) printf 'working'; return ;; esac
+      ;;
+  esac
   printf 'none'
+}
+
+# 0 when a current-state line is a NON-ANSWER rather than a verdict: either no
+# parseable line came back, or fm-crew-state.sh reported `unknown`, which is its
+# own word for "I could not determine this" (no backend target, an unreadable
+# harness state, an unreachable remote endpoint, a bounded no-mistakes call that
+# did not answer). Absence of evidence is not evidence of a wedge, so callers
+# that hold an earlier ANSWERED verdict may keep it across such a read instead of
+# letting a flickering source reclassify a healthy crew. Every non-unknown state
+# is an answer, including blocked and failed, which must still surface.
+state_line_is_unanswered() {  # <state-line>
+  local line=$1 state
+  case "$line" in state:*) ;; *) return 0 ;; esac
+  state=${line#state: }; state=${state%% *}
+  [ "$state" = unknown ]
+}
+
+# One fm-crew-state.sh read classified in one call, for callers that need only the
+# class. Reading the state authoritatively (not the status log) is what keeps
+# run-step precedence: a crew that appended paused: but then STARTED a run reports
+# working, never paused.
+crew_absorb_class() {  # <id>
+  absorb_class_of_state_line "$(crew_state_line "$1")"
 }
 
 # 0 if crew <id> shows POSITIVE evidence it is still working (crew_absorb_class
@@ -1121,7 +1162,7 @@ crew_absorb_class() {  # <id>
 # ONLY when this returns 0, and SURFACED otherwise (the crew may be done, waiting
 # on a decision, or wedged). For stale panes it is checked before trusting the
 # status log so a pre-validation captain-relevant line does not override an active
-# run. See crew_absorb_class for the exact working/paused/none decision.
+# run. See crew_absorb_class for the exact absorb-class decision.
 crew_is_provably_working() {  # <id>
   [ "$(crew_absorb_class "$1")" = working ]
 }
