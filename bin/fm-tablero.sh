@@ -103,6 +103,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+BACKLOG="$DATA/backlog.md"
 
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
@@ -144,6 +146,17 @@ tasks_axi() {
 require_tasks_axi() {
   command -v tasks-axi >/dev/null 2>&1 || fail "tasks-axi is required to read the open decisions"
   fm_tasks_axi_compatible || fail "compatible tasks-axi is required (see bin/fm-tasks-axi-lib.sh)"
+}
+
+# A home whose backlog file is missing lists exactly like a home whose backlog is
+# empty: `tasks-axi list --state held` prints `count: 0` and exits 0 for both. So
+# without this guard, running from the wrong home drafts a confident "nothing to
+# serve" while every real decision sits open elsewhere. This board exists because
+# stalled decisions were invisible, so a false all-clear is its worst output;
+# refuse loudly instead, naming the home and the file that was looked for.
+require_backlog() {
+  [ -f "$BACKLOG" ] && [ -r "$BACKLOG" ] || fail \
+    "no readable backlog in this home, so an empty board would be a false all-clear: FM_HOME is $FM_HOME and the backlog looked for is $BACKLOG"
 }
 
 today() {
@@ -247,6 +260,7 @@ cmd_draft() {
     esac
   done
   require_tasks_axi
+  require_backlog
   [ -n "$out" ] || out="$FM_HOME/.lavish/tablero.draft.md"
   if [ -e "$out" ] && [ "$force" -ne 1 ]; then
     fail "draft already exists and may hold written judgment: $out (pass --force to replace it)"
@@ -308,7 +322,9 @@ EOF
     printf '#\n'
     printf '# Las tarjetas se pintan en el orden de este archivo. El orden que traen es\n'
     printf '# el mecanico; reordena los bloques "## decision" si tu juicio dice otra cosa.\n'
-    printf '# Una linea que empieza con # es comentario en todo el archivo.\n'
+    printf '# Una linea que empieza con un solo # es comentario en todo el archivo; una\n'
+    printf '# que empieza con ## es estructura, no comentario, y si no es un bloque\n'
+    printf '# conocido se pinta como texto.\n'
     printf '\n'
     printf '## pagina\n'
     printf 'titulo: %s Un titulo que diga de que trata la ronda.\n' "$HOLE"
@@ -626,6 +642,10 @@ END {
     exit 0
   }
 
+  # First bytes of the page, ahead of everything else: an exported standalone copy
+  # is opened over file:// with no Content-Type, where a browser otherwise falls
+  # back to a locale default and turns every accented Spanish word into mojibake.
+  print "<meta charset=\"utf-8\">"
   print "<title>" esc(titulo) "</title>"
   printf "%s", ENVIRON["TABLERO_CSS"]
   print "<div class=\"envoltura\">"
@@ -702,10 +722,14 @@ require_draft() {  # <path>
 
 # Every unfilled judgment hole, as `<line>:<text>`. Comment lines are skipped for
 # the same reason the grammar skips them: the header explains the marker and can
-# never be filled, so counting it would make the draft impossible to pass.
+# never be filled, so counting it would make the draft impossible to pass. The
+# skip is the grammar's own comment rule byte for byte, never a looser `^#`: to
+# the parser a `##` line is structure or prose and is rendered either way, so a
+# marker sitting on one is a real hole and skipping it would serve the page.
+# Every line of the generated header opens with a single hash, so it still skips.
 hole_hits() {  # <draft>
   awk -v hole="$HOLE" '
-    /^#/ { next }
+    /^#[^#]/ || /^#$/ { next }
     index($0, hole) > 0 { printf "%d:%s\n", NR, $0 }
   ' "$1"
 }

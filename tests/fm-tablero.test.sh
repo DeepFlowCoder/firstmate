@@ -117,10 +117,11 @@ PY
 
 # No hole left that the refusal would actually count. Comment lines are skipped
 # for the same reason the refusal skips them: the generated header explains the
-# marker and can never be filled. Cases that mean to reach a rule BEYOND the hole
-# refusal assert this first, so that rule cannot go quietly untested behind it.
+# marker and can never be filled. The rule is the grammar's own, so a line opening
+# with `##` is NOT a comment here either. Cases that mean to reach a rule BEYOND
+# the hole refusal assert this first, so that rule cannot go quietly untested.
 assert_no_countable_hole() {  # <draft> <message>
-  if grep -v '^#' "$1" | grep -qF 'TODO(firstmate):'; then
+  if grep -vE '^#([^#]|$)' "$1" | grep -qF 'TODO(firstmate):'; then
     fail "$2"
   fi
 }
@@ -456,6 +457,10 @@ test_page_carries_the_recommendation_and_the_warning() {
   assert_grep "<strong>Cambiar la agregacion.</strong>" "$page" \
     "written emphasis did not render"
   assert_grep "Medido: 0/60 en tres clases." "$page" "the evidence did not reach the page"
+  # An exported standalone copy is opened over file:// with no Content-Type to
+  # rely on, and the declaration only counts if the browser meets it first.
+  [ "$(head -1 "$page")" = '<meta charset="utf-8">' ] || fail \
+    "the page does not open by declaring utf-8, so an exported copy renders accented Spanish as mojibake"
   # Phone readability is the difference between dispatching twelve and none.
   assert_grep 'name="viewport"' "$page" "the page has no viewport, so a phone will zoom out"
   assert_grep "max-width:44rem" "$page" "the page is not the single narrow column a phone needs"
@@ -489,12 +494,104 @@ test_page_escapes_recorded_evidence() {
   pass "recorded evidence and written prose render as text, never as markup"
 }
 
+# Submit the generated page's own form for real. The page's `<script>` is executed
+# under node against a stub `window.lavish` that captures what it queues, so the
+# payload every downstream step is fed comes from the page itself rather than from
+# a fixture restating the shape it is supposed to have. Renaming a data key inside
+# the emitted script therefore changes what this returns.
+queued_payload() {  # <page> -> echoes the captured payload as one JSON object
+  PAGE="$1" node <<'JS'
+const fs = require('fs');
+const vm = require('vm');
+const html = fs.readFileSync(process.env.PAGE, 'utf8');
+
+const attributes = (tag) => {
+  const out = {};
+  for (const m of tag.matchAll(/([A-Za-z-]+)="([^"]*)"/g)) out[m[1]] = m[2];
+  return out;
+};
+
+const script = html.match(/<script>([\s\S]*?)<\/script>/);
+if (!script) { console.error('the page carries no script to execute'); process.exit(1); }
+const formTag = html.match(/<form\b[^>]*>/);
+if (!formTag) { console.error('the page carries no form to submit'); process.exit(1); }
+
+const attrs = attributes(formTag[0]);
+const body = html.slice(formTag.index, html.indexOf('</form>', formTag.index));
+const radios = [...body.matchAll(/<input\b[^>]*>/g)].map((m) => {
+  const a = attributes(m[0]);
+  return { name: a.name, value: a.value, checked: false };
+});
+if (!radios.length) { console.error('the form offers nothing to choose'); process.exit(1); }
+radios[0].checked = true;
+
+const estado = { textContent: '' };
+const form = {
+  getAttribute: (name) => (name in attrs ? attrs[name] : null),
+  querySelector: (sel) => (sel === '[data-estado]' ? estado : null),
+  radios,
+};
+
+const captured = [];
+globalThis.FormData = class {
+  constructor(f) { this.form = f; }
+  get(name) {
+    const hit = this.form.radios.find((r) => r.name === name && r.checked);
+    return hit ? hit.value : null;
+  }
+};
+globalThis.window = { lavish: { queuePrompt: (prompt, opts) => captured.push({ prompt, opts }) } };
+vm.runInThisContext(script[1]);
+
+encolar(form);
+if (captured.length !== 1) {
+  console.error(`one submit queued ${captured.length} prompt(s), expected exactly 1`);
+  process.exit(1);
+}
+const q = captured[0];
+process.stdout.write(JSON.stringify({
+  prompt: q.prompt,
+  tag: q.opts.tag,
+  text: q.opts.text,
+  queueKey: q.opts.queueKey,
+  data: q.opts.data,
+  estado: estado.textContent,
+}));
+JS
+}
+
+# Write the captured payload as Lavish publishes a captured result: one CSV row
+# per queued prompt, whose `prompt` field carries the queued text followed by the
+# queued `data` object under `Context data:`. Only the framing is restated here;
+# every value in it came out of the executed page.
+write_captured_result() {  # <payload-json> <page> <result-path>
+  python3 - "$@" <<'PY'
+import json, sys
+payload, page, dest = sys.argv[1:4]
+q = json.loads(payload)
+prompt = q['prompt'] + '\n\nContext data:\n' + json.dumps(q['data'], indent=2)
+
+
+def field(value):
+    return '"%s"' % str(value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+
+
+row = ','.join(field(v) for v in ('2', prompt, 'form', q['tag'], q['text']))
+with open(dest, 'w') as fh:
+    fh.write('session:\n  file: %s\n  status: feedback\n  session_ended: true\n' % page)
+    fh.write('prompts[1]{uid,prompt,selector,tag,text}:\n')
+    fh.write('  %s\n' % row)
+PY
+}
+
 # The whole point of generating the page instead of hand-writing it: the form's
 # payload is the shape the review adapter already reads, so the captain's answer
-# closes its own hold with no hand translation. This drives the REAL adapter and
-# the REAL keyed-answer intake, keyed by the page's own emitted values.
+# closes its own hold with no hand translation. This drives the page's REAL form
+# script, the REAL adapter and the REAL keyed-answer intake, end to end.
 test_answer_from_the_generated_form_closes_its_hold() {
-  local home page clave valor result sid show fed
+  local home page clave valor result sid show fed payload
+  command -v node >/dev/null 2>&1 \
+    || fail "node is required to run the generated page's own form script"
   home=$(make_home ciclo)
   page=$(build_full_board "$home") || fail "could not build a fully written board"
   # The investigation that raised the decision, as the completion gate expects to
@@ -505,29 +602,24 @@ test_answer_from_the_generated_form_closes_its_hold() {
 
   # Everything below is read out of the generated page, never restated here: if
   # the page stops emitting the adapter's shape, this test has nothing to feed.
-  assert_grep "tag: 'choice'" "$page" \
-    "the form does not queue the choice payload the review adapter reads"
   clave=$(sed -n 's/.*data-clave="\([^"]*\)".*/\1/p' "$page" | head -1)
   valor=$(sed -n 's/.*<input type="radio" name="op" value="\([^"]*\)".*/\1/p' "$page" | head -1)
   [ -n "$clave" ] && [ -n "$valor" ] || fail "the page emitted no keyed choice to answer"
   [ "$clave" = corte ] || fail "the form is keyed by '$clave', not by the hold's decision key"
 
-  # The captured result, in the published response shape, carrying exactly the
-  # key and the answer value this page emitted.
+  # Submitting the page's own form is what produces the payload from here on.
+  payload=$(queued_payload "$page") \
+    || fail "submitting the generated form did not queue an answer through window.lavish"
   sid=tablero-src
   mkdir -p "$home/state/procevent-inbox"
   result="$home/state/procevent-inbox/$sid.1.result"
-  {
-    printf 'session:\n  file: %s\n  status: feedback\n  session_ended: true\n' "$page"
-    printf 'prompts[1]{uid,prompt,selector,tag,text}:\n'
-    printf '  "2","%s -> %s\\n\\nContext data:\\n{\\n  \\"question\\": \\"%s\\",\\n  \\"answer\\": \\"%s\\"\\n}","form",choice,"%s: %s"\n' \
-      "$clave" "$valor" "$clave" "$valor" "$clave" "$valor"
-  } > "$result"
+  write_captured_result "$payload" "$page" "$result" \
+    || fail "could not write the captured payload as a Lavish result"
 
   fed=$(run_lavish "$home" answers "$result") \
     || fail "the review adapter could not read the generated form's answer"
   assert_contains "$fed" "$clave	$valor" \
-    "the adapter did not read the page's own key and answer back out"
+    "the adapter read nothing out of what the form actually queued, so the page's payload no longer carries the key and answer the adapter reads"
 
   # Bind the page to its origin the way the script's header prescribes, then feed
   # the adapter's keyed lines into the one intake that closes holds.
@@ -752,6 +844,66 @@ test_evidence_that_would_read_as_grammar_becomes_a_hole() {
   pass "recorded evidence that would read as grammar comes back as a hole, text intact"
 }
 
+# The hole refusal has to be enforced on exactly the bytes the grammar parses. To
+# the grammar a `##` line naming no known block is ordinary prose, painted onto
+# the card like any other line, so a marker sitting on one is a real unfilled
+# hole. A refusal that skipped every line opening with a hash would let that
+# marker through check and render and print it on the captain's page.
+test_a_hole_on_a_structure_line_is_still_refused() {
+  local home draft page rc out
+  home=$(make_home hueco-estructura)
+  seed_decision "$home" inv-uno corte "Una decision" "Su evidencia." >/dev/null
+  run_tablero "$home" draft >/dev/null || fail "draft failed"
+  draft="$home/.lavish/tablero.draft.md"
+  page="$home/.lavish/tablero.html"
+  fill_page_judgment "$draft" "Una decision suya" "Lleva una semana parada." ninguna
+  fill_decision_judgment "$draft" inv-uno-decision-corte "Cuesta una tarea parada." \
+    "Cambiar la agregacion|Cambiar la agregacion." "Bajar el corte|Bajar el corte."
+  # Every generated hole is filled first, so nothing but the line added next can
+  # be what the refusal catches.
+  assert_no_countable_hole "$draft" \
+    "this case must leave no other hole, or the refusal it asserts proves nothing"
+  python3 - "$draft" <<'PYIN'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace('Cambiar la agregacion.\n',
+              'Cambiar la agregacion.\n## Opcion recomendada: TODO(firstmate): escribir cual.\n', 1)
+open(p, 'w').write(s)
+PYIN
+
+  out=$(run_tablero "$home" check "$draft" 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "check accepted a judgment hole sitting on a ## line"
+  assert_contains "$out" "unfilled TODO(firstmate):" \
+    "the refusal did not name the judgment still unwritten"
+  out=$(run_tablero "$home" render "$draft" 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "render served a page carrying an unfilled judgment hole"
+  assert_absent "$page" "render left a page carrying the raw marker behind after refusing"
+  pass "a judgment hole on a ## line is refused, because the grammar paints that line as prose"
+}
+
+# `tasks-axi list --state held` answers a home whose backlog file is absent
+# exactly as it answers a home with nothing held: `count: 0`, exit 0. Drafting an
+# all-clear from that is this tool's worst possible output, because it says the
+# captain has nothing waiting while every real decision sits open in the home it
+# never read. The healthy empty case above must keep working unchanged, so the
+# two are only useful if they are distinguishable, and they are: this one refuses.
+test_draft_refuses_a_home_whose_backlog_it_cannot_read() {
+  local home out rc
+  home=$(make_home sin-backlog)
+  rm -f "$home/data/backlog.md"
+  out=$(run_tablero "$home" draft 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "draft reported an all-clear for a home whose backlog it never read"
+  assert_not_contains "$out" "decisiones: 0" \
+    "draft counted the decisions of a backlog it could not read"
+  assert_contains "$out" "$home/data/backlog.md" \
+    "the refusal did not name the backlog file it looked for"
+  assert_contains "$out" "FM_HOME is $home" "the refusal did not name the home it read"
+  assert_absent "$home/.lavish/tablero.draft.md" \
+    "draft wrote a board out of a backlog it could not read"
+  pass "a home whose backlog cannot be read is refused, never reported as having nothing open"
+}
+
 test_draft_finds_every_captain_hold_whatever_its_kind
 test_draft_orders_by_stopped_work_not_by_date
 test_draft_ranks_parked_work_above_mere_waiting
@@ -769,4 +921,6 @@ test_render_warns_when_a_page_spans_several_origins
 test_render_says_a_decision_with_no_origin_will_not_close_itself
 test_a_waiting_decision_renders_without_a_form
 test_page_refuses_one_key_under_two_origins
+test_a_hole_on_a_structure_line_is_still_refused
 test_no_open_decisions_drafts_nothing_to_serve
+test_draft_refuses_a_home_whose_backlog_it_cannot_read
