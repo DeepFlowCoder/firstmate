@@ -24,7 +24,7 @@
 #
 # Stability: this suite measured green in the task worktree and in CI, which is
 # what was measured and not a claim that it cannot flake anywhere.
-# The task-worktree measurement is 130 consecutive runs with zero failures
+# The task-worktree measurement is 133 consecutive runs with zero failures
 # against main a66422d on 2026-08-26, made up of 30 serial, 75 across three
 # concurrent loops on a deliberately loaded machine, 5 environment variants
 # (TMPDIR=/tmp, LC_ALL=C, LC_ALL=en_US.UTF-8, PATH without tasks-axi,
