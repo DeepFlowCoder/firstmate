@@ -650,7 +650,12 @@ test_render_says_a_decision_with_no_origin_will_not_close_itself() {
     "Subir el alcance|Subir el alcance." "Dejarlo|Dejarlo."
   fill_decision_judgment "$draft" fm-rio-arriba "Cuesta esto otro." \
     "Publicarlos|Publicarlos." "Guardarlos|Guardarlos."
-  assert_grep "origen: " "$draft" "the draft records no origin field at all"
+  # The fixture only means something if one decision really came through with an
+  # empty origin and the other with a real one.
+  grep -q '^origen: *$' "$draft" || fail \
+    "no decision reached the board without an origin, so this case tests nothing"
+  assert_grep "origen: inv-uno" "$draft" \
+    "no decision reached the board WITH an origin, so the kept promise is untested"
 
   out=$(run_tablero "$home" render "$draft") || fail "render refused a legitimate board"
   assert_contains "$out" "no traen origen registrado" \
