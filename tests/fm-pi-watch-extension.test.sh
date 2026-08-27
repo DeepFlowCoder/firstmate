@@ -430,7 +430,13 @@ trap 'exit 0' TERM INT
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  # Each hung arm records itself only once its own cold start reaches the script
+  # above, and the extension SIGTERMs an arm the moment the readiness budget
+  # runs out. So that budget has to stay well above a `bash -l` cold start, for
+  # the same reason production defaults it to 12s: squeezed too close, a slow
+  # but real start is killed before it records, and the arm count comes up short
+  # for a reason that has nothing to do with the recovery being tested.
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=5000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -454,9 +460,13 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
+// Restoration deliberately waits out the readiness budget once per attempt, so
+// this has to outlast three of them by a wide margin; a bound near the expected
+// duration would report a merely slow machine as a lost wake.
+for (let i = 0; i < 6000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
+if (!prompt) throw new Error("bounded restoration never delivered a wake");
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -470,8 +480,10 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery"
+  # Output first: a thrown assertion lands in $out, so checking the bare exit
+  # code first would discard the only account of what actually went wrong.
   [ -z "$out" ] || fail "Pi hung-successor test printed output: $out"
+  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery"
   pass "Pi hung successor falls back to one typed actionable wake"
 }
 
@@ -1605,7 +1617,9 @@ trap 'exit 0' TERM INT
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  # Same cold-start budget reasoning as the Pi hung-successor case above: an arm
+  # killed before its own start reaches the script never records itself.
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=2000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=5000 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1629,9 +1643,11 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
+// Outlasts three readiness budgets by a wide margin; see the Pi case above.
+for (let i = 0; i < 6000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
+if (!prompt) throw new Error("bounded restoration never delivered a wake");
 const rows = existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
@@ -1645,8 +1661,9 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery"
+  # Output first, for the same reason as the Pi hung-successor case above.
   [ -z "$out" ] || fail "OpenCode hung-successor test printed output: $out"
+  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery"
   pass "OpenCode hung successor falls back to one typed actionable wake"
 }
 
