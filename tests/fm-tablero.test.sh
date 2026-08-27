@@ -495,10 +495,13 @@ test_page_escapes_recorded_evidence() {
 }
 
 # Submit the generated page's own form for real. The page's `<script>` is executed
-# under node against a stub `window.lavish` that captures what it queues, so the
-# payload every downstream step is fed comes from the page itself rather than from
-# a fixture restating the shape it is supposed to have. Renaming a data key inside
-# the emitted script therefore changes what this returns.
+# under node, and the submission is driven through the `onsubmit` the page emits,
+# against a stub `window.lavish` that captures what it queues. So the path
+# exercised is the one the captain's Encolar button really takes, and the payload
+# every downstream step is fed comes from the page itself rather than from a
+# fixture restating the shape it is supposed to have. Cutting the handler out of
+# the form, or renaming a data key inside the emitted script, changes what this
+# returns rather than leaving it green over a page that queues nothing.
 queued_payload() {  # <page> -> echoes the captured payload as one JSON object
   PAGE="$1" node <<'JS'
 const fs = require('fs');
@@ -543,7 +546,22 @@ globalThis.FormData = class {
 globalThis.window = { lavish: { queuePrompt: (prompt, opts) => captured.push({ prompt, opts }) } };
 vm.runInThisContext(script[1]);
 
-encolar(form);
+if (!attrs.onsubmit) {
+  console.error('the form emits no onsubmit handler, so its Encolar button does nothing');
+  process.exit(1);
+}
+let prevented = 0;
+try {
+  const onsubmit = vm.runInThisContext(`(function (event) { ${attrs.onsubmit} })`);
+  onsubmit.call(form, { preventDefault: () => { prevented += 1; } });
+} catch (e) {
+  console.error(`submitting the form threw, so its onsubmit reaches nothing: ${e.message}`);
+  process.exit(1);
+}
+if (prevented !== 1) {
+  console.error(`submitting the form prevented its default ${prevented} time(s), expected exactly 1`);
+  process.exit(1);
+}
 if (captured.length !== 1) {
   console.error(`one submit queued ${captured.length} prompt(s), expected exactly 1`);
   process.exit(1);
