@@ -46,11 +46,17 @@
 # status presentation: driving that script against a fresh state dir holding one
 # open decision, 4 of 40 and 1 of 60 invocations exited 0 with completely empty
 # stdout.
-# The abort point is bin/fm-classify-lib.sh:617, where the line
+# The abort point is the guarded size read inside status_presentation_snapshot
+# in bin/fm-classify-lib.sh, the line
 #   size=$(_fm_status_file_size "$f") || return 1
-# in status_presentation_snapshot gives up when that subshell exits nonzero
-# despite printing the correct size, and bin/fm-wake-drain.sh:334 then discards
-# that failure.
+# which gives up when that subshell exits nonzero despite printing the correct
+# size.
+# The failure it returns is then swallowed by the two
+# (print_status_presentation ...) || true discards in bin/fm-wake-drain.sh.
+# Those two constructs are the durable anchors, and as of this commit they sit
+# at bin/fm-classify-lib.sh:623 and at bin/fm-wake-drain.sh:286 and :338, so
+# treat a later drift in those numbers as expected and search for the
+# constructs.
 # That defect is tracked as separate work and is deliberately not addressed
 # here.
 # So a drain-dependent failure of this suite should be attributed to that drain
