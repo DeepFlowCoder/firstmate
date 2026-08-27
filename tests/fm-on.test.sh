@@ -32,9 +32,6 @@ fm_on_stop_worker_tree() {
     '' | *[!0-9]*) ;;
     *) fm_remote_job_stop_worker_tree "$pid" || true ;;
   esac
-  # TMP_ROOT was physicalized above, so remove it here as well as through the
-  # library's registry, which recorded the pre-physicalized path.
-  rm -rf -- "$TMP_ROOT"
 }
 fm_test_exit_trap fm_on_stop_worker_tree
 LOCAL_HOME="$TMP_ROOT/local-home"

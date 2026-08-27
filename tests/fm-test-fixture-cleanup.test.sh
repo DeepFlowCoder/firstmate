@@ -208,9 +208,9 @@ test_exit_trap_preserves_the_verdict_through_failing_teardown() {
 
   rc=0
   run_teardown_child "$child" "$LIB" "$dirfile" "$locked" helper pass || rc=$?
+  chmod 700 "$locked"
   [ -s "$dirfile" ] || fail "the child never published its fixture root"
   child_root=$(cat "$dirfile")
-  chmod 700 "$locked"
   [ "$rc" -eq 0 ] || fail "a passing run was turned into exit $rc by its failing teardown: $CHILD_OUT"
   assert_contains "$CHILD_OUT" "ALL TESTS PASSED" "the passing child did not reach its own verdict"
   assert_absent "$child_root" "fm_test_exit_trap skipped the library teardown it must still run"
@@ -229,9 +229,9 @@ test_exit_trap_keeps_a_real_failure_nonzero() {
 
   rc=0
   run_teardown_child "$child" "$LIB" "$dirfile" "$locked" helper fail || rc=$?
+  chmod 700 "$locked"
   [ -s "$dirfile" ] || fail "the child never published its fixture root"
   child_root=$(cat "$dirfile")
-  chmod 700 "$locked"
   [ "$rc" -ne 0 ] || fail "a failing assertion was swallowed into exit 0: $CHILD_OUT"
   assert_contains "$CHILD_OUT" "not ok" "the failing child did not report its failure"
   assert_absent "$child_root" "fm_test_exit_trap skipped the library teardown on the failing path"
@@ -250,13 +250,41 @@ test_hand_rolled_trap_shows_the_inversion_the_helper_removes() {
 
   rc=0
   run_teardown_child "$child" "$LIB" "$dirfile" "$locked" hand-rolled pass || rc=$?
+  chmod 700 "$locked"
   [ -s "$dirfile" ] || fail "the child never published its fixture root"
   child_root=$(cat "$dirfile")
-  chmod 700 "$locked"
   [ "$rc" -ne 0 ] || fail "the hand-rolled trap no longer inverts a passing verdict, so the helper cases above prove nothing"
   assert_contains "$CHILD_OUT" "ALL TESTS PASSED" "the hand-rolled child did not reach its own verdict before the inversion"
   rm -rf -- "$child_root"
   pass "the hand-rolled EXIT trap inverts a passing verdict, which fm_test_exit_trap is what removes"
+}
+
+# Swallowing teardown errors is only safe while a teardown that never ran at
+# all still fails loudly, so this pins the arm-time check: a cleanup name that
+# is not callable must stop the file at the point of the mistake rather than
+# leave the worker or session it was meant to reap behind a green verdict.
+test_exit_trap_rejects_an_uncallable_cleanup_name() {
+  local harness child rc out
+  harness=$(fm_test_tmproot fm-test-exit-trap-badname-harness)
+  child="$harness/child.sh"
+  cat > "$child" <<'CHILD'
+#!/usr/bin/env bash
+set -u
+# shellcheck source=tests/lib.sh
+. "$FM_CHILD_LIB"
+fm_test_exit_trap fm_child_taerdown_typo
+printf 'ALL TESTS PASSED\n'
+CHILD
+  chmod +x "$child"
+
+  rc=0
+  out=$(FM_CHILD_LIB="$LIB" "$child" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "arming fm_test_exit_trap with an undefined cleanup name was accepted: $out"
+  assert_contains "$out" "fm_child_taerdown_typo" \
+    "the arm-time rejection did not name the uncallable cleanup"
+  assert_not_contains "$out" "ALL TESTS PASSED" \
+    "the child kept running after arming a cleanup that could never be invoked"
+  pass "fm_test_exit_trap rejects an uncallable cleanup name at arm time"
 }
 
 test_fixture_root_gone_after_normal_exit
@@ -267,3 +295,4 @@ test_orphan_sweep_respects_fixture_ownership
 test_exit_trap_preserves_the_verdict_through_failing_teardown
 test_exit_trap_keeps_a_real_failure_nonzero
 test_hand_rolled_trap_shows_the_inversion_the_helper_removes
+test_exit_trap_rejects_an_uncallable_cleanup_name

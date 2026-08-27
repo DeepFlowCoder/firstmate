@@ -68,8 +68,9 @@ pass() {
 #
 # fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
 # on EXIT/INT/TERM. A test file that needs extra teardown (e.g. killing a
-# daemon) should define its own EXIT trap and call fm_test_cleanup from inside
-# it so registered dirs are still removed.
+# daemon) should arm fm_test_exit_trap (below) with its own cleanup function
+# rather than hand-rolling an EXIT trap, so registered dirs are still removed
+# and a failing teardown cannot invert the file's verdict.
 #
 # The call site is almost always `TMP_ROOT=$(fm_test_tmproot prefix)`, which
 # forks a subshell to capture stdout. Anything that function does to the
@@ -150,6 +151,11 @@ trap 'fm_test_cleanup; exit 143' TERM
 # with the verdict it captured. Teardown diagnostics still reach stderr; they
 # just cannot manufacture a failure, and a real fail() still exits nonzero.
 # Teardown that must be enforced belongs in an assertion, not in the trap.
+#
+# The one thing swallowing teardown errors must not hide is a teardown that
+# never ran at all, so the name is resolved at arm time and a name that is not
+# callable there fails immediately. Otherwise a typo would leak the very worker
+# or session the file armed the trap to reap, behind a green suite.
 FM_TEST_EXTRA_CLEANUP=
 
 _fm_test_exit_trap() {
@@ -160,6 +166,9 @@ _fm_test_exit_trap() {
 }
 
 fm_test_exit_trap() {  # [<extra-cleanup-function>]
+  if [ -n "${1:-}" ] && ! command -v "$1" > /dev/null 2>&1; then
+    fail "fm_test_exit_trap: cleanup '$1' is not defined at arm time"
+  fi
   FM_TEST_EXTRA_CLEANUP=${1:-}
   trap _fm_test_exit_trap EXIT
 }
