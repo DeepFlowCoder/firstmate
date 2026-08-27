@@ -607,6 +607,48 @@ test_render_warns_when_a_page_spans_several_origins() {
   pass "render warns plainly when a board spans more origins than one binding covers"
 }
 
+# A captain hold on an ordinary task carries no origin, so no binding can reach
+# it and its answer will never close itself. Saying nothing there is worse than
+# saying nothing about several origins: the page would be served under the note
+# that promises the opposite.
+test_render_says_a_decision_with_no_origin_will_not_close_itself() {
+  local home draft out
+  home=$(make_home sin-origen)
+  seed_decision "$home" inv-uno alcance "La del alcance" "Evidencia del alcance." >/dev/null
+  axi "$home" add fm-rio-arriba --title "Como entregar los defectos rio arriba" \
+    --repo firstmate >/dev/null
+  axi "$home" hold fm-rio-arriba --reason "Publica codigo bajo su identidad." \
+    --kind captain >/dev/null
+  run_tablero "$home" draft >/dev/null || fail "draft failed"
+  draft="$home/.lavish/tablero.draft.md"
+  fill_page_judgment "$draft" "Dos decisiones" "Las dos llevan una semana." ninguna
+  fill_decision_judgment "$draft" inv-uno-decision-alcance "Cuesta esto." \
+    "Subir el alcance|Subir el alcance." "Dejarlo|Dejarlo."
+  fill_decision_judgment "$draft" fm-rio-arriba "Cuesta esto otro." \
+    "Publicarlos|Publicarlos." "Guardarlos|Guardarlos."
+  assert_grep "origen: " "$draft" "the draft records no origin field at all"
+
+  out=$(run_tablero "$home" render "$draft") || fail "render refused a legitimate board"
+  assert_contains "$out" "no traen origen registrado" \
+    "render stayed silent about an answer that no binding can ever close"
+  assert_contains "$out" "NO se cierran" "the warning did not say what will not happen"
+  assert_not_contains "$out" "las respuestas cierran solas" \
+    "render still promised that every answer on this page closes itself"
+
+  # And the promise must survive where it is true, or the warning above would have
+  # been bought by silencing the note everywhere.
+  home=$(make_home con-origen)
+  seed_decision "$home" inv-uno alcance "La del alcance" "Evidencia del alcance." >/dev/null
+  run_tablero "$home" draft >/dev/null || fail "draft failed"
+  draft="$home/.lavish/tablero.draft.md"
+  fill_page_judgment "$draft" "Una decision" "Lleva una semana." ninguna
+  fill_decision_judgment "$draft" inv-uno-decision-alcance "Cuesta esto." \
+    "Subir el alcance|Subir el alcance." "Dejarlo|Dejarlo."
+  out=$(run_tablero "$home" render "$draft") || fail "render refused a legitimate board"
+  assert_contains "$out" "las respuestas cierran solas" \
+    "render no longer says that a bound single-origin page closes its own answers"
+  pass "render says plainly which answers no binding can close, and still promises the ones it can"
+}
 
 # A bound origin closes `<origin>-decision-<clave>`, so the same clave under two
 # origins is a page that could close the wrong captain decision.
@@ -655,11 +697,37 @@ test_no_open_decisions_drafts_nothing_to_serve() {
   pass "a home with no open decisions drafts nothing servable and says so"
 }
 
+# A recorded reason is arbitrary prose and may open with a hash. Carried verbatim
+# that line stops being evidence and becomes grammar - a comment, or a structure
+# line that silently splits the decision in two - and no written judgment can then
+# make the draft servable. The generator must hand it back as a named hole with
+# the text intact, not emit a draft that is already unusable.
+test_evidence_that_would_read_as_grammar_becomes_a_hole() {
+  local home draft rc out
+  home=$(make_home gramatica)
+  seed_decision "$home" inv-uno corte "Una decision" "## decision falsa-inyectada" >/dev/null
+  run_tablero "$home" draft >/dev/null || fail "draft failed"
+  draft="$home/.lavish/tablero.draft.md"
+  # Anchored, so it must be a real grep: assert_no_grep is fixed-string and would
+  # read the caret as a literal that can never match.
+  if grep -q '^## decision falsa-inyectada' "$draft"; then
+    fail "recorded evidence became a structure line and split the board into a phantom decision"
+  fi
+  assert_grep "## decision falsa-inyectada" "$draft" \
+    "the recorded evidence was dropped instead of handed back to be rewritten"
+  assert_grep "empieza con #" "$draft" "the draft did not say why the evidence needs rewriting"
+  out=$(run_tablero "$home" check "$draft" 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "a draft whose evidence still needs rewriting was accepted"
+  assert_contains "$out" "unfilled TODO(firstmate):" \
+    "the refusal blamed something other than the evidence still waiting to be rewritten"
+  pass "recorded evidence that would read as grammar comes back as a hole, text intact"
+}
 
 test_draft_finds_every_captain_hold_whatever_its_kind
 test_draft_orders_by_stopped_work_not_by_date
 test_draft_ranks_parked_work_above_mere_waiting
 test_draft_refuses_to_overwrite_written_judgment
+test_evidence_that_would_read_as_grammar_becomes_a_hole
 test_unfilled_judgment_refuses_and_serves_no_page
 test_each_judgment_hole_is_separately_required
 test_declaring_no_interaction_is_an_answer_not_a_hole
@@ -668,6 +736,7 @@ test_page_escapes_recorded_evidence
 test_answer_from_the_generated_form_closes_its_hold
 test_prose_that_would_be_swallowed_as_a_comment_refuses
 test_render_warns_when_a_page_spans_several_origins
+test_render_says_a_decision_with_no_origin_will_not_close_itself
 test_a_waiting_decision_renders_without_a_form
 test_page_refuses_one_key_under_two_origins
 test_no_open_decisions_drafts_nothing_to_serve

@@ -52,7 +52,9 @@
 # back as `skipped:` from that intake and still need a close command by hand;
 # `render` prints which origins a page carries so that is visible before serving
 # it, and refuses a page where one decision key appears under two origins,
-# because a bound origin could otherwise close the wrong hold.
+# because a bound origin could otherwise close the wrong hold. A plain
+# captain-gated task carries no origin at all, so no binding can ever cover it;
+# `render` counts those separately rather than promising answers close themselves.
 #
 # WHAT IT READS.
 # `tasks-axi list --state held` in the active FM_HOME, filtered to the holds
@@ -74,6 +76,8 @@
 # block that is a refusal rather than a silent drop, because quietly deleting a
 # line of the recommendation is the degradation this whole board exists to stop.
 # Everything else is a `field: value` line inside a block, or prose.
+# Recorded evidence is carried data, not prose its author can be asked to reword,
+# so `draft` hands back a hole carrying the text whenever a reason opens with `#`.
 #
 #   ## pagina          titulo:, bajada:
 #   ## aviso           prose, or the single word `ninguna`
@@ -335,11 +339,20 @@ EOF
         [ "$blocked" -eq 0 ] || printf 'etiqueta: para %s tarea(s)\n' "$blocked"
         [ -z "$until" ] || [ "$until" = '-' ] || printf 'etiqueta: se suelta sola el %s\n' "$until"
         printf '### evidencia\n'
-        if [ -s "$tmp/evidence.$id" ]; then
-          cat "$tmp/evidence.$id"
+        if [ ! -s "$tmp/evidence.$id" ]; then
+          printf '%s Sin razon registrada en el pendiente; pega aqui la evidencia.\n' "$HOLE"
+        elif head -1 "$tmp/evidence.$id" | grep -q '^#'; then
+          # A recorded reason opening with a hash cannot be carried verbatim: the
+          # grammar would read it as a comment, or as a whole structure line that
+          # silently splits this decision in two. Hand it back as a hole with the
+          # text intact rather than emitting a draft no written judgment can save.
+          printf '%s la evidencia registrada empieza con # y la gramatica la ' "$HOLE"
+          printf 'leeria como estructura; reescribela aqui sin ese # inicial. Dice: '
+          tr '\n' ' ' < "$tmp/evidence.$id"
           printf '\n'
         else
-          printf '%s Sin razon registrada en el pendiente; pega aqui la evidencia.\n' "$HOLE"
+          cat "$tmp/evidence.$id"
+          printf '\n'
         fi
         printf '### porque\n'
         printf '%s Por que esta decision le cuesta al capitan hoy, en una o dos frases.\n' "$HOLE"
@@ -599,6 +612,9 @@ END {
       err("clave `" clave[i] "` appears under two origins (`" seen_origin[clave[i]] "` and `" origen[i] "`)")
     seen_origin[clave[i]] = origen[i]
     if (origen[i] != "" && !(origen[i] in origins)) { origins[origen[i]] = 1; norigins++ }
+    # An answerable decision with no origin is covered by no binding at all. Only
+    # `activa` counts: an `espera` card carries no form, so nothing comes back.
+    if (grupo[i] == "activa" && origen[i] == "") nsinorigen++
   }
 
   if (errors > 0) exit 1
@@ -606,6 +622,7 @@ END {
   if (mode == "check") {
     printf "ok: %d decision(s), %d origin(s)\n", dn, norigins
     for (o in origins) printf "origin: %s\n", o
+    printf "sin-origen: %d\n", nsinorigen + 0
     exit 0
   }
 
@@ -714,7 +731,7 @@ cmd_check() {
 }
 
 cmd_render() {
-  local draft='' out='' base summary origins
+  local draft='' out='' base summary origins sinorigen
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --out) [ "$#" -gt 1 ] || fail "--out requires a path"; out=$2; shift 2 ;;
@@ -738,11 +755,18 @@ cmd_render() {
   summary=$(draft_awk check "$draft") || exit 1
   printf '%s\n' "$summary" | grep '^origin: ' || true
   origins=$(printf '%s\n' "$summary" | grep -c '^origin: ' || true)
+  sinorigen=$(printf '%s\n' "$summary" | sed -n 's/^sin-origen: //p')
+  sinorigen=${sinorigen:-0}
+  if [ "$sinorigen" -gt 0 ]; then
+    printf 'aviso: %s decision(es) de esta pagina no traen origen registrado.\n' "$sinorigen"
+    printf '       ninguna vinculacion las alcanza; sus respuestas NO se cierran\n'
+    printf '       solas, cierralas con bin/fm-decision-hold.sh una por una.\n'
+  fi
   if [ "$origins" -gt 1 ]; then
     printf 'aviso: esta pagina lleva %s origenes y una vinculacion nombra solo uno.\n' "$origins"
     printf '       las respuestas de los otros origenes NO se cierran solas; cierralas\n'
     printf '       con bin/fm-decision-hold.sh una por una.\n'
-  else
+  elif [ "$origins" -eq 1 ] && [ "$sinorigen" -eq 0 ]; then
     printf 'nota: vinculala a su origen antes de armarla y las respuestas cierran solas.\n'
   fi
 }
