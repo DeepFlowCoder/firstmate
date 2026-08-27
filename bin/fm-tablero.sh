@@ -498,7 +498,12 @@ JS
 
 # --- the one draft parser, shared by check and render -----------------------
 
-AWK_PROG=$(cat <<'AWK'
+# Emitted from a function, like the CSS and JS above, rather than assigned
+# straight through $(cat <<'AWK' ...): stock macOS Bash 3.2 scans a here-doc
+# nested inside $( ) for shell quotes, so the odd double quote in gsub(/"/, ...)
+# below makes it swallow the rest of the file and fail to parse the script.
+tablero_awk_prog() {
+  cat <<'AWK'
 function esc(s) {
   gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s)
   gsub(/"/, "\\&quot;", s)
@@ -706,7 +711,8 @@ END {
   printf "%s", ENVIRON["TABLERO_JS"]
 }
 AWK
-)
+}
+AWK_PROG=$(tablero_awk_prog)
 
 draft_awk() {  # <mode> <draft>
   TABLERO_CSS="$(tablero_css)" TABLERO_JS="$(tablero_js)" \
