@@ -68,8 +68,9 @@ pass() {
 #
 # fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
 # on EXIT/INT/TERM. A test file that needs extra teardown (e.g. killing a
-# daemon) should define its own EXIT trap and call fm_test_cleanup from inside
-# it so registered dirs are still removed.
+# daemon) should arm fm_test_exit_trap (below) with its own cleanup function
+# rather than hand-rolling an EXIT trap, so registered dirs are still removed
+# and a failing teardown cannot invert the file's verdict.
 #
 # The call site is almost always `TMP_ROOT=$(fm_test_tmproot prefix)`, which
 # forks a subshell to capture stdout. Anything that function does to the
@@ -123,6 +124,65 @@ fm_test_tmproot() {
 trap fm_test_cleanup EXIT
 trap 'fm_test_cleanup; exit 130' INT
 trap 'fm_test_cleanup; exit 143' TERM
+
+# --- verdict-preserving EXIT trap for test files with their own teardown ------
+#
+# fm_test_exit_trap [<extra-cleanup-function>] installs the EXIT trap a test
+# file needs when it must tear down more than the registered fixture roots (a
+# spawned daemon, a worker tree, a real tmux session). It replaces the obvious
+# hand-rolled `trap 'stop_thing; rm -rf "$dir"' EXIT`, which is wrong in two
+# ways that only show up intermittently.
+#
+# First, that shape drops the library's own teardown: the file's trap REPLACES
+# the fm_test_cleanup trap armed above, so registered fixture roots and the
+# cleanup registry leak unless the file remembers to call it back.
+#
+# Second, and worse, it can invert the script's verdict. Test files run with
+# errexit active around their assertions, and under errexit a failing command
+# inside an EXIT trap becomes the script's exit status. A teardown that loses a
+# race - an `rm -rf` walking a tree a not-yet-dead child process is still
+# writing into - therefore turns a run that printed every ok line and
+# ALL TESTS PASSED into exit 1. That reads as a failing test with no failing
+# assertion, which is worse than a clean failure: it trains readers to discount
+# a red suite.
+#
+# So this captures the verdict BEFORE any teardown runs, invokes
+# <extra-cleanup-function> and fm_test_cleanup for their effect only, and exits
+# with the verdict it captured. Teardown diagnostics still reach stderr; they
+# just cannot manufacture a failure, and a real fail() still exits nonzero.
+# Teardown that must be enforced belongs in an assertion, not in the trap.
+#
+# The one thing swallowing teardown errors must not hide is a teardown that
+# never ran at all, so the name is resolved at arm time and a name that is not
+# callable there fails immediately. Otherwise a typo would leak the very worker
+# or session the file armed the trap to reap, behind a green suite.
+#
+# Arming also takes over INT and TERM, because ordering has to hold on the
+# signal path too. The INT/TERM traps armed above run fm_test_cleanup
+# themselves, so leaving them in place would remove the fixture root FIRST and
+# only then reach the caller's teardown through the EXIT trap - the exact
+# inversion this helper exists to remove, and an unreapable leak when the
+# worker still writing into that root makes the rm -rf fail. So the signal
+# handlers here only set the conventional status and let the one EXIT trap do
+# the whole teardown, in order, once.
+FM_TEST_EXTRA_CLEANUP=
+
+_fm_test_exit_trap() {
+  local status=$?
+  [ -z "$FM_TEST_EXTRA_CLEANUP" ] || "$FM_TEST_EXTRA_CLEANUP" || true
+  fm_test_cleanup || true
+  exit "$status"
+}
+
+fm_test_exit_trap() {  # [<extra-cleanup-function>]
+  if [ -n "${1:-}" ] && ! command -v "$1" > /dev/null 2>&1; then
+    fail "fm_test_exit_trap: cleanup '$1' is not defined at arm time"
+  fi
+  FM_TEST_EXTRA_CLEANUP=${1:-}
+  trap _fm_test_exit_trap EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
 
 # fm_test_reap_orphans: best-effort sweep for fixture roots left behind by a
 # prior run that was killed hard enough to skip the traps above (e.g. a

@@ -11,7 +11,40 @@ TMP_ROOT=$(fm_test_tmproot fm-on)
 # and physicalize macOS's /var -> /private/var alias before transport validation.
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+# shellcheck source=bin/fm-remote-job-lib.sh
+. "$ROOT/bin/fm-remote-job-lib.sh"
+
+# This fixture forces the Linux worker platform (FM_REMOTE_JOB_PLATFORM_OVERRIDE
+# below), so its worker runs under the restart supervisor, and worker.pid names
+# the serving CHILD, not that supervisor. Signalling the recorded pid alone
+# therefore reaches only the child, and whether the supervisor above it starts a
+# replacement is CONDITIONAL on how that child exits. On the ordinary TERM path
+# worker_shutdown exits 0 and the supervisor returns without restarting, which
+# is what the stopped-worker case further down relies on. Only a nonzero child
+# exit restarts it, and the two windows that produce one are a TERM landing
+# before worker_shutdown is armed (the window bin/fm-remote-job-worker.sh names
+# in its own comment) and worker_shutdown's exit-125 shutdown-failure paths. A
+# replacement recreates remote-jobs/ and its worker.lock while the fixture root
+# is being removed, so rm -rf loses the race and fails with ENOTEMPTY - and
+# because that restart needs one of those windows, the red reproduced at roughly
+# 1 run in 75 under concurrency rather than every run. The library's own
+# group-wide stop is the one owner of that shutdown; it signals the whole worker
+# tree, supervisor included, so no replacement child can be started at all, and
+# it waits for the tree to be gone before returning, which is what makes the
+# removal below safe. That retires the whole class rather than the likely case,
+# which is why it is the fix even though the restart is conditional. The worker
+# deliberately outlives a briefly-missing root
+# (FM_REMOTE_JOB_ORPHAN_GRACE_SECONDS), so waiting is the fixture's job, not
+# something to fix in the worker.
+fm_on_stop_worker_tree() {
+  local pid
+  pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid" 2>/dev/null || true)
+  case "$pid" in
+    '' | *[!0-9]*) ;;
+    *) fm_remote_job_stop_worker_tree "$pid" || true ;;
+  esac
+}
+fm_test_exit_trap fm_on_stop_worker_tree
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"

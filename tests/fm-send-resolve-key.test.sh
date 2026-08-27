@@ -21,6 +21,47 @@
 #      message crosses the stubbed ssh transport while the close is the same
 #      local ledger append; a failed transport closes nothing.
 #   7. Flag misuse (--key, empty message, explicit backend target) refuses.
+#
+# Stability: this suite measured green in the task worktree and in CI, which is
+# what was measured and not a claim that it cannot flake anywhere.
+# The task-worktree measurement is 133 consecutive runs with zero failures
+# against main a66422d on 2026-08-26, made up of 30 serial, 75 across three
+# concurrent loops on a deliberately loaded machine, 5 environment variants
+# (TMPDIR=/tmp, LC_ALL=C, LC_ALL=en_US.UTF-8, PATH without tasks-axi,
+# COLUMNS=40), 3 runs in serial-lane-neighbour context, and a later 20-run solo
+# re-measurement:
+#   for i in $(seq 1 30); do ./tests/fm-send-resolve-key.test.sh || break; done
+# The CI evidence is that it appears in none of the 13 CI failures reviewed over
+# that window, including all three on main.
+# The change-independent red those runs actually carried came from another
+# script's teardown, fixed in tests/fm-on.test.sh and pinned by
+# tests/fm-test-fixture-cleanup.test.sh.
+#
+# The opposite result was measured elsewhere: inside the no-mistakes gate
+# worktree this same suite failed 13 of 20 consecutive solo runs, every failure
+# on a drain-dependent assertion.
+# The failure is therefore environment-dependent, reproduced in the gate
+# worktree and not in the task worktree.
+# The open suspect is that bin/fm-wake-drain.sh can silently discard a failed
+# status presentation: driving that script against a fresh state dir holding one
+# open decision, 4 of 40 and 1 of 60 invocations exited 0 with completely empty
+# stdout.
+# The abort point is the guarded size read inside status_presentation_snapshot
+# in bin/fm-classify-lib.sh, the line
+#   size=$(_fm_status_file_size "$f") || return 1
+# which gives up when that subshell exits nonzero despite printing the correct
+# size.
+# The failure it returns is then swallowed by the two
+# (print_status_presentation ...) || true discards in bin/fm-wake-drain.sh.
+# Those two constructs are the durable anchors, and as of this commit they sit
+# at bin/fm-classify-lib.sh:623 and at bin/fm-wake-drain.sh:286 and :338, so
+# treat a later drift in those numbers as expected and search for the
+# constructs.
+# That defect is tracked as separate work and is deliberately not addressed
+# here.
+# So a drain-dependent failure of this suite should be attributed to that drain
+# defect rather than treated as a defect in this suite or in fm-send's
+# decision-key contract.
 set -u
 
 # shellcheck source=tests/lib.sh
