@@ -156,6 +156,15 @@ trap 'fm_test_cleanup; exit 143' TERM
 # never ran at all, so the name is resolved at arm time and a name that is not
 # callable there fails immediately. Otherwise a typo would leak the very worker
 # or session the file armed the trap to reap, behind a green suite.
+#
+# Arming also takes over INT and TERM, because ordering has to hold on the
+# signal path too. The INT/TERM traps armed above run fm_test_cleanup
+# themselves, so leaving them in place would remove the fixture root FIRST and
+# only then reach the caller's teardown through the EXIT trap - the exact
+# inversion this helper exists to remove, and an unreapable leak when the
+# worker still writing into that root makes the rm -rf fail. So the signal
+# handlers here only set the conventional status and let the one EXIT trap do
+# the whole teardown, in order, once.
 FM_TEST_EXTRA_CLEANUP=
 
 _fm_test_exit_trap() {
@@ -171,6 +180,8 @@ fm_test_exit_trap() {  # [<extra-cleanup-function>]
   fi
   FM_TEST_EXTRA_CLEANUP=${1:-}
   trap _fm_test_exit_trap EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 }
 
 # fm_test_reap_orphans: best-effort sweep for fixture roots left behind by a

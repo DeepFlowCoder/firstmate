@@ -185,10 +185,19 @@ CHILD
   chmod +x "$1"
 }
 
+# Each child gets a TMPDIR inside its own harness root. Sourcing tests/lib.sh
+# mktemps a cleanup registry there, and the hand-rolled child deliberately never
+# runs fm_test_cleanup, so with the real TMPDIR that registry file would be left
+# behind on every run of this suite with nothing able to reap it - the orphan
+# sweep only looks at marked fm-* directories. Inside the harness root it dies
+# with the harness, and the child fixture roots the assertions look for still
+# land in a directory this file owns.
 run_teardown_child() {  # <child> <lib> <dirfile> <locked> <trap> <verdict> -> rc, sets CHILD_OUT
-  local rc=0
-  CHILD_OUT=$(FM_CHILD_LIB="$2" FM_CHILD_DIRFILE="$3" FM_CHILD_LOCKED="$4" \
-    FM_CHILD_TRAP="$5" FM_CHILD_VERDICT="$6" "$1" 2>&1) || rc=$?
+  local rc=0 child_tmp
+  child_tmp="$(dirname "$1")/tmp"
+  mkdir -p "$child_tmp" || return 1
+  CHILD_OUT=$(TMPDIR="$child_tmp" FM_CHILD_LIB="$2" FM_CHILD_DIRFILE="$3" \
+    FM_CHILD_LOCKED="$4" FM_CHILD_TRAP="$5" FM_CHILD_VERDICT="$6" "$1" 2>&1) || rc=$?
   return "$rc"
 }
 
@@ -287,6 +296,70 @@ CHILD
   pass "fm_test_exit_trap rejects an uncallable cleanup name at arm time"
 }
 
+# Ordering has to hold on the signal path too, not just on normal exit. A
+# Ctrl-C or a runner SIGTERM must still run the file's own teardown BEFORE the
+# library removes the fixture roots, because the reverse order is what leaves an
+# rm -rf walking a tree a live worker is writing into. The child here records
+# what it observed from inside its extra cleanup, which is the only evidence
+# that says which of the two ran first.
+test_exit_trap_runs_extra_cleanup_before_library_teardown_on_a_signal() {
+  local harness child dirfile evidence ready child_tmp pid rc tries child_root
+  harness=$(fm_test_tmproot fm-test-exit-trap-signal-harness)
+  child="$harness/child.sh"
+  dirfile="$harness/child-dir"
+  evidence="$harness/evidence"
+  ready="$harness/ready"
+  child_tmp="$harness/tmp"
+  mkdir -p "$child_tmp"
+  cat > "$child" <<'CHILD'
+#!/usr/bin/env bash
+set -u
+# shellcheck source=tests/lib.sh
+. "$FM_CHILD_LIB"
+child_root=$(fm_test_tmproot fm-test-exit-trap-signal-child)
+printf '%s\n' "$child_root" > "$FM_CHILD_DIRFILE"
+# Written outside the fixture root on purpose, so it survives the teardown it
+# is reporting on.
+child_teardown() {
+  if [ -d "$child_root" ]; then
+    printf 'root-still-present\n' > "$FM_CHILD_EVIDENCE"
+  else
+    printf 'root-already-removed\n' > "$FM_CHILD_EVIDENCE"
+  fi
+}
+fm_test_exit_trap child_teardown
+printf 'ready\n' > "$FM_CHILD_READY"
+while :; do sleep 0.05; done
+CHILD
+  chmod +x "$child"
+
+  TMPDIR="$child_tmp" FM_CHILD_LIB="$LIB" FM_CHILD_DIRFILE="$dirfile" \
+    FM_CHILD_EVIDENCE="$evidence" FM_CHILD_READY="$ready" "$child" &
+  pid=$!
+  tries=0
+  while [ ! -s "$ready" ]; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 200 ]; then
+      kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      fail "the signalled child never finished arming its trap"
+    fi
+    sleep 0.05
+  done
+  [ -s "$dirfile" ] || fail "the signalled child never published its fixture root"
+  child_root=$(cat "$dirfile")
+
+  kill -TERM "$pid"
+  rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  [ "$rc" -eq 143 ] || fail "the signalled child exited $rc instead of the conventional SIGTERM status 143"
+  assert_contains "$(cat "$evidence" 2>/dev/null)" "root-still-present" \
+    "the library teardown removed the fixture root before the file's own cleanup ran on the signal path"
+  assert_absent "$child_root" \
+    "the fixture root survived the signal path's teardown"
+  pass "fm_test_exit_trap keeps teardown order and status on a terminating signal"
+}
+
 test_fixture_root_gone_after_normal_exit
 test_fixture_root_gone_after_sigterm
 test_cleanup_registry_resists_precreation
@@ -296,3 +369,4 @@ test_exit_trap_preserves_the_verdict_through_failing_teardown
 test_exit_trap_keeps_a_real_failure_nonzero
 test_hand_rolled_trap_shows_the_inversion_the_helper_removes
 test_exit_trap_rejects_an_uncallable_cleanup_name
+test_exit_trap_runs_extra_cleanup_before_library_teardown_on_a_signal
