@@ -283,6 +283,30 @@ test_draft_ranks_parked_work_above_mere_waiting() {
   pass "the board ranks a decision with work parked behind it above one merely waiting"
 }
 
+# The stopped-work count is a cheap token match over one listing, and the whole
+# ordering rests on it. A plain substring search would credit a decision with
+# every task blocked by a LONGER identity that merely starts the same way, which
+# reorders the board with no signal that anything went wrong.
+test_the_stopped_work_count_does_not_count_a_longer_identity() {
+  local home draft
+  home=$(make_home prefijo)
+  seed_decision "$home" inv-uno corte "La del corte" "Evidencia del corte." >/dev/null
+  seed_decision "$home" inv-uno corte-largo "La del corte largo" "Evidencia del largo." >/dev/null
+  # Only the longer identity blocks anything.
+  axi "$home" add ship-a --title "Trabajo A" --repo demo >/dev/null
+  axi "$home" block ship-a --by inv-uno-decision-corte-largo >/dev/null
+  axi "$home" add ship-b --title "Trabajo B" --repo demo >/dev/null
+  axi "$home" block ship-b --by inv-uno-decision-corte-largo >/dev/null
+
+  run_tablero "$home" draft >/dev/null || fail "draft failed"
+  draft="$home/.lavish/tablero.draft.md"
+  assert_grep "etiqueta: para 2 tarea(s)" "$draft" \
+    "the decision that really has work stopped behind it was not credited with it"
+  [ "$(grep -c '^etiqueta: para ' "$draft")" -eq 1 ] || fail \
+    "a decision was credited with work stopped behind a longer identity sharing its prefix"
+  pass "the stopped-work count credits only the decision whose identity actually blocks the work"
+}
+
 test_draft_refuses_to_overwrite_written_judgment() {
   local home draft rc out
   home=$(make_home clobber)
@@ -726,6 +750,7 @@ test_evidence_that_would_read_as_grammar_becomes_a_hole() {
 test_draft_finds_every_captain_hold_whatever_its_kind
 test_draft_orders_by_stopped_work_not_by_date
 test_draft_ranks_parked_work_above_mere_waiting
+test_the_stopped_work_count_does_not_count_a_longer_identity
 test_draft_refuses_to_overwrite_written_judgment
 test_evidence_that_would_read_as_grammar_becomes_a_hole
 test_unfilled_judgment_refuses_and_serves_no_page
