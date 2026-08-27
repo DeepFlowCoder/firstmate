@@ -106,9 +106,44 @@ for line in s.splitlines(True):
         out.append(line)
 s = ''.join(out)
 start = s.index('## aviso\n') + len('## aviso\n')
-end = s.index('\n## decision ', start) + 1
+try:
+    end = s.index('\n## decision ', start) + 1
+except ValueError:
+    end = len(s)
 s = s[:start] + aviso + '\n' + s[end:]
 open(draft, 'w').write(s)
+PY
+}
+
+# No hole left that the refusal would actually count. Comment lines are skipped
+# for the same reason the refusal skips them: the generated header explains the
+# marker and can never be filled. Cases that mean to reach a rule BEYOND the hole
+# refusal assert this first, so that rule cannot go quietly untested behind it.
+assert_no_countable_hole() {  # <draft> <message>
+  if grep -v '^#' "$1" | grep -qF 'TODO(firstmate):'; then
+    fail "$2"
+  fi
+}
+
+# Move one decision's recorded `(since <date>)` in the backlog, whatever date
+# tasks-axi stamped on it. Anchoring on the literal date the fixture happened to
+# be created on would make the backdating a silent no-op on every other day,
+# which is exactly how an ordering test stops being able to fail.
+backdate_since() {  # <home> <task-id> <YYYY-MM-DD>
+  python3 - "$1/data/backlog.md" "$2" "$3" <<'PY'
+import re, sys
+path, task_id, when = sys.argv[1:4]
+lines = open(path).read().splitlines(True)
+hits = 0
+for i, line in enumerate(lines):
+    if (' %s - ' % task_id) not in line:
+        continue
+    line, n = re.subn(r'\(since \d{4}-\d{2}-\d{2}\)', '(since %s)' % when, line)
+    lines[i] = line
+    hits += n
+if hits != 1:
+    sys.exit("fixture: backdating %s replaced %d dates, expected 1" % (task_id, hits))
+open(path, 'w').write(''.join(lines))
 PY
 }
 
@@ -180,29 +215,29 @@ test_draft_finds_every_captain_hold_whatever_its_kind() {
 # date sort and a cost sort disagree and only one of them can pass.
 test_draft_orders_by_stopped_work_not_by_date() {
   local home draft old_pos new_pos
+  local FM_TABLERO_NOW=2026-09-10
   home=$(make_home orden)
   seed_decision "$home" inv-viejo barato "La decision vieja que no para nada" \
     "Vieja y sin trabajo detenido detras." >/dev/null
   seed_decision "$home" inv-nuevo caro "La decision nueva que para trabajo" \
     "Nueva, y una tarea lista espera por ella." >/dev/null
-  # Backdate the cheap one by a week, so date order would put it first.
-  python3 - "$home/data/backlog.md" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-s = s.replace('inv-viejo-decision-barato', 'inv-viejo-decision-barato', 1)
-lines = []
-for line in s.splitlines(True):
-    if 'inv-viejo-decision-barato' in line:
-        line = line.replace('(since 2026-09-10)', '(since 2026-09-03)')
-    lines.append(line)
-open(p, 'w').write(''.join(lines))
-PY
+  # Both dates are set here, not just one: the fixtures are stamped with whatever
+  # today happens to be, so pinning only the old one would leave the two ages
+  # equal and the date key with nothing to disagree about.
+  backdate_since "$home" inv-viejo-decision-barato 2026-09-03 || fail "fixture: backdating failed"
+  backdate_since "$home" inv-nuevo-decision-caro 2026-09-09 || fail "fixture: backdating failed"
   axi "$home" add ship-listo --title "El trabajo que espera" --repo demo >/dev/null
   axi "$home" block ship-listo --by inv-nuevo-decision-caro >/dev/null
 
   run_tablero "$home" draft >/dev/null || fail "draft failed"
   draft="$home/.lavish/tablero.draft.md"
+  # The disagreement itself, asserted before the order is: the cheap decision is
+  # genuinely the older one here, so a date sort and a cost sort cannot both pass.
+  # Without this the whole test goes quietly vacuous the moment the ages tie.
+  assert_grep "etiqueta: 7 dias esperando" "$draft" \
+    "the cheap decision is not seven days old, so date order and cost order do not disagree"
+  assert_grep "etiqueta: 1 dia esperando" "$draft" \
+    "the costly decision is not the newer one, so date order and cost order do not disagree"
   new_pos=$(grep -n '^## decision inv-nuevo-decision-caro$' "$draft" | cut -d: -f1)
   old_pos=$(grep -n '^## decision inv-viejo-decision-barato$' "$draft" | cut -d: -f1)
   [ -n "$new_pos" ] && [ -n "$old_pos" ] || fail "both decisions must appear on the board"
@@ -211,6 +246,41 @@ PY
   assert_grep "etiqueta: para 1 tarea(s)" "$draft" \
     "the stopped-work count that justifies the order was not shown to the captain"
   pass "the board orders by what not deciding costs, not by how old the decision is"
+}
+
+# The second ranking key, and the only one that reads outside the backlog: work
+# parked on a decision outranks work that is merely waiting. Both decisions here
+# tie on stopped work and on age, and the live one is deliberately the one the
+# identity tiebreak would place LAST, so nothing but liveness can produce the
+# expected order.
+test_draft_ranks_parked_work_above_mere_waiting() {
+  local home draft live_pos dead_pos
+  local FM_TABLERO_NOW=2026-09-10
+  home=$(make_home parada)
+  seed_decision "$home" aaa-cerrada k "La de la investigacion terminada" \
+    "Su investigacion ya cerro." >/dev/null
+  seed_decision "$home" zzz-parada k2 "La de la investigacion parada" \
+    "Su investigacion sigue detenida esperando esto." >/dev/null
+  backdate_since "$home" aaa-cerrada-decision-k 2026-09-04 || fail "fixture: backdating failed"
+  backdate_since "$home" zzz-parada-decision-k2 2026-09-04 || fail "fixture: backdating failed"
+  fm_write_meta "$home/state/aaa-cerrada.meta" kind=scout repo=demo
+  printf 'working: investigando\ndone: entregado el informe\n' > "$home/state/aaa-cerrada.status"
+  fm_write_meta "$home/state/zzz-parada.meta" kind=scout repo=demo
+  printf 'working: parada esperando la decision\n' > "$home/state/zzz-parada.status"
+
+  run_tablero "$home" draft >/dev/null || fail "draft failed"
+  draft="$home/.lavish/tablero.draft.md"
+  # The ties the ranking must fall through before liveness can decide anything.
+  assert_no_grep "etiqueta: para " "$draft" \
+    "a decision has stopped work behind it, so the first ranking key is not tied"
+  [ "$(grep -c '^etiqueta: 6 dias esperando$' "$draft")" -eq 2 ] || fail \
+    "the two decisions are not the same age, so the ranking never reaches liveness"
+  live_pos=$(grep -n '^## decision zzz-parada-decision-k2$' "$draft" | cut -d: -f1)
+  dead_pos=$(grep -n '^## decision aaa-cerrada-decision-k$' "$draft" | cut -d: -f1)
+  [ -n "$live_pos" ] && [ -n "$dead_pos" ] || fail "both decisions must appear on the board"
+  [ "$live_pos" -lt "$dead_pos" ] || fail \
+    "the board fell through to the identity tiebreak: a decision with work parked behind it must come first"
+  pass "the board ranks a decision with work parked behind it above one merely waiting"
 }
 
 test_draft_refuses_to_overwrite_written_judgment() {
@@ -258,14 +328,22 @@ test_each_judgment_hole_is_separately_required() {
   home=$(make_home cada-hueco)
   seed_decision "$home" inv-uno corte "Una decision" "Su evidencia." >/dev/null
 
-  # Everything written EXCEPT the interaction warning.
+  # Everything written EXCEPT the interaction warning, which is DELETED rather
+  # than left as its hole. Deleting the placeholder is what a hurried pass with
+  # nothing to say actually does, and it leaves the hole refusal nothing to catch,
+  # so the grammar's own rule is the only guard between that pass and a board that
+  # never answers whether two decisions push on the same promise.
   run_tablero "$home" draft --force >/dev/null || fail "draft failed"
   draft="$home/.lavish/tablero.draft.md"
+  fill_page_judgment "$draft" "Una decision suya" "Lleva una semana parada." ""
   fill_decision_judgment "$draft" inv-uno-decision-corte "Cuesta una tarea parada." \
     "Cambiar la agregacion|Cambiar la agregacion, que no toca ninguna cifra prometida." \
     "Bajar el corte|Bajar el corte. Barato hoy, indefendible manana."
+  assert_no_countable_hole "$draft" \
+    "this case must leave no hole at all, or the hole refusal masks the missing warning"
   out=$(run_tablero "$home" check "$draft" 2>&1) && rc=0 || rc=$?
   expect_code 1 "$rc" "check accepted a board with no answer on whether the decisions interact"
+  assert_contains "$out" "interaction warning" "the refusal did not name the missing warning"
 
   # Everything written EXCEPT the recommendation: two plain options, no reco.
   run_tablero "$home" draft --force >/dev/null || fail "draft failed"
@@ -529,6 +607,7 @@ test_render_warns_when_a_page_spans_several_origins() {
   pass "render warns plainly when a board spans more origins than one binding covers"
 }
 
+
 # A bound origin closes `<origin>-decision-<clave>`, so the same clave under two
 # origins is a page that could close the wrong captain decision.
 test_page_refuses_one_key_under_two_origins() {
@@ -563,12 +642,23 @@ test_no_open_decisions_drafts_nothing_to_serve() {
   assert_grep "No hay ninguna decision del capitan abierta" "$draft" \
     "the draft did not say plainly that there is nothing to serve"
   out=$(run_tablero "$home" check "$draft" 2>&1) && rc=0 || rc=$?
-  expect_code 1 "$rc" "an empty board was accepted as servable"
+  expect_code 1 "$rc" "an empty board with its judgment unwritten was accepted as servable"
+  # And once the page judgment IS written, so the hole refusal has nothing left to
+  # catch: an empty board must still refuse, or the captain is served a page with
+  # a title, a subtitle and no decisions on it.
+  fill_page_judgment "$draft" "Una ronda vacia" "No hay nada que decidir hoy." ninguna
+  assert_no_countable_hole "$draft" \
+    "this case must leave no hole at all, or the hole refusal masks the empty-board refusal"
+  out=$(run_tablero "$home" check "$draft" 2>&1) && rc=0 || rc=$?
+  expect_code 1 "$rc" "a board carrying no decisions at all was accepted as servable"
+  assert_contains "$out" "no board to serve" "the refusal did not say the board is empty"
   pass "a home with no open decisions drafts nothing servable and says so"
 }
 
+
 test_draft_finds_every_captain_hold_whatever_its_kind
 test_draft_orders_by_stopped_work_not_by_date
+test_draft_ranks_parked_work_above_mere_waiting
 test_draft_refuses_to_overwrite_written_judgment
 test_unfilled_judgment_refuses_and_serves_no_page
 test_each_judgment_hole_is_separately_required
