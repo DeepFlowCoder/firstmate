@@ -67,6 +67,8 @@ Assignment is longest-processing-time bin packing over per-script duration hints
 The hints came from that run's `fm-test-timing-portable-serial` artifact on 2026-08-02, where the lane ran 69 scripts in 1143762 ms of serial work.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
+`tests/fm-pi-watch-extension.test.sh` is knowingly stale in that table: its fixtures now pin the plugins' own 12000 ms arm-readiness budget instead of a shorter test-local one, so the script waits out several of those budgets and runs well past its recorded 16386 ms.
+Its hint stays as CI measured it until the next wholesale refresh below, because a hand-written replacement would be an invented number in a table that is otherwise generated from timing artifacts.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
@@ -108,7 +110,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 15` | Each balanced shard is about five minutes, leaving roughly 3x hang-tripwire margin. |
+| portable serial 1-4 | job `timeout-minutes: 15` | The balanced shard estimates are about five minutes, so even a shard running above a stale estimate keeps hang-tripwire margin. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
