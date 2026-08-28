@@ -450,17 +450,20 @@ _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
   fi
 }
 
-# A status file the presentation reads can disappear between the directory scan
-# (or the snapshot row) and the read itself, because nothing holds the file
-# still for the whole presentation. That is not an I/O error: the task is simply
-# no longer part of this fleet view, exactly as the `[ -e ]` guards already treat
-# a file that was already absent when the scan reached it. Callers use this to
-# tell the two apart, so one departed task cannot discard every other task's open
-# decisions, while a file that is still there and unreadable stays a hard failure
-# the presentation must refuse on rather than print an empty section for.
-_fm_status_file_gone() {  # <status-file>
+# The presentation reads each status file in several passes and nothing holds it
+# still between them, so a path can stop being a status file mid-presentation: a
+# teardown removes it, or it is replaced by a symlink or another node type. That
+# is not an I/O error, and it is not new policy either - it is the same set the
+# `[ -f ] && [ -r ] && [ ! -L ]` guards already exclude when a scan reaches such a
+# path first, so the only thing that changes is WHEN the exclusion is noticed.
+# Callers use this to skip a departed path, so one of them cannot discard every
+# other task's open decisions. A path that is still a readable regular file and
+# whose read nevertheless failed is a genuine I/O failure and stays a hard error
+# the drain refuses on, rather than printing an empty section as if nothing were
+# open.
+_fm_status_file_departed() {  # <status-file>
   local f=$1
-  [ ! -e "$f" ] && [ ! -L "$f" ]
+  ! { [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ]; }
 }
 
 _fm_status_file_size() {  # <status-file>
@@ -638,7 +641,7 @@ status_presentation_snapshot() {  # <state>
     case "$size" in *[!0-9]*) size= ;; esac
     ident=$(_fm_open_decisions_file_ident "$f") || ident=
     if [ -z "$size" ] || [ -z "$ident" ]; then
-      _fm_status_file_gone "$f" && continue
+      _fm_status_file_departed "$f" && continue
       return 1
     fi
     printf '%s\t%s\t%s\n' "$task" "$size" "$ident" || return 1
@@ -764,11 +767,11 @@ $fully_presented
     f="$state/$task.status"
     # The task left the fleet view after the snapshot captured it; there is
     # nothing left to acknowledge, and its cursor row is retired with the file.
-    _fm_status_file_gone "$f" && continue
+    _fm_status_file_departed "$f" && continue
     if [ "$safe" = false ]; then
       if ! offset=$(status_presentation_cursor_offset "$f") \
         || ! lines=$(status_new_lines_since_cursor "$f" "$endpoint"); then
-        _fm_status_file_gone "$f" && continue
+        _fm_status_file_departed "$f" && continue
         return 1
       fi
       # Once any informational line in this span is presented fleet-wide, the
@@ -805,14 +808,13 @@ status_commit_presentation_snapshot() {  # <state> <snapshot>
     # A task that left the fleet view after the snapshot keeps no cursor row:
     # its row is retired with its status file, so omitting it here is the same
     # outcome, reached without discarding every other task's committed offset.
-    _fm_status_file_gone "$f" && continue
-    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { rm -f "$tmp"; return 1; }
+    _fm_status_file_departed "$f" && continue
     cur_ident=$(_fm_open_decisions_file_ident "$f") || cur_ident=
     size=$(_fm_status_file_size "$f") || size=
     size=${size//[[:space:]]/}
     case "$size" in *[!0-9]*) size= ;; esac
     if [ -z "$cur_ident" ] || [ -z "$size" ]; then
-      _fm_status_file_gone "$f" && continue
+      _fm_status_file_departed "$f" && continue
       rm -f "$tmp"; return 1
     fi
     [ "$cur_ident" = "$ident" ] && [ "$endpoint" -le "$size" ] \
@@ -1003,7 +1005,7 @@ scan_unread_surface_lines() {  # <state>
     [ -e "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
     if ! lines=$(status_new_lines_since_cursor "$f"); then
-      _fm_status_file_gone "$f" && continue
+      _fm_status_file_departed "$f" && continue
       return 1
     fi
     [ -n "$lines" ] || continue
@@ -1024,7 +1026,7 @@ scan_unread_surface_snapshot() {  # <state> <task-and-endpoint-snapshot>
     [ -n "$task" ] || continue
     f="$state/$task.status"
     if ! lines=$(status_new_lines_since_cursor "$f" "$endpoint"); then
-      _fm_status_file_gone "$f" && continue
+      _fm_status_file_departed "$f" && continue
       return 1
     fi
     [ -n "$lines" ] || continue
