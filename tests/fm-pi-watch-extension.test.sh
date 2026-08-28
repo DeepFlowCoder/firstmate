@@ -38,7 +38,10 @@ FM_TEST_ARM_READY_TIMEOUT_MS=12000
 FM_TEST_WAIT_MS=$((FM_TEST_ARM_READY_TIMEOUT_MS * 4))
 
 # Every other bounded wait below polls for a condition and stops at a 30s ceiling
-# (3000 steps of 10ms, or 1500 of 20ms).
+# (3000 steps of 10ms, or 1500 of 20ms), except the scheduled-continuity-retry
+# loop.
+# That one loop is capped from above by its own test's pinned rearm backoff
+# rather than by this convention, and carries its own derivation beside it.
 # These waits assert that something eventually happens, never how fast, so a
 # larger ceiling cannot hide a defect: a condition that never holds still fails
 # the assertion that follows, just later.
@@ -338,19 +341,20 @@ let redundant = null;
 // This loop waits for one `bash -lc` arm child to spawn, exit emptily, and be
 // classified, after which the tool reports the already-scheduled continuity
 // retry.
-// The retry backoff is pinned at 10000ms by this test, so that timer never
-// fires and only the scheduling is being awaited.
 // Measured on an 8-core macOS host: 20 samples at load average 39 needed 2 to
 // 20 iterations (25ms to 257ms), and 12 idle samples needed 1 to 26 iterations
-// (12ms to 309ms), so the old 100-iteration bound sat about 4x above the worst
-// observed case.
-// Each iteration measured 11.8ms to 28.7ms: the 10ms sleep plus a tool call
-// measured at 0.25ms to 0.9ms, which is orders of magnitude below the 40ms to
-// 400ms a `bash -lc` arm spawn costs, so no iteration arms anything and this
-// is the same passive class as the 30s ceilings above.
-// 3000 iterations is therefore at least 30s of real waiting even at the
-// fastest measured 11.8ms per iteration, which matches that convention.
-for (let i = 0; i < 3000; i += 1) {
+// (12ms to 309ms).
+// Each iteration measured 11.8ms to 28.7ms.
+// Unlike the passive ceilings above, this bound is capped from above rather
+// than chosen for margin: this test pins the rearm backoff at 10000ms, and once
+// that timer fires each further iteration spawns another arm child, which is a
+// different regime from the ownership no-op being asserted here.
+// So the ceiling has to clear the measured wait and still land inside 10000ms:
+// 300 iterations is at most 300 x 28.7ms = 8.61s, leaving 1.39s of margin
+// against the backoff, and at least 300 x 11.8ms = 3.54s, which is about 11x
+// the worst observed 26 iterations.
+// 500 would have been 500 x 28.7ms = 14.35s and would have crossed the backoff.
+for (let i = 0; i < 300; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
   redundant = await tool.execute("tool-call-during-retry", {}, undefined, undefined, {});
   if (redundant.content[0]?.text.includes("scheduled continuity retry")) break;
