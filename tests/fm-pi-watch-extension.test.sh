@@ -12,6 +12,50 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
 
+# Arm-readiness budget for the fixture arms below.
+# Both plugins default it to 12000ms off Windows: ARM_READY_TIMEOUT_DEFAULT_MS in
+# .opencode/plugins/fm-primary-watch-arm.js and armReadyTimeoutMs in
+# .pi/extensions/fm-primary-pi-watch.ts.
+# That default is the boundary production uses to separate a slow-but-healthy arm
+# from a hung one, so these tests pin the production value rather than a shorter
+# test-local one.
+# The budget has to cover a real cold start, because every one of these fixtures
+# lets a healthy arm report ready before it exercises a hung one, and the plugins
+# spawn that arm as a `bash -lc` login shell.
+# 40 such spawns on an 8-core macOS host measured p50=42ms and max=394ms at load
+# average 137, so a budget of a few hundred milliseconds already sits inside the
+# healthy cold-start tail: it classifies a healthy arm as hung and turns these
+# assertions red for a defect they do not watch.
+FM_TEST_ARM_READY_TIMEOUT_MS=12000
+
+# Ceiling for the outer waits in those same tests.
+# Each one waits out a chain of arm-readiness timeouts, and the longest chain is
+# one successor plus the two configured retries, so three budgets back to back.
+# Four budgets leaves one whole budget of slack for process teardown and prompt
+# delivery on top of that chain.
+# This is only a ceiling on an early-breaking poll, so raising it costs nothing
+# when the assertion passes.
+FM_TEST_WAIT_MS=$((FM_TEST_ARM_READY_TIMEOUT_MS * 4))
+
+# Every other bounded wait below polls for a condition and stops at a 30s ceiling
+# (3000 steps of 10ms, or 1500 of 20ms), except the scheduled-continuity-retry
+# loop.
+# That one loop is capped from above by its own test's pinned rearm backoff
+# rather than by this convention, and carries its own derivation beside it.
+# These waits assert that something eventually happens, never how fast, so a
+# larger ceiling cannot hide a defect: a condition that never holds still fails
+# the assertion that follows, just later.
+# They also break as soon as the condition holds, so the ceiling is paid only by
+# a run that was going to fail anyway, and 30s keeps even that inside the shard
+# budget.
+# The ceilings used to sit at 1s to 5s, which is single-digit multiples of what
+# these waits actually cover: each spans two or three sequential child processes,
+# and on this host under load those measured a 394ms tail for one `bash -lc` arm
+# start and a 284ms tail for the up-to-8-hop `ps` walk that only the not-owned
+# session-lock verdict pays for.
+# Those margins were thin enough that the suite failed a different assertion on
+# roughly one loaded run in eight.
+
 install_pi_watch_extension_fixture() {
   local repo=$1
   mkdir -p \
@@ -110,7 +154,7 @@ if (!notification.includes("started Pi extension arm child")) {
   console.error(notification);
   process.exit(1);
 }
-for (let i = 0; i < 250 && !prompt; i += 1) {
+for (let i = 0; i < 1500 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!prompt.startsWith("\u2063FIRSTMATE_OP: v1 watcher: ")) {
@@ -132,7 +176,7 @@ if (!prompt.includes("watcher: healthy pid=1")) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi extension must surface an external healthy watcher as an owned-wake failure"
+  expect_code 0 "$status" "Pi extension must surface an external healthy watcher as an owned-wake failure${out:+ | $out}"
   [ -z "$out" ] || fail "Pi external-healthy test printed output: $out"
   pass "Pi extension reports external healthy watcher output"
 }
@@ -194,7 +238,7 @@ if (result.details?.ok !== true || result.details?.message !== result.content[0]
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi custom tool must expose first-cycle or repair-only metadata and return Pi's AgentToolResult shape"
+  expect_code 0 "$status" "Pi custom tool must expose first-cycle or repair-only metadata and return Pi's AgentToolResult shape${out:+ | $out}"
   [ -z "$out" ] || fail "Pi tool-result test printed output: $out"
   pass "Pi custom tool exposes repair-only metadata and returns automatic-continuation guidance"
 }
@@ -246,7 +290,7 @@ if (/^watcher: healthy\b/.test(redundant.content[0]?.text)) {
 if (!redundant.content[0]?.text.includes("only after a later notification says the cycle is missing, failed, or unhealthy")) {
   throw new Error(`redundant call omitted the repair-only condition: ${redundant.content[0]?.text}`);
 }
-for (let i = 0; i < 100 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 3000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("initial arm child did not start");
@@ -257,7 +301,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi redundant tool call must remain an ownership-based no-op with repair-only guidance"
+  expect_code 0 "$status" "Pi redundant tool call must remain an ownership-based no-op with repair-only guidance${out:+ | $out}"
   [ -z "$out" ] || fail "Pi redundant-call test printed output: $out"
   pass "Pi redundant tool call returns ownership guidance and spawns no second child"
 }
@@ -294,7 +338,23 @@ const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-first", {}, undefined, undefined, {});
 let redundant = null;
-for (let i = 0; i < 100; i += 1) {
+// This loop waits for one `bash -lc` arm child to spawn, exit emptily, and be
+// classified, after which the tool reports the already-scheduled continuity
+// retry.
+// Measured on an 8-core macOS host: 20 samples at load average 39 needed 2 to
+// 20 iterations (25ms to 257ms), and 12 idle samples needed 1 to 26 iterations
+// (12ms to 309ms).
+// Each iteration measured 11.8ms to 28.7ms.
+// Unlike the passive ceilings above, this bound is capped from above rather
+// than chosen for margin: this test pins the rearm backoff at 10000ms, and once
+// that timer fires each further iteration spawns another arm child, which is a
+// different regime from the ownership no-op being asserted here.
+// So the ceiling has to clear the measured wait and still land inside 10000ms:
+// 300 iterations is at most 300 x 28.7ms = 8.61s, leaving 1.39s of margin
+// against the backoff, and at least 300 x 11.8ms = 3.54s, which is about 11x
+// the worst observed 26 iterations.
+// 500 would have been 500 x 28.7ms = 14.35s and would have crossed the backoff.
+for (let i = 0; i < 300; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
   redundant = await tool.execute("tool-call-during-retry", {}, undefined, undefined, {});
   if (redundant.content[0]?.text.includes("scheduled continuity retry")) break;
@@ -314,7 +374,7 @@ if (rows.length !== 1) throw new Error(`scheduled retry call spawned ${rows.leng
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi scheduled-retry call must not duplicate the extension-owned retry"
+  expect_code 0 "$status" "Pi scheduled-retry call must not duplicate the extension-owned retry${out:+ | $out}"
   [ -z "$out" ] || fail "Pi scheduled-retry test printed output: $out"
   pass "Pi scheduled retry remains extension-owned after another tool call"
 }
@@ -375,7 +435,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-continuity", {}, undefined, undefined, {});
-for (let i = 0; i < 250; i += 1) {
+for (let i = 0; i < 3000; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
     ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
     : [];
@@ -391,7 +451,7 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (stableRows.length !== 2) throw new Error(`delivery was confirmed before the prompt succeeded: ${stableRows.join(" | ")}`);
 releaseDelivery();
-for (let i = 0; i < 100; i += 1) {
+for (let i = 0; i < 3000; i += 1) {
   if (readFileSync(process.env.FM_ARM_LOG, "utf8").includes("confirmed generation=fixture-generation")) break;
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -404,7 +464,7 @@ process.exit(0);
 EOF
   )
   status=$?
-  expect_code 0 "$status" "Pi actionable close must start one successor before wake delivery settles"
+  expect_code 0 "$status" "Pi actionable close must start one successor before wake delivery settles${out:+ | $out}"
   [ -z "$out" ] || fail "Pi continuous-rearm test printed output: $out"
   pass "Pi actionable close starts one successor before wake delivery settles"
 }
@@ -430,9 +490,14 @@ trap 'exit 0' TERM INT
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS="$FM_TEST_ARM_READY_TIMEOUT_MS" FM_TEST_WAIT_MS="$FM_TEST_WAIT_MS" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+// Poll in 10ms steps up to FM_TEST_WAIT_MS, the ceiling derived from the
+// arm-readiness budget this test waits out. The loop breaks as soon as the
+// condition holds, so the ceiling only bounds the failure case.
+const waitSteps = Math.ceil(Number(process.env.FM_TEST_WAIT_MS) / 10);
 
 let tool = null;
 let prompt = "";
@@ -454,7 +519,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
+for (let i = 0; i < waitSteps && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -470,7 +535,7 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery"
+  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery${out:+ | $out}"
   [ -z "$out" ] || fail "Pi hung-successor test printed output: $out"
   pass "Pi hung successor falls back to one typed actionable wake"
 }
@@ -502,9 +567,14 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_PI_ARM_READY_TIMEOUT_MS="$FM_TEST_ARM_READY_TIMEOUT_MS" FM_TEST_WAIT_MS="$FM_TEST_WAIT_MS" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+// Poll in 10ms steps up to FM_TEST_WAIT_MS, the ceiling derived from the
+// arm-readiness budget this test waits out. The loop breaks as soon as the
+// condition holds, so the ceiling only bounds the failure case.
+const waitSteps = Math.ceil(Number(process.env.FM_TEST_WAIT_MS) / 10);
 
 let tool = null;
 let prompt = "";
@@ -526,7 +596,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
+for (let i = 0; i < waitSteps && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -541,7 +611,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "Pi must fall back without overlapping an unretired successor${out:+ | $out}"
   [ -z "$out" ] || fail "Pi unretired-successor test printed output: $out"
   pass "Pi unretired successor falls back without an overlapping retry"
 }
@@ -580,9 +650,14 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_PI_ARM_READY_TIMEOUT_MS="$FM_TEST_ARM_READY_TIMEOUT_MS" FM_TEST_WAIT_MS="$FM_TEST_WAIT_MS" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+// Poll in 10ms steps up to FM_TEST_WAIT_MS, the ceiling derived from the
+// arm-readiness budget this test waits out. The loop breaks as soon as the
+// condition holds, so the ceiling only bounds the failure case.
+const waitSteps = Math.ceil(Number(process.env.FM_TEST_WAIT_MS) / 10);
 
 let tool = null;
 const prompts = [];
@@ -600,7 +675,7 @@ const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
 async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
+  for (let i = 0; i < waitSteps; i += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -622,7 +697,7 @@ await waitFor(
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
+for (let i = 0; i < waitSteps; i += 1) {
   if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -637,7 +712,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
     status=$?
-    expect_code 0 "$status" "Pi late $kind close must remain supervised after fallback"
+    expect_code 0 "$status" "Pi late $kind close must remain supervised after fallback${out:+ | $out}"
     [ -z "$out" ] || fail "Pi late-$kind test printed output: $out"
   done
   pass "Pi late unretired closes resume classified supervision"
@@ -682,7 +757,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-empty", {}, undefined, undefined, {});
-for (let i = 0; i < 250; i += 1) {
+for (let i = 0; i < 3000; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
     ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
     : [];
@@ -697,7 +772,7 @@ process.exit(0);
 EOF
   )
   status=$?
-  expect_code 0 "$status" "Pi clean empty close must trigger a bounded continuity retry"
+  expect_code 0 "$status" "Pi clean empty close must trigger a bounded continuity retry${out:+ | $out}"
   [ -z "$out" ] || fail "Pi empty-close retry test printed output: $out"
   pass "Pi clean empty close triggers a bounded continuity retry"
 }
@@ -737,7 +812,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-established-empty", {}, undefined, undefined, {});
-for (let i = 0; i < 250 && !prompt; i += 1) {
+for (let i = 0; i < 3000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -748,7 +823,7 @@ if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was n
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi established clean closes must honor the continuity retry limit"
+  expect_code 0 "$status" "Pi established clean closes must honor the continuity retry limit${out:+ | $out}"
   [ -z "$out" ] || fail "Pi established-empty-close retry test printed output: $out"
   pass "Pi established clean closes stop at the configured retry limit"
 }
@@ -795,7 +870,7 @@ const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { s
 try {
   writeFileSync(lock, `${other.pid}\n`);
   writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-  for (let i = 0; i < 250 && !prompt.includes("no longer owns the lock"); i += 1) {
+  for (let i = 0; i < 3000 && !prompt.includes("no longer owns the lock"); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
@@ -881,14 +956,14 @@ const owned = await callArm();
 if (owned.details?.ok !== true || !owned.details.message.includes("started Pi extension arm child")) {
   throw new Error(`owned lock did not arm: ${JSON.stringify(owned.details)}`);
 }
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) throw new Error("owned lock did not run the watcher arm");
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi watcher arm must distinguish owned, live-other, and missing or dead session locks"
+  expect_code 0 "$status" "Pi watcher arm must distinguish owned, live-other, and missing or dead session locks${out:+ | $out}"
   [ -z "$out" ] || fail "Pi lock-ownership arm test printed output: $out"
   pass "Pi watcher arm distinguishes all session lock ownership states"
 }
@@ -941,7 +1016,7 @@ function pidAlive(pid) {
   }
 }
 
-async function waitFor(pred, label, attempts = 250) {
+async function waitFor(pred, label, attempts = 1500) {
   for (let i = 0; i < attempts; i += 1) {
     if (pred()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1000,10 +1075,15 @@ async function replaceSession(previous, reason) {
   if (String(armed.details.message).includes("shutting down")) {
     throw new Error(`${reason} replacement still refused with shutting-down latch`);
   }
+  // The fixture writes the pid file before it appends its arm-log row, and the
+  // count assertion below reads the log rather than the pid file. Waiting only
+  // for the pid file leaves that append outside the barrier, so under load the
+  // log can still be one row behind and the count reads (none).
   await waitFor(() => {
     if (!existsSync(process.env.FM_CHILD_PID_FILE)) return false;
     const child = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
-    return child && child !== previousChild && pidAlive(child);
+    if (!child || child === previousChild || !pidAlive(child)) return false;
+    return liveArmPids().includes(child);
   }, `${reason} replacement child`);
   const live = liveArmPids();
   if (live.length !== 1) {
@@ -1024,10 +1104,13 @@ const sameInstanceArm = await current.getTool().execute("same-instance", {}, und
 if (!sameInstanceArm.details?.ok || String(sameInstanceArm.details.message).includes("shutting down")) {
   throw new Error(`same-instance replacement arm failed: ${JSON.stringify(sameInstanceArm.details)}`);
 }
+// Same pid-file-before-arm-log ordering as replaceSession: the count assertion
+// below reads the log, so the barrier has to wait for the log row too.
 await waitFor(() => {
   if (!existsSync(process.env.FM_CHILD_PID_FILE)) return false;
   const child = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
-  return child !== sameInstanceChild && pidAlive(child);
+  if (child === sameInstanceChild || !pidAlive(child)) return false;
+  return liveArmPids().includes(child);
 }, "same-instance replacement child");
 await waitFor(() => !pidAlive(sameInstanceChild), "same-instance previous child exit");
 if (liveArmPids().length !== 1) {
@@ -1069,7 +1152,7 @@ if (liveArmPids().length !== 0) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi session transitions must rearm through an explicit generation owner"
+  expect_code 0 "$status" "Pi session transitions must rearm through an explicit generation owner${out:+ | $out}"
   [ -z "$out" ] || fail "Pi session-transition generation owner test printed output: $out"
   pass "Pi session transitions use a generation owner across /new /resume /fork, stale callbacks, and quit"
 }
@@ -1112,7 +1195,7 @@ if (process.listenerCount("exit") !== before + 1) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi cleanup fallback listener must remain singular across session replacement"
+  expect_code 0 "$status" "Pi cleanup fallback listener must remain singular across session replacement${out:+ | $out}"
   [ -z "$out" ] || fail "Pi listener-lifecycle test printed output: $out"
   pass "Pi process-exit cleanup listener remains singular across session replacement"
 }
@@ -1153,7 +1236,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-exit", {}, undefined, undefined, {});
-for (let i = 0; i < 250 && !existsSync(process.env.FM_CHILD_PID_FILE); i += 1) {
+for (let i = 0; i < 1500 && !existsSync(process.env.FM_CHILD_PID_FILE); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_CHILD_PID_FILE)) throw new Error("arm child did not start");
@@ -1161,7 +1244,7 @@ const firstChild = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
 await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, {});
 await handlers.get("session_start")?.({ type: "session_start" }, {});
 await tool.execute("tool-call-replacement", {}, undefined, undefined, {});
-for (let i = 0; i < 250; i += 1) {
+for (let i = 0; i < 1500; i += 1) {
   const currentChild = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
   if (currentChild !== firstChild) break;
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1173,11 +1256,16 @@ process.exit(0);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi process exit must run the watcher cleanup fallback"
+  expect_code 0 "$status" "Pi process exit must run the watcher cleanup fallback${out:+ | $out}"
   [ -z "$out" ] || fail "Pi process-exit cleanup test printed output: $out"
   pid=$(cat "$pid_file")
   i=0
-  while [ "$i" -lt 250 ] && ! grep -qx "$pid" "$cleanup_log" 2>/dev/null; do
+  # This wait spans two sequential process teardowns: the node process exiting
+  # and its exit handler delivering TERM, then the bash arm child's trap
+  # appending its pid to the cleanup log.
+  # That puts it in the same class as the 30s ceilings above, so it stops at
+  # 1500 steps of 0.02s.
+  while [ "$i" -lt 1500 ] && ! grep -qx "$pid" "$cleanup_log" 2>/dev/null; do
     sleep 0.02
     i=$((i + 1))
   done
@@ -1204,7 +1292,7 @@ await import(pathToFileURL(process.env.PLUGIN).href);
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode plugin must import beneath an explicit ESM package boundary"
+  expect_code 0 "$status" "OpenCode plugin must import beneath an explicit ESM package boundary${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode ESM boundary import printed output: $out"
   pass "OpenCode plugins have an explicit ESM boundary even under a typeless parent package"
 }
@@ -1238,7 +1326,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -1254,7 +1342,7 @@ if (!text.includes(`home=${process.env.FM_HOME}`) || !text.includes(`root=${expe
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must use FM_HOME state outside the repo root"
+  expect_code 0 "$status" "OpenCode watch plugin must use FM_HOME state outside the repo root${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode effective-state test printed output: $out"
   pass "OpenCode watcher plugin uses the effective FM_HOME state"
 }
@@ -1288,7 +1376,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -1303,7 +1391,7 @@ if (!text.includes("poll=7")) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must source FM_HOME config outside the repo root"
+  expect_code 0 "$status" "OpenCode watch plugin must source FM_HOME config outside the repo root${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode effective-config test printed output: $out"
   pass "OpenCode watcher plugin sources the effective config"
 }
@@ -1337,15 +1425,26 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+// The event hook starts its arm attempt without awaiting it, so awaiting the
+// hook proves nothing about that attempt. Drain it through the plugin's own
+// published coordinator: while an attempt is in flight ensureArmed awaits that
+// exact attempt, so this returns only once the foreign-lock attempt has
+// finished. A fixed sleep here instead is a guess about how long the attempt's
+// git and lock reads take, and under load the second event below then coalesces
+// onto the unfinished first attempt and never rechecks the lock.
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+const drained = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (drained !== "read-only") {
+  console.error(`foreign lock holder did not yield a read-only attempt: ${drained}`);
+  process.exit(1);
+}
 if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event(event);
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -1355,7 +1454,7 @@ if (!existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock"
+  expect_code 0 "$status" "OpenCode watch plugin must arm only when this session owns the fleet lock${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode session-lock test printed output: $out"
   pass "OpenCode watcher plugin requires session lock ownership"
 }
@@ -1402,7 +1501,7 @@ if (existsSync(process.env.FM_ARM_LOG)) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch coordinator must keep primary scope checks in the shared arm path"
+  expect_code 0 "$status" "OpenCode watch coordinator must keep primary scope checks in the shared arm path${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode coordinator-scope test printed output: $out"
   pass "OpenCode watcher coordinator respects primary scope"
 }
@@ -1466,7 +1565,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event(event);
-for (let i = 0; i < 250; i += 1) {
+for (let i = 0; i < 3000; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
     ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
     : [];
@@ -1482,7 +1581,7 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 const stableRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
 if (stableRows.length !== 2) throw new Error(`delivery was confirmed before the prompt succeeded: ${stableRows.join(" | ")}`);
 releasePrompt();
-for (let i = 0; i < 100; i += 1) {
+for (let i = 0; i < 3000; i += 1) {
   if (readFileSync(process.env.FM_ARM_LOG, "utf8").includes("confirmed generation=fixture-generation")) break;
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -1552,7 +1651,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500; i += 1) {
+for (let i = 0; i < 3000; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
     ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
     : [];
@@ -1565,7 +1664,7 @@ if (!prompts.some((message) => message.includes("original wake"))) throw new Err
 await new Promise((resolve) => setTimeout(resolve, 150));
 if (existsSync(process.env.FM_PRE_READY_RETIRED_FILE)) throw new Error("pre-ready actionable successor was retired before its close");
 writeFileSync(process.env.FM_PRE_READY_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
+for (let i = 0; i < 3000; i += 1) {
   const successorRows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
   if (successorRows.length >= 3 && prompts.some((message) => message.includes("pre-ready successor wake"))) break;
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1577,7 +1676,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must retire the pre-ready arm, not its actionable successor"
+  expect_code 0 "$status" "OpenCode must retire the pre-ready arm, not its actionable successor${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode pre-ready actionable test printed output: $out"
   pass "OpenCode pre-ready actionable close preserves its successor"
 }
@@ -1605,9 +1704,14 @@ trap 'exit 0' TERM INT
 while :; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_OPENCODE_ARM_READY_TIMEOUT_MS="$FM_TEST_ARM_READY_TIMEOUT_MS" FM_TEST_WAIT_MS="$FM_TEST_WAIT_MS" FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+// Poll in 10ms steps up to FM_TEST_WAIT_MS, the ceiling derived from the
+// arm-readiness budget this test waits out. The loop breaks as soon as the
+// condition holds, so the ceiling only bounds the failure case.
+const waitSteps = Math.ceil(Number(process.env.FM_TEST_WAIT_MS) / 10);
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
@@ -1629,7 +1733,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
+for (let i = 0; i < waitSteps && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1645,7 +1749,7 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery"
+  expect_code 0 "$status" "OpenCode must deliver the actionable wake after bounded hung-successor recovery${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode hung-successor test printed output: $out"
   pass "OpenCode hung successor falls back to one typed actionable wake"
 }
@@ -1679,9 +1783,14 @@ printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
 while [ ! -e "$FM_RELEASE_FILE" ]; do sleep 0.1; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_RELEASE_FILE="$release" FM_OPENCODE_ARM_READY_TIMEOUT_MS="$FM_TEST_ARM_READY_TIMEOUT_MS" FM_TEST_WAIT_MS="$FM_TEST_WAIT_MS" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+// Poll in 10ms steps up to FM_TEST_WAIT_MS, the ceiling derived from the
+// arm-readiness budget this test waits out. The loop breaks as soon as the
+// condition holds, so the ceiling only bounds the failure case.
+const waitSteps = Math.ceil(Number(process.env.FM_TEST_WAIT_MS) / 10);
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 let prompt = "";
@@ -1703,7 +1812,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
+for (let i = 0; i < waitSteps && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1718,7 +1827,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor"
+  expect_code 0 "$status" "OpenCode must fall back without overlapping an unretired successor${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode unretired-successor test printed output: $out"
   pass "OpenCode unretired successor falls back without an overlapping retry"
 }
@@ -1759,9 +1868,14 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
     chmod +x "$repo/bin/fm-watch-arm.sh"
-    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS=250 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" FM_UNRETIRED_READY_FILE="$ready" FM_UNRETIRED_RETIRE_FILE="$retired" FM_RELEASE_FILE="$release" FM_STOP_FILE="$stop" FM_LATE_KIND="$kind" FM_OPENCODE_ARM_READY_TIMEOUT_MS="$FM_TEST_ARM_READY_TIMEOUT_MS" FM_TEST_WAIT_MS="$FM_TEST_WAIT_MS" FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+// Poll in 10ms steps up to FM_TEST_WAIT_MS, the ceiling derived from the
+// arm-readiness budget this test waits out. The loop breaks as soon as the
+// condition holds, so the ceiling only bounds the failure case.
+const waitSteps = Math.ceil(Number(process.env.FM_TEST_WAIT_MS) / 10);
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const prompts = [];
@@ -1776,7 +1890,7 @@ const rows = () => existsSync(process.env.FM_ARM_LOG)
   ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
   : [];
 async function waitFor(predicate, message) {
-  for (let i = 0; i < 500; i += 1) {
+  for (let i = 0; i < waitSteps; i += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -1801,7 +1915,7 @@ await waitFor(
 if (rows().length !== 2) throw new Error(`unretired arm overlapped before fallback: ${rows().join(" | ")}`);
 if (!prompts[0]?.includes("original wake")) throw new Error(`missing original fallback: ${prompts.join(" | ")}`);
 writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
-for (let i = 0; i < 500; i += 1) {
+for (let i = 0; i < waitSteps; i += 1) {
   if (rows().length >= 3 && (process.env.FM_LATE_KIND !== "actionable" || prompts.some((message) => message.includes("late wake")))) break;
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -1816,7 +1930,7 @@ await new Promise((resolve) => setTimeout(resolve, 80));
 EOF
 )
     status=$?
-    expect_code 0 "$status" "OpenCode late $kind close must remain supervised after fallback"
+    expect_code 0 "$status" "OpenCode late $kind close must remain supervised after fallback${out:+ | $out}"
     [ -z "$out" ] || fail "OpenCode late-$kind test printed output: $out"
   done
   pass "OpenCode late unretired closes resume classified supervision"
@@ -1863,7 +1977,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250; i += 1) {
+for (let i = 0; i < 3000; i += 1) {
   const rows = existsSync(process.env.FM_ARM_LOG)
     ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n")
     : [];
@@ -1877,7 +1991,7 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode clean empty close must trigger a bounded continuity retry"
+  expect_code 0 "$status" "OpenCode clean empty close must trigger a bounded continuity retry${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode empty-close retry test printed output: $out"
   pass "OpenCode clean empty close triggers a bounded continuity retry"
 }
@@ -1919,7 +2033,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !prompt; i += 1) {
+for (let i = 0; i < 3000 && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1930,7 +2044,7 @@ if (!prompt.includes("after 2 retries")) throw new Error(`retry exhaustion was n
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode established clean closes must honor the continuity retry limit"
+  expect_code 0 "$status" "OpenCode established clean closes must honor the continuity retry limit${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode established-empty-close retry test printed output: $out"
   pass "OpenCode established clean closes stop at the configured retry limit"
 }
@@ -1975,7 +2089,7 @@ const hooks = await mod.FmPrimaryWatchArm({
 const lock = `${process.env.FM_HOME}/state/.lock`;
 writeFileSync(lock, `${process.pid}\n`);
 const eventPromise = hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 3000 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -1983,7 +2097,7 @@ try {
   writeFileSync(lock, `${other.pid}\n`);
   writeFileSync(process.env.FM_RELEASE_FILE, "release\n");
   await eventPromise;
-  for (let i = 0; i < 250 && !prompt.includes("no longer owns the lock"); i += 1) {
+  for (let i = 0; i < 3000 && !prompt.includes("no longer owns the lock"); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   const rows = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n");
@@ -1995,7 +2109,7 @@ try {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode close handler must verify session-lock ownership before successor launch"
+  expect_code 0 "$status" "OpenCode close handler must verify session-lock ownership before successor launch${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode close lock test printed output: $out"
   pass "OpenCode close handler verifies session-lock ownership before successor launch"
 }
@@ -2050,7 +2164,7 @@ const guardHooks = await guardMod.FmPrimaryTurnendGuard({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
+for (let i = 0; i < 1500 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -2068,7 +2182,7 @@ if (promptBody) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode turn-end guard must let the auto-arm plugin establish supervision first"
+  expect_code 0 "$status" "OpenCode turn-end guard must let the auto-arm plugin establish supervision first${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode coordination test printed output: $out"
   pass "OpenCode watcher plugin coordinates with the turn-end guard"
 }
@@ -2123,7 +2237,7 @@ const guardHooks = await guardMod.FmPrimaryTurnendGuard({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !existsSync(process.env.FM_GUARD_LOG); i += 1) {
+for (let i = 0; i < 1500 && !existsSync(process.env.FM_GUARD_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!existsSync(process.env.FM_ARM_LOG)) {
@@ -2145,7 +2259,7 @@ if (!promptBody.includes("TURN WOULD END BLIND")) {
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must not treat external healthy output as an owned arm"
+  expect_code 0 "$status" "OpenCode watch plugin must not treat external healthy output as an owned arm${out:+ | $out}"
   [ -z "$out" ] || fail "OpenCode external-healthy test printed output: $out"
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
