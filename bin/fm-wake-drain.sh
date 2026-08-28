@@ -3,6 +3,12 @@
 # annotate every unread line for validated signal status keys, surface unread
 # informational status lines and OPEN DECISIONS, then assert liveness.
 #
+# An absent OPEN DECISIONS section is an affirmative claim that nothing is open,
+# so a presentation that could not read the durable status must never be printed
+# as one: this script exits nonzero with a named diagnostic instead. The durable
+# wake queue is consumed only by --ack-through, so refusing loses no wake, and
+# the queued records stay durable for the re-run.
+#
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.
 set -u
@@ -26,6 +32,7 @@ ACK_THROUGH=
 ACK_GENERATION=
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
+STATUS_PRESENTATION_FAILED=false
 
 case "${1:-}" in
   '') ;;
@@ -200,6 +207,19 @@ print_status_presentation() {  # [<deduped-raw-rows>]
   return "$rc"
 }
 
+# Run the status presentation, and refuse loudly when it could not read the
+# durable status. Silence from this stage is indistinguishable from "no decision
+# is open", which is the one claim this script must never make without having
+# read the state that backs it, so the failure gets its own diagnostic and the
+# script's exit status. The presentation itself writes no cursor when it fails,
+# so the same records surface on the re-run.
+present_status_or_refuse() {  # [<deduped-raw-rows>]
+  (print_status_presentation "$@") && return 0
+  STATUS_PRESENTATION_FAILED=true
+  echo "wake drain: the durable status could not be read, so unread status and OPEN DECISIONS were NOT presented this turn - do not read their absence as nothing being open; inspect $STATE and re-run bin/fm-wake-drain.sh" >&2
+  return 1
+}
+
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
 cleanup() {
   local status=$?
@@ -283,11 +303,12 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   esac
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
-  (print_status_presentation) || true
+  present_status_or_refuse
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
   fi
   assert_watcher_liveness
+  [ "$STATUS_PRESENTATION_FAILED" = false ] || exit 1
   exit 0
 fi
 
@@ -335,6 +356,7 @@ DRAIN_LOCK_HELD=false
 printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
   "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
 
-(print_status_presentation "$RAW_ROWS") || true
+present_status_or_refuse "$RAW_ROWS"
 assert_watcher_liveness
+[ "$STATUS_PRESENTATION_FAILED" = false ] || exit 1
 exit 0

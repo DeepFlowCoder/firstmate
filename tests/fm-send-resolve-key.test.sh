@@ -40,28 +40,15 @@
 # The opposite result was measured elsewhere: inside the no-mistakes gate
 # worktree this same suite failed 13 of 20 consecutive solo runs, every failure
 # on a drain-dependent assertion.
-# The failure is therefore environment-dependent, reproduced in the gate
-# worktree and not in the task worktree.
-# The open suspect is that bin/fm-wake-drain.sh can silently discard a failed
-# status presentation: driving that script against a fresh state dir holding one
-# open decision, 4 of 40 and 1 of 60 invocations exited 0 with completely empty
-# stdout.
-# The abort point is the guarded size read inside status_presentation_snapshot
-# in bin/fm-classify-lib.sh, the line
-#   size=$(_fm_status_file_size "$f") || return 1
-# which gives up when that subshell exits nonzero despite printing the correct
-# size.
-# The failure it returns is then swallowed by the two
-# (print_status_presentation ...) || true discards in bin/fm-wake-drain.sh.
-# Those two constructs are the durable anchors, and as of this commit they sit
-# at bin/fm-classify-lib.sh:623 and at bin/fm-wake-drain.sh:286 and :338, so
-# treat a later drift in those numbers as expected and search for the
-# constructs.
-# That defect is tracked as separate work and is deliberately not addressed
-# here.
-# So a drain-dependent failure of this suite should be attributed to that drain
-# defect rather than treated as a defect in this suite or in fm-send's
-# decision-key contract.
+# That gate-worktree environment was never reproduced, so the cause of those
+# specific runs is not established.
+# What is established is that bin/fm-wake-drain.sh used to discard a failed
+# status presentation and exit 0 with empty stdout, which every assertion here
+# reads as "no decision is open".
+# The drain now refuses on that failure instead, and drain_out below keeps its
+# diagnostic on this suite's stderr, so a recurrence names its own cause rather
+# than surfacing as a missing decision.
+# tests/fm-wake-drain-open-decisions-cursor.test.sh owns that contract.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -144,7 +131,18 @@ setup_home() {  # <name> -> echoes a fresh home dir with an empty state/
 }
 
 drain_out() {  # <home>
-  FM_STATE_OVERRIDE="$1/state" "$DRAIN" 2>/dev/null
+  # Every assertion below reads this stdout, so a drain that cannot read the
+  # state must not look like "no decision is open". The drain refuses on that
+  # failure; keep its diagnostic on the suite's stderr instead of dropping it
+  # with the routine WAKE_ACK_REQUIRED and guard lines, and propagate its status
+  # so a caller that checks can tell a refusal from a genuinely empty fleet.
+  local err rc=0
+  err=$(mktemp "$TMP_ROOT/drain-err.XXXXXX") || return 1
+  FM_STATE_OVERRIDE="$1/state" "$DRAIN" 2> "$err" || rc=$?
+  [ "$rc" -eq 0 ] \
+    || printf 'drain refused (exit %s): %s\n' "$rc" "$(grep -F 'wake drain:' "$err" | tail -1)" >&2
+  rm -f "$err"
+  return "$rc"
 }
 
 test_answer_send_closes_open_decision() {
