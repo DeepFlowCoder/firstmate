@@ -335,7 +335,22 @@ const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-first", {}, undefined, undefined, {});
 let redundant = null;
-for (let i = 0; i < 500; i += 1) {
+// This loop waits for one `bash -lc` arm child to spawn, exit emptily, and be
+// classified, after which the tool reports the already-scheduled continuity
+// retry.
+// The retry backoff is pinned at 10000ms by this test, so that timer never
+// fires and only the scheduling is being awaited.
+// Measured on an 8-core macOS host: 20 samples at load average 39 needed 2 to
+// 20 iterations (25ms to 257ms), and 12 idle samples needed 1 to 26 iterations
+// (12ms to 309ms), so the old 100-iteration bound sat about 4x above the worst
+// observed case.
+// Each iteration measured 11.8ms to 28.7ms: the 10ms sleep plus a tool call
+// measured at 0.25ms to 0.9ms, which is orders of magnitude below the 40ms to
+// 400ms a `bash -lc` arm spawn costs, so no iteration arms anything and this
+// is the same passive class as the 30s ceilings above.
+// 3000 iterations is therefore at least 30s of real waiting even at the
+// fastest measured 11.8ms per iteration, which matches that convention.
+for (let i = 0; i < 3000; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
   redundant = await tool.execute("tool-call-during-retry", {}, undefined, undefined, {});
   if (redundant.content[0]?.text.includes("scheduled continuity retry")) break;
@@ -1241,7 +1256,12 @@ EOF
   [ -z "$out" ] || fail "Pi process-exit cleanup test printed output: $out"
   pid=$(cat "$pid_file")
   i=0
-  while [ "$i" -lt 250 ] && ! grep -qx "$pid" "$cleanup_log" 2>/dev/null; do
+  # This wait spans two sequential process teardowns: the node process exiting
+  # and its exit handler delivering TERM, then the bash arm child's trap
+  # appending its pid to the cleanup log.
+  # That puts it in the same class as the 30s ceilings above, so it stops at
+  # 1500 steps of 0.02s.
+  while [ "$i" -lt 1500 ] && ! grep -qx "$pid" "$cleanup_log" 2>/dev/null; do
     sleep 0.02
     i=$((i + 1))
   done
@@ -1408,6 +1428,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 // finished. A fixed sleep here instead is a guess about how long the attempt's
 // git and lock reads take, and under load the second event below then coalesces
 // onto the unfinished first attempt and never rechecks the lock.
+await hooks.event(event);
 const drained = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
 if (drained !== "read-only") {
   console.error(`foreign lock holder did not yield a read-only attempt: ${drained}`);
