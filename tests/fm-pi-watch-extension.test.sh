@@ -1056,10 +1056,15 @@ async function replaceSession(previous, reason) {
   if (String(armed.details.message).includes("shutting down")) {
     throw new Error(`${reason} replacement still refused with shutting-down latch`);
   }
+  // The fixture writes the pid file before it appends its arm-log row, and the
+  // count assertion below reads the log rather than the pid file. Waiting only
+  // for the pid file leaves that append outside the barrier, so under load the
+  // log can still be one row behind and the count reads (none).
   await waitFor(() => {
     if (!existsSync(process.env.FM_CHILD_PID_FILE)) return false;
     const child = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
-    return child && child !== previousChild && pidAlive(child);
+    if (!child || child === previousChild || !pidAlive(child)) return false;
+    return liveArmPids().includes(child);
   }, `${reason} replacement child`);
   const live = liveArmPids();
   if (live.length !== 1) {
@@ -1080,10 +1085,13 @@ const sameInstanceArm = await current.getTool().execute("same-instance", {}, und
 if (!sameInstanceArm.details?.ok || String(sameInstanceArm.details.message).includes("shutting down")) {
   throw new Error(`same-instance replacement arm failed: ${JSON.stringify(sameInstanceArm.details)}`);
 }
+// Same pid-file-before-arm-log ordering as replaceSession: the count assertion
+// below reads the log, so the barrier has to wait for the log row too.
 await waitFor(() => {
   if (!existsSync(process.env.FM_CHILD_PID_FILE)) return false;
   const child = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
-  return child !== sameInstanceChild && pidAlive(child);
+  if (child === sameInstanceChild || !pidAlive(child)) return false;
+  return liveArmPids().includes(child);
 }, "same-instance replacement child");
 await waitFor(() => !pidAlive(sameInstanceChild), "same-instance previous child exit");
 if (liveArmPids().length !== 1) {
