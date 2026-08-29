@@ -28,18 +28,19 @@
 #   (q) a green measured against a moved base warns loudly and still merges
 #   (r) the override cannot be smuggled in through the gh-axi passthrough
 #   (s) a check name cannot forge a second pull request record into the reading
-#   (t) a repository with no PR CI at all still merges
-#   (u) an empty check list refuses while the base branch head demonstrably
-#       carries checks: a check that has not registered yet must not be read as
-#       a repository with no CI
-#   (v) an empty check list refuses when the no-CI signal cannot be obtained,
+#   (t) a repository whose pull requests receive no checks at all still merges
+#   (u) an empty check list refuses while prior pull requests demonstrably did
+#       receive checks: not-registered-yet must not be read as no CI
+#   (v) a prior pull request carrying only legacy commit statuses counts too,
+#       so a Status-API-only repository is not read as having no CI
+#   (w) an empty check list refuses when there is no prior pull request to
+#       establish whether this repository runs PR checks
+#   (x) an empty check list refuses when the no-CI signal cannot be obtained,
 #       and the refusal carries gh's own account of why
-#   (w) a repository whose workflows can never raise a PR check still merges:
-#       the signal counts checks produced, not workflows configured
-#   (x) a compare call that fails warns rather than dropping the stale signal
-#   (y) a compare call that answers something unreadable says so, rather than
+#   (y) a compare call that fails warns rather than dropping the stale signal
+#   (z) a compare call that answers something unreadable says so, rather than
 #       claiming the call failed
-#   (z) a glob character in a check name is not expanded against the cwd
+#  (aa) a glob character in a check name is not expanded against the cwd
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -83,21 +84,38 @@ make_case() {
 # unreachable forge), FM_TEST_GH_VIEW_STDERR (what the failing read writes to
 # stderr), FM_TEST_BEHIND (behind_by for the compare call),
 # FM_TEST_COMPARE_FAIL (non-empty fails the compare call),
-# FM_TEST_BASE_CHECK_RUNS (check runs GitHub produced on the base branch head),
-# FM_TEST_BASE_CHECKS_FAIL (non-empty fails that base-head check-run query),
-# FM_TEST_BASE_CHECKS_STDERR (what that failing query writes to stderr).
+# FM_TEST_PRIOR_PR_SHAS (head SHAs of prior closed pull requests, whitespace
+# separated; empty means this pull request is the only one), FM_TEST_PRIOR_CHECK_RUNS
+# (check runs each sampled head carries), FM_TEST_PRIOR_STATUSES (legacy commit
+# statuses each sampled head carries), FM_TEST_PRIOR_FAIL (non-empty fails the
+# per-head sampling query), FM_TEST_PRIOR_STDERR (what that failure writes to
+# stderr).
+#
+# The pull request under test is always listed first, as number 9, so a gate
+# that failed to exclude its own number would sample the very head whose
+# emptiness is in question.
 gh_mock_body() {
   local head=$1
   cat <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = api ]; then
   case " \$* " in
+    *pulls?state=closed*)
+      printf '%s\n' "9 $head"
+      prior_n=101
+      for prior_sha in \${FM_TEST_PRIOR_PR_SHAS:-}; do
+        printf '%s\n' "\$prior_n \$prior_sha"
+        prior_n=\$((prior_n + 1))
+      done
+      exit 0 ;;
     *check-runs*)
-      if [ -n "\${FM_TEST_BASE_CHECKS_FAIL:-}" ]; then
-        [ -z "\${FM_TEST_BASE_CHECKS_STDERR:-}" ] || printf '%s\n' "\${FM_TEST_BASE_CHECKS_STDERR}" >&2
+      if [ -n "\${FM_TEST_PRIOR_FAIL:-}" ]; then
+        [ -z "\${FM_TEST_PRIOR_STDERR:-}" ] || printf '%s\n' "\${FM_TEST_PRIOR_STDERR}" >&2
         exit 1
       fi
-      printf '%s\n' "\${FM_TEST_BASE_CHECK_RUNS:-0}" ; exit 0 ;;
+      printf '%s\n' "\${FM_TEST_PRIOR_CHECK_RUNS:-0}" ; exit 0 ;;
+    */status*)
+      printf '%s\n' "\${FM_TEST_PRIOR_STATUSES:-0}" ; exit 0 ;;
     *compare*)
       [ -z "\${FM_TEST_COMPARE_FAIL:-}" ] || exit 1
       printf '%s\n' "\${FM_TEST_BEHIND:-0}" ; exit 0 ;;
@@ -175,9 +193,11 @@ run_pr_merge() {
   FM_TEST_GH_VIEW_STDERR="${FM_TEST_GH_VIEW_STDERR:-}" \
   FM_TEST_BEHIND="${FM_TEST_BEHIND:-0}" \
   FM_TEST_COMPARE_FAIL="${FM_TEST_COMPARE_FAIL:-}" \
-  FM_TEST_BASE_CHECK_RUNS="${FM_TEST_BASE_CHECK_RUNS:-0}" \
-  FM_TEST_BASE_CHECKS_FAIL="${FM_TEST_BASE_CHECKS_FAIL:-}" \
-  FM_TEST_BASE_CHECKS_STDERR="${FM_TEST_BASE_CHECKS_STDERR:-}" \
+  FM_TEST_PRIOR_PR_SHAS="${FM_TEST_PRIOR_PR_SHAS:-}" \
+  FM_TEST_PRIOR_CHECK_RUNS="${FM_TEST_PRIOR_CHECK_RUNS:-0}" \
+  FM_TEST_PRIOR_STATUSES="${FM_TEST_PRIOR_STATUSES:-0}" \
+  FM_TEST_PRIOR_FAIL="${FM_TEST_PRIOR_FAIL:-}" \
+  FM_TEST_PRIOR_STDERR="${FM_TEST_PRIOR_STDERR:-}" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
   rc=$?
@@ -620,67 +640,94 @@ test_override_cannot_be_smuggled_through_passthrough() {
 test_repo_without_ci_still_merges() {
   local case_dir
   # This suite exists partly for repos with no PR CI (see the header). An empty
-  # check list plus a base branch head that carries no checks either is the one
+  # check list plus prior pull requests that received nothing either is the one
   # shape that reads as "there is nothing red to be caught on here", so the gate
   # must not turn "no CI" into "never mergeable".
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
   )
-  FM_TEST_BASE_CHECK_RUNS=0
-  export FM_TEST_BASE_CHECK_RUNS
+  FM_TEST_PRIOR_PR_SHAS='aaa111 bbb222 ccc333'
+  FM_TEST_PRIOR_CHECK_RUNS=0
+  FM_TEST_PRIOR_STATUSES=0
+  export FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_CHECK_RUNS FM_TEST_PRIOR_STATUSES
   case_dir=$(run_gate_case no-ci)
-  unset FM_TEST_BASE_CHECK_RUNS
+  unset FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_CHECK_RUNS FM_TEST_PRIOR_STATUSES
   expect_code 0 "$(cat "$case_dir/rc")" "no-ci: a PR with no checks must still merge"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "no-ci: the merge did not proceed on a repo with no PR CI"
-  pass "fm-pr-merge still merges a green PR on a repository with no PR CI"
-}
-
-test_dispatch_only_workflows_still_merge() {
-  local case_dir
-  # A repository whose only workflows are workflow_dispatch, schedule, or
-  # release has workflow entries that can never raise a PR check, so its base
-  # branch head carries no check runs. Counting workflows instead of checks
-  # produced would refuse every merge there forever and push routine merges
-  # through the captain override.
-  READING_LINES=(
-    'pr OPEN MERGEABLE CLEAN'
-    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-  )
-  FM_TEST_BASE_CHECK_RUNS=0
-  export FM_TEST_BASE_CHECK_RUNS
-  case_dir=$(run_gate_case dispatch-only)
-  unset FM_TEST_BASE_CHECK_RUNS
-  expect_code 0 "$(cat "$case_dir/rc")" \
-    "dispatch-only: a repo whose workflows cannot raise a PR check must still merge"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
-    || fail "dispatch-only: the merge did not proceed"
-  pass "fm-pr-merge merges where workflows exist but produce no checks: the signal counts checks, not workflows"
+  pass "fm-pr-merge still merges a green PR on a repository whose pull requests receive no checks"
 }
 
 test_unregistered_checks_refuse() {
   local case_dir
   # The race window the empty rollup hides: between opening a pull request and
   # GitHub registering a check run against its head commit, the reading is
-  # indistinguishable from a repository that has no CI at all. The settled base
-  # branch head is the second, positive signal that tells them apart.
+  # indistinguishable from a repository that has no CI at all. What prior pull
+  # requests received is the second, positive signal that tells them apart.
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
   )
-  FM_TEST_BASE_CHECK_RUNS=12
-  export FM_TEST_BASE_CHECK_RUNS
+  FM_TEST_PRIOR_PR_SHAS='aaa111'
+  FM_TEST_PRIOR_CHECK_RUNS=1
+  export FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_CHECK_RUNS
   case_dir=$(run_gate_case checks-not-registered)
-  unset FM_TEST_BASE_CHECK_RUNS
+  unset FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_CHECK_RUNS
   expect_code 1 "$(cat "$case_dir/rc")" \
-    "checks-not-registered: an empty check list on a repo that has CI must refuse"
+    "checks-not-registered: an empty check list on a repo whose PRs get checks must refuse"
   assert_grep 'has not registered yet' "$case_dir/stderr" \
     "checks-not-registered: refusal did not say a check may simply not have registered yet"
-  assert_grep '12 on the head of main' "$case_dir/stderr" \
-    "checks-not-registered: refusal did not name the checks the base branch head demonstrably carries"
+  assert_grep 'pull requests in example/repo demonstrably do receive them' "$case_dir/stderr" \
+    "checks-not-registered: refusal did not name what the prior pull requests received"
   assert_no_side_effects "$case_dir" checks-not-registered
-  pass "fm-pr-merge refuses an empty check list where the base branch head demonstrably carries checks"
+  pass "fm-pr-merge refuses an empty check list where prior pull requests demonstrably received checks"
+}
+
+test_prior_pr_legacy_statuses_refuse() {
+  local case_dir
+  # A repository reporting only through the legacy Status API (Jenkins,
+  # Buildkite, older CircleCI) produces zero Checks-API runs. The primary
+  # reading counts those statuses, so the second signal has to as well, or the
+  # race window stays wide open for exactly that class of repository.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+  )
+  FM_TEST_PRIOR_PR_SHAS='aaa111'
+  FM_TEST_PRIOR_CHECK_RUNS=0
+  FM_TEST_PRIOR_STATUSES=2
+  export FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_CHECK_RUNS FM_TEST_PRIOR_STATUSES
+  case_dir=$(run_gate_case legacy-statuses)
+  unset FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_CHECK_RUNS FM_TEST_PRIOR_STATUSES
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "legacy-statuses: a prior PR carrying only commit statuses must still count as PR CI"
+  assert_grep 'has not registered yet' "$case_dir/stderr" \
+    "legacy-statuses: refusal did not say a check may simply not have registered yet"
+  assert_no_side_effects "$case_dir" legacy-statuses
+  pass "fm-pr-merge counts a prior pull request's legacy commit statuses as evidence of PR CI"
+}
+
+test_no_prior_pull_request_refuses() {
+  local case_dir
+  # With no other closed pull request there is nothing to establish the answer
+  # from. The gate must not fall back to sampling this pull request's own head:
+  # that head's emptiness is the very question, so answering with it would read
+  # every repository as having no CI.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+  )
+  FM_TEST_PRIOR_PR_SHAS=''
+  export FM_TEST_PRIOR_PR_SHAS
+  case_dir=$(run_gate_case no-prior-pr)
+  unset FM_TEST_PRIOR_PR_SHAS
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "no-prior-pr: an empty check list with nothing to sample must refuse"
+  assert_grep 'no other closed pull request' "$case_dir/stderr" \
+    "no-prior-pr: refusal did not say there was no prior pull request to establish it"
+  assert_no_side_effects "$case_dir" no-prior-pr
+  pass "fm-pr-merge refuses an empty check list when no prior pull request can establish whether PRs get checks"
 }
 
 test_missing_ci_signal_refuses() {
@@ -689,13 +736,14 @@ test_missing_ci_signal_refuses() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
   )
-  FM_TEST_BASE_CHECKS_FAIL=1
-  # A missing actions scope, a disabled feature, and a rate limit call for three
+  FM_TEST_PRIOR_PR_SHAS='aaa111'
+  FM_TEST_PRIOR_FAIL=1
+  # A missing scope, a disabled feature, and a rate limit call for three
   # different actions, so gh's own words have to survive into the refusal.
-  FM_TEST_BASE_CHECKS_STDERR='HTTP 403: Resource not accessible by integration (https://api.github.com/repos/example/repo/commits/main/check-runs)'
-  export FM_TEST_BASE_CHECKS_FAIL FM_TEST_BASE_CHECKS_STDERR
+  FM_TEST_PRIOR_STDERR='HTTP 403: Resource not accessible by integration (https://api.github.com/repos/example/repo/commits/aaa111/check-runs)'
+  export FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_FAIL FM_TEST_PRIOR_STDERR
   case_dir=$(run_gate_case no-ci-signal)
-  unset FM_TEST_BASE_CHECKS_FAIL FM_TEST_BASE_CHECKS_STDERR
+  unset FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_FAIL FM_TEST_PRIOR_STDERR
   expect_code 1 "$(cat "$case_dir/rc")" \
     "no-ci-signal: an empty check list must refuse when the no-CI signal cannot be obtained"
   assert_grep 'could not establish whether example/repo has PR CI' "$case_dir/stderr" \
@@ -830,8 +878,9 @@ test_override_does_not_apply_to_conflicts
 test_stale_green_warns_but_merges
 test_override_cannot_be_smuggled_through_passthrough
 test_repo_without_ci_still_merges
-test_dispatch_only_workflows_still_merge
 test_unregistered_checks_refuse
+test_prior_pr_legacy_statuses_refuse
+test_no_prior_pull_request_refuses
 test_missing_ci_signal_refuses
 test_compare_failure_warns_instead_of_going_silent
 test_unreadable_behind_by_is_not_reported_as_a_failed_call

@@ -121,27 +121,29 @@ The incident this gate answers had `behind_by=24` on three pull requests reporte
 ## An empty check list is told apart from a repository with no CI
 
 A pull request that reports no checks renders zero `check` lines whether the repository has no PR CI or GitHub has simply not registered a check run against this head commit yet.
-The gate resolves that with a second, positive signal: how many check runs GitHub actually produced on the settled head of the base branch.
+The gate resolves that with a second, positive signal that answers the question directly rather than by proxy: do pull requests in this repository receive checks?
+The head commits of up to three recent other closed pull requests are sampled, and each is asked both of GitHub's check APIs, because the primary reading counts legacy commit statuses as well as Checks-API runs.
 
 ```sh
-gh api repos/kunchenguid/firstmate/commits/main/check-runs -q .total_count
-gh api repos/DeepFlowCoder/dotfiles/commits/main/check-runs -q .total_count
+for sha in $(gh api 'repos/<owner>/<repo>/pulls?state=closed&per_page=5' -q '.[].head.sha' | head -3); do
+  printf 'runs=%s/st=%s\n' \
+    "$(gh api "repos/<owner>/<repo>/commits/$sha/check-runs" -q .total_count)" \
+    "$(gh api "repos/<owner>/<repo>/commits/$sha/status" -q '.statuses|length')"
+done
 ```
 
 ```
-12
-0
+kunchenguid/firstmate    runs=1/st=0  runs=1/st=0  runs=1/st=0
+DeepFlowCoder/dotfiles   runs=0/st=0  runs=0/st=0  runs=0/st=0
 ```
 
-`kunchenguid/firstmate` demonstrably produces checks; `DeepFlowCoder/dotfiles` is a registered project with no `.github/workflows` directory at all.
-Zero merges on an empty check list; anything else refuses, and so does a count that cannot be obtained.
-The base branch head is the right commit to ask because it is settled: it has already had all the time it will ever get to accumulate the checks it gets, so a zero there is evidence rather than silence, unlike the freshly pushed PR head whose emptiness is exactly what is ambiguous.
+`kunchenguid/firstmate`'s pull requests demonstrably receive checks; `DeepFlowCoder/dotfiles` is a registered project with no `.github/workflows` directory at all, and it has 8 pull requests in total, so the history this signal needs exists for the project that must keep merging.
+Any sampled head carrying anything refuses; every sampled head carrying nothing merges; no prior pull request to sample, or a query that could not be answered, refuses and names which.
 
-Trigger accuracy was measured rather than assumed.
-`.github/workflows/windows-herdr-spike.yml` is `on: workflow_dispatch` only and contributed none of those 12 runs, so a repository whose workflows are all dispatch, schedule, or release reads `0` and keeps merging.
-The reading is behavioural rather than configurational, which also means third-party check apps that are no Actions workflow at all (Greptile, Copilot) are counted.
+Trigger accuracy is a property of the sample rather than an inference: it observes pull request heads specifically, so a `push`-only, `schedule`-only, or `workflow_dispatch`-only workflow cannot inflate it, and a `pull_request`-only workflow does register in it.
+It needs no knowledge of workflow files, triggers, path filters, or app installations, and it counts third-party check apps that are no Actions workflow at all.
 
-Three other candidates were measured and rejected.
+Four other candidates were measured and rejected.
 
 The check-suite count for the head commit returns a non-zero count on the repository that has no CI:
 
@@ -175,6 +177,22 @@ active dynamic/agents/copilot-pull-request-reviewer
 Two of those five cannot raise a PR check at all: the `windows-herdr-spike` workflow is `workflow_dispatch` only, and the `copilot-pull-request-reviewer` entry is a dynamic pseudo-workflow rather than a file.
 A repository whose only workflows are of that kind would report a non-zero count against an empty check list and be refused forever, which is the same permanent-false-refusal mode the check-suite count was rejected for.
 
+The base branch head's check-run count measures the wrong population, because a `pull_request`-triggered run attaches its check runs to the pull request head and never to the base head:
+
+```sh
+gh api repos/kunchenguid/firstmate/commits/main/check-runs -q .total_count
+gh api repos/DeepFlowCoder/dotfiles/commits/main/check-runs -q .total_count
+```
+
+```
+12
+0
+```
+
+Those 12 runs come from `.github/workflows/ci.yml`, which is `on: push: branches: [main]` as well as `pull_request`; it is the push trigger that populates the base head.
+So the signal has both failure modes: a repository whose CI is `pull_request`-only has a base head with zero runs and would falsely pass an empty check list, and a repository whose CI is `push`-only has a base head with runs and would falsely refuse every pull request forever.
+It also reads only the Checks API, so a repository reporting exclusively through the legacy Status API would read as having no CI at all, while the primary reading counts those statuses.
+
 Branch protection's required status checks cannot distinguish the two repositories, because it is absent on both:
 
 ```sh
@@ -187,10 +205,13 @@ HTTP 404: Not Found
 HTTP 404: Branch not protected
 ```
 
-Two windows stay open, and `bin/fm-pr-merge.sh`'s header records both as known limits rather than implying full coverage.
-The first is partial registration: the empty-list rule only fires on a reading carrying exactly zero checks, so a reading taken while some checks have registered and passed and others have not registered yet still reads as `ok` and merges.
-The gate deliberately does not refuse on that, because a pull request legitimately runs fewer checks than its base head under path filters and conditional jobs, so comparing the two counts would refuse honest pull requests.
-The second is a repository whose base branch never receives checks because its CI runs only on `pull_request`, which reads `0` on the base head.
+The head commit's age was rejected too: the GraphQL `Commit` type exposes `authoredDate` and `committedDate` and no `pushedDate`, so a commit authored hours before it was pushed reads as settled while its checks are still registering, which is precisely the window being closed.
+
+Three windows stay open, and `bin/fm-pr-merge.sh`'s header records all three as known limits rather than implying full coverage.
+A repository whose CI was added after its last sampled pull request reads as no-CI until one pull request has run under the new configuration.
+The first pull request in a brand-new repository has no prior pull request to sample and is refused until one exists, which the refusal names and the captain override covers.
+Partial registration also stays open: the empty-list rule fires only on a reading carrying exactly zero checks, so a reading taken while some checks have registered and passed and others have not registered yet still reads as `ok` and merges.
+The gate deliberately does not refuse on that, because a pull request legitimately runs fewer checks than a sampled one under path filters and conditional jobs, so comparing the counts would refuse honest pull requests.
 
 ## Portable regression
 
@@ -198,7 +219,7 @@ The second is a repository whose base branch never receives checks because its C
 bash tests/fm-pr-merge.test.sh
 ```
 
-The gate's own cases, out of the twenty-eight the file runs:
+The gate's own cases, out of the twenty-nine the file runs:
 
 ```
 ok - fm-pr-merge refuses a PR with a failed check and changes no state
@@ -211,9 +232,10 @@ ok - fm-pr-merge refuses a red PR on a yolo=on task: autonomy never opens the ov
 ok - fm-pr-merge refuses a conflicting PR even under the captain override
 ok - fm-pr-merge warns loudly about a green measured against a moved base, and still merges
 ok - fm-pr-merge refuses the override flag passed through to gh-axi
-ok - fm-pr-merge still merges a green PR on a repository with no PR CI
-ok - fm-pr-merge merges where workflows exist but produce no checks: the signal counts checks, not workflows
-ok - fm-pr-merge refuses an empty check list where the base branch head demonstrably carries checks
+ok - fm-pr-merge still merges a green PR on a repository whose pull requests receive no checks
+ok - fm-pr-merge refuses an empty check list where prior pull requests demonstrably received checks
+ok - fm-pr-merge counts a prior pull request's legacy commit statuses as evidence of PR CI
+ok - fm-pr-merge refuses an empty check list when no prior pull request can establish whether PRs get checks
 ok - fm-pr-merge refuses an empty check list when it cannot establish whether the repo has PR CI, and reports why
 ok - fm-pr-merge warns that staleness could not be measured when the compare call fails
 ok - fm-pr-merge distinguishes an unreadable behind_by from a compare call that failed
@@ -221,7 +243,8 @@ ok - fm-pr-merge names a check containing a glob character instead of matching f
 ok - fm-pr-merge refuses a reading whose check name forged a second pull request record
 ```
 
-Fifteen of those eighteen fail against the pre-gate script.
-The three that do not, the `SKIPPED`/`NEUTRAL` case, the no-PR-CI case, and the workflows-that-produce-no-checks case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
+Seventeen of those nineteen fail against the pre-gate script.
+The two that do not, the `SKIPPED`/`NEUTRAL` case and the no-PR-CI case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
 
-The cases covering the empty check list, the two compare-call failure modes, and the glob-bearing check name, together with the assertions that the unreadable-forge and unavailable-signal refusals carry `gh`'s own words, were each run in isolation against the version of the gate that preceded them and failed there.
+Every case covering the empty check list, both compare-call failure modes, and the glob-bearing check name, together with the assertions that the unreadable-forge and unavailable-signal refusals carry `gh`'s own words, was run in isolation against the version of the gate that preceded it and failed there.
+The legacy-status and no-prior-pull-request cases in particular fail against the base-head signal that preceded them: the first because that signal never read the Status API, the second because it never needed a prior pull request and so had nothing to refuse on.

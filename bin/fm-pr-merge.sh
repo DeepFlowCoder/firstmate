@@ -16,30 +16,43 @@
 # check list cannot tell a repository with no PR CI apart from one whose checks
 # have not been registered against this head commit yet, and merging in that
 # window is blinder than merging red. So an empty list passes only on a second,
-# positive signal that the repository genuinely has no CI - the count from
-# `gh api repos/<owner>/<repo>/commits/<baseRefName>/check-runs`. Zero merges;
-# any count refuses and says to wait for the checks to appear; a count that
-# cannot be obtained refuses too, because silence is not the evidence.
+# positive signal, and that signal has to answer exactly one question: do pull
+# requests in this repository receive checks? Not "is CI configured" and not
+# "does the base branch receive checks" - both were measured, and both answer a
+# different question; docs/verification/pr-merge-fitness.md records what each
+# rejected candidate got wrong.
 #
-# The base branch head is the commit to ask, because it is settled: it has
-# already had all the time it will ever get to accumulate the checks it gets,
-# so a zero there is evidence rather than silence, unlike the freshly pushed PR
-# head whose emptiness is exactly what is ambiguous. The reading is also
-# behavioural rather than configurational - it counts the checks GitHub really
-# produced - so a workflow that can never raise a PR check (workflow_dispatch,
-# schedule, release) does not make a quiet repository look like it has CI, and a
-# third-party check app that is no Actions workflow at all still counts.
+# So the head commits of up to three recent OTHER closed pull requests are
+# sampled, and each is asked both of GitHub's check APIs:
+#   gh api repos/<owner>/<repo>/commits/<sha>/check-runs -q .total_count
+#   gh api repos/<owner>/<repo>/commits/<sha>/status -q '.statuses|length'
+# Both, because the primary reading counts legacy commit statuses too, so a
+# repository reporting only through the Status API (Jenkins, Buildkite, older
+# CircleCI) would otherwise read as having no CI at all. Sampling stops at the
+# first head carrying anything. Because it observes pull request heads
+# specifically, a push-only or dispatch-only workflow cannot inflate it and a
+# pull_request-only workflow does register in it, with no knowledge needed of
+# workflow files, triggers, path filters, or app installations.
 #
-# KNOWN LIMITS, two windows this narrows but does not close.
-# 1. Partial registration. The empty-list rule only fires on a reading carrying
+# Any sampled head carried a check or a status: refuse, because a check that
+# has not registered yet cannot be told apart from no CI. Every sampled head
+# carried none: merge, this is the genuine no-CI repository. No other closed
+# pull request to sample, or a query that could not be answered: refuse, naming
+# which. The sampling runs only on the empty-check-list path, so an ordinary
+# merge whose checks are present pays none of these calls.
+#
+# KNOWN LIMITS, three windows this narrows but does not close.
+# 1. A repository whose CI was added after its last sampled pull request reads
+#    as no-CI until one pull request has run under the new configuration.
+# 2. The first pull request in a brand-new repository has no prior pull request
+#    to sample and is refused until one exists. The refusal names that, and the
+#    captain override covers a captain who wants it merged anyway.
+# 3. Partial registration. The empty-list rule fires only on a reading carrying
 #    exactly zero checks, so a reading taken while some checks have registered
 #    and passed and others have not registered yet still reads as ok and merges.
 #    The gate deliberately does not refuse on that: a pull request legitimately
-#    runs fewer checks than its base head under path filters and conditional
-#    jobs, so comparing the two counts would refuse honest pull requests.
-# 2. A repository whose base branch never receives checks because its CI runs
-#    only on pull_request reads zero on the base head, so an empty check list
-#    there is merged.
+#    runs fewer checks than a sampled one under path filters and conditional
+#    jobs, so comparing the counts would refuse honest pull requests.
 #
 # The reading comes from `gh pr view --json ... -q`, not from gh-axi. gh-axi is
 # this repo's GitHub tool and still performs the merge, but `gh-axi pr view`
@@ -222,31 +235,101 @@ else
   FM_PR_FITNESS_REASON="its checks and mergeability could not be read from GitHub; nothing was merged"
 fi
 
-# An empty check list is resolved against a second, positive signal: how many
-# checks GitHub actually produced on the settled head of the base branch. Only
-# a measured zero reads as "there is no PR CI here" and merges. Both refusals
-# below are ordinary fitness refusals - the pull request itself is neither
-# conflicted nor closed - so the captain override still passes them.
+# Sample what pull requests in this repository actually receive. Sets
+# FM_PR_PRIOR_CI to has-ci, none, no-history, or unmeasurable, and
+# FM_PR_PRIOR_ERR to whatever gh said when a query could not be answered.
+#
+# This pull request's own number is excluded from the sample. Its head is the
+# very commit whose emptiness is in question, so counting it would answer the
+# question with itself and read every repository as having no CI.
+FM_PR_PRIOR_CI=
+FM_PR_PRIOR_ERR=
+sample_prior_pr_ci() {
+  local err_file='' list='' number='' sha='' runs='' statuses='' sampled=0 found=0
+  FM_PR_PRIOR_CI=unmeasurable
+  FM_PR_PRIOR_ERR=
+  err_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-merge-gh.XXXXXX" 2>/dev/null) || err_file=
+
+  if ! list=$(gh api "repos/$PR_OWNER/$PR_REPO/pulls?state=closed&per_page=5" \
+    -q '.[] | "\(.number) \(.head.sha)"' 2>"${err_file:-/dev/null}"); then
+    [ -z "$err_file" ] || { FM_PR_PRIOR_ERR=$(gh_error_summary "$err_file"); rm -f "$err_file"; }
+    return 0
+  fi
+
+  while IFS=' ' read -r number sha; do
+    [ -n "$sha" ] || continue
+    [ "$number" != "$PR_NUMBER" ] || continue
+    case "$sha" in *[!0-9a-fA-F]*) continue ;; esac
+    [ "$sampled" -lt 3 ] || break
+    sampled=$((sampled + 1))
+
+    if ! runs=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$sha/check-runs" \
+      -q '.total_count' 2>"${err_file:-/dev/null}"); then
+      [ -z "$err_file" ] || { FM_PR_PRIOR_ERR=$(gh_error_summary "$err_file"); rm -f "$err_file"; }
+      return 0
+    fi
+    case "$runs" in
+      ''|*[!0-9]*)
+        [ -z "$err_file" ] || rm -f "$err_file"
+        return 0
+        ;;
+    esac
+    if [ "$runs" -gt 0 ]; then
+      found=1
+      break
+    fi
+
+    if ! statuses=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$sha/status" \
+      -q '.statuses|length' 2>"${err_file:-/dev/null}"); then
+      [ -z "$err_file" ] || { FM_PR_PRIOR_ERR=$(gh_error_summary "$err_file"); rm -f "$err_file"; }
+      return 0
+    fi
+    case "$statuses" in
+      ''|*[!0-9]*)
+        [ -z "$err_file" ] || rm -f "$err_file"
+        return 0
+        ;;
+    esac
+    if [ "$statuses" -gt 0 ]; then
+      found=1
+      break
+    fi
+  done <<< "$list"
+
+  [ -z "$err_file" ] || rm -f "$err_file"
+  if [ "$found" -eq 1 ]; then
+    FM_PR_PRIOR_CI=has-ci
+  elif [ "$sampled" -eq 0 ]; then
+    FM_PR_PRIOR_CI=no-history
+  else
+    FM_PR_PRIOR_CI=none
+  fi
+}
+
+# An empty check list is resolved against that sample. Only pull requests that
+# demonstrably received nothing read as "there is no PR CI here" and merge. All
+# three refusals below are ordinary fitness refusals - the pull request itself
+# is neither conflicted nor closed - so the captain override still passes them.
 if [ "$FM_PR_FITNESS_VERDICT" = no-checks ]; then
-  BASE_CHECKS=
-  BASE_ERR_FILE=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-merge-gh.XXXXXX" 2>/dev/null) || BASE_ERR_FILE=
-  BASE_CHECKS=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$FM_PR_FITNESS_BASE/check-runs" \
-    -q '.total_count' 2>"${BASE_ERR_FILE:-/dev/null}") || BASE_CHECKS=
-  case "$BASE_CHECKS" in
-    0)
+  sample_prior_pr_ci
+  case "$FM_PR_PRIOR_CI" in
+    none)
       FM_PR_FITNESS_VERDICT=ok
       ;;
-    ''|*[!0-9]*)
-      FM_PR_FITNESS_VERDICT=no-ci-signal
-      FM_PR_FITNESS_REASON="it reports no checks at all, and firstmate could not establish whether $PR_OWNER/$PR_REPO has PR CI, so an empty check list is not evidence that it is green"
-      [ -z "$BASE_ERR_FILE" ] || READING_ERR=$(gh_error_summary "$BASE_ERR_FILE")
+    has-ci)
+      FM_PR_FITNESS_VERDICT=checks-not-registered
+      FM_PR_FITNESS_REASON="it reports no checks yet while pull requests in $PR_OWNER/$PR_REPO demonstrably do receive them, so a check that has not registered yet cannot be told apart from a repository with no CI; wait for the checks to appear and re-run"
+      ;;
+    no-history)
+      FM_PR_FITNESS_VERDICT=no-prior-pr
+      FM_PR_FITNESS_REASON="it reports no checks at all, and $PR_OWNER/$PR_REPO has no other closed pull request to establish whether pull requests here receive checks, so an empty check list is not evidence that it is green"
       ;;
     *)
-      FM_PR_FITNESS_VERDICT=checks-not-registered
-      FM_PR_FITNESS_REASON="it reports no checks yet while $PR_OWNER/$PR_REPO demonstrably produces them - $BASE_CHECKS on the head of $FM_PR_FITNESS_BASE - so a check that has not registered yet cannot be told apart from a repository with no CI; wait for the checks to appear and re-run"
+      FM_PR_FITNESS_VERDICT=no-ci-signal
+      FM_PR_FITNESS_REASON="it reports no checks at all, and firstmate could not establish whether $PR_OWNER/$PR_REPO has PR CI, so an empty check list is not evidence that it is green"
       ;;
   esac
-  [ -z "$BASE_ERR_FILE" ] || rm -f "$BASE_ERR_FILE"
+  [ -z "$FM_PR_PRIOR_ERR" ] || READING_ERR=$FM_PR_PRIOR_ERR
 fi
 
 case "$FM_PR_FITNESS_VERDICT" in
