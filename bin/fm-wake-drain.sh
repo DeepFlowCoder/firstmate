@@ -7,7 +7,10 @@
 # so a presentation that could not read the durable status must never be printed
 # as one: this script exits nonzero with a named diagnostic instead. The durable
 # wake queue is consumed only by --ack-through, so refusing loses no wake, and
-# the queued records stay durable for the re-run.
+# the queued records stay durable for the re-run. Failing to advance the
+# presentation cursor after both sections printed in full is NOT that failure -
+# nothing went unseen, only the marker stalled - so it prints its own distinct
+# notice and the drain still exits 0.
 #
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.
@@ -181,6 +184,15 @@ EOF
   printf "OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'\n" || return 1
 }
 
+# Two failures live in this stage and they carry opposite costs, so they are
+# told apart where they are produced rather than merged into one verdict. A read
+# failure means the sections above may be missing something the captain never
+# saw, so it fails the presentation and the caller refuses. A cursor-commit
+# failure happens only after both sections were printed in full: nothing is
+# missing, the marker simply did not advance, so those lines are re-presented
+# later rather than lost. That gets its own notice and keeps the drain green -
+# a refusal after everything went right is what teaches people to ignore
+# refusals.
 print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
@@ -188,7 +200,10 @@ print_status_sections() {
   acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
   print_unread_status_section "$snapshot" || return 1
   print_open_decisions_section "$snapshot" || return 1
-  status_commit_presentation_snapshot "$STATE" "$acknowledged"
+  status_commit_presentation_snapshot "$STATE" "$acknowledged" || {
+    echo "wake drain: unread status and OPEN DECISIONS above WERE presented in full, but the presentation cursor could not be advanced, so nothing was missed and you may see those same lines again on a later drain; inspect $STATE" >&2
+  }
+  return 0
 }
 
 print_status_presentation() {  # [<deduped-raw-rows>]

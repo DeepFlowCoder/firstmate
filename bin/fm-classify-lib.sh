@@ -416,10 +416,13 @@ EOF
 # because no code path in this repo ever does that to a status file.
 #
 # The other real failure mode is OUR OWN read failing (a stat/wc/tail I/O
-# error), not a malformed writer: every such read here is checked, and on
-# failure this reports the already-trusted persisted set unchanged rather than
-# risking a silent invalidation that would wipe it - never a bare "empty" as if
-# nothing were open.
+# error), not a malformed writer: every such read here is checked, and a failure
+# on a path that is still a readable regular file fails the fold so its caller
+# refuses. The persisted set is empty whenever the cursor is absent or stale, so
+# reporting it after a failed read would be a bare "empty" claiming nothing is
+# open. A departed path (see _fm_status_file_departed) is not that failure: it
+# keeps the already-trusted persisted set and succeeds, so an ordinary teardown
+# race stays silent.
 #
 # Not a pure status-file read: this writes/rewrites the sibling cursor file as a
 # side effect (state/.<task>.open-decisions-cursor), the library's second
@@ -464,6 +467,17 @@ _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
 _fm_status_file_departed() {  # <status-file>
   local f=$1
   ! { [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ]; }
+}
+
+# Resolve one failed read inside the incremental fold against the departed-path
+# rule above: a path that stopped being a status file keeps the already-trusted
+# persisted open set and succeeds, while a path that is still a readable regular
+# file failed for a genuine I/O reason and fails the fold, so the drain refuses
+# instead of printing an empty section as if nothing were open.
+_fm_open_decisions_read_failed() {  # <status-file> <trusted-open-set>
+  local f=$1 trusted=$2
+  _fm_status_file_departed "$f" || return 1
+  printf '%s' "$trusted"
 }
 
 _fm_status_file_size() {  # <status-file>
@@ -544,20 +558,27 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
       esac
   fi
 
-  # A stat/size-read failure is a genuine I/O error, not "the file is empty" -
-  # report the already-trusted persisted set unchanged rather than risking a
-  # silent invalidation that would wipe it.
-  cur_ident=$(_fm_open_decisions_file_ident "$f") || { printf '%s' "$trusted_open"; return 0; }
-  [ -n "$cur_ident" ] || { printf '%s' "$trusted_open"; return 0; }
+  # A stat/size-read failure is a genuine I/O error, not "the file is empty",
+  # and the persisted set is empty whenever this cursor is absent or stale, so
+  # reporting it as the answer would let the drain claim nothing is open without
+  # having read the state behind that claim. Every read failure below is routed
+  # through _fm_open_decisions_read_failed instead: a departed path keeps the
+  # already-trusted persisted set and succeeds, anything else fails the fold.
+  cur_ident=$(_fm_open_decisions_file_ident "$f") \
+    || { _fm_open_decisions_read_failed "$f" "$trusted_open"; return; }
+  [ -n "$cur_ident" ] || { _fm_open_decisions_read_failed "$f" "$trusted_open"; return; }
   actual_size=$(_fm_status_file_size "$f") \
-    || { printf '%s' "$trusted_open"; return 0; }
+    || { _fm_open_decisions_read_failed "$f" "$trusted_open"; return; }
   actual_size=${actual_size//[[:space:]]/}
-  case "$actual_size" in ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;; esac
+  case "$actual_size" in
+    ''|*[!0-9]*) _fm_open_decisions_read_failed "$f" "$trusted_open"; return ;;
+  esac
   if [ -n "$captured_end" ]; then
     case "$captured_end" in
-      ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;;
+      ''|*[!0-9]*) return 1 ;;
     esac
-    [ "$captured_end" -le "$actual_size" ] || { printf '%s' "$trusted_open"; return 0; }
+    [ "$captured_end" -le "$actual_size" ] \
+      || { _fm_open_decisions_read_failed "$f" "$trusted_open"; return; }
     size=$captured_end
   else
     size=$actual_size
@@ -573,12 +594,13 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>]
   if [ "$offset" -lt "$size" ]; then
     chunk_file="$cf.read.$$"
     _fm_status_read_span "$f" "$offset" "$((size - offset))" > "$chunk_file" 2>/dev/null \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; _fm_open_decisions_read_failed "$f" "$trusted_open"; return; }
     chunk_size=$(LC_ALL=C wc -c < "$chunk_file" 2>/dev/null) \
-      || { rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0; }
+      || { rm -f "$chunk_file"; _fm_open_decisions_read_failed "$f" "$trusted_open"; return; }
     chunk_size=${chunk_size//[[:space:]]/}
     case "$chunk_size" in
-      ''|*[!0-9]*) rm -f "$chunk_file"; printf '%s' "$trusted_open"; return 0 ;;
+      ''|*[!0-9]*)
+        rm -f "$chunk_file"; _fm_open_decisions_read_failed "$f" "$trusted_open"; return ;;
     esac
     # Test-only observability seam (off by default, no production behavior
     # change): when set, records exactly how many bytes THIS call folded, so a
@@ -618,7 +640,7 @@ scan_open_decisions_incremental() {  # <state>
   for f in "$state"/*.status; do
     [ -e "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
-    open=$(status_open_decisions_incremental "$f") || continue
+    open=$(status_open_decisions_incremental "$f") || return 1
     [ -n "$open" ] || continue
     while IFS= read -r line; do
       [ -n "$line" ] || continue
