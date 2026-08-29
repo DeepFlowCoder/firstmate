@@ -184,14 +184,15 @@ test_same_size_rewrite_is_detected_via_inode_identity() {
   pass "a same-size file rotation (new inode) is detected and falls back to a full re-fold"
 }
 
-test_read_failure_preserves_state_for_retry() {
-  local dir state reader statusfile cursor out before_cursor after_cursor
+test_read_failure_refuses_loudly_and_preserves_state_for_retry() {
+  local dir state reader statusfile cursor out err rc before_cursor after_cursor
   dir=$(make_case cursor-read-failure)
   state="$dir/state"
   reader="$dir/fail-reader"
   statusfile="$state/task4.status"
   cursor="$state/.task4.open-decisions-cursor"
   out="$dir/drain.out"
+  err="$dir/drain.err"
 
   printf 'needs-decision [key=x]: something important\n' > "$statusfile"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
@@ -205,10 +206,14 @@ test_read_failure_preserves_state_for_retry() {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"
   chmod +x "$reader"
 
-  FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" \
-    || fail "wake drain failed instead of preserving state after the injected read failure"
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "wake drain exited green after it could not read the durable status, so an empty presentation reads as no decision being open"
   [ ! -s "$out" ] \
     || fail "the failed presentation read emitted a partial status presentation: $(command cat "$out")"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "the failed presentation read printed no diagnostic naming what went unpresented: $(command cat "$err")"
   after_cursor=$(LC_ALL=C cksum "$cursor")
   [ "$after_cursor" = "$before_cursor" ] \
     || fail "the failed read advanced or rewrote the persisted cursor"
@@ -218,7 +223,216 @@ test_read_failure_preserves_state_for_retry() {
   grep -F 'task4' "$out" | grep -F '[key=x]' | grep -F 'something important' >/dev/null \
     || fail "the open decision disappeared when presentation reads recovered: $(command cat "$out")"
 
-  pass "a failed presentation read preserves status state for retry"
+  pass "a failed presentation read refuses loudly and preserves status state for retry"
+}
+
+# The captain's decisions reach the captain through this drain, so "nothing
+# printed, exit 0" is an affirmative claim that nothing is open. Drive the real
+# script repeatedly with the size read failing and assert it can never make that
+# claim while a decision is in fact open.
+test_unreadable_status_never_exits_green_and_empty_while_a_decision_is_open() {
+  local dir state reader statusfile out err rc i runs=20 green_empty=0
+  dir=$(make_case size-read-failure)
+  state="$dir/state"
+  reader="$dir/fail-size-reader"
+  statusfile="$state/task8.status"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+
+  printf 'needs-decision [key=budget]: approve the spend or cut scope\n' > "$statusfile"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"
+  chmod +x "$reader"
+
+  i=0
+  while [ "$i" -lt "$runs" ]; do
+    rc=0
+    FM_STATE_OVERRIDE="$state" FM_STATUS_SIZE_READER="$reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+    if [ "$rc" -eq 0 ] && [ ! -s "$out" ]; then green_empty=$((green_empty + 1)); fi
+    i=$((i + 1))
+  done
+  [ "$green_empty" -eq 0 ] \
+    || fail "$green_empty of $runs drains exited 0 with empty output while task8's decision was open"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "the unreadable status produced no diagnostic: $(command cat "$err")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "wake drain did not recover once the status size read worked again"
+  grep -F 'task8 [key=budget] needs-decision: approve the spend or cut scope' "$out" >/dev/null \
+    || fail "the decision did not surface once reads recovered: $(command cat "$out")"
+
+  pass "an unreadable status never lets the drain exit green and empty over an open decision"
+}
+
+# Nothing holds every status file still for the whole presentation, so one can
+# disappear between the directory scan and the read - exactly what a teardown
+# does. That task is simply gone; it must not take every other task's open
+# decision down with it, and it must not raise a false read-failure alarm.
+test_status_file_vanishing_mid_scan_still_surfaces_other_open_decisions() {
+  local dir state reader out err rc
+  dir=$(make_case vanishing-status-file)
+  state="$dir/state"
+  reader="$dir/vanishing-reader"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+
+  printf 'needs-decision [key=keel]: pick the keel material\n' > "$state/task9.status"
+  printf 'working: about to be torn down\n' > "$state/taskgone.status"
+  cat > "$reader" <<'SH'
+#!/usr/bin/env bash
+# Remove taskgone's log after the scan's guards accepted it and before this read
+# opens it, then read for real so the failure is the genuine ENOENT.
+set -u
+f=$1
+case "$f" in *taskgone.status) rm -f "$f" ;; esac
+LC_ALL=C wc -c < "$f" 2>/dev/null
+SH
+  chmod +x "$reader"
+
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SIZE_READER="$reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "a status file disappearing mid-scan was reported as a read failure: $(command cat "$err")"
+  [ -e "$state/taskgone.status" ] \
+    && fail "the fixture did not actually remove taskgone's status file"
+  grep -F 'task9 [key=keel] needs-decision: pick the keel material' "$out" >/dev/null \
+    || fail "a vanished sibling status file discarded task9's open decision: $(command cat "$out")"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    && fail "a vanished status file raised a false read-failure alarm: $(command cat "$err")"
+
+  pass "a status file vanishing mid-scan neither hides other decisions nor alarms"
+}
+
+# The OPEN DECISIONS fold keeps its own cursor, so it can be the only reader
+# with bytes left to read: once the presentation cursor is at EOF the unread
+# pass reads nothing at all, and a fold that answered a failed read with its
+# persisted set - empty whenever that cursor is absent or stale - would leave the
+# drain exiting 0 with completely empty output over a decision that IS open.
+# That is the same affirmative lie, produced one layer below the drain.
+test_open_decisions_fold_read_failure_refuses_instead_of_claiming_nothing_is_open() {
+  local dir state reader statusfile cursor out err rc
+  dir=$(make_case fold-read-failure)
+  state="$dir/state"
+  reader="$dir/fail-span-reader"
+  statusfile="$state/task10.status"
+  cursor="$state/.task10.open-decisions-cursor"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+
+  # The note: line is what lets the presentation cursor reach EOF on the
+  # bootstrap drain; a needs-decision line alone never advances it.
+  {
+    printf 'needs-decision [key=hull]: pick the hull plating\n'
+    printf 'note: routine informational line\n'
+  } > "$statusfile"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the injected fold read failure failed"
+  grep -F 'task10 [key=hull] needs-decision: pick the hull plating' "$out" >/dev/null \
+    || fail "the decision did not surface on the bootstrap drain: $(command cat "$out")"
+  [ -s "$cursor" ] || fail "no fold cursor was persisted after the bootstrap drain"
+
+  # Drop ONLY the fold's own cursor (documented as safe to delete: it forces one
+  # full re-fold). The presentation cursor stays at EOF, so the unread pass reads
+  # nothing and the fold is the single remaining reader of this status file.
+  rm -f "$cursor"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"
+  chmod +x "$reader"
+
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "the drain exited green while the OPEN DECISIONS fold could not read task10's status, so its empty output reads as no decision being open"
+  [ ! -s "$out" ] \
+    || fail "the failed fold read emitted a partial status presentation: $(command cat "$out")"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "the failed fold read printed no diagnostic naming what went unpresented: $(command cat "$err")"
+  [ ! -e "$cursor" ] \
+    || fail "the failed fold read persisted a cursor, which would bury the open decision behind an empty folded set"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "wake drain did not recover after the injected fold read failure"
+  grep -F 'task10 [key=hull] needs-decision: pick the hull plating' "$out" >/dev/null \
+    || fail "the open decision disappeared when fold reads recovered: $(command cat "$out")"
+
+  pass "a failed OPEN DECISIONS fold read refuses instead of claiming nothing is open"
+}
+
+# The opposite case, which must NOT be a refusal: both sections were printed in
+# full and only the presentation cursor failed to advance. Nothing went unseen -
+# those same lines are simply presented again next drain - so a refusal here
+# would be a false statement, and a refusal that fires after everything went
+# right is what teaches people to ignore the one that fires for a real read
+# failure.
+test_cursor_commit_failure_after_a_full_presentation_notices_and_stays_green() {
+  local dir state reader marker rotated statusfile manifest out err rc
+  local before_manifest after_manifest
+  dir=$(make_case cursor-commit-failure)
+  state="$dir/state"
+  reader="$dir/rotating-reader"
+  marker="$dir/rotated.marker"
+  rotated="$dir/rotation.tmp"
+  statusfile="$state/task11.status"
+  manifest="$state/.status-presentation-cursor"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+
+  {
+    printf 'needs-decision [key=rudder]: pick the rudder profile\n'
+    printf 'note: the yard confirmed the keel\n'
+  } > "$statusfile"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the stalled cursor commit failed"
+  [ -s "$manifest" ] || fail "no presentation cursor was committed by the bootstrap drain"
+  before_manifest=$(LC_ALL=C cksum "$manifest")
+
+  # The line whose re-presentation the stalled cursor is on the hook for.
+  printf 'note: the yard answered about the fittings\n' >> "$statusfile"
+
+  # Rotate the status file (same bytes, new inode) exactly once, after the first
+  # span read has already returned the real content: the sections are presented
+  # in full from the captured snapshot, and only the commit's identity check then
+  # finds the file replaced. That is the real shape of this failure.
+  cat > "$reader" <<SH
+#!/usr/bin/env bash
+set -u
+f=\$1
+start=\$2
+length=\$3
+LC_ALL=C tail -c "+\$((start + 1))" "\$f" | LC_ALL=C head -c "\$length" || exit 1
+if [ ! -e "$marker" ]; then
+  : > "$marker"
+  cp "\$f" "$rotated" >/dev/null 2>&1 && mv "$rotated" "\$f" >/dev/null 2>&1
+fi
+exit 0
+SH
+  chmod +x "$reader"
+
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SPAN_READER="$reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ -e "$marker" ] || fail "test setup error: the fixture never rotated the status file"
+  [ "$rc" -eq 0 ] \
+    || fail "a stalled presentation cursor was reported as a failure to read the status: $(command cat "$err")"
+  grep -F 'task11 [key=rudder] needs-decision: pick the rudder profile' "$out" >/dev/null \
+    || fail "the open decision was not presented before the cursor commit failed: $(command cat "$out")"
+  grep -F 'task11 note: the yard answered about the fittings' "$out" >/dev/null \
+    || fail "the unread informational line was not presented before the cursor commit failed: $(command cat "$out")"
+  grep -F 'presentation cursor could not be advanced' "$err" >/dev/null \
+    || fail "a stalled presentation cursor printed no notice of its own: $(command cat "$err")"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    && fail "a complete presentation whose cursor stalled raised the read-failure refusal: $(command cat "$err")"
+  after_manifest=$(LC_ALL=C cksum "$manifest")
+  [ "$after_manifest" = "$before_manifest" ] \
+    || fail "the failed commit still advanced the presentation cursor manifest"
+
+  # The notice says these lines may come back rather than being lost: prove
+  # nothing was lost by seeing the same informational line presented again.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "the drain after the stalled cursor commit failed: $(command cat "$err")"
+  grep -F 'task11 note: the yard answered about the fittings' "$out" >/dev/null \
+    || fail "the lines the stalled cursor promised to re-present were not presented again: $(command cat "$out")"
+  grep -F 'task11 [key=rudder] needs-decision: pick the rudder profile' "$out" >/dev/null \
+    || fail "the open decision did not survive the stalled cursor commit: $(command cat "$out")"
+
+  pass "a stalled presentation cursor after a full presentation notices distinctly and keeps the drain green"
 }
 
 test_cursor_cache_read_failure_refolds_without_replaying_unread_status() {
@@ -349,7 +563,11 @@ test_previous_fold_cache_is_refolded_under_current_semantics() {
 
 test_truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision
 test_same_size_rewrite_is_detected_via_inode_identity
-test_read_failure_preserves_state_for_retry
+test_read_failure_refuses_loudly_and_preserves_state_for_retry
+test_unreadable_status_never_exits_green_and_empty_while_a_decision_is_open
+test_open_decisions_fold_read_failure_refuses_instead_of_claiming_nothing_is_open
+test_cursor_commit_failure_after_a_full_presentation_notices_and_stays_green
+test_status_file_vanishing_mid_scan_still_surfaces_other_open_decisions
 test_cursor_cache_read_failure_refolds_without_replaying_unread_status
 test_pre_fix_cursor_refolds_corr_tagged_decision
 test_previous_fold_cache_is_refolded_under_current_semantics

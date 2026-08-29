@@ -1240,7 +1240,14 @@ fm_wake_print_annotations() {  # <deduped-raw-rows> [<presentation-snapshot>]
     if [ "$mode" = historical ] && fm_wake_signal_seen_current "$STATE" "$path"; then
       continue
     fi
-    offset=$(fm_wake_status_cursor_offset "$path") || return 1
+    # Same supplemental rule as the unread-events read below: a signal can name a
+    # task whose status file is absent, rotated, or unreadable, and that must not
+    # suppress the annotations for every other row. The guaranteed surfaces are
+    # the already-printed wake rows and the OPEN DECISIONS fold, which refuses
+    # loudly on its own read failures rather than skipping.
+    if ! offset=$(fm_wake_status_cursor_offset "$path"); then
+      continue
+    fi
     endpoint=
     if [ -n "$snapshot" ]; then
       task=${status_key%.status}
