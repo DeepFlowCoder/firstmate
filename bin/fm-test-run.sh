@@ -92,14 +92,18 @@ JOBS_MAX=8
 # How many separate-runner shards the portable serial remainder splits into.
 # One owner: CI lane names carry this count and are refused when they disagree.
 # Derived from the measured remainder against the CI job cap, not chosen freely:
-# the lane now measures about 2959 s of serial work, so four shards left roughly
-# 740 s in the worst shard against a 900 s cap and timed one out. Eight keeps the
-# balanced shard near 370 s, so the cap stays a hang tripwire with margin.
+# the lane now measures about 2959 s of serial work, so four shards carried
+# 903/633/880/543 s and the worst crossed the 900 s cap and timed out. Eight puts
+# the balanced estimate near 370 s; the worst shard measured on green run
+# 33246490613 ran 565 s, so the cap stays a hang tripwire with real margin.
 PORTABLE_SERIAL_SHARDS=8
 
-# Balance hint for a portable-serial script with no measured duration, close to
-# the measured per-script mean so a newly added test neither starves nor
-# overloads the shard it lands in.
+# Balance hint for a portable-serial script with no measured duration. The
+# measured per-script mean is now 2958555/118 = 25072 ms, so this default sits
+# about 20% below it and a newly added test is under-weighted until the hints are
+# refreshed. Only balance is affected: the coverage guard keeps the partition
+# complete and disjoint regardless. Moving the value is lane-retuning work
+# tracked separately from the refresh that changed the mean.
 PORTABLE_SERIAL_DEFAULT_WEIGHT_MS=20000
 
 usage() {

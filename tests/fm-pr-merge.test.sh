@@ -467,9 +467,11 @@ test_parses_pr_url_for_gh_axi() {
 
 # --- fitness gate ----------------------------------------------------------
 
-# Drive one gate case end to end. Args: name, expected exit code, reading lines
-# passed via READING_LINES, extra fm-pr-merge args via EXTRA_ARGS. Echoes the
-# case dir so the caller can assert on stderr, meta, and the gh-axi log.
+# Drive one gate case end to end. Args: name, then any extra fm-pr-merge flags,
+# which are forwarded positionally after the PR URL (e.g. run_gate_case
+# captain-override --captain-override-red). The gh fitness reading is supplied
+# out of band in the READING_LINES array. Echoes the case dir so the caller can
+# assert on the recorded rc, stderr, meta, and the gh-axi log.
 run_gate_case() {
   local name=$1 case_dir rc
   shift

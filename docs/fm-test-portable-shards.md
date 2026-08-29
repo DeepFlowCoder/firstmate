@@ -69,8 +69,9 @@ Every script in the lane now carries a measured hint, so `PORTABLE_SERIAL_DEFAUL
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
 
 Stale hints still cost a red lane once the drift is large enough to cross the job cap.
-The previous table described a 1143762 ms lane while the real lane had grown to 2958555 ms, so four shards packed about 740 s into the worst shard and `Behavior portable serial 3` hit its 900 s cap mid-script and reported as cancelled.
-The shard count is therefore derived from the refreshed measurement rather than chosen freely: eight shards keep the balanced shard near 370 s, which restores the cap to a hang tripwire with margin.
+The previous table described a 1143762 ms lane while the real lane had grown to 2958555 ms, so four shards carried 903113 / 632913 / 879800 / 542729 ms and the worst shard held 903 s of work against a 900 s cap.
+`Behavior portable serial 1` therefore hit that cap mid-script and reported as cancelled.
+The shard count is derived from the refreshed measurement rather than chosen freely: eight shards put the balanced estimate near 370 s, and the measured worst shard of green 8-shard run [33246490613](https://github.com/DeepFlowCoder/firstmate/actions/runs/33246490613) ran 565 s, so the cap is a hang tripwire with real margin rather than the expected end of the lane.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
@@ -84,7 +85,7 @@ The shard count is therefore derived from the refreshed measurement rather than 
 | `portable-serial-8of8` | 18 | 369800 ms (~369.8 s) |
 | imbalance | | 123 ms |
 
-The single longest script, `tests/fm-watch-triage.test.sh` at 213049 ms, is the floor for any shard count.
+The single longest script, `tests/fm-pr-check-security.test.sh` at 252478 ms, is the floor for any shard count, and this branch adds cases to it, so that floor only grows.
 
 Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above:
 
@@ -116,7 +117,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-8 | job `timeout-minutes: 15` | The balanced shard estimates are about six minutes, so even a shard running above a stale estimate keeps hang-tripwire margin. |
+| portable serial 1-8 | job `timeout-minutes: 15` | The balanced estimate is about 6.2 min, but the worst shard measured on green run 33246490613 ran 9.41 min, 53% above its estimate, which is the number the cap has to clear: roughly 1.6x margin, not 2x. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.

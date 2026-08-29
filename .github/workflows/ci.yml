@@ -129,9 +129,14 @@ jobs:
   tests-portable-serial:
     name: Behavior portable serial ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Measured whole remainder is ~49 min of serial work; the balanced shards
-    # are ~6.2 min each. Cap is a hang tripwire with roughly 2x margin, not the
-    # expected healthy end of the lane.
+    # Measured whole remainder is ~49 min of serial work. The ~6.2 min per shard
+    # is only the hint-sum estimate; the number the cap has to clear is the worst
+    # shard actually observed. On green run 33246490613 the measured shard sums
+    # were 306/367/347/314/565/372/348/300 s, so the worst ran 565 s (9.41 min),
+    # 53% above its 369800 ms estimate and leaving ~1.6x margin against the cap
+    # rather than 2x. An estimate cannot stand in for that margin:
+    # tests/fm-bootstrap.test.sh alone drifted 38766 -> 139280 ms in that run.
+    # Cap is a hang tripwire, not the expected healthy end of the lane.
     timeout-minutes: 15
     strategy:
       # Every shard reports so one failure never hides another shard's result.
