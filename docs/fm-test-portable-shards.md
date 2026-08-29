@@ -64,21 +64,27 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 `.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
-The hints came from that run's `fm-test-timing-portable-serial` artifact on 2026-08-02, where the lane ran 69 scripts in 1143762 ms of serial work.
-A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
+The hints were wholesale refreshed on 2026-08-29 from the four `fm-test-timing-portable-serial-*` artifacts of run 33236596384 on `DeepFlowCoder/firstmate`, where the lane ran 118 scripts in 2958555 ms of serial work.
+Every script in the lane now carries a measured hint, so `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` applies only to a test added since that refresh.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
-`tests/fm-pi-watch-extension.test.sh` is knowingly stale in that table: its fixtures now pin the plugins' own 12000 ms arm-readiness budget instead of a shorter test-local one, so the script waits out several of those budgets and runs well past its recorded 16386 ms.
-Its hint stays as CI measured it until the next wholesale refresh below, because a hand-written replacement would be an invented number in a table that is otherwise generated from timing artifacts.
+
+Stale hints still cost a red lane once the drift is large enough to cross the job cap.
+The previous table described a 1143762 ms lane while the real lane had grown to 2958555 ms, so four shards packed about 740 s into the worst shard and `Behavior portable serial 3` hit its 900 s cap mid-script and reported as cancelled.
+The shard count is therefore derived from the refreshed measurement rather than chosen freely: eight shards keep the balanced shard near 370 s, which restores the cap to a hang tripwire with margin.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 15 | 285945 ms (~285.9 s) |
-| `portable-serial-2of4` | 18 | 285944 ms (~285.9 s) |
-| `portable-serial-3of4` | 17 | 285929 ms (~285.9 s) |
-| `portable-serial-4of4` | 19 | 285944 ms (~285.9 s) |
-| imbalance | | 16 ms |
+| `portable-serial-1of8` | 14 | 369810 ms (~369.8 s) |
+| `portable-serial-2of8` | 13 | 369810 ms (~369.8 s) |
+| `portable-serial-3of8` | 15 | 369816 ms (~369.8 s) |
+| `portable-serial-4of8` | 15 | 369798 ms (~369.8 s) |
+| `portable-serial-5of8` | 16 | 369800 ms (~369.8 s) |
+| `portable-serial-6of8` | 12 | 369921 ms (~369.9 s) |
+| `portable-serial-7of8` | 15 | 369800 ms (~369.8 s) |
+| `portable-serial-8of8` | 18 | 369800 ms (~369.8 s) |
+| imbalance | | 123 ms |
 
-The single longest script, `tests/fm-pr-check-security.test.sh` at 199573 ms, is the floor for any shard count.
+The single longest script, `tests/fm-watch-triage.test.sh` at 213049 ms, is the floor for any shard count.
 
 Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above:
 
@@ -110,7 +116,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 15` | The balanced shard estimates are about five minutes, so even a shard running above a stale estimate keeps hang-tripwire margin. |
+| portable serial 1-8 | job `timeout-minutes: 15` | The balanced shard estimates are about six minutes, so even a shard running above a stale estimate keeps hang-tripwire margin. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
