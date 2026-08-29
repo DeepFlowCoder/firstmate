@@ -46,19 +46,14 @@
 #      current one. Branch+head identity cannot separate an aborted run from the
 #      live run that replaced it (both report the submitted head for the whole
 #      successor run - measured, see bin/fm-nm-run-lib.sh's runs-list
-#      primitives), so the runs list arbitrates. How much it can prove differs by
-#      path, and the rule claims only what each path actually delivers:
-#        - coarse (runs list): the answering row's identity is known, so ANY
-#          newer row for this branch - active OR terminal - proves the verdict
-#          belongs to a run a later run has already replaced.
-#        - full (`axi status`): the runs list carries no run id, so the reported
-#          run cannot be matched to a row. Only a still-ACTIVE newest row proves
-#          supersession (the list is read AFTER the status call and one run has
-#          one status, so an active row cannot be the run just reported
-#          terminal); a newer TERMINAL run is not detectable from this path.
-#      A superseded verdict reports the live successor when its head binds here,
-#      and `unknown` when it does not. A stale terminal verdict must never be
-#      asserted as failed or done.
+#      primitives), so the runs list arbitrates. ONE predicate owns that whole
+#      question - nm_terminal_verdict_standing, below - and every terminal
+#      verdict reaches the captain only through it; the rule lives THERE, and
+#      this paragraph only describes it. Its three answers: `current` asserts
+#      failed/done as read, `superseded` reports the live successor when its head
+#      binds here and `unknown` when it does not, and `unestablished` (the runs
+#      list never answered, so nothing was checked) reports `unknown`. A stale or
+#      unverifiable terminal verdict is never asserted as failed or done.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -421,7 +416,13 @@ nm_ci_checks_state() {
 #   COARSE_ROW_IS_NEWEST whether that answering row IS the branch's newest row.
 #                        When it is not, a strictly newer run exists, so the
 #                        coarse verdict belongs to a run already replaced.
+#   RUNS_ANSWERED        whether the list produced any output at all. `nm_run` is
+#                        fail-open and bounded, so a timed-out or failed query is
+#                        indistinguishable from an empty one EXCEPT that it is
+#                        silence, not evidence, and the arbitration below must
+#                        not read it as "no newer run exists".
 RUNS_SCANNED=0
+RUNS_ANSWERED=0
 BRANCH_NEWEST_FOUND=0
 BRANCH_NEWEST_STATUS=""
 BRANCH_NEWEST_SHA=""
@@ -435,6 +436,7 @@ nm_scan_runs_for_branch() {  # <branch>
   RUNS_SCANNED=1
   out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
   [ -n "$out" ] || return 0
+  RUNS_ANSWERED=1
   while IFS= read -r row; do
     parsed=$(fm_nm_runs_parse_row "$row") || continue
     IFS=$'\t' read -r st br sha <<< "$parsed"
@@ -454,6 +456,59 @@ nm_scan_runs_for_branch() {  # <branch>
     [ -n "$COARSE_STATUS" ] && break
   done <<< "$out"
   return 0
+}
+
+# THE decision point for "may this terminal verdict be asserted?". Every path
+# that would report a terminal run-step verdict passes through here, and every
+# piece of evidence is an INPUT to it rather than a branch of its own, so the
+# invariant lives in this function and not in the prose describing it. Echoes
+# exactly one of three answers:
+#
+#   current       the reported run is provably still this branch's outcome ->
+#                 assert failed/done as the run-step read it.
+#   superseded    a strictly later run for this branch provably exists -> the
+#                 reported outcome is not the current one.
+#   unestablished the arbitrator did not answer, so nothing was checked ->
+#                 `unknown`, never failed and never done. A bounded, fail-open
+#                 `no-mistakes runs` returns empty on timeout, and under the
+#                 multi-crew load that produced the incident the heavy list query
+#                 is likelier to time out than the single `axi status` that
+#                 already answered; converting that silence into `failed` is the
+#                 exact inversion of what this helper owes the captain.
+#
+# Evidence, in order of what it can prove:
+#   * The list answered at all (RUNS_ANSWERED).
+#   * A row for this branch was found (BRANCH_NEWEST_FOUND). Its absence is not
+#     "the branch is quiet": both callers have already established that a run for
+#     this branch exists (coarse attribution matched a row for it; the full path
+#     had `axi status` return a run whose branch IS this branch), so zero rows
+#     means the answer was truncated or incomplete, not that there is no run.
+#   * Whether the answering row is the branch's NEWEST row (coarse path only -
+#     there the row that produced the verdict is known, so any newer row, active
+#     or terminal, proves a later run replaced it).
+#   * Whether the newest row is still active: one run has one status, and the
+#     list is read AFTER `axi status`, so an active newest row cannot be the run
+#     just reported terminal.
+#   * The terminal words themselves: when the reported verdict's list word and
+#     the newest row's word DISAGREE they are provably different runs, which is
+#     how the full path detects a newer TERMINAL run despite the list carrying no
+#     run id. Identical words stay `current`: that case is genuinely ambiguous
+#     and a real terminal verdict must not be blanket-erased.
+nm_terminal_verdict_standing() {  # <reported-terminal-list-word>
+  local reported=${1:-}
+  [ "$RUNS_ANSWERED" = 1 ] || { printf 'unestablished'; return 0; }
+  [ "$BRANCH_NEWEST_FOUND" = 1 ] || { printf 'unestablished'; return 0; }
+  if [ "$RUN_SOURCE" = coarse ]; then
+    [ "$COARSE_ROW_IS_NEWEST" = 1 ] && { printf 'current'; return 0; }
+    printf 'superseded'
+    return 0
+  fi
+  fm_nm_status_is_active "$BRANCH_NEWEST_STATUS" && { printf 'superseded'; return 0; }
+  if [ -n "$reported" ] && [ "$reported" != "$BRANCH_NEWEST_STATUS" ]; then
+    printf 'superseded'
+    return 0
+  fi
+  printf 'current'
 }
 
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
@@ -608,49 +663,46 @@ if [ "$HAVE_RUN" = 1 ]; then
   # successor advanced through review, test and document, and the watcher was one
   # step from telling the captain the task had failed.
   #
-  # The runs list settles it: it carries every run newest-first with its own
-  # status, and it is read AFTER the `axi status` call, so it is never the staler
-  # view. What it can PROVE differs by path, and this rule claims only that:
-  #
-  #   * coarse: the verdict came from a known row, so any newer row for this
-  #     branch - active or terminal - proves a later run replaced it. That the
-  #     newer row is itself finished changes nothing: the reported one is still
-  #     not the run whose outcome is current.
-  #   * full: `axi status` reports a run id, but the runs list carries none, so
-  #     the reported run cannot be matched to a row. Only a still-ACTIVE newest
-  #     row proves supersession - one run has one status, so it cannot be the run
-  #     just reported terminal. A newer TERMINAL run is invisible from here.
-  #
-  # When the successor's head cannot be bound to this worktree (a branch name
-  # reused by a later task, a rewritten tip), the honest answer is `unknown`:
-  # what is certain is only that the terminal verdict is NOT current.
+  # The runs list is the arbitrator: it carries every run newest-first with its
+  # own status, and it is read AFTER the `axi status` call, so it is never the
+  # staler view. nm_terminal_verdict_standing owns what it can and cannot prove;
+  # this block only acts on the three answers it returns. When a superseding
+  # successor's head cannot be bound to this worktree (a branch name reused by a
+  # later task, a rewritten tip), the honest answer is `unknown`: what is certain
+  # is only that the terminal verdict is NOT current.
+  RUN_TERMINAL_WORD=""
   if [ "$RUN_IS_TERMINAL" = 1 ]; then
-    nm_scan_runs_for_branch "$CREW_BRANCH"
-    RUN_SUPERSEDED=0
-    if [ "$BRANCH_NEWEST_FOUND" = 1 ]; then
-      if [ "$RUN_SOURCE" = coarse ]; then
-        [ "$COARSE_ROW_IS_NEWEST" = 1 ] || RUN_SUPERSEDED=1
-      elif fm_nm_status_is_active "$BRANCH_NEWEST_STATUS"; then
-        RUN_SUPERSEDED=1
-      fi
+    if [ "$RUN_SOURCE" = coarse ]; then
+      RUN_TERMINAL_WORD=$(fm_nm_runs_word_for_terminal "$COARSE_STATUS")
+    elif [ -n "${outcome:-}" ]; then
+      RUN_TERMINAL_WORD=$(fm_nm_runs_word_for_terminal "${outcome:-}")
+    else
+      RUN_TERMINAL_WORD=$(fm_nm_runs_word_for_terminal "$RUN_STATUS")
     fi
-    if [ "$RUN_SUPERSEDED" = 1 ]; then
-      # A bound `running` successor is this crew validating right now. Any other
-      # newest status - `pending`, a terminal word this path cannot re-attribute,
-      # a status this helper does not model - says a later run owns this branch
-      # without saying what its outcome is here, which is `unknown`.
-      if fm_nm_status_is_active "$BRANCH_NEWEST_STATUS" \
-        && nm_coarse_head_matches_worktree "$BRANCH_NEWEST_SHA"; then
-        if [ "$BRANCH_NEWEST_STATUS" = running ]; then
-          emit working run-step \
-            "validating (background run)${SEP}newer run supersedes the reported terminal run ($RUN_DETAIL)"
+    nm_scan_runs_for_branch "$CREW_BRANCH"
+    case "$(nm_terminal_verdict_standing "$RUN_TERMINAL_WORD")" in
+      superseded)
+        # A bound `running` successor is this crew validating right now. Any
+        # other newest status - `pending`, a terminal word belonging to a run
+        # this read cannot re-attribute, a status this helper does not model -
+        # says a later run owns this branch without saying what its outcome is
+        # here.
+        if nm_coarse_head_matches_worktree "$BRANCH_NEWEST_SHA"; then
+          if [ "$BRANCH_NEWEST_STATUS" = running ]; then
+            emit working run-step \
+              "validating (background run)${SEP}newer run supersedes the reported terminal run ($RUN_DETAIL)"
+          fi
+          emit unknown run-step \
+            "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run ($RUN_DETAIL)"
         fi
         emit unknown run-step \
-          "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run ($RUN_DETAIL)"
-      fi
-      emit unknown run-step \
-        "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run ($RUN_DETAIL); its head does not bind to this worktree"
-    fi
+          "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run ($RUN_DETAIL); its head does not bind to this worktree"
+        ;;
+      unestablished)
+        emit unknown run-step \
+          "cannot confirm the reported terminal run is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH"
+        ;;
+    esac
   fi
 
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then

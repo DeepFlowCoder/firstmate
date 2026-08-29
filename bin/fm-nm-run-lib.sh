@@ -97,6 +97,25 @@ fm_nm_status_is_active() {  # <status-word>
   return 1
 }
 
+# The `no-mistakes runs` status word that a run `axi status` reports as terminal
+# must carry in the list, so the two surfaces can be compared word to word. The
+# `outcome:` field appears only in a FINAL state (the installed binary's own help
+# text: "A final state instead shows outcome:
+# <checks-passed|passed|failed|cancelled>"), and the store's run statuses are
+# pending/running/completed/failed/cancelled (measured 2026-08-29 by tallying
+# ~/.no-mistakes/state.sqlite: completed 10, cancelled 3, running 2, failed 2,
+# with every merged-PR run completed), so a finished run that is neither failed
+# nor cancelled is completed. Echoes NOTHING for a word whose list
+# correspondence is not established; a caller must read that as "no evidence",
+# never as a mismatch.
+fm_nm_runs_word_for_terminal() {  # <outcome-or-status word>
+  case "${1:-}" in
+    passed|checks-passed|completed) printf 'completed' ;;
+    failed)                         printf 'failed' ;;
+    cancelled)                      printf 'cancelled' ;;
+  esac
+}
+
 # Split one `no-mistakes runs` row into "<status><TAB><branch><TAB><sha>".
 # Rows are plain, unquoted, column-padded text -
 # "<status> <branch> <short-sha> <date> [<pr-url>]" - so splitting on the first

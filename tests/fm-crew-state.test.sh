@@ -686,11 +686,14 @@ test_top_level_fixing_done_log_stays_working() {
 # (d) terminal run-step is authoritative
 test_terminal_passed() {
   reset_fakes
-  local d; d=$(new_case passed)
+  local d short; d=$(new_case passed)
   make_repo_on_branch "$d/wt" fm/feat-d
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-d.meta" "window=fm:fm-feat-d" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-d)"
+  # The runs list corroborates: this branch's newest run is the finished one.
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-d ${short}  2026-08-29 07:45"
   local out; out=$(run_crew_state "$d" feat-d)
   assert_contains "$out" "state: done" "passed run -> done"
   assert_contains "$out" "source: run-step" "passed -> run-step source"
@@ -699,11 +702,13 @@ test_terminal_passed() {
 
 test_terminal_failed() {
   reset_fakes
-  local d; d=$(new_case failed)
+  local d short; d=$(new_case failed)
   make_repo_on_branch "$d/wt" fm/feat-e
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-e.meta" "window=fm:fm-feat-e" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_failed fm/feat-e)"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-e ${short}  2026-08-29 07:45"
   local out; out=$(run_crew_state "$d" feat-e)
   assert_contains "$out" "state: failed" "failed run -> failed"
   assert_contains "$out" "source: run-step" "failed -> run-step source"
@@ -1079,12 +1084,14 @@ test_dead_window_ignores_stale_status_log() {
 # it must still report its terminal run-step state (e.g. done), never unknown.
 test_dead_window_still_reports_terminal_run_step() {
   reset_fakes
-  local d; d=$(new_case dead-window-done)
+  local d short; d=$(new_case dead-window-done)
   make_repo_on_branch "$d/wt" fm/feat-dead-done
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-dead-done.meta" "window=fm:fm-feat-dead-done" "worktree=$d/wt" "kind=ship"
   printf 'done: PR https://github.com/o/r/pull/3 checks green\n' > "$d/state/feat-dead-done.status"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-dead-done)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-dead-done ${short}  2026-08-29 07:45"
   FM_FAKE_TMUX_MISSING=1   # the crew's window has closed
   local out; out=$(run_crew_state "$d" feat-dead-done)
   assert_contains "$out" "state: done" "closed pane still reports terminal run-step done"
@@ -1666,6 +1673,67 @@ EOF
   pass "runs list is read once per invocation"
 }
 
+# The measured incident's very NEXT moment, on the full `axi status` path: the
+# repo-scoped call still hands back the aborted run A (cancelled, head = the
+# parked submitted head, branch = this crew's), but by now its live successor B
+# has FINISHED. The list carries no run id, yet one run has one status, so a
+# newest row whose terminal word DISAGREES with the reported one is provably a
+# different, later run - and the reported `cancelled` is not this branch's
+# outcome. Asserting it would reproduce the incident line byte-for-byte.
+test_full_path_terminal_successor_disagreement_is_not_failed() {
+  reset_fakes
+  local d short out
+  d=$(new_case superseded-full-terminal)
+  make_repo_on_branch "$d/wt" fm/feat-supersede-f
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/supersede-f.meta" "window=fm:fm-supersede-f" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/supersede-f.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled_superseded fm/feat-supersede-f)"
+  # The successor finished without pushing past the submitted head, so its row
+  # still binds to this worktree - exactly as measured on the real runs.
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  completed  fm/feat-supersede-f ${short}  2026-08-29 07:45  https://github.com/o/r/pull/10
+  cancelled  fm/feat-supersede-f ${short}  2026-08-29 01:30  https://github.com/o/r/pull/10
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" supersede-f
+  out=$(run_crew_state "$d" supersede-f)
+  assert_not_contains "$out" "state: failed" "an aborted run must not be reported over its finished successor"
+  assert_contains "$out" "state: unknown" "a disagreeing newer terminal run leaves the verdict at unknown"
+  assert_contains "$out" "source: run-step" "the superseded verdict is still run-step sourced"
+  assert_contains "$out" "supersedes the reported terminal run" "the detail names the supersession"
+  pass "full path: a newer terminal run with a different outcome is not reported failed"
+}
+
+# Criterion (c) in its sharpest form: `no-mistakes runs` is bounded and
+# fail-open, so a timeout returns EMPTY - and the heavy list query is likeliest
+# to time out under exactly the multi-crew load that produced the incident, while
+# the lighter `axi status` that already answered succeeds. Silence from the
+# arbitrator is not evidence that nothing newer exists: `axi status` proved this
+# branch HAS a run, so an empty list means the list failed, not that the branch
+# is quiet. Reporting `failed` there asserts a verdict that was never checked.
+test_runs_list_silence_is_unknown_not_failed() {
+  reset_fakes
+  local d out
+  d=$(new_case runs-list-silent)
+  make_repo_on_branch "$d/wt" fm/feat-silent
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/silent.meta" "window=fm:fm-silent" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/silent.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled_superseded fm/feat-silent)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" silent
+  out=$(run_crew_state "$d" silent)
+  assert_not_contains "$out" "state: failed" "an unanswered runs list must not be read as a confirmed failure"
+  assert_contains "$out" "state: unknown" "an unanswered arbitrator reports an honest unknown"
+  assert_contains "$out" "source: run-step" "the unverifiable verdict is still run-step sourced"
+  assert_contains "$out" "runs list did not answer" "the detail says the arbitrator was not reached"
+  pass "a runs list that does not answer reports unknown rather than failed"
+}
+
 # Guard the other direction: the supersession rule must not blanket-erase a
 # genuine terminal verdict. When this branch's NEWEST run is the terminal one,
 # `failed` remains the correct, actionable answer.
@@ -1749,6 +1817,8 @@ test_pending_live_successor_is_unknown_not_failed
 test_coarse_older_terminal_row_does_not_outrank_newer_active_row
 test_coarse_older_terminal_row_does_not_outrank_newer_terminal_row
 test_runs_list_is_read_once_per_invocation
+test_full_path_terminal_successor_disagreement_is_not_failed
+test_runs_list_silence_is_unknown_not_failed
 test_terminal_run_with_no_newer_active_run_stays_failed
 
 echo "all fm-crew-state tests passed"
