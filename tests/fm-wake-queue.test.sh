@@ -323,7 +323,15 @@ test_enrichment_preserves_all_unread_lines_and_status_file_failures() {
   dir=$(make_case complete-enrichment)
   state="$dir/state"
   out="$dir/drain.out"
-  awk 'BEGIN { printf "done: "; for (i = 0; i < 20000; i++) printf "x"; printf "\n" }' > "$state/huge.status"
+  # 200 KB on one line. The unread-status annotation is deliberately uncapped -
+  # a decision buried in a long line must arrive whole - so the size here is the
+  # only thing standing between that promise and a worker whose status append is
+  # bigger than anyone expected. Measured on this fleet: the drain reproduces
+  # this line byte for byte, and still does at 20 MB (~15 s), so 200 KB is a
+  # decisive margin that costs the suite well under a second. It is also ~40x
+  # the point where grep gives up on a pattern this long, which is what
+  # assert_line exists to work around - see tests/lib.sh.
+  awk 'BEGIN { printf "done: "; for (i = 0; i < 200000; i++) printf "x"; printf "\n" }' > "$state/huge.status"
   append_wake "$state" signal huge.status "signal: huge" || fail "huge status wake append failed"
   i=1
   while [ "$i" -le 8 ]; do
@@ -346,13 +354,11 @@ test_enrichment_preserves_all_unread_lines_and_status_file_failures() {
   [ "$raw_count" -eq 13 ] || fail "missing, unreadable, malformed, empty, or oversized status input hid a raw row"
 
   expected="wake annotation: latest wake-EVENT observed at drain, not current state: huge.status: $(cat "$state/huge.status")"
-  grep -Fx "$expected" "$out" >/dev/null \
-    || fail "the oversized unread status line was truncated or omitted"
+  assert_line "$out" "$expected" "the oversized unread status line was truncated or omitted"
   i=1
   while [ "$i" -le 8 ]; do
     expected="wake annotation: latest wake-EVENT observed at drain, not current state: many-$i.status: $(cat "$state/many-$i.status")"
-    grep -Fx "$expected" "$out" >/dev/null \
-      || fail "readable status many-$i was truncated or omitted"
+    assert_line "$out" "$expected" "readable status many-$i was truncated or omitted"
     i=$((i + 1))
   done
   if grep -E '^wake annotation:.*(truncated|omitted)' "$out" >/dev/null; then
