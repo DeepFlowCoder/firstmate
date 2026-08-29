@@ -55,13 +55,16 @@ make_repo_on_branch() {  # <dir> <branch>
 # `axi` surface - no runs-listing subcommand exists under it, verified against
 # the real CLI), and the actual top-level run-listing command, `no-mistakes
 # runs --limit N`, which is plain text - no run id, no quoting - serving
-# FM_FAKE_RUNS_LIST verbatim.
+# FM_FAKE_RUNS_LIST verbatim. Every invocation's argv is appended to
+# $FM_FAKE_NM_CALLS when set, so a test can count how many times the helper
+# really shells out to a given subcommand.
 make_fakebin() {  # <dir> -> echoes fakebin path
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
   cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >> "${FM_FAKE_NM_CALLS:-/dev/null}"
 case "${1:-}" in
   axi)
     shift
@@ -170,8 +173,9 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_NM_CALLS=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
-  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_NM_CALLS
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -1526,6 +1530,7 @@ EOF
   out=$(run_crew_state "$d" supersede-u)
   assert_not_contains "$out" "state: failed" "an unbindable live successor must not be reported as failed"
   assert_contains "$out" "state: unknown" "unbindable live successor reports an honest unknown"
+  assert_contains "$out" "source: run-step" "the superseded verdict is still run-step sourced"
   pass "unbindable live successor reports unknown rather than failed"
 }
 
@@ -1553,6 +1558,7 @@ EOF
   out=$(run_crew_state "$d" supersede-q)
   assert_not_contains "$out" "state: failed" "a pending successor must not leave the aborted run reported as failed"
   assert_contains "$out" "state: unknown" "a pending successor reports an honest unknown"
+  assert_contains "$out" "source: run-step" "the superseded verdict is still run-step sourced"
   pass "pending live successor reports unknown rather than failed"
 }
 
@@ -1582,7 +1588,82 @@ EOF
   arm_idle_record "$d/state" supersede-c
   out=$(run_crew_state "$d" supersede-c)
   assert_not_contains "$out" "state: failed" "an older terminal row must not outrank a newer active row"
+  # Positive assertions: the negative above also holds for EMPTY output, so on
+  # its own a crash or a silent early exit in the coarse path would read green.
+  assert_contains "$out" "state: unknown" "an unbindable newer active row reports an honest unknown"
+  assert_contains "$out" "source: run-step" "the superseded verdict is still run-step sourced"
+  assert_contains "$out" "does not bind to this worktree" "the detail names why the successor cannot be reported"
   pass "coarse scan does not let an older terminal row outrank a newer active run"
+}
+
+# The same coarse defect with a TERMINAL successor. `axi status` answers for
+# another branch, so attribution goes coarse; the branch's NEWEST row (a run that
+# finished after rebasing onto the base branch, so its head no longer binds here)
+# is skipped, and an OLDER cancelled row whose sha still equals the parked
+# submitted head answers instead. The newer row's own status is irrelevant to
+# what it proves: a later run exists, so the older run's `cancelled` is not this
+# branch's current outcome and must not be asserted as failed.
+test_coarse_older_terminal_row_does_not_outrank_newer_terminal_row() {
+  reset_fakes
+  local d short out
+  d=$(new_case superseded-coarse-terminal)
+  make_repo_on_branch "$d/wt" fm/feat-supersede-t
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/supersede-t.meta" "window=fm:fm-supersede-t" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/supersede-t.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-29 08:00
+  completed  fm/feat-supersede-t 9999999  2026-08-29 07:45
+  cancelled  fm/feat-supersede-t ${short}  2026-08-29 01:30
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" supersede-t
+  out=$(run_crew_state "$d" supersede-t)
+  assert_not_contains "$out" "state: failed" "an older terminal row must not outrank a newer terminal row"
+  assert_contains "$out" "state: unknown" "a newer terminal run leaves the older verdict at unknown"
+  assert_contains "$out" "source: run-step" "the superseded verdict is still run-step sourced"
+  assert_contains "$out" "supersedes the reported terminal run" "the detail names the supersession"
+  pass "coarse scan does not let an older terminal row outrank a newer terminal run"
+}
+
+# The runs list costs a real CLI call on a script that runs every heartbeat, and
+# BOTH readers of it (the coarse attribution verdict and the supersession check)
+# fire on this path. Counting the fake's own invocations is what proves the list
+# is read once: a helper that memoizes inside `$( )` caches into a subshell that
+# is discarded on return, so the call count - not the source - is the evidence.
+test_runs_list_is_read_once_per_invocation() {
+  reset_fakes
+  local d short out calls_file runs_calls
+  d=$(new_case runs-list-once)
+  make_repo_on_branch "$d/wt" fm/feat-runs-once
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls_file="$d/no-mistakes.calls"
+  : > "$calls_file"
+  FM_FAKE_NM_CALLS="$calls_file"
+  fm_write_meta "$d/state/runs-once.meta" "window=fm:fm-runs-once" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/runs-once.status"
+  # Coarse attribution (axi status is another branch's run) reaching a terminal
+  # verdict, which is exactly when the supersession check consults the list too.
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-29 08:00
+  running    fm/feat-runs-once 9999999  2026-08-29 07:45
+  cancelled  fm/feat-runs-once ${short}  2026-08-29 01:30
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" runs-once
+  out=$(run_crew_state "$d" runs-once)
+  assert_contains "$out" "state: unknown" "the counted run still reports the superseded verdict"
+  assert_contains "$out" "source: run-step" "the counted run still resolves through the run-step path"
+  runs_calls=$(grep -c '^runs' "$calls_file" 2>/dev/null || true)
+  [ "${runs_calls:-0}" -eq 1 ] \
+    || fail "runs list must be read once per invocation (${runs_calls:-0} calls)"
+  pass "runs list is read once per invocation"
 }
 
 # Guard the other direction: the supersession rule must not blanket-erase a
@@ -1666,6 +1747,8 @@ test_passed_run_superseded_by_live_run_is_not_done
 test_unbindable_live_successor_is_unknown_not_failed
 test_pending_live_successor_is_unknown_not_failed
 test_coarse_older_terminal_row_does_not_outrank_newer_active_row
+test_coarse_older_terminal_row_does_not_outrank_newer_terminal_row
+test_runs_list_is_read_once_per_invocation
 test_terminal_run_with_no_newer_active_run_stays_failed
 
 echo "all fm-crew-state tests passed"
