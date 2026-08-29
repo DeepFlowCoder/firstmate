@@ -60,7 +60,8 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 
 The split exists because the unsharded lane outgrew its cap. The figures below are pre-shard history, not a current measurement:
 on green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757) the whole remainder accumulated 19m04s of script time against the 20-minute job timeout of that era, and on [PR 1495](https://github.com/kunchenguid/firstmate/pull/1495) its main step ran about 19m51s before the job was cancelled at that boundary.
-Neither number is live: that 20-minute cap no longer exists anywhere in `.github/workflows/ci.yml`, and the lane has since been measured at roughly two and a half times the ~19 minutes recorded there.
+Neither number is live: the portable serial lane no longer runs under that 20-minute cap, since the `tests-portable-serial` job now caps each shard at 15 minutes, and the lane has since been measured at roughly two and a half times the ~19 minutes recorded there.
+A 20-minute timeout does still exist elsewhere in `.github/workflows/ci.yml` — the real-Herdr family-run step, recorded in the Timeouts table below — so it is only this lane's cap that changed.
 
 `bin/fm-test-run.sh` owns `n` and refuses any lane whose `of<n>` disagrees with it.
 `.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
