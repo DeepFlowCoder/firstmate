@@ -55,35 +55,50 @@ Membership is derived rather than enumerated, so a newly added test lands here b
 
 ## Portable serial CI shards
 
-On green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757), that remainder accumulated 19m04s of script time against a 20-minute job timeout.
-On [PR 1495](https://github.com/kunchenguid/firstmate/pull/1495), its main step ran about 19m51s before the job was cancelled at that boundary.
-`portable-serial-<k>of<n>` splits it across `n` separate CI runners.
+That remainder now measures about 49 minutes of serial work (2958555 ms, from the refresh recorded below), so `portable-serial-<k>of<n>` splits it across `n` separate CI runners, each under a 15-minute job cap.
 Each shard is still strictly serial in itself, and separate runners mean no two of these stateful scripts ever share a machine, so the split needs no concurrency isolation proof.
+
+The split exists because the unsharded lane outgrew its cap. The figures below are pre-shard history, not a current measurement:
+on green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757) the whole remainder accumulated 19m04s of script time against the 20-minute job timeout of that era, and on [PR 1495](https://github.com/kunchenguid/firstmate/pull/1495) its main step ran about 19m51s before the job was cancelled at that boundary.
+Neither number is live: the portable serial lane no longer runs under that 20-minute cap, since the `tests-portable-serial` job now caps each shard at 15 minutes, and the lane has since been measured at roughly two and a half times the ~19 minutes recorded there.
+A 20-minute timeout does still exist elsewhere in `.github/workflows/ci.yml` — the real-Herdr family-run step, recorded in the Timeouts table below — so it is only this lane's cap that changed.
 
 `bin/fm-test-run.sh` owns `n` and refuses any lane whose `of<n>` disagrees with it.
 `.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
+`tests/fm-test-run.test.sh` renders the lane names from the workflow's own matrix and `FM_SERIAL_LANE` expression and drives the real runner with them, so that disagreement surfaces locally instead of only in CI.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
-The hints came from that run's `fm-test-timing-portable-serial` artifact on 2026-08-02, where the lane ran 69 scripts in 1143762 ms of serial work.
-A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
+The hints were wholesale refreshed on 2026-08-29 from the four `fm-test-timing-portable-serial-*` artifacts of run 33236596384 on `DeepFlowCoder/firstmate`, where the lane ran 118 scripts in 2958555 ms of serial work.
+Every script in the lane now carries a measured hint, so `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` applies only to a test added since that refresh.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
-`tests/fm-pi-watch-extension.test.sh` is knowingly stale in that table: its fixtures now pin the plugins' own 12000 ms arm-readiness budget instead of a shorter test-local one, so the script waits out several of those budgets and runs well past its recorded 16386 ms.
-Its hint stays as CI measured it until the next wholesale refresh below, because a hand-written replacement would be an invented number in a table that is otherwise generated from timing artifacts.
+
+Stale hints still cost a red lane once the drift is large enough to cross the job cap.
+The previous table described a 1143762 ms lane while the real lane had grown to 2958555 ms, so four shards carried 903113 / 632913 / 879800 / 542729 ms and the worst shard held 903 s of work against a 900 s cap.
+`Behavior portable serial 1` therefore reported as cancelled at that cap with all 28 of its scripts passing: the lane went red on the clock, not on a test.
+The shard count is derived from the refreshed measurement rather than chosen freely: eight shards put the balanced estimate near 370 s, and the measured worst shard of green 8-shard run [33246490613](https://github.com/DeepFlowCoder/firstmate/actions/runs/33246490613) ran 565 s, so the cap is a hang tripwire with real margin rather than the expected end of the lane.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 15 | 285945 ms (~285.9 s) |
-| `portable-serial-2of4` | 18 | 285944 ms (~285.9 s) |
-| `portable-serial-3of4` | 17 | 285929 ms (~285.9 s) |
-| `portable-serial-4of4` | 19 | 285944 ms (~285.9 s) |
-| imbalance | | 16 ms |
+| `portable-serial-1of8` | 14 | 369810 ms (~369.8 s) |
+| `portable-serial-2of8` | 13 | 369810 ms (~369.8 s) |
+| `portable-serial-3of8` | 15 | 369816 ms (~369.8 s) |
+| `portable-serial-4of8` | 15 | 369798 ms (~369.8 s) |
+| `portable-serial-5of8` | 16 | 369800 ms (~369.8 s) |
+| `portable-serial-6of8` | 12 | 369921 ms (~369.9 s) |
+| `portable-serial-7of8` | 15 | 369800 ms (~369.8 s) |
+| `portable-serial-8of8` | 18 | 369800 ms (~369.8 s) |
+| imbalance | | 123 ms |
 
-The single longest script, `tests/fm-pr-check-security.test.sh` at 199573 ms, is the floor for any shard count.
+The single longest script, `tests/fm-pr-check-security.test.sh` at 252478 ms, is the floor for any shard count, and every security case added to it raises that floor.
 
-Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above:
+Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above.
+
+`<owner>/<repo>` is a parameter, not a constant: this project has an upstream and a private mirror that number runs and pull requests independently, so a bare run id is ambiguous and resolves in at most one of them.
+Resolve `<run-id>` against the repository the run actually belongs to, and pass that repository explicitly to every command here.
+The 2026-08-29 refresh used run 33236596384 on `DeepFlowCoder/firstmate`; the pre-shard history above cites run 30725985757 and PR 1495 on `kunchenguid/firstmate`.
 
 ```sh
-gh run download <run-id> -R kunchenguid/firstmate --pattern 'fm-test-timing-portable-serial-*' -D /tmp/fm-serial
+gh run download <run-id> -R <owner>/<repo> --pattern 'fm-test-timing-portable-serial-*' -D /tmp/fm-serial
 jq -r '.scripts[] | [.path, .duration_ms] | @tsv' /tmp/fm-serial/*.json | LC_ALL=C sort
 bin/fm-test-run.sh --check-coverage
 ```
@@ -110,7 +125,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-4 | job `timeout-minutes: 15` | The balanced shard estimates are about five minutes, so even a shard running above a stale estimate keeps hang-tripwire margin. |
+| portable serial 1-8 | job `timeout-minutes: 15` | The balanced estimate is about 6.2 min, but the worst shard measured on green run 33246490613 ran 9.41 min, 53% above its estimate, which is the number the cap has to clear: roughly 1.6x margin, not 2x. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.

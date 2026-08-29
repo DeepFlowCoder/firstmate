@@ -466,6 +466,86 @@ test_portable_serial_shard_lane_refusals() {
   pass "portable serial shard lanes refuse mismatched, out-of-range, and countless names"
 }
 
+# Render the portable serial lane names exactly as CI does: take the workflow's
+# own FM_SERIAL_LANE expression and substitute matrix.shard and
+# strategy.job-total, so the rendered name is the workflow's meaning rather than
+# a re-spelling of it here. <job-total> is overridable to model a matrix resized
+# without bin/fm-test-run.sh.
+render_ci_serial_lanes() {
+  local workflow=$1 job_total=${2:-}
+  # Single quotes are required: the body is a Ruby program whose ${{ ... }}
+  # patterns must reach Ruby unexpanded by the shell.
+  # shellcheck disable=SC2016
+  ruby -ryaml -e '
+doc = YAML.load_file(ARGV[0])
+job = doc.fetch("jobs").fetch("tests-portable-serial")
+shards = job.fetch("strategy").fetch("matrix").fetch("shard")
+step = job.fetch("steps").find { |s|
+  s.is_a?(Hash) && s.fetch("env", {}).key?("FM_SERIAL_LANE")
+}
+raise "no step sets FM_SERIAL_LANE" if step.nil?
+template = step.fetch("env").fetch("FM_SERIAL_LANE").to_s
+job_total = ARGV[1].to_s.empty? ? shards.length : Integer(ARGV[1])
+shards.each do |shard|
+  lane = template
+    .gsub(/\$\{\{\s*matrix\.shard\s*\}\}/, shard.to_s)
+    .gsub(/\$\{\{\s*strategy\.job-total\s*\}\}/, job_total.to_s)
+  raise "unexpanded workflow expression in #{lane}" if lane.include?("${{")
+  puts lane
+end
+' "$workflow" "$job_total"
+}
+
+test_ci_serial_matrix_agrees_with_the_runner_shard_count() {
+  # The CI matrix and PORTABLE_SERIAL_SHARDS are two halves of one contract:
+  # resizing the matrix without the runner must fail loudly instead of leaving
+  # part of the required serial lane unrun. Drive the real runner with the lane
+  # names the workflow actually produces so that break surfaces here, before CI.
+  command -v ruby >/dev/null 2>&1 \
+    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+  local workflow lanes serial union lane listed count tmp rc
+  workflow="$ROOT/.github/workflows/ci.yml"
+  lanes=$(render_ci_serial_lanes "$workflow") \
+    || fail "could not render portable serial lanes from ci.yml"
+  count=$(printf '%s\n' "$lanes" | grep -c .)
+  [ "$count" -ge 2 ] || fail "ci.yml portable serial matrix has $count shard(s)"
+
+  serial=$("$RUNNER" --list --lane portable-serial | LC_ALL=C sort)
+  union=""
+  while IFS= read -r lane; do
+    [ -n "$lane" ] || continue
+    listed=$("$RUNNER" --list --lane "$lane") \
+      || fail "the runner refuses lane '$lane' that ci.yml would run"
+    [ -n "$listed" ] || fail "ci.yml lane '$lane' selected no tests"
+    union=$(printf '%s\n%s' "$union" "$listed")
+  done <<EOF
+$lanes
+EOF
+  union=$(printf '%s\n' "$union" | grep -v '^$' || true)
+  [ -z "$(printf '%s\n' "$union" | LC_ALL=C sort | uniq -d || true)" ] \
+    || fail "ci.yml serial matrix runs a script in more than one shard"
+  [ "$(printf '%s\n' "$union" | LC_ALL=C sort)" = "$serial" ] \
+    || fail "ci.yml serial matrix does not cover the portable serial lane exactly"
+
+  # A matrix resized without the runner must be refused, not silently partial.
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-ci-matrix.XXXXXX")
+  lanes=$(render_ci_serial_lanes "$workflow" "$((count - 1))") \
+    || { rm -rf "$tmp"; fail "could not render a resized serial matrix"; }
+  lane=$(printf '%s\n' "$lanes" | head -1)
+  set +e
+  "$RUNNER" --list --lane "$lane" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] \
+    || { rm -rf "$tmp"; fail "a shrunk ci.yml matrix must refuse (exit 2), got $rc"; }
+  [ ! -s "$tmp/out" ] \
+    || { rm -rf "$tmp"; fail "a shrunk ci.yml matrix must not list tests"; }
+  grep -Fq "configured for $count" "$tmp/err" \
+    || { rm -rf "$tmp"; fail "refusal must name the configured count: $(cat "$tmp/err")"; }
+  rm -rf "$tmp"
+  pass "ci.yml portable serial matrix and the runner's shard count agree"
+}
+
 test_jobs_requires_proven_isolated() {
   local tmp rc shard_lane
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs.XXXXXX")
@@ -717,6 +797,7 @@ test_exclude_family
 test_portable_shard_union_and_coverage_guard
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
+test_ci_serial_matrix_agrees_with_the_runner_shard_count
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_herdr_ci_family_run_has_a_step_timeout

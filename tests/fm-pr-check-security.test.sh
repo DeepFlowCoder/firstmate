@@ -77,6 +77,17 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case " $* " in
+  # fm-pr-merge.sh's fitness gate reads this before merging. These cases are
+  # about poll artifact security, not about the gate, so it always answers a
+  # green, mergeable, up-to-date pull request; tests/fm-pr-merge.test.sh owns
+  # the gate's own matrix. Matched first, and on the comma-joined field list,
+  # so it cannot collide with the single-field reads below.
+  *statusCheckRollup*)
+    printf '%s\n' 'pr OPEN MERGEABLE CLEAN' \
+      'base main 0123456789abcdef0123456789abcdef01234567' \
+      'check COMPLETED SUCCESS Lint'
+    ;;
+  *compare*) printf '%s\n' 0 ;;
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
