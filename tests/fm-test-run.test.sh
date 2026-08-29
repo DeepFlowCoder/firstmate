@@ -473,6 +473,9 @@ test_portable_serial_shard_lane_refusals() {
 # without bin/fm-test-run.sh.
 render_ci_serial_lanes() {
   local workflow=$1 job_total=${2:-}
+  # Single quotes are required: the body is a Ruby program whose ${{ ... }}
+  # patterns must reach Ruby unexpanded by the shell.
+  # shellcheck disable=SC2016
   ruby -ryaml -e '
 doc = YAML.load_file(ARGV[0])
 job = doc.fetch("jobs").fetch("tests-portable-serial")
