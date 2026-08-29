@@ -21,6 +21,7 @@
 #   (j) unfinished checks refuse: merging while they run is as blind as red
 #   (k) a conflicting PR refuses
 #   (l) a forge reading that cannot be obtained refuses instead of passing
+#  (l2) a missing gh binary refuses naming itself, not the generic sentence
 #   (m) SKIPPED and NEUTRAL are not failures and must not refuse
 #   (n) --captain-override-red merges a red PR
 #   (o) yolo=on in the task meta does NOT open that override
@@ -91,9 +92,9 @@ make_case() {
 # per-head sampling query), FM_TEST_PRIOR_STDERR (what that failure writes to
 # stderr).
 #
-# The pull request under test is always listed first, as number 9, so a gate
-# that failed to exclude its own number would sample the very head whose
-# emptiness is in question.
+# The closed-pull-request listing is exactly FM_TEST_PRIOR_PR_SHAS, one row per
+# SHA, so an empty value produces the empty listing a brand-new repository
+# really returns rather than a fabricated row GitHub could not send.
 gh_mock_body() {
   local head=$1
   cat <<SH
@@ -101,7 +102,6 @@ gh_mock_body() {
 if [ "\${1:-}" = api ]; then
   case " \$* " in
     *pulls?state=closed*)
-      printf '%s\n' "9 $head"
       prior_n=101
       for prior_sha in \${FM_TEST_PRIOR_PR_SHAS:-}; do
         printf '%s\n' "\$prior_n \$prior_sha"
@@ -174,6 +174,24 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
+# PATH with every directory that provides a real gh removed, so a case can
+# exercise the "gh is not installed" path on a machine that has one.
+path_without_gh() {
+  local dir out='' had_noglob=0
+  case "$-" in
+    *f*) had_noglob=1 ;;
+  esac
+  set -f
+  local IFS=:
+  for dir in $PATH; do
+    [ -n "$dir" ] || continue
+    [ ! -x "$dir/gh" ] || continue
+    out="${out:+$out:}$dir"
+  done
+  [ "$had_noglob" -eq 1 ] || set +f
+  printf '%s' "$out"
+}
+
 # write_reading <case_dir> <line>...: stage the rendered forge reading this
 # case should be gated on, and echo its path.
 write_reading() {
@@ -198,7 +216,7 @@ run_pr_merge() {
   FM_TEST_PRIOR_STATUSES="${FM_TEST_PRIOR_STATUSES:-0}" \
   FM_TEST_PRIOR_FAIL="${FM_TEST_PRIOR_FAIL:-}" \
   FM_TEST_PRIOR_STDERR="${FM_TEST_PRIOR_STDERR:-}" \
-  PATH="$case_dir/fakebin:$PATH" \
+  PATH="${FM_TEST_PATH:-$case_dir/fakebin:$PATH}" \
     "$PR_MERGE" "$@"
   rc=$?
   if [ "${case_dir##*/}" = unsafe-url-segment ] && [ "$rc" -eq 2 ]; then
@@ -517,6 +535,36 @@ test_unreadable_forge_refuses() {
   pass "fm-pr-merge refuses rather than merging blind when the forge cannot be read, and reports why"
 }
 
+test_missing_gh_binary_names_itself() {
+  local case_dir rc
+  # The fleet installs gh-axi without necessarily installing gh, so a machine
+  # can legitimately lack it. "install gh" is a different action from
+  # re-authenticating or waiting out a rate limit, so a refusal that reads the
+  # same as those two sends the reader to fix the wrong thing.
+  case_dir=$(make_case missing-gh)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" abcabcabcabcabcabcabcabcabcabcabcabcabca
+  rm -f "$case_dir/fakebin/gh"
+  : > "$case_dir/gh-axi.log"
+  FM_TEST_PATH="$case_dir/fakebin:$(path_without_gh)"
+  export FM_TEST_PATH
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  unset FM_TEST_PATH
+
+  expect_code 1 "$rc" "missing-gh: fm-pr-merge should refuse when gh is not installed"
+  assert_grep 'gh command is not installed' "$case_dir/stderr" \
+    "missing-gh: refusal did not name the missing gh binary as the cause"
+  assert_no_grep 'could not be read from GitHub' "$case_dir/stderr" \
+    "missing-gh: refusal fell back to the generic unreadable-forge sentence"
+  assert_no_side_effects "$case_dir" missing-gh
+  pass "fm-pr-merge names a missing gh binary rather than reporting a generic unreadable forge"
+}
+
 test_skipped_and_neutral_are_not_failures() {
   local case_dir
   READING_LINES=(
@@ -710,10 +758,9 @@ test_prior_pr_legacy_statuses_refuse() {
 
 test_no_prior_pull_request_refuses() {
   local case_dir
-  # With no other closed pull request there is nothing to establish the answer
-  # from. The gate must not fall back to sampling this pull request's own head:
-  # that head's emptiness is the very question, so answering with it would read
-  # every repository as having no CI.
+  # The brand-new repository's real shape: GitHub returns an empty closed
+  # pull request listing, so there is nothing to establish the answer from and
+  # an empty check list is not evidence of anything.
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
@@ -871,6 +918,7 @@ test_failed_check_refuses
 test_running_checks_refuse
 test_conflicting_pr_refuses
 test_unreadable_forge_refuses
+test_missing_gh_binary_names_itself
 test_skipped_and_neutral_are_not_failures
 test_captain_override_merges_red_pr
 test_yolo_does_not_open_the_override

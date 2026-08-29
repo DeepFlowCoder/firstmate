@@ -216,7 +216,9 @@ gh: (further output suppressed)"
 READING=
 READING_OK=0
 READING_ERR=
+GH_AVAILABLE=0
 if command -v gh >/dev/null 2>&1; then
+  GH_AVAILABLE=1
   GH_ERR_FILE=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-merge-gh.XXXXXX" 2>/dev/null) || GH_ERR_FILE=
   if READING=$(gh pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
     --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup \
@@ -228,8 +230,15 @@ if command -v gh >/dev/null 2>&1; then
   [ -z "$GH_ERR_FILE" ] || rm -f "$GH_ERR_FILE"
 fi
 
+# A missing gh gets its own sentence. Installing it is a different action from
+# re-authenticating or waiting out a rate limit, and the fleet installs gh-axi
+# without necessarily installing gh, so this is a reachable state rather than a
+# theoretical one.
 if [ "$READING_OK" -eq 1 ]; then
   fm_pr_fitness_classify <<< "$READING"
+elif [ "$GH_AVAILABLE" -eq 0 ]; then
+  FM_PR_FITNESS_VERDICT=unmeasurable
+  FM_PR_FITNESS_REASON="the gh command is not installed, and this gate reads checks and mergeability through it because gh-axi is a separate binary that exposes no field selector; install gh, because nothing was merged"
 else
   FM_PR_FITNESS_VERDICT=unmeasurable
   FM_PR_FITNESS_REASON="its checks and mergeability could not be read from GitHub; nothing was merged"
@@ -244,17 +253,39 @@ fi
 # question with itself and read every repository as having no CI.
 FM_PR_PRIOR_CI=
 FM_PR_PRIOR_ERR=
+FM_PR_SAMPLE_VALUE=
+
+# One sampling read. The answer lands in FM_PR_SAMPLE_VALUE rather than on
+# stdout, because a command substitution would run this in a subshell and lose
+# the captured gh diagnostics. Returns 0 for a usable answer, 1 when the query
+# itself failed - gh's own words go to FM_PR_PRIOR_ERR - and 2 when GitHub
+# answered something that is not a count. Pass a want of "any" for the one read
+# that is a list rather than a count.
+fm_pr_sample_read() {
+  local path=$1 filter=$2 err_file=$3 want=${4:-count}
+  FM_PR_SAMPLE_VALUE=
+  if ! FM_PR_SAMPLE_VALUE=$(gh api "$path" -q "$filter" 2>"${err_file:-/dev/null}"); then
+    [ -z "$err_file" ] || FM_PR_PRIOR_ERR=$(gh_error_summary "$err_file")
+    return 1
+  fi
+  [ "$want" = count ] || return 0
+  case "$FM_PR_SAMPLE_VALUE" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+}
+
 sample_prior_pr_ci() {
-  local err_file='' list='' number='' sha='' runs='' statuses='' sampled=0 found=0
+  local err_file='' list='' number='' sha='' sampled=0 found=0
   FM_PR_PRIOR_CI=unmeasurable
   FM_PR_PRIOR_ERR=
   err_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-merge-gh.XXXXXX" 2>/dev/null) || err_file=
 
-  if ! list=$(gh api "repos/$PR_OWNER/$PR_REPO/pulls?state=closed&per_page=5" \
-    -q '.[] | "\(.number) \(.head.sha)"' 2>"${err_file:-/dev/null}"); then
-    [ -z "$err_file" ] || { FM_PR_PRIOR_ERR=$(gh_error_summary "$err_file"); rm -f "$err_file"; }
+  fm_pr_sample_read "repos/$PR_OWNER/$PR_REPO/pulls?state=closed&per_page=5" \
+    '.[] | "\(.number) \(.head.sha)"' "$err_file" any || {
+    [ -z "$err_file" ] || rm -f "$err_file"
     return 0
-  fi
+  }
+  list=$FM_PR_SAMPLE_VALUE
 
   while IFS=' ' read -r number sha; do
     [ -n "$sha" ] || continue
@@ -263,34 +294,22 @@ sample_prior_pr_ci() {
     [ "$sampled" -lt 3 ] || break
     sampled=$((sampled + 1))
 
-    if ! runs=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$sha/check-runs" \
-      -q '.total_count' 2>"${err_file:-/dev/null}"); then
-      [ -z "$err_file" ] || { FM_PR_PRIOR_ERR=$(gh_error_summary "$err_file"); rm -f "$err_file"; }
+    fm_pr_sample_read "repos/$PR_OWNER/$PR_REPO/commits/$sha/check-runs" \
+      '.total_count' "$err_file" || {
+      [ -z "$err_file" ] || rm -f "$err_file"
       return 0
-    fi
-    case "$runs" in
-      ''|*[!0-9]*)
-        [ -z "$err_file" ] || rm -f "$err_file"
-        return 0
-        ;;
-    esac
-    if [ "$runs" -gt 0 ]; then
+    }
+    if [ "$FM_PR_SAMPLE_VALUE" -gt 0 ]; then
       found=1
       break
     fi
 
-    if ! statuses=$(gh api "repos/$PR_OWNER/$PR_REPO/commits/$sha/status" \
-      -q '.statuses|length' 2>"${err_file:-/dev/null}"); then
-      [ -z "$err_file" ] || { FM_PR_PRIOR_ERR=$(gh_error_summary "$err_file"); rm -f "$err_file"; }
+    fm_pr_sample_read "repos/$PR_OWNER/$PR_REPO/commits/$sha/status" \
+      '.statuses|length' "$err_file" || {
+      [ -z "$err_file" ] || rm -f "$err_file"
       return 0
-    fi
-    case "$statuses" in
-      ''|*[!0-9]*)
-        [ -z "$err_file" ] || rm -f "$err_file"
-        return 0
-        ;;
-    esac
-    if [ "$statuses" -gt 0 ]; then
+    }
+    if [ "$FM_PR_SAMPLE_VALUE" -gt 0 ]; then
       found=1
       break
     fi
