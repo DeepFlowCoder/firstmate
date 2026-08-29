@@ -18,8 +18,13 @@
 #   base <baseRefName> <headRefOid>
 #   check <status> <conclusion> <name>        (a CheckRun)
 #   check <state> CONTEXT <name>              (a legacy commit status)
-# A PR with no checks at all renders no check lines, which is a real and
-# passing shape: a repository with no CI has nothing red to be caught on.
+# A PR with no checks at all renders no check lines. That shape is not read as
+# green: an empty list cannot tell a repository with no PR CI apart from one
+# whose checks have simply not been registered against this head commit yet,
+# and merging in that window is blinder than merging red. The classifier
+# returns the distinct verdict no-checks and leaves the second, positive signal
+# - whether the repository has any CI at all - to the caller, which is where
+# the network lives.
 #
 # Enum values are GitHub's own, read from the live GraphQL schema rather than
 # from memory (CheckConclusionState, CheckStatusState, StatusState,
@@ -36,24 +41,35 @@ FM_PR_FITNESS_FAILING=
 FM_PR_FITNESS_RUNNING=
 FM_PR_FITNESS_FAILING_COUNT=0
 FM_PR_FITNESS_RUNNING_COUNT=0
+FM_PR_FITNESS_CHECK_COUNT=0
 FM_PR_FITNESS_BASE=
 FM_PR_FITNESS_HEAD=
 FM_PR_FITNESS_MERGE_STATE=
 
-# Join up to five names for a refusal message, summarising any remainder rather
-# than printing an unbounded list into the captain's terminal.
+# Join up to five of the <total> names in <list> for a refusal message,
+# summarising any remainder rather than printing an unbounded list into the
+# captain's terminal.
+#
+# Pathname expansion is off while the list is split: a check name is a field a
+# third-party check app controls, and one containing a glob character would
+# otherwise be expanded against the merge script's working directory, so the
+# refusal would name files instead of the check the reader has to go and fix.
+# The count comes from the caller, which already has it, rather than from a
+# counting loop that the same expansion would have inflated.
 fm_pr_fitness_names() {
-  local list=$1 shown=0 total=0 out='' name
+  local list=$1 total=$2 shown=0 out='' name had_noglob=0
+  case "$-" in
+    *f*) had_noglob=1 ;;
+  esac
+  set -f
   local IFS='
 '
-  for name in $list; do
-    total=$((total + 1))
-  done
   for name in $list; do
     shown=$((shown + 1))
     [ "$shown" -le 5 ] || break
     [ -z "$out" ] && out=$name || out="$out, $name"
   done
+  [ "$had_noglob" -eq 1 ] || set +f
   if [ "$total" -gt 5 ]; then
     out="$out, and $((total - 5)) more"
   fi
@@ -107,6 +123,9 @@ fm_pr_fitness_context() {
 #   not-open     the PR is no longer open
 #   failing      at least one check failed
 #   running      at least one check has not finished
+#   no-checks    nothing else blocks a merge, but no check was reported at all,
+#                which the caller must resolve against a second signal before
+#                it can be read as green
 #   unmeasurable the reading itself could not be trusted
 #
 # Ordering is deliberate. conflicted and not-open come first because they are
@@ -123,6 +142,7 @@ fm_pr_fitness_classify() {
   FM_PR_FITNESS_RUNNING=
   FM_PR_FITNESS_FAILING_COUNT=0
   FM_PR_FITNESS_RUNNING_COUNT=0
+  FM_PR_FITNESS_CHECK_COUNT=0
   FM_PR_FITNESS_BASE=
   FM_PR_FITNESS_HEAD=
   FM_PR_FITNESS_MERGE_STATE=
@@ -157,6 +177,7 @@ fm_pr_fitness_classify() {
         ;;
       check)
         [ -n "$name" ] || name='(unnamed check)'
+        FM_PR_FITNESS_CHECK_COUNT=$((FM_PR_FITNESS_CHECK_COUNT + 1))
         if [ "$f2" = CONTEXT ]; then
           verdict=$(fm_pr_fitness_context "$f1")
         else
@@ -219,13 +240,22 @@ fm_pr_fitness_classify() {
 
   if [ "$FM_PR_FITNESS_FAILING_COUNT" -gt 0 ]; then
     FM_PR_FITNESS_VERDICT=failing
-    FM_PR_FITNESS_REASON="$FM_PR_FITNESS_FAILING_COUNT of its checks did not pass: $(fm_pr_fitness_names "$failing")"
+    FM_PR_FITNESS_REASON="$FM_PR_FITNESS_FAILING_COUNT of its checks did not pass: $(fm_pr_fitness_names "$failing" "$FM_PR_FITNESS_FAILING_COUNT")"
     return 0
   fi
 
   if [ "$FM_PR_FITNESS_RUNNING_COUNT" -gt 0 ]; then
     FM_PR_FITNESS_VERDICT=running
-    FM_PR_FITNESS_REASON="$FM_PR_FITNESS_RUNNING_COUNT of its checks have not finished: $(fm_pr_fitness_names "$running")"
+    FM_PR_FITNESS_REASON="$FM_PR_FITNESS_RUNNING_COUNT of its checks have not finished: $(fm_pr_fitness_names "$running" "$FM_PR_FITNESS_RUNNING_COUNT")"
+    return 0
+  fi
+
+  # Silence is not evidence of green. Whether this repository has any PR CI at
+  # all is a question about the repository, not about this reading, so it is
+  # the caller's to answer.
+  if [ "$FM_PR_FITNESS_CHECK_COUNT" -eq 0 ]; then
+    FM_PR_FITNESS_VERDICT=no-checks
+    FM_PR_FITNESS_REASON="GitHub reported no checks at all for it"
     return 0
   fi
 

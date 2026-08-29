@@ -12,6 +12,19 @@
 # whose fitness could not be read at all. A gate that cannot measure never
 # passes silently: an unreadable answer refuses.
 #
+# A pull request that reports no checks at all is the same principle: an empty
+# check list cannot tell a repository with no PR CI apart from one whose checks
+# have not been registered against this head commit yet, and merging in that
+# window is blinder than merging red. So an empty list passes only on a second,
+# positive signal that the repository genuinely has no CI - the count from
+# `gh api repos/<owner>/<repo>/actions/workflows`. Zero workflows merges; any
+# workflow refuses and says to wait for the checks to appear; a count that
+# cannot be obtained refuses too, because silence is not the evidence.
+# KNOWN LIMIT: that signal counts Actions workflows only. A repository with no
+# workflows whose only PR CI is a third-party check app would report zero and
+# be merged on an empty check list, so this narrows the race window rather than
+# closing it.
+#
 # The reading comes from `gh pr view --json ... -q`, not from gh-axi. gh-axi is
 # this repo's GitHub tool and still performs the merge, but `gh-axi pr view`
 # exposes no field selector and `gh-axi pr checks` prints a human summary; that
@@ -148,14 +161,42 @@ FITNESS_QUERY='"pr \(.state) \(.mergeable) \(.mergeStateStatus)",
     "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \(.context)"
   end)'
 
+# gh's own diagnostics are kept rather than discarded: "not authenticated for
+# this host", "no pull request found", and "API rate limit exceeded" all reach
+# the reader as the same failed read otherwise, and they call for three
+# different actions. Bounded to three lines of printable text and prefixed, so
+# a forge message can neither flood the terminal nor impersonate a verdict.
+gh_error_summary() {
+  local file=$1 line count=0 out=''
+  [ -s "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=$(printf '%s' "$line" | tr -d '\r' | tr -c '[:print:]' ' ')
+    [ -n "${line// /}" ] || continue
+    count=$((count + 1))
+    if [ "$count" -gt 3 ]; then
+      out="$out
+gh: (further output suppressed)"
+      break
+    fi
+    out="${out:+$out
+}gh: ${line:0:200}"
+  done < "$file"
+  printf '%s' "$out"
+}
+
 READING=
 READING_OK=0
+READING_ERR=
 if command -v gh >/dev/null 2>&1; then
+  GH_ERR_FILE=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-pr-merge-gh.XXXXXX" 2>/dev/null) || GH_ERR_FILE=
   if READING=$(gh pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
     --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup \
-    -q "$FITNESS_QUERY" 2>/dev/null); then
+    -q "$FITNESS_QUERY" 2>"${GH_ERR_FILE:-/dev/null}"); then
     READING_OK=1
+  elif [ -n "$GH_ERR_FILE" ]; then
+    READING_ERR=$(gh_error_summary "$GH_ERR_FILE")
   fi
+  [ -z "$GH_ERR_FILE" ] || rm -f "$GH_ERR_FILE"
 fi
 
 if [ "$READING_OK" -eq 1 ]; then
@@ -163,6 +204,29 @@ if [ "$READING_OK" -eq 1 ]; then
 else
   FM_PR_FITNESS_VERDICT=unmeasurable
   FM_PR_FITNESS_REASON="its checks and mergeability could not be read from GitHub; nothing was merged"
+fi
+
+# An empty check list is resolved against a second, positive signal: whether
+# this repository has any Actions workflow at all. Only a measured zero reads
+# as "there is no PR CI here" and merges. Both refusals below are ordinary
+# fitness refusals - the pull request itself is neither conflicted nor closed -
+# so the captain override still passes them.
+if [ "$FM_PR_FITNESS_VERDICT" = no-checks ]; then
+  WORKFLOW_COUNT=$(gh api "repos/$PR_OWNER/$PR_REPO/actions/workflows" \
+    -q '.total_count' 2>/dev/null) || WORKFLOW_COUNT=
+  case "$WORKFLOW_COUNT" in
+    0)
+      FM_PR_FITNESS_VERDICT=ok
+      ;;
+    ''|*[!0-9]*)
+      FM_PR_FITNESS_VERDICT=no-ci-signal
+      FM_PR_FITNESS_REASON="it reports no checks at all, and firstmate could not establish whether $PR_OWNER/$PR_REPO has PR CI, so an empty check list is not evidence that it is green"
+      ;;
+    *)
+      FM_PR_FITNESS_VERDICT=checks-not-registered
+      FM_PR_FITNESS_REASON="it reports no checks yet while $PR_OWNER/$PR_REPO has $WORKFLOW_COUNT workflow(s) configured, so a check that has not registered yet cannot be told apart from a repository with no CI; wait for the checks to appear and re-run"
+      ;;
+  esac
 fi
 
 case "$FM_PR_FITNESS_VERDICT" in
@@ -177,9 +241,11 @@ case "$FM_PR_FITNESS_VERDICT" in
   *)
     if [ "$OVERRIDE" -eq 1 ]; then
       echo "warn: PR #$PR_NUMBER ($PR_OWNER/$PR_REPO) is not fit to merge: $FM_PR_FITNESS_REASON" >&2
+      [ -z "$READING_ERR" ] || printf 'warn: %s\n' "$READING_ERR" >&2
       echo "warn: merging anyway on --captain-override-red; this is the captain's explicit call, not a routine approval" >&2
     else
       echo "error: refusing to merge PR #$PR_NUMBER ($PR_OWNER/$PR_REPO): $FM_PR_FITNESS_REASON" >&2
+      [ -z "$READING_ERR" ] || printf 'error: %s\n' "$READING_ERR" >&2
       echo "error: fix that, or re-run with --captain-override-red if the captain explicitly ordered this merge anyway" >&2
       exit 1
     fi
@@ -192,14 +258,21 @@ esac
 # appears when the repository requires up-to-date branches, and a direct commit
 # count from the compare endpoint, which does not depend on that setting.
 if [ "$READING_OK" -eq 1 ] && [ -n "$FM_PR_FITNESS_BASE" ] && [ -n "$FM_PR_FITNESS_HEAD" ]; then
+  # A failed compare call is tracked apart from a measured zero. Collapsing the
+  # two would let the signal vanish exactly when it is least reliable, and the
+  # remaining signal only appears when the repository requires up-to-date
+  # branches, so the reader could be told nothing at all.
   BEHIND=
+  BEHIND_MEASURED=1
   BEHIND=$(gh api "repos/$PR_OWNER/$PR_REPO/compare/$FM_PR_FITNESS_BASE...$FM_PR_FITNESS_HEAD" \
-    -q '.behind_by' 2>/dev/null) || BEHIND=
+    -q '.behind_by' 2>/dev/null) || BEHIND_MEASURED=0
   case "$BEHIND" in
-    ''|*[!0-9]*) BEHIND= ;;
-    0) BEHIND= ;;
+    ''|*[!0-9]*) BEHIND_MEASURED=0; BEHIND= ;;
   esac
-  if [ -n "$BEHIND" ]; then
+  if [ "$BEHIND_MEASURED" -eq 0 ]; then
+    echo "warn: could not measure how far behind $FM_PR_FITNESS_BASE PR #$PR_NUMBER is: the compare call to GitHub failed, so whether its checks are stale is unknown" >&2
+  fi
+  if [ "$BEHIND_MEASURED" -eq 1 ] && [ "$BEHIND" != 0 ]; then
     echo "warn: PR #$PR_NUMBER is $BEHIND commit(s) behind $FM_PR_FITNESS_BASE; its checks were measured against an older base and may not reflect merging into $FM_PR_FITNESS_BASE as it stands now" >&2
   elif [ "$FM_PR_FITNESS_MERGE_STATE" = BEHIND ]; then
     echo "warn: GitHub reports PR #$PR_NUMBER as behind $FM_PR_FITNESS_BASE; its checks were measured against an older base" >&2

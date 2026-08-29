@@ -118,25 +118,71 @@ behind_by=0 ahead_by=2
 
 The incident this gate answers had `behind_by=24` on three pull requests reported as green and mergeable.
 
+## An empty check list is told apart from a repository with no CI
+
+A pull request that reports no checks renders zero `check` lines whether the repository has no PR CI or GitHub has simply not registered a check run against this head commit yet.
+The gate resolves that with a second, positive signal about the repository rather than about the reading:
+
+```sh
+gh api repos/kunchenguid/firstmate/actions/workflows -q .total_count
+gh api repos/DeepFlowCoder/dotfiles/actions/workflows -q .total_count
+```
+
+```
+5
+0
+```
+
+`kunchenguid/firstmate` has CI; `DeepFlowCoder/dotfiles` is a registered project with no `.github/workflows` directory at all.
+Zero merges on an empty check list; anything else refuses, and so does a count that cannot be obtained.
+
+Two other candidates were measured and rejected.
+The first, the check-suite count for the head commit, returns a non-zero count on the repository that has no CI:
+
+```sh
+gh api repos/DeepFlowCoder/dotfiles/commits/<sha>/check-suites \
+  -q '"total_count=\(.total_count) app=\(.check_suites[0].app.slug) status=\(.check_suites[0].status) runs=\(.check_suites[0].latest_check_runs_count)"'
+```
+
+```
+total_count=1 app=cursor status=queued runs=0
+```
+
+So "zero suites means no CI" never holds on that repository and it would refuse forever.
+The second candidate, "any queued suite means checks are coming", fails on the same evidence: that `cursor` suite is permanently queued, so it would produce the same permanent false refusal.
+
+This signal counts Actions workflows only.
+A repository with zero workflows whose only PR CI is a third-party check app that never touches the base branch would still report `0` and be merged on an empty check list, so the gate narrows this race window rather than closing it.
+`bin/fm-pr-merge.sh`'s header records that limit alongside the rule.
+
 ## Portable regression
 
 ```sh
 bash tests/fm-pr-merge.test.sh
 ```
 
+The gate's own cases, out of the twenty-six the file runs:
+
 ```
 ok - fm-pr-merge refuses a PR with a failed check and changes no state
 ok - fm-pr-merge refuses while checks are still running
 ok - fm-pr-merge refuses a conflicting PR even when every check is green
-ok - fm-pr-merge refuses rather than merging blind when the forge cannot be read
+ok - fm-pr-merge refuses rather than merging blind when the forge cannot be read, and reports why
 ok - fm-pr-merge treats SKIPPED and NEUTRAL checks as not-failures
 ok - fm-pr-merge merges a red PR under the explicit captain override
 ok - fm-pr-merge refuses a red PR on a yolo=on task: autonomy never opens the override
 ok - fm-pr-merge refuses a conflicting PR even under the captain override
 ok - fm-pr-merge warns loudly about a green measured against a moved base, and still merges
 ok - fm-pr-merge refuses the override flag passed through to gh-axi
+ok - fm-pr-merge still merges a green PR on a repository with no PR CI
+ok - fm-pr-merge refuses an empty check list on a repository that has CI workflows
+ok - fm-pr-merge refuses an empty check list when it cannot establish whether the repo has PR CI
+ok - fm-pr-merge warns that staleness could not be measured when the compare call fails
+ok - fm-pr-merge names a check containing a glob character instead of matching files
 ok - fm-pr-merge refuses a reading whose check name forged a second pull request record
 ```
 
-Ten of those eleven fail against the pre-gate script.
-The one that does not, the `SKIPPED`/`NEUTRAL` case, asserts that the gate does *not* refuse, so it passes before the change by construction; it guards the gate against becoming noisy enough to be worked around.
+Fourteen of those sixteen fail against the pre-gate script.
+The two that do not, the `SKIPPED`/`NEUTRAL` case and the no-PR-CI case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
+
+The four cases covering the empty check list, the failed compare call, and the glob-bearing check name, together with the added assertion that the unreadable-forge refusal carries `gh`'s own words, were each run in isolation against the gate's first version and failed there before those fixes landed.
