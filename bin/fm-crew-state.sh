@@ -42,6 +42,13 @@
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
 #      green, so a green PR is never silently read as still-validating.
+#      AND EXCEPT: a terminal run is only reported when this branch's NEWEST run
+#      is that terminal one. Branch+head identity cannot separate an aborted run
+#      from the live run that replaced it (both report the submitted head for the
+#      whole successor run - measured, see bin/fm-nm-run-lib.sh's runs-list
+#      primitives), so a still-active newest row for this branch outranks it: the
+#      live run is reported when its head binds here, and `unknown` when it does
+#      not. A stale terminal verdict must never be asserted as failed or done.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -354,12 +361,15 @@ nm_ci_checks_state() {
   esac
 }
 # Coarse fallback for cross-branch attribution. `no-mistakes axi status` (bare)
-# reports the active-or-most-recent run for the CURRENT branch when one
-# exists, else falls back to some other branch's run purely as informational
-# display (verified empirically: querying a worktree with its own active run
-# reliably returns that run, even under concurrent load from several other
-# validating crews on the same underlying repo). A crew whose branch genuinely
-# has no run yet therefore sees another branch's answer here.
+# returns exactly ONE run and takes no branch or status selector (verified:
+# `axi status --help` exposes only --run). It is REPO-scoped, not branch-scoped:
+# measured 2026-08-29 from a worktree whose branch had no run at all, it answered
+# with a different branch's run. It usually surfaces this branch's own active
+# run, but "usually" is the whole problem - when a branch holds both an aborted
+# run and its live successor it can hand back the terminal one, which is the
+# false-failure this helper's supersession rule exists to catch. So a crew whose
+# branch genuinely has no run yet sees another branch's answer here, and a crew
+# whose branch has several runs may see the wrong one.
 #
 # This fallback used to shell out to `no-mistakes axi` (bare, no subcommand)
 # expecting a `runs[N]{id,branch,status,...}:` TOON table and re-query the
@@ -380,23 +390,33 @@ nm_ci_checks_state() {
 # "<status> <branch> <short-sha> <date> [<pr-url>]" separated by runs of
 # spaces (verified: no quoting, so splitting on the first two whitespace runs
 # is exact) - but branch + coarse status is exactly what this predicate needs:
-# is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (running/completed/cancelled/failed), or empty
-# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
+# is a run for THIS branch active right now. Row splitting itself is owned by
+# fm_nm_runs_parse_row in bin/fm-nm-run-lib.sh, shared with the newest-row read
+# the supersession check below needs.
+#
+# The list costs one CLI call and now has two callers, so read it at most once
+# per invocation. RUNS_LIST_READ distinguishes "not asked yet" from "asked, and
+# the CLI returned nothing".
+RUNS_LIST=""
+RUNS_LIST_READ=0
+nm_runs_list() {
+  if [ "$RUNS_LIST_READ" = 0 ]; then
+    RUNS_LIST=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+    RUNS_LIST_READ=1
+  fi
+  printf '%s' "$RUNS_LIST"
+}
+
+# Echoes the first (most recent) row for <branch> whose short-sha binds to this
+# worktree, as its status word (running/completed/cancelled/failed), or empty
+# when the branch has no such row within FM_CREW_STATE_RUNS_LIMIT rows.
 nm_runs_status_for_branch() {  # <branch>
-  local branch=$1 out row st rest br sha
-  out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
+  local branch=$1 out row parsed st br sha
+  out=$(nm_runs_list)
   [ -n "$out" ] || return 0
   while IFS= read -r row; do
-    row=$(trim "$row")
-    [ -n "$row" ] || continue
-    st=${row%% *}
-    rest=${row#* }
-    rest=$(trim "$rest")
-    br=${rest%% *}
-    rest=${rest#* }
-    rest=$(trim "$rest")
-    sha=${rest%% *}
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    IFS=$'\t' read -r st br sha <<< "$parsed"
     if [ "$br" = "$branch" ]; then
       # Same code-identity rule as axi status: skip a same-branch row whose
       # short-sha does not match this worktree (rewritten or advanced tip).
@@ -408,6 +428,26 @@ nm_runs_status_for_branch() {  # <branch>
     fi
   done <<< "$out"
   return 0
+}
+
+# The branch's NEWEST runs-list row as "<status><TAB><sha>", or nothing when the
+# branch has no row within FM_CREW_STATE_RUNS_LIMIT. Deliberately unfiltered by
+# code identity: the newest row is the newest run for this branch whether or not
+# its head binds here, and the caller needs that distinction to tell a bindable
+# live run from an unbindable one.
+nm_branch_newest_row() {  # <branch>
+  local branch=$1 out row parsed st br sha
+  out=$(nm_runs_list)
+  [ -n "$out" ] || return 1
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    IFS=$'\t' read -r st br sha <<< "$parsed"
+    if [ "$br" = "$branch" ]; then
+      printf '%s\t%s' "$st" "$sha"
+      return 0
+    fi
+  done <<< "$out"
+  return 1
 }
 
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
@@ -470,6 +510,11 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
+  # Whether the RUN itself reached a terminal outcome, which is NOT the same as
+  # RUN_STATE being done or failed: the ci-green override below reports done for
+  # a run that is still actively monitoring its PR. Only a genuinely terminal run
+  # is subject to the supersession check.
+  RUN_IS_TERMINAL=0
   if [ "$RUN_SOURCE" = coarse ]; then
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
@@ -480,9 +525,9 @@ if [ "$HAVE_RUN" = 1 ]; then
     # coarse-vs-full distinction, so a real gate is never silently missed.
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
-      completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
-      failed)    RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-      cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
+      completed) RUN_STATE="done";  RUN_DETAIL="run completed"; RUN_IS_TERMINAL=1 ;;
+      failed)    RUN_STATE=failed;  RUN_DETAIL="run failed"; RUN_IS_TERMINAL=1 ;;
+      cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled"; RUN_IS_TERMINAL=1 ;;
       *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
     esac
   else
@@ -496,10 +541,10 @@ if [ "$HAVE_RUN" = 1 ]; then
 
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
-        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
-        failed)        RUN_STATE=failed; RUN_DETAIL="run failed" ;;
-        cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
+        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed"; RUN_IS_TERMINAL=1 ;;
+        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review"; RUN_IS_TERMINAL=1 ;;
+        failed)        RUN_STATE=failed; RUN_DETAIL="run failed"; RUN_IS_TERMINAL=1 ;;
+        cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled"; RUN_IS_TERMINAL=1 ;;
         *)             RUN_STATE=unknown; RUN_DETAIL="outcome: $outcome" ;;
       esac
     elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
@@ -521,9 +566,9 @@ if [ "$HAVE_RUN" = 1 ]; then
       case "$status" in
         ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
         running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
-        completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
-        failed)         RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-        cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
+        completed)      RUN_STATE="done"; RUN_DETAIL="run completed"; RUN_IS_TERMINAL=1 ;;
+        failed)         RUN_STATE=failed;  RUN_DETAIL="run failed"; RUN_IS_TERMINAL=1 ;;
+        cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled"; RUN_IS_TERMINAL=1 ;;
         "")             RUN_STATE=working; RUN_DETAIL="run active" ;;
         *)              RUN_STATE=working; RUN_DETAIL="run active ($status)" ;;
       esac
@@ -542,6 +587,45 @@ if [ "$HAVE_RUN" = 1 ]; then
             ;;
         esac
       fi
+    fi
+  fi
+
+  # A terminal verdict is only trustworthy when this branch's NEWEST run is the
+  # terminal one. Measured 2026-08-29 on the real store (runs
+  # 01M166T3Z9WVJDV1V2JJM8F7HG cancelled and 01M16WA7F47FKSF3459NSH7E7K live,
+  # both on fm/fm-merge-puerta-aptitud): branch and head identity give ZERO
+  # discrimination between an aborted run and the live run that replaced it,
+  # because the crew worktree stays at the submitted head - the same sha the
+  # aborted run reports - for the whole successor run (see the runs-list
+  # primitives in bin/fm-nm-run-lib.sh for the full measurement). Whichever run
+  # `axi status` happened to return was then reported as authoritative, so a
+  # deliberately aborted run read as `failed: run cancelled` for hours while its
+  # successor advanced through review, test and document, and the watcher was one
+  # step from telling the captain the task had failed.
+  #
+  # The runs list settles it: it carries every run newest-first with its own
+  # status, and it is read AFTER the `axi status` call, so it is never the staler
+  # view. A still-active newest row therefore cannot be the run just reported as
+  # terminal - one run has one status - and it outranks that run. When the live
+  # successor's head cannot be bound to this worktree (a branch name reused by a
+  # later task, a rewritten tip), the honest answer is `unknown`: what is certain
+  # is only that the terminal verdict is NOT current.
+  if [ "$RUN_IS_TERMINAL" = 1 ] && NEWEST_ROW=$(nm_branch_newest_row "$CREW_BRANCH"); then
+    IFS=$'\t' read -r NEWEST_STATUS NEWEST_SHA <<< "$NEWEST_ROW"
+    if fm_nm_status_is_active "$NEWEST_STATUS"; then
+      if nm_coarse_head_matches_worktree "$NEWEST_SHA"; then
+        # A bound `running` successor is this crew validating right now. Any
+        # other active word (`pending`, a status this helper does not model) says
+        # a live run exists without saying what it is doing, which is `unknown`.
+        if [ "$NEWEST_STATUS" = running ]; then
+          emit working run-step \
+            "validating (background run)${SEP}newer run supersedes the reported terminal run ($RUN_DETAIL)"
+        fi
+        emit unknown run-step \
+          "a $NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run ($RUN_DETAIL)"
+      fi
+      emit unknown run-step \
+        "a $NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run ($RUN_DETAIL); its head does not bind to this worktree"
     fi
   fi
 

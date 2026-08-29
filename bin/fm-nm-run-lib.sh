@@ -71,3 +71,45 @@ fm_nm_head_matches_worktree() {  # <worktree> <run_head>
   [ "$run_full" = "$local_full" ] && return 0
   git -C "$wt" merge-base --is-ancestor "$local_full" "$run_full" 2>/dev/null
 }
+
+# --- runs-list primitives ---------------------------------------------------
+#
+# Why the runs list is needed at all, measured 2026-08-29 against the real store
+# (~/.no-mistakes/state.sqlite; runs 01M166T3Z9WVJDV1V2JJM8F7HG cancelled and
+# 01M16WA7F47FKSF3459NSH7E7K live, both on branch fm/fm-merge-puerta-aptitud):
+# branch + head identity CANNOT separate an aborted run from the live run that
+# replaced it. A run's reported `head:` is its last PUSHED sha (head_sha equals
+# last_pushed_sha for every run in the store) and the pipeline commits in its own
+# managed worktree, so the crew worktree sits at the submitted head - the exact
+# sha the aborted run also reports - for the whole successor run. `axi status`
+# returns ONE run and offers no way to ask for a specific branch's active run
+# (verified: `axi status --help` exposes only --run, and `runs --help` has no
+# branch or status filter), so the runs list, which carries every run
+# newest-first WITH its own status, is the only discriminator available.
+#
+# 0 if a `no-mistakes runs` status word belongs to a run that has not reached a
+# terminal outcome. The store's terminal vocabulary is completed/failed/
+# cancelled; pending and running are the non-terminal words the binary carries.
+fm_nm_status_is_active() {  # <status-word>
+  case "$1" in
+    pending|running) return 0 ;;
+  esac
+  return 1
+}
+
+# Split one `no-mistakes runs` row into "<status><TAB><branch><TAB><sha>".
+# Rows are plain, unquoted, column-padded text -
+# "<status> <branch> <short-sha> <date> [<pr-url>]" - so splitting on the first
+# two whitespace runs is exact. Echoes nothing for a blank row.
+fm_nm_runs_parse_row() {  # <row>
+  local row status rest branch sha
+  row=$(fm_nm_trim "${1:-}")
+  [ -n "$row" ] || return 1
+  status=${row%% *}
+  rest=$(fm_nm_trim "${row#* }")
+  branch=${rest%% *}
+  rest=$(fm_nm_trim "${rest#* }")
+  sha=${rest%% *}
+  [ -n "$status" ] && [ -n "$branch" ] || return 1
+  printf '%s\t%s\t%s' "$status" "$branch" "$sha"
+}

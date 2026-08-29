@@ -291,6 +291,28 @@ outcome: failed
 EOF
 }
 
+# A run the captain deliberately aborted so a new run could re-validate the same
+# branch. Transcribed from the real record of run 01M166T3Z9WVJDV1V2JJM8F7HG
+# (`no-mistakes axi status --run`, installed v1.48.0, 2026-08-29), including the
+# `error:` line no-mistakes writes when a push supersedes a run.
+run_cancelled_superseded() {  # <branch>
+  cat <<EOF
+run:
+  id: "01OLDRUN"
+  branch: $1
+  status: cancelled
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/10"
+  findings: "1 awaiting, 1 auto-fix, 1 info"
+  steps[3]{step,status,findings,duration_ms}:
+    review,completed,2,5203327
+    document,completed,0,129859
+    ci,failed,1,15428075
+outcome: cancelled
+error: "cancelled: superseded by new push"
+EOF
+}
+
 run_ci_monitoring() {  # <branch>
   cat <<EOF
 run:
@@ -1408,6 +1430,184 @@ test_missing_run_head_falls_back_to_current_state() {
   pass "missing run head falls back instead of matching by branch"
 }
 
+# --- superseded terminal run vs the live run that replaced it ----------------
+#
+# MEASURED 2026-08-29 against the real run store (~/.no-mistakes/state.sqlite,
+# runs 01M166T3Z9WVJDV1V2JJM8F7HG and 01M16WA7F47FKSF3459NSH7E7K, both on
+# fm/fm-merge-puerta-aptitud):
+#
+#   * A run's reported `head:` is its last PUSHED sha - head_sha equals
+#     last_pushed_sha in the store for both runs - and it only advances when the
+#     pipeline pushes. Until then the run reports its submitted head.
+#   * The pipeline commits in its OWN managed worktree (~/.no-mistakes/worktrees/
+#     <repo-id>, created per run and removed at run end; `no-mistakes sync`
+#     exists precisely to move the crew's branch to a pipeline-pushed head), so
+#     the crew worktree stays parked at the submitted head for the whole run.
+#   * The cancelled run's head_sha (d4625352) was therefore IDENTICAL to the
+#     live successor's submitted head and to the crew worktree HEAD.
+#
+# So branch + code identity - the whole attribution rule - gives ZERO
+# discrimination between an aborted run and the live run that replaced it. When
+# `axi status` handed back the terminal one, fm-crew-state reported
+# `failed - run cancelled` with full confidence for hours while the live run
+# advanced through review, test and document, and the watcher was one step from
+# telling the captain the task had failed.
+#
+# The discriminator is the runs list: it carries EVERY run newest-first with its
+# own status, so a still-active newest row for this branch cannot be the terminal
+# run `axi status` just reported.
+test_cancelled_run_superseded_by_live_run_reports_the_live_run() {
+  reset_fakes
+  local d short out
+  d=$(new_case superseded-cancelled)
+  make_repo_on_branch "$d/wt" fm/feat-supersede
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/supersede.meta" "window=fm:fm-supersede" "worktree=$d/wt" "kind=ship"
+  # The repo-wide answer is the ABORTED run - same branch, same head as the crew
+  # worktree, so every identity check the helper has passes on the wrong run.
+  FM_FAKE_AXI_STATUS="$(run_cancelled_superseded fm/feat-supersede)"
+  # ...while the runs list shows the live successor as this branch's newest run,
+  # still at the submitted head because it has not pushed yet.
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-supersede ${short}  2026-08-29 07:45  https://github.com/o/r/pull/10
+  cancelled  fm/feat-supersede ${short}  2026-08-29 01:30  https://github.com/o/r/pull/10
+EOF
+)"
+  out=$(run_crew_state "$d" supersede)
+  assert_not_contains "$out" "state: failed" "an aborted run must not be reported over its live successor"
+  assert_contains "$out" "state: working" "the live run on this branch is the current state"
+  pass "cancelled run superseded by a live run reports the live run"
+}
+
+# Same shape, terminal side: a run that finished must not be reported as done
+# either when a newer run for the same branch is already validating again.
+test_passed_run_superseded_by_live_run_is_not_done() {
+  reset_fakes
+  local d short out
+  d=$(new_case superseded-passed)
+  make_repo_on_branch "$d/wt" fm/feat-supersede-p
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/supersede-p.meta" "window=fm:fm-supersede-p" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-supersede-p)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-supersede-p ${short}  2026-08-29 07:45
+  completed  fm/feat-supersede-p ${short}  2026-08-29 01:30  https://github.com/o/r/pull/1
+EOF
+)"
+  out=$(run_crew_state "$d" supersede-p)
+  assert_not_contains "$out" "state: done" "a finished run must not be reported over a newer live run"
+  assert_contains "$out" "state: working" "the newer live run is the current state"
+  pass "passed run superseded by a live run is not reported done"
+}
+
+# Criterion (c): when the live successor cannot be bound to this worktree's code
+# identity (branch name reused by a later task, rewritten tip), the helper knows
+# only that SOMETHING is running on this branch name. An honest `unknown` is
+# correct there; asserting the aborted run's `failed` is not.
+test_unbindable_live_successor_is_unknown_not_failed() {
+  reset_fakes
+  local d out
+  d=$(new_case superseded-unbindable)
+  make_repo_on_branch "$d/wt" fm/feat-supersede-u
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/supersede-u.meta" "window=fm:fm-supersede-u" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/supersede-u.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled_superseded fm/feat-supersede-u)"
+  # The live row's sha is neither this worktree's HEAD nor a descendant of it.
+  FM_FAKE_RUNS_LIST="$(cat <<'EOF'
+  running    fm/feat-supersede-u 9999999  2026-08-29 07:45
+  cancelled  fm/feat-supersede-u 1111111  2026-08-29 01:30
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" supersede-u
+  out=$(run_crew_state "$d" supersede-u)
+  assert_not_contains "$out" "state: failed" "an unbindable live successor must not be reported as failed"
+  assert_contains "$out" "state: unknown" "unbindable live successor reports an honest unknown"
+  pass "unbindable live successor reports unknown rather than failed"
+}
+
+# A successor that binds to this worktree but has not started stepping yet is
+# still proof the terminal verdict is stale. The runs list cannot say what a
+# `pending` run is doing, so `unknown` is the honest answer - never the aborted
+# run's `failed`.
+test_pending_live_successor_is_unknown_not_failed() {
+  reset_fakes
+  local d short out
+  d=$(new_case superseded-pending)
+  make_repo_on_branch "$d/wt" fm/feat-supersede-q
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/supersede-q.meta" "window=fm:fm-supersede-q" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/supersede-q.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled_superseded fm/feat-supersede-q)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  pending    fm/feat-supersede-q ${short}  2026-08-29 07:45
+  cancelled  fm/feat-supersede-q ${short}  2026-08-29 01:30
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" supersede-q
+  out=$(run_crew_state "$d" supersede-q)
+  assert_not_contains "$out" "state: failed" "a pending successor must not leave the aborted run reported as failed"
+  assert_contains "$out" "state: unknown" "a pending successor reports an honest unknown"
+  pass "pending live successor reports unknown rather than failed"
+}
+
+# The coarse path carries the same defect by a different route: it scans PAST a
+# newest active row whose sha does not bind (the live run rebased, or already
+# pushed a pipeline commit) and lets an OLDER terminal row whose sha still
+# equals the submitted head answer instead. A newer active run must always
+# outrank an older terminal one.
+test_coarse_older_terminal_row_does_not_outrank_newer_active_row() {
+  reset_fakes
+  local d short out
+  d=$(new_case superseded-coarse)
+  make_repo_on_branch "$d/wt" fm/feat-supersede-c
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/supersede-c.meta" "window=fm:fm-supersede-c" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/supersede-c.status"
+  # axi status answers for another crew's branch, so attribution goes coarse.
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-29 08:00
+  running    fm/feat-supersede-c 9999999  2026-08-29 07:45
+  cancelled  fm/feat-supersede-c ${short}  2026-08-29 01:30
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" supersede-c
+  out=$(run_crew_state "$d" supersede-c)
+  assert_not_contains "$out" "state: failed" "an older terminal row must not outrank a newer active row"
+  pass "coarse scan does not let an older terminal row outrank a newer active run"
+}
+
+# Guard the other direction: the supersession rule must not blanket-erase a
+# genuine terminal verdict. When this branch's NEWEST run is the terminal one,
+# `failed` remains the correct, actionable answer.
+test_terminal_run_with_no_newer_active_run_stays_failed() {
+  reset_fakes
+  local d short out
+  d=$(new_case terminal-not-superseded)
+  make_repo_on_branch "$d/wt" fm/feat-terminal-ns
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/terminal-ns.meta" "window=fm:fm-terminal-ns" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-terminal-ns)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed     fm/feat-terminal-ns ${short}  2026-08-29 07:45
+  completed  fm/feat-terminal-ns ${short}  2026-08-29 01:30
+EOF
+)"
+  out=$(run_crew_state "$d" terminal-ns)
+  assert_contains "$out" "state: failed" "a genuinely terminal newest run still reports failed"
+  assert_contains "$out" "source: run-step" "genuine terminal verdict stays run-step sourced"
+  pass "terminal run with no newer active run still reports failed"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -1461,5 +1661,11 @@ test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_local_advanced_past_run_head_invalidates
 test_missing_run_head_falls_back_to_current_state
+test_cancelled_run_superseded_by_live_run_reports_the_live_run
+test_passed_run_superseded_by_live_run_is_not_done
+test_unbindable_live_successor_is_unknown_not_failed
+test_pending_live_successor_is_unknown_not_failed
+test_coarse_older_terminal_row_does_not_outrank_newer_active_row
+test_terminal_run_with_no_newer_active_run_stays_failed
 
 echo "all fm-crew-state tests passed"
