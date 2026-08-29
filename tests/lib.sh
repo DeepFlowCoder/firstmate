@@ -375,10 +375,13 @@ assert_no_grep() {
 #
 # BSD grep (2.6.0-FreeBSD, the /usr/bin/grep macOS ships) aborts with
 # "grep: out of memory" once the PATTERN grows past roughly 5 KB - measured
-# 2026-08-29 on this fleet at exactly 5116 bytes fine, 5117 bytes fatal, and
-# identically for -F, -Fx and BRE -x. The limit is in the matcher, not the data:
-# a file may hold arbitrarily long lines as long as the pattern stays small, so
-# only assertions that quote a large expected line back at grep are affected.
+# 2026-08-29 on this fleet by bisecting each flag separately. The anchored forms
+# give up one byte earlier than the unanchored ones: -Fx and BRE -x take 5116
+# bytes fine and are fatal at 5117, while plain -F reaches 5117 fine and is fatal
+# at 5118. The call sites this helper replaces are the anchored -Fx ones. The
+# limit is in the matcher, not the data: a file may hold arbitrarily long lines
+# as long as the pattern stays small, so only assertions that quote a large
+# expected line back at grep are affected.
 #
 # The failure mode is why this is worth its own helper rather than a comment at
 # the call site. grep exits 2, which is neither "matched" nor "did not match",
