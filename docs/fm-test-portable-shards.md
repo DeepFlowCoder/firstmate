@@ -65,6 +65,7 @@ A 20-minute timeout does still exist elsewhere in `.github/workflows/ci.yml` —
 
 `bin/fm-test-run.sh` owns `n` and refuses any lane whose `of<n>` disagrees with it.
 `.github/workflows/ci.yml` derives the same `n` from `strategy.job-total` rather than a literal, so changing the shard count in either file without the other fails the lane loudly instead of leaving part of the required suite unrun.
+`tests/fm-test-run.test.sh` renders the lane names from the workflow's own matrix and `FM_SERIAL_LANE` expression and drives the real runner with them, so that disagreement surfaces locally instead of only in CI.
 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints were wholesale refreshed on 2026-08-29 from the four `fm-test-timing-portable-serial-*` artifacts of run 33236596384 on `DeepFlowCoder/firstmate`, where the lane ran 118 scripts in 2958555 ms of serial work.
@@ -73,7 +74,7 @@ Hints only affect balance: the coverage guard keeps the partition complete and d
 
 Stale hints still cost a red lane once the drift is large enough to cross the job cap.
 The previous table described a 1143762 ms lane while the real lane had grown to 2958555 ms, so four shards carried 903113 / 632913 / 879800 / 542729 ms and the worst shard held 903 s of work against a 900 s cap.
-`Behavior portable serial 1` therefore hit that cap mid-script and reported as cancelled.
+`Behavior portable serial 1` therefore reported as cancelled at that cap with all 28 of its scripts passing: the lane went red on the clock, not on a test.
 The shard count is derived from the refreshed measurement rather than chosen freely: eight shards put the balanced estimate near 370 s, and the measured worst shard of green 8-shard run [33246490613](https://github.com/DeepFlowCoder/firstmate/actions/runs/33246490613) ran 565 s, so the cap is a hang tripwire with real margin rather than the expected end of the lane.
 
 | Lane | Script count | Estimated duration |
@@ -88,7 +89,7 @@ The shard count is derived from the refreshed measurement rather than chosen fre
 | `portable-serial-8of8` | 18 | 369800 ms (~369.8 s) |
 | imbalance | | 123 ms |
 
-The single longest script, `tests/fm-pr-check-security.test.sh` at 252478 ms, is the floor for any shard count, and this branch adds cases to it, so that floor only grows.
+The single longest script, `tests/fm-pr-check-security.test.sh` at 252478 ms, is the floor for any shard count, and every security case added to it raises that floor.
 
 Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above.
 

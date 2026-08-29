@@ -63,6 +63,7 @@ DIRTY UNKNOWN BLOCKED BEHIND UNSTABLE HAS_HOOKS CLEAN
 ```
 
 `SUCCESS`, `SKIPPED`, and `NEUTRAL` are the classifier's only passing conclusions; every other value, including one GitHub adds later, refuses.
+The portable regression below pins that closure with both a conclusion and a status value the gate has never seen.
 `SKIPPED` is reachable in this repository through the job-level condition in `.github/workflows/no-mistakes-required.yml`, which skips for bot authors.
 
 ## The rendered reading matches live pull requests
@@ -219,7 +220,7 @@ The gate deliberately does not refuse on that, because a pull request legitimate
 bash tests/fm-pr-merge.test.sh
 ```
 
-The gate's own cases, out of the thirty the file runs:
+The gate's own cases, out of the thirty-one the file runs:
 
 ```
 ok - fm-pr-merge refuses a PR with a failed check and changes no state
@@ -228,6 +229,7 @@ ok - fm-pr-merge refuses a conflicting PR even when every check is green
 ok - fm-pr-merge refuses rather than merging blind when the forge cannot be read, and reports why
 ok - fm-pr-merge names a missing gh binary rather than reporting a generic unreadable forge
 ok - fm-pr-merge treats SKIPPED and NEUTRAL checks as not-failures
+ok - fm-pr-merge refuses a check value it has never seen instead of assuming green
 ok - fm-pr-merge merges a red PR under the explicit captain override
 ok - fm-pr-merge refuses a red PR on a yolo=on task: autonomy never opens the override
 ok - fm-pr-merge refuses a conflicting PR even under the captain override
@@ -244,7 +246,7 @@ ok - fm-pr-merge names a check containing a glob character instead of matching f
 ok - fm-pr-merge refuses a reading whose check name forged a second pull request record
 ```
 
-Eighteen of those twenty fail against the pre-gate script.
+Nineteen of those twenty-one fail against the pre-gate script.
 The two that do not, the `SKIPPED`/`NEUTRAL` case and the no-PR-CI case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
 
 Every case covering the empty check list, both compare-call failure modes, and the glob-bearing check name, together with the assertions that the unreadable-forge and unavailable-signal refusals carry `gh`'s own words, was run in isolation against the version of the gate that preceded it and failed there.

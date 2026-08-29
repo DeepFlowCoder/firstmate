@@ -23,6 +23,8 @@
 #   (l) a forge reading that cannot be obtained refuses instead of passing
 #  (l2) a missing gh binary refuses naming itself, not the generic sentence
 #   (m) SKIPPED and NEUTRAL are not failures and must not refuse
+#  (m2) a check status or conclusion outside the known enums refuses, so a
+#       value GitHub adds later cannot pass by default
 #   (n) --captain-override-red merges a red PR
 #   (o) yolo=on in the task meta does NOT open that override
 #   (p) the override does not apply to a conflicting PR
@@ -631,6 +633,38 @@ test_skipped_and_neutral_are_not_failures() {
   pass "fm-pr-merge treats SKIPPED and NEUTRAL checks as not-failures"
 }
 
+test_unknown_check_values_refuse() {
+  local case_dir
+  # The allow-list is SUCCESS, SKIPPED, NEUTRAL and nothing else, so a
+  # conclusion GitHub adds after this gate was written refuses rather than
+  # passing by default. Same for a status enum the gate has never seen: it is
+  # not evidence the check finished, so it cannot be read as finished-and-green.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'check COMPLETED SUCCESS Lint'
+    'check COMPLETED QUARANTINED Behavior tests (Herdr)'
+  )
+  case_dir=$(run_gate_case unknown-conclusion)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "unknown-conclusion: a conclusion outside the allow-list must refuse"
+  assert_grep 'Behavior tests (Herdr)' "$case_dir/stderr" \
+    "unknown-conclusion: refusal did not name the check it could not vouch for"
+  assert_no_side_effects "$case_dir" unknown-conclusion
+
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'check COMPLETED SUCCESS Lint'
+    'check DEFERRED SUCCESS Behavior portable serial 5'
+  )
+  case_dir=$(run_gate_case unknown-status)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "unknown-status: a status outside the known enums must refuse"
+  assert_no_side_effects "$case_dir" unknown-status
+  pass "fm-pr-merge refuses a check value it has never seen instead of assuming green"
+}
+
 test_captain_override_merges_red_pr() {
   local case_dir
   READING_LINES=(
@@ -970,6 +1004,7 @@ test_conflicting_pr_refuses
 test_unreadable_forge_refuses
 test_missing_gh_binary_names_itself
 test_skipped_and_neutral_are_not_failures
+test_unknown_check_values_refuse
 test_captain_override_merges_red_pr
 test_yolo_does_not_open_the_override
 test_override_does_not_apply_to_conflicts
