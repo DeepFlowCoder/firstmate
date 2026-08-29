@@ -174,22 +174,59 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
-# PATH with every directory that provides a real gh removed, so a case can
-# exercise the "gh is not installed" path on a machine that has one.
-path_without_gh() {
-  local dir out='' had_noglob=0
+# make_path_without_gh <case_dir>: build one directory holding a symlink to
+# every command currently on PATH except any named exactly gh, and echo it, so
+# a case can exercise the "gh is not installed" path on a machine that has one.
+#
+# Dropping whole PATH directories cannot work: on a usrmerge system gh ships in
+# /usr/bin alongside bash and the coreutils, and /bin is a symlink to the same
+# directory, so excluding the directory that holds gh also removes the shell the
+# script under test runs under. Mirroring entry by entry removes only gh.
+# First name wins, so the sandbox preserves PATH's own precedence order.
+make_path_without_gh() {
+  local case_dir=$1 sandbox dir entry name had_noglob=0
+  sandbox="$case_dir/nogh-path"
+  mkdir -p "$sandbox" || return 1
   case "$-" in
     *f*) had_noglob=1 ;;
   esac
   set -f
   local IFS=:
   for dir in $PATH; do
-    [ -n "$dir" ] || continue
-    [ ! -x "$dir/gh" ] || continue
-    out="${out:+$out:}$dir"
+    set +f
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+      for entry in "$dir"/*; do
+        [ -e "$entry" ] || continue
+        name=${entry##*/}
+        [ "$name" != gh ] || continue
+        [ -e "$sandbox/$name" ] || ln -s "$entry" "$sandbox/$name" 2>/dev/null || :
+      done
+    fi
+    set -f
   done
   [ "$had_noglob" -eq 1 ] || set +f
-  printf '%s' "$out"
+  printf '%s' "$sandbox"
+}
+
+# resolves_in <path> <command>: does <command> resolve under <path>? The lookup
+# is done by hand rather than through `command -v` under a reassigned PATH, so
+# nothing here can disturb the PATH the rest of the suite runs under.
+resolves_in() {
+  local search=$1 name=$2 dir had_noglob=0 found=1
+  case "$-" in
+    *f*) had_noglob=1 ;;
+  esac
+  set -f
+  local IFS=:
+  for dir in $search; do
+    [ -n "$dir" ] || continue
+    if [ -x "$dir/$name" ] && [ ! -d "$dir/$name" ]; then
+      found=0
+      break
+    fi
+  done
+  [ "$had_noglob" -eq 1 ] || set +f
+  return "$found"
 }
 
 # write_reading <case_dir> <line>...: stage the rendered forge reading this
@@ -541,13 +578,26 @@ test_missing_gh_binary_names_itself() {
   # can legitimately lack it. "install gh" is a different action from
   # re-authenticating or waiting out a rate limit, so a refusal that reads the
   # same as those two sends the reader to fix the wrong thing.
+  local sandbox
   case_dir=$(make_case missing-gh)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" abcabcabcabcabcabcabcabcabcabcabcabcabca
   rm -f "$case_dir/fakebin/gh"
   : > "$case_dir/gh-axi.log"
-  FM_TEST_PATH="$case_dir/fakebin:$(path_without_gh)"
+  sandbox=$(make_path_without_gh "$case_dir") \
+    || fail "missing-gh: could not build a PATH sandbox without gh"
+  FM_TEST_PATH="$case_dir/fakebin:$sandbox"
   export FM_TEST_PATH
+
+  # A sandbox that failed to drop gh would make this case pass on the ordinary
+  # reading, and one that dropped the shell would make it "refuse" with exec
+  # failure. Both must be reported as a broken sandbox, not as the refusal.
+  ! resolves_in "$FM_TEST_PATH" gh \
+    || fail "missing-gh: the PATH sandbox still resolves gh, so this case would prove nothing"
+  resolves_in "$FM_TEST_PATH" bash \
+    || fail "missing-gh: the PATH sandbox does not resolve bash, so the script could not run at all"
+  resolves_in "$FM_TEST_PATH" dirname \
+    || fail "missing-gh: the PATH sandbox does not resolve dirname, so the script could not run at all"
 
   set +e
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
@@ -559,6 +609,8 @@ test_missing_gh_binary_names_itself() {
   expect_code 1 "$rc" "missing-gh: fm-pr-merge should refuse when gh is not installed"
   assert_grep 'gh command is not installed' "$case_dir/stderr" \
     "missing-gh: refusal did not name the missing gh binary as the cause"
+  assert_grep 'install gh' "$case_dir/stderr" \
+    "missing-gh: refusal did not tell the reader the action that fixes it"
   assert_no_grep 'could not be read from GitHub' "$case_dir/stderr" \
     "missing-gh: refusal fell back to the generic unreadable-forge sentence"
   assert_no_side_effects "$case_dir" missing-gh

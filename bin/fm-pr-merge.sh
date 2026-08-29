@@ -238,7 +238,7 @@ if [ "$READING_OK" -eq 1 ]; then
   fm_pr_fitness_classify <<< "$READING"
 elif [ "$GH_AVAILABLE" -eq 0 ]; then
   FM_PR_FITNESS_VERDICT=unmeasurable
-  FM_PR_FITNESS_REASON="the gh command is not installed, and this gate reads checks and mergeability through it because gh-axi is a separate binary that exposes no field selector; install gh, because nothing was merged"
+  FM_PR_FITNESS_REASON="the gh command is not installed, so its checks and mergeability could not be read at all; nothing was merged; install gh, which this reading needs because gh-axi is a separate binary that exposes no field selector"
 else
   FM_PR_FITNESS_VERDICT=unmeasurable
   FM_PR_FITNESS_REASON="its checks and mergeability could not be read from GitHub; nothing was merged"
