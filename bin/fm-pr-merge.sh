@@ -1,13 +1,47 @@
 #!/usr/bin/env bash
-# Merge a task's PR after recording pr= and any available pr_head= through
-# bin/fm-pr-check.sh, so teardown can verify landed work after squash merges.
+# Merge a task's PR after checking that it is technically fit to merge, then
+# recording pr= and any available pr_head= through bin/fm-pr-check.sh, so
+# teardown can verify landed work after squash merges.
 # The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
 # owner/repository and PR number are passed to gh-axi as separate arguments.
+#
+# FITNESS GATE
+# AGENTS.md section 7 says never merge a red PR. This script enforces that
+# before any state changes, refusing a PR whose checks failed, whose checks
+# have not finished, that conflicts with its base, that is no longer open, or
+# whose fitness could not be read at all. A gate that cannot measure never
+# passes silently: an unreadable answer refuses.
+#
+# The reading comes from `gh pr view --json ... -q`, not from gh-axi. gh-axi is
+# this repo's GitHub tool and still performs the merge, but `gh-axi pr view`
+# exposes no field selector and `gh-axi pr checks` prints a human summary; that
+# summary is exactly what cannot distinguish a current green from one measured
+# against a base that has since moved. bin/fm-pr-check.sh already reads
+# headRefOid the same way, so this follows an idiom the repo established rather
+# than adding a dependency.
+#
+# Staleness (a green measured before the base branch moved on) is reported as a
+# loud warning rather than a refusal. Being behind a base is not a defect: a
+# non-conflicting branch still merges correctly, and in an active repository the
+# base moves constantly, so refusing on it would refuse nearly every PR and push
+# every merge through the override below - which would retire the gate entirely.
+# It is never silent, because silence is what let three conflicting PRs be
+# reported as green and mergeable.
+#
+# CAPTAIN OVERRIDE
+# --captain-override-red, passed before the optional -- separator, proceeds
+# despite a failing, unfinished, or unreadable verdict. It exists because the
+# captain may order one concrete merge anyway. It is a per-invocation flag with
+# no configuration or environment form, so it cannot be turned on by inertia,
+# and this script never reads the task's yolo posture: routine autonomy is not
+# authority to merge a red PR. A conflicting or closed PR is refused even with
+# the override, because that merge cannot succeed at all.
 #
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--captain-override-red]
+#          [-- <extra gh-axi pr merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +51,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-pr-fitness-lib.sh
+. "$SCRIPT_DIR/fm-pr-fitness-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -37,7 +73,32 @@ PR_OWNER=$FM_PR_OWNER
 PR_REPO=$FM_PR_REPO
 PR_NUMBER=$FM_PR_NUMBER
 shift 2
-[ "${1:-}" = "--" ] && shift
+
+# Firstmate's own flags sit between the URL and the -- separator. The override
+# is deliberately accepted only here: after --, every argument belongs to
+# gh-axi, so the flag cannot be smuggled in through the passthrough.
+OVERRIDE=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --captain-override-red) OVERRIDE=1; shift ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+reject_override_in_passthrough() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --captain-override-red)
+        echo "error: --captain-override-red is firstmate's own flag and must come before the -- separator" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+reject_override_in_passthrough "$@" || exit 1
 
 caller_has_merge_method() {
   local arg
@@ -68,6 +129,81 @@ META="$STATE/$ID.meta"
 if [ ! -f "$META" ] || [ -L "$META" ]; then
   echo "error: task metadata is unavailable" >&2
   exit 1
+fi
+
+# --- fitness gate --------------------------------------------------------
+# Runs before fm-pr-check.sh so a refusal changes no state at all, matching
+# every other refusal in this script. Arming the merge poll for a PR that is
+# not ready is bin/fm-pr-check.sh's own job and stays available separately.
+
+# One reading, rendered flat so it can be parsed without a JSON processor,
+# which bin/fm-pr-poll.sh documents this repo as not requiring. gh supplies its
+# own -q evaluator, so this adds no dependency beyond the gh already used here.
+FITNESS_QUERY='"pr \(.state) \(.mergeable) \(.mergeStateStatus)",
+"base \(.baseRefName) \(.headRefOid)",
+(.statusCheckRollup[]? |
+  if .__typename == "CheckRun" then
+    "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \(.name)"
+  else
+    "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \(.context)"
+  end)'
+
+READING=
+READING_OK=0
+if command -v gh >/dev/null 2>&1; then
+  if READING=$(gh pr view "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
+    --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup \
+    -q "$FITNESS_QUERY" 2>/dev/null); then
+    READING_OK=1
+  fi
+fi
+
+if [ "$READING_OK" -eq 1 ]; then
+  fm_pr_fitness_classify <<< "$READING"
+else
+  FM_PR_FITNESS_VERDICT=unmeasurable
+  FM_PR_FITNESS_REASON="its checks and mergeability could not be read from GitHub; nothing was merged"
+fi
+
+case "$FM_PR_FITNESS_VERDICT" in
+  ok) ;;
+  conflicted|not-open)
+    # Not overridable: GitHub refuses these merges itself, so proceeding could
+    # only produce a confusing failure rather than the merge the caller wants.
+    echo "error: refusing to merge PR #$PR_NUMBER ($PR_OWNER/$PR_REPO): $FM_PR_FITNESS_REASON" >&2
+    echo "error: --captain-override-red does not apply here; this merge cannot succeed as the branch stands" >&2
+    exit 1
+    ;;
+  *)
+    if [ "$OVERRIDE" -eq 1 ]; then
+      echo "warn: PR #$PR_NUMBER ($PR_OWNER/$PR_REPO) is not fit to merge: $FM_PR_FITNESS_REASON" >&2
+      echo "warn: merging anyway on --captain-override-red; this is the captain's explicit call, not a routine approval" >&2
+    else
+      echo "error: refusing to merge PR #$PR_NUMBER ($PR_OWNER/$PR_REPO): $FM_PR_FITNESS_REASON" >&2
+      echo "error: fix that, or re-run with --captain-override-red if the captain explicitly ordered this merge anyway" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+# Staleness warning: a green measured before the base branch moved on is the
+# shape that reads as ready and is not. Two independent signals feed it, so no
+# single one is load-bearing: GitHub's own BEHIND merge state, which only
+# appears when the repository requires up-to-date branches, and a direct commit
+# count from the compare endpoint, which does not depend on that setting.
+if [ "$READING_OK" -eq 1 ] && [ -n "$FM_PR_FITNESS_BASE" ] && [ -n "$FM_PR_FITNESS_HEAD" ]; then
+  BEHIND=
+  BEHIND=$(gh api "repos/$PR_OWNER/$PR_REPO/compare/$FM_PR_FITNESS_BASE...$FM_PR_FITNESS_HEAD" \
+    -q '.behind_by' 2>/dev/null) || BEHIND=
+  case "$BEHIND" in
+    ''|*[!0-9]*) BEHIND= ;;
+    0) BEHIND= ;;
+  esac
+  if [ -n "$BEHIND" ]; then
+    echo "warn: PR #$PR_NUMBER is $BEHIND commit(s) behind $FM_PR_FITNESS_BASE; its checks were measured against an older base and may not reflect merging into $FM_PR_FITNESS_BASE as it stands now" >&2
+  elif [ "$FM_PR_FITNESS_MERGE_STATE" = BEHIND ]; then
+    echo "warn: GitHub reports PR #$PR_NUMBER as behind $FM_PR_FITNESS_BASE; its checks were measured against an older base" >&2
+  fi
 fi
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
