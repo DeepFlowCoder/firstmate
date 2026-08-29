@@ -40,11 +40,30 @@
 # The opposite result was measured elsewhere: inside the no-mistakes gate
 # worktree this same suite failed 13 of 20 consecutive solo runs, every failure
 # on a drain-dependent assertion.
-# That gate-worktree environment was never reproduced, so the cause of those
-# specific runs is not established.
-# What is established is that bin/fm-wake-drain.sh used to discard a failed
-# status presentation and exit 0 with empty stdout, which every assertion here
-# reads as "no decision is open".
+# That split now has a measured mechanism, and it is this machine's interpreter
+# rather than this suite or fm-send's decision-key contract.
+# On this host `#!/usr/bin/env bash` resolves to Nix GNU bash 5.3.9, whose
+# forked children intermittently die of SIGSEGV: the crash reports are
+# EXC_BAD_ACCESS in _os_log_preferences_refresh inside CoreFoundation's
+# preferences lookup, the macOS fork-safety fault. A command substitution such
+# as `size=$(_fm_status_file_size "$f")` therefore prints the correct bytes and
+# still exits 139, which the guarded reads must treat as a failed read.
+# Measured on 2026-08-28 by instrumenting those reads in a throwaway copy of
+# bin/: rc=139 with the file's true 48-byte size, and rc=139 with its true
+# device:inode from the identity read. 5 of 60 and 8 of 80 drains against a
+# healthy disposable home holding one open decision hit it; this suite went red
+# 2 of 3 runs on this tree and 3 of 3 on base 75ccf7f, while under
+# /bin/bash 3.2.57 it is 3 of 3 green with 0 failed reads in 60 drains.
+# Two earlier records on this branch got the attribution wrong and are corrected
+# here rather than quietly dropped, since a wrong attribution is what a later
+# reader repeats: `wc` was blamed for printing a correct size while exiting
+# nonzero, and that observation was then dismissed as a misreading of
+# interleaved trace output. The symptom is real; the process dying is bash, not
+# wc or stat. This is one host's interpreter defect, tracked as its own work
+# item - not a property of bash in general, and not a firstmate contract.
+# What the drain contributes is that bin/fm-wake-drain.sh used to discard a
+# failed status presentation and exit 0 with empty stdout, which every assertion
+# here reads as "no decision is open".
 # The drain now refuses on that failure instead, and drain_out below keeps its
 # diagnostic on this suite's stderr, so a recurrence names its own cause rather
 # than surfacing as a missing decision.
