@@ -390,6 +390,15 @@ assert_no_grep() {
 # expected text is piped in rather than passed in argv, keeping it clear of the
 # separate ~1 MB single-argument E2BIG ceiling. A comparison that cannot be
 # completed is reported as exactly that, never as a quiet pass.
+#
+# Both sides are concatenated with "" to force string context, and that is
+# load-bearing rather than decoration. Anything awk reads from input is a
+# strnum, so two operands that both look numeric are compared NUMERICALLY:
+# measured on awk 20200816, a bare `$0 == want` accepts "1.0", "0x0", " 5 ",
+# "+5", "5.000" and "1e0" against a file holding only 1, 0 and 5 - six lines
+# grep -Fx correctly rejects. A helper built to refuse a comparison it cannot
+# complete must never accept a line it was never given, so the byte-exact
+# comparison this promises only holds with the forcing left in place.
 assert_line() {
   local file=$1 expected=$2 msg=$3 rc=0
   case $expected in
@@ -397,8 +406,8 @@ assert_line() {
   esac
   [ -r "$file" ] || fail "$msg (unreadable file: $file)"
   printf '%s\n' "$expected" | awk '
-    NR == FNR { want = $0; next }
-    $0 == want { found = 1 }
+    NR == FNR { want = $0 ""; next }
+    ($0 "") == want { found = 1 }
     END { exit(found ? 0 : 1) }
   ' - "$file" || rc=$?
   case $rc in

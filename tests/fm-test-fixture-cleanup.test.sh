@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Behavior tests for tests/lib.sh's shared fixture-tempdir helper
-# (fm_test_tmproot / fm_test_cleanup / fm_test_reap_orphans) and for the
+# Behavior tests for tests/lib.sh's own shared helpers: the fixture-tempdir
+# helper (fm_test_tmproot / fm_test_cleanup / fm_test_reap_orphans), the
 # verdict-preserving EXIT trap a test file with its own teardown installs
-# through fm_test_exit_trap.
+# through fm_test_exit_trap, and the whole-line matcher assert_line.
 #
 # The near-universal call pattern across this suite is
 # `TMP_ROOT=$(fm_test_tmproot prefix)`, which forks a subshell to capture the
@@ -360,6 +360,126 @@ CHILD
   pass "fm_test_exit_trap keeps teardown order and status on a terminating signal"
 }
 
+# --- assert_line ------------------------------------------------------------
+#
+# assert_line is the whole-line matcher that replaced `grep -Fx` on assertions
+# whose expected text is larger than BSD grep will compile as a pattern. It only
+# earns that job by being at least as strict as the grep it replaced: a helper
+# that accepts a line it was never given is the same silent pass it exists to
+# remove. These cases drive the real helper in a child bash - it reports through
+# fail(), which exits - and assert on the child's observable exit status.
+#
+# Each child gets a TMPDIR inside the harness root for the same reason the
+# teardown children above do: sourcing tests/lib.sh mktemps a cleanup registry
+# there, and a child that exits through fail() should not leave one behind in
+# the real TMPDIR.
+run_assert_line() {  # <harness> <file> <expected-file> -> rc, sets ASSERT_LINE_OUT
+  local rc=0 child_tmp="$1/tmp"
+  mkdir -p "$child_tmp" || return 1
+  ASSERT_LINE_OUT=$(TMPDIR="$child_tmp" FM_CHILD_LIB="$LIB" \
+    FM_CHILD_FILE="$2" FM_CHILD_EXPECTED="$3" bash -c '
+    set -u
+    . "$FM_CHILD_LIB"
+    expected=$(cat "$FM_CHILD_EXPECTED")
+    assert_line "$FM_CHILD_FILE" "$expected" "probe assertion"
+    printf "ASSERT_LINE_MATCHED\n"
+  ' 2>&1) || rc=$?
+  return "$rc"
+}
+
+# Everything awk reads from input is a strnum, so two operands that both look
+# numeric get compared as numbers unless the comparison is forced into string
+# context. Each value below is a distinct way of spelling a number that grep -Fx
+# rejects against the file, so any of them passing means the matcher went
+# numeric and the helper is looser than the grep it replaced.
+test_assert_line_compares_bytes_not_numbers() {
+  local harness file want rc spelling
+  harness=$(fm_test_tmproot fm-test-assert-line-strnum)
+  file="$harness/haystack"
+  want="$harness/want"
+  printf '1\n0\n5\n' > "$file"
+
+  for spelling in '1.0' '0x0' ' 5 ' '+5' '5.000' '1e0'; do
+    printf '%s\n' "$spelling" > "$want"
+    rc=0
+    run_assert_line "$harness" "$file" "$want" || rc=$?
+    [ "$rc" -ne 0 ] || fail "assert_line accepted '$spelling' against a file holding only 1, 0 and 5 - grep -Fx rejects it, so the comparison went numeric"
+    assert_not_contains "$ASSERT_LINE_OUT" "ASSERT_LINE_MATCHED" \
+      "assert_line reported a match for '$spelling'"
+  done
+  pass "assert_line compares bytes, not numbers, so numeric look-alikes are rejected"
+}
+
+test_assert_line_matches_whole_lines_only() {
+  local harness file want rc
+  harness=$(fm_test_tmproot fm-test-assert-line-whole)
+  file="$harness/haystack"
+  want="$harness/want"
+  printf 'wake annotation: alpha\nwake annotation: beta\n' > "$file"
+
+  printf '%s\n' 'wake annotation: beta' > "$want"
+  rc=0
+  run_assert_line "$harness" "$file" "$want" || rc=$?
+  [ "$rc" -eq 0 ] || fail "assert_line rejected an exact whole-line match: $ASSERT_LINE_OUT"
+  assert_contains "$ASSERT_LINE_OUT" "ASSERT_LINE_MATCHED" \
+    "assert_line did not report the exact whole-line match"
+
+  printf '%s\n' 'annotation: beta' > "$want"
+  rc=0
+  run_assert_line "$harness" "$file" "$want" || rc=$?
+  [ "$rc" -ne 0 ] || fail "assert_line accepted a substring of a line, so it is looser than the grep -Fx it replaced"
+  pass "assert_line accepts an exact whole line and rejects a substring of one"
+}
+
+# The size that made grep abort, decided in both directions so a green verdict
+# here cannot come from a length check or from matching nothing at all.
+test_assert_line_decides_a_line_past_greps_pattern_limit() {
+  local harness file want rc
+  harness=$(fm_test_tmproot fm-test-assert-line-huge)
+  file="$harness/haystack"
+  want="$harness/want"
+  awk 'BEGIN { printf "done: "; for (i = 0; i < 200000; i++) printf "x"; printf "\n" }' > "$file"
+  printf 'done: short\n' >> "$file"
+
+  head -n 1 "$file" > "$want"
+  rc=0
+  run_assert_line "$harness" "$file" "$want" || rc=$?
+  [ "$rc" -eq 0 ] || fail "assert_line failed to match a 200 KB line it was handed verbatim: $ASSERT_LINE_OUT"
+  assert_contains "$ASSERT_LINE_OUT" "ASSERT_LINE_MATCHED" \
+    "assert_line did not report the 200 KB whole-line match"
+
+  awk 'BEGIN { printf "done: "; for (i = 0; i < 199999; i++) printf "x"; printf "y\n" }' > "$want"
+  rc=0
+  run_assert_line "$harness" "$file" "$want" || rc=$?
+  [ "$rc" -ne 0 ] || fail "assert_line accepted a 200 KB expected line that differs from every line of the file"
+  pass "assert_line decides a 200 KB line correctly in both directions"
+}
+
+# The point of the helper over `! grep` is that a comparison it cannot complete
+# is refused out loud rather than counted as a pass.
+test_assert_line_refuses_what_it_cannot_compare() {
+  local harness file want rc
+  harness=$(fm_test_tmproot fm-test-assert-line-refusals)
+  file="$harness/haystack"
+  want="$harness/want"
+  printf 'alpha\nbeta\n' > "$file"
+
+  printf 'alpha\nbeta\n' > "$want"
+  rc=0
+  run_assert_line "$harness" "$file" "$want" || rc=$?
+  [ "$rc" -ne 0 ] || fail "assert_line accepted a multi-line expected value instead of refusing it"
+  assert_contains "$ASSERT_LINE_OUT" "one line" \
+    "the multi-line refusal did not name what was wrong"
+
+  printf 'alpha\n' > "$want"
+  rc=0
+  run_assert_line "$harness" "$harness/absent" "$want" || rc=$?
+  [ "$rc" -ne 0 ] || fail "assert_line passed against a file it could not read"
+  assert_contains "$ASSERT_LINE_OUT" "unreadable file" \
+    "the unreadable-file refusal did not name what was wrong"
+  pass "assert_line refuses loudly when it cannot complete the comparison"
+}
+
 test_fixture_root_gone_after_normal_exit
 test_fixture_root_gone_after_sigterm
 test_cleanup_registry_resists_precreation
@@ -370,3 +490,7 @@ test_exit_trap_keeps_a_real_failure_nonzero
 test_hand_rolled_trap_shows_the_inversion_the_helper_removes
 test_exit_trap_rejects_an_uncallable_cleanup_name
 test_exit_trap_runs_extra_cleanup_before_library_teardown_on_a_signal
+test_assert_line_compares_bytes_not_numbers
+test_assert_line_matches_whole_lines_only
+test_assert_line_decides_a_line_past_greps_pattern_limit
+test_assert_line_refuses_what_it_cannot_compare
