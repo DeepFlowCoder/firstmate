@@ -369,6 +369,57 @@ assert_no_grep() {
   ! grep -F -- "$1" "$2" >/dev/null || fail "$3"
 }
 
+# assert_line <file> <expected-line> <msg>: some line of <file> must equal
+# <expected-line> byte for byte. This is what `grep -Fx` means; it deliberately
+# does not use grep.
+#
+# BSD grep (2.6.0-FreeBSD, the /usr/bin/grep macOS ships) aborts with
+# "grep: out of memory" once the PATTERN grows past roughly 5 KB - measured
+# 2026-08-29 on this fleet by bisecting each flag separately. The anchored forms
+# give up one byte earlier than the unanchored ones: -Fx and BRE -x take 5116
+# bytes fine and are fatal at 5117, while plain -F reaches 5117 fine and is fatal
+# at 5118. The call sites this helper replaces are the anchored -Fx ones. The
+# limit is in the matcher, not the data: a file may hold arbitrarily long lines
+# as long as the pattern stays small, so only assertions that quote a large
+# expected line back at grep are affected.
+#
+# The failure mode is why this is worth its own helper rather than a comment at
+# the call site. grep exits 2, which is neither "matched" nor "did not match",
+# so `grep -Fx ... || fail` blames the code under test for output that was in
+# fact perfect, and `! grep -Fx ...` passes vacuously - a suite proving that an
+# oversized line survives end to end cannot use grep to check it either way.
+#
+# So the comparison runs in awk, which has no pattern to compile, and the
+# expected text is piped in rather than passed in argv, keeping it clear of the
+# separate ~1 MB single-argument E2BIG ceiling. A comparison that cannot be
+# completed is reported as exactly that, never as a quiet pass.
+#
+# Both sides are concatenated with "" to force string context, and that is
+# load-bearing rather than decoration. Anything awk reads from input is a
+# strnum, so two operands that both look numeric are compared NUMERICALLY:
+# measured on awk 20200816, a bare `$0 == want` accepts "1.0", "0x0", " 5 ",
+# "+5", "5.000" and "1e0" against a file holding only 1, 0 and 5 - six lines
+# grep -Fx correctly rejects. A helper built to refuse a comparison it cannot
+# complete must never accept a line it was never given, so the byte-exact
+# comparison this promises only holds with the forcing left in place.
+assert_line() {
+  local file=$1 expected=$2 msg=$3 rc=0
+  case $expected in
+    *$'\n'*) fail "$msg (assert_line takes one line, not many)" ;;
+  esac
+  [ -r "$file" ] || fail "$msg (unreadable file: $file)"
+  printf '%s\n' "$expected" | awk '
+    NR == FNR { want = $0 ""; next }
+    ($0 "") == want { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' - "$file" || rc=$?
+  case $rc in
+    0) return 0 ;;
+    1) fail "$msg (no line of $file equals the expected ${#expected}-byte text)" ;;
+    *) fail "$msg (assert_line could not complete the comparison: awk exit $rc)" ;;
+  esac
+}
+
 # assert_absent <path> <msg>: path must not exist.
 assert_absent() {
   [ ! -e "$1" ] || fail "$2"
