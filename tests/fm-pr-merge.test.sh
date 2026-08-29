@@ -29,11 +29,17 @@
 #   (r) the override cannot be smuggled in through the gh-axi passthrough
 #   (s) a check name cannot forge a second pull request record into the reading
 #   (t) a repository with no PR CI at all still merges
-#   (u) an empty check list refuses while the repository has workflows: a check
-#       that has not registered yet must not be read as a repository with no CI
-#   (v) an empty check list refuses when the no-CI signal cannot be obtained
-#   (w) a compare call that fails warns rather than dropping the stale signal
-#   (x) a glob character in a check name is not expanded against the cwd
+#   (u) an empty check list refuses while the base branch head demonstrably
+#       carries checks: a check that has not registered yet must not be read as
+#       a repository with no CI
+#   (v) an empty check list refuses when the no-CI signal cannot be obtained,
+#       and the refusal carries gh's own account of why
+#   (w) a repository whose workflows can never raise a PR check still merges:
+#       the signal counts checks produced, not workflows configured
+#   (x) a compare call that fails warns rather than dropping the stale signal
+#   (y) a compare call that answers something unreadable says so, rather than
+#       claiming the call failed
+#   (z) a glob character in a check name is not expanded against the cwd
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -77,17 +83,21 @@ make_case() {
 # unreachable forge), FM_TEST_GH_VIEW_STDERR (what the failing read writes to
 # stderr), FM_TEST_BEHIND (behind_by for the compare call),
 # FM_TEST_COMPARE_FAIL (non-empty fails the compare call),
-# FM_TEST_WORKFLOW_COUNT (Actions workflows the repository has),
-# FM_TEST_WORKFLOWS_FAIL (non-empty fails that workflow count query).
+# FM_TEST_BASE_CHECK_RUNS (check runs GitHub produced on the base branch head),
+# FM_TEST_BASE_CHECKS_FAIL (non-empty fails that base-head check-run query),
+# FM_TEST_BASE_CHECKS_STDERR (what that failing query writes to stderr).
 gh_mock_body() {
   local head=$1
   cat <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = api ]; then
   case " \$* " in
-    *actions/workflows*)
-      [ -z "\${FM_TEST_WORKFLOWS_FAIL:-}" ] || exit 1
-      printf '%s\n' "\${FM_TEST_WORKFLOW_COUNT:-0}" ; exit 0 ;;
+    *check-runs*)
+      if [ -n "\${FM_TEST_BASE_CHECKS_FAIL:-}" ]; then
+        [ -z "\${FM_TEST_BASE_CHECKS_STDERR:-}" ] || printf '%s\n' "\${FM_TEST_BASE_CHECKS_STDERR}" >&2
+        exit 1
+      fi
+      printf '%s\n' "\${FM_TEST_BASE_CHECK_RUNS:-0}" ; exit 0 ;;
     *compare*)
       [ -z "\${FM_TEST_COMPARE_FAIL:-}" ] || exit 1
       printf '%s\n' "\${FM_TEST_BEHIND:-0}" ; exit 0 ;;
@@ -165,8 +175,9 @@ run_pr_merge() {
   FM_TEST_GH_VIEW_STDERR="${FM_TEST_GH_VIEW_STDERR:-}" \
   FM_TEST_BEHIND="${FM_TEST_BEHIND:-0}" \
   FM_TEST_COMPARE_FAIL="${FM_TEST_COMPARE_FAIL:-}" \
-  FM_TEST_WORKFLOW_COUNT="${FM_TEST_WORKFLOW_COUNT:-0}" \
-  FM_TEST_WORKFLOWS_FAIL="${FM_TEST_WORKFLOWS_FAIL:-}" \
+  FM_TEST_BASE_CHECK_RUNS="${FM_TEST_BASE_CHECK_RUNS:-0}" \
+  FM_TEST_BASE_CHECKS_FAIL="${FM_TEST_BASE_CHECKS_FAIL:-}" \
+  FM_TEST_BASE_CHECKS_STDERR="${FM_TEST_BASE_CHECKS_STDERR:-}" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
   rc=$?
@@ -609,45 +620,67 @@ test_override_cannot_be_smuggled_through_passthrough() {
 test_repo_without_ci_still_merges() {
   local case_dir
   # This suite exists partly for repos with no PR CI (see the header). An empty
-  # check list plus a measured zero workflows is the one shape that reads as
-  # "there is nothing red to be caught on here", so the gate must not turn
-  # "no CI" into "never mergeable".
+  # check list plus a base branch head that carries no checks either is the one
+  # shape that reads as "there is nothing red to be caught on here", so the gate
+  # must not turn "no CI" into "never mergeable".
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
   )
-  FM_TEST_WORKFLOW_COUNT=0
-  export FM_TEST_WORKFLOW_COUNT
+  FM_TEST_BASE_CHECK_RUNS=0
+  export FM_TEST_BASE_CHECK_RUNS
   case_dir=$(run_gate_case no-ci)
-  unset FM_TEST_WORKFLOW_COUNT
+  unset FM_TEST_BASE_CHECK_RUNS
   expect_code 0 "$(cat "$case_dir/rc")" "no-ci: a PR with no checks must still merge"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "no-ci: the merge did not proceed on a repo with no PR CI"
   pass "fm-pr-merge still merges a green PR on a repository with no PR CI"
 }
 
-test_unregistered_checks_refuse() {
+test_dispatch_only_workflows_still_merge() {
   local case_dir
-  # The race window the empty rollup hides: between opening a pull request and
-  # GitHub registering a check run against its head commit, the reading is
-  # indistinguishable from a repository that has no CI at all. The workflow
-  # count is the second, positive signal that tells them apart.
+  # A repository whose only workflows are workflow_dispatch, schedule, or
+  # release has workflow entries that can never raise a PR check, so its base
+  # branch head carries no check runs. Counting workflows instead of checks
+  # produced would refuse every merge there forever and push routine merges
+  # through the captain override.
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
   )
-  FM_TEST_WORKFLOW_COUNT=5
-  export FM_TEST_WORKFLOW_COUNT
+  FM_TEST_BASE_CHECK_RUNS=0
+  export FM_TEST_BASE_CHECK_RUNS
+  case_dir=$(run_gate_case dispatch-only)
+  unset FM_TEST_BASE_CHECK_RUNS
+  expect_code 0 "$(cat "$case_dir/rc")" \
+    "dispatch-only: a repo whose workflows cannot raise a PR check must still merge"
+  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "dispatch-only: the merge did not proceed"
+  pass "fm-pr-merge merges where workflows exist but produce no checks: the signal counts checks, not workflows"
+}
+
+test_unregistered_checks_refuse() {
+  local case_dir
+  # The race window the empty rollup hides: between opening a pull request and
+  # GitHub registering a check run against its head commit, the reading is
+  # indistinguishable from a repository that has no CI at all. The settled base
+  # branch head is the second, positive signal that tells them apart.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+  )
+  FM_TEST_BASE_CHECK_RUNS=12
+  export FM_TEST_BASE_CHECK_RUNS
   case_dir=$(run_gate_case checks-not-registered)
-  unset FM_TEST_WORKFLOW_COUNT
+  unset FM_TEST_BASE_CHECK_RUNS
   expect_code 1 "$(cat "$case_dir/rc")" \
     "checks-not-registered: an empty check list on a repo that has CI must refuse"
   assert_grep 'has not registered yet' "$case_dir/stderr" \
     "checks-not-registered: refusal did not say a check may simply not have registered yet"
-  assert_grep '5 workflow(s) configured' "$case_dir/stderr" \
-    "checks-not-registered: refusal did not name how many workflows the repository has"
+  assert_grep '12 on the head of main' "$case_dir/stderr" \
+    "checks-not-registered: refusal did not name the checks the base branch head demonstrably carries"
   assert_no_side_effects "$case_dir" checks-not-registered
-  pass "fm-pr-merge refuses an empty check list on a repository that has CI workflows"
+  pass "fm-pr-merge refuses an empty check list where the base branch head demonstrably carries checks"
 }
 
 test_missing_ci_signal_refuses() {
@@ -656,16 +689,21 @@ test_missing_ci_signal_refuses() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
   )
-  FM_TEST_WORKFLOWS_FAIL=1
-  export FM_TEST_WORKFLOWS_FAIL
+  FM_TEST_BASE_CHECKS_FAIL=1
+  # A missing actions scope, a disabled feature, and a rate limit call for three
+  # different actions, so gh's own words have to survive into the refusal.
+  FM_TEST_BASE_CHECKS_STDERR='HTTP 403: Resource not accessible by integration (https://api.github.com/repos/example/repo/commits/main/check-runs)'
+  export FM_TEST_BASE_CHECKS_FAIL FM_TEST_BASE_CHECKS_STDERR
   case_dir=$(run_gate_case no-ci-signal)
-  unset FM_TEST_WORKFLOWS_FAIL
+  unset FM_TEST_BASE_CHECKS_FAIL FM_TEST_BASE_CHECKS_STDERR
   expect_code 1 "$(cat "$case_dir/rc")" \
     "no-ci-signal: an empty check list must refuse when the no-CI signal cannot be obtained"
   assert_grep 'could not establish whether example/repo has PR CI' "$case_dir/stderr" \
     "no-ci-signal: refusal did not say the no-CI signal could not be established"
+  assert_grep 'HTTP 403: Resource not accessible by integration' "$case_dir/stderr" \
+    "no-ci-signal: refusal discarded gh's own account of why the signal query failed"
   assert_no_side_effects "$case_dir" no-ci-signal
-  pass "fm-pr-merge refuses an empty check list when it cannot establish whether the repo has PR CI"
+  pass "fm-pr-merge refuses an empty check list when it cannot establish whether the repo has PR CI, and reports why"
 }
 
 test_compare_failure_warns_instead_of_going_silent() {
@@ -685,9 +723,35 @@ test_compare_failure_warns_instead_of_going_silent() {
   expect_code 0 "$(cat "$case_dir/rc")" "compare-fails: a green PR should still merge"
   assert_grep 'could not measure how far behind' "$case_dir/stderr" \
     "compare-fails: a failed compare call left the staleness signal silent"
+  assert_grep 'the compare call to GitHub failed' "$case_dir/stderr" \
+    "compare-fails: the warning did not name the failed call as the cause"
   grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "compare-fails: the merge did not proceed"
   pass "fm-pr-merge warns that staleness could not be measured when the compare call fails"
+}
+
+test_unreadable_behind_by_is_not_reported_as_a_failed_call() {
+  local case_dir
+  # The compare endpoint answering 200 with no behind_by field renders as the
+  # literal null. Staleness is equally unknown, but the reader has a different
+  # thing to go and look at than a call that never completed.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'check COMPLETED SUCCESS Lint'
+  )
+  FM_TEST_BEHIND=null
+  export FM_TEST_BEHIND
+  case_dir=$(run_gate_case compare-unreadable)
+  unset FM_TEST_BEHIND
+  expect_code 0 "$(cat "$case_dir/rc")" "compare-unreadable: a green PR should still merge"
+  assert_grep 'returned no usable behind_by' "$case_dir/stderr" \
+    "compare-unreadable: the warning did not name the unusable value as the cause"
+  assert_no_grep 'the compare call to GitHub failed' "$case_dir/stderr" \
+    "compare-unreadable: the warning blamed a failed call that in fact succeeded"
+  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "compare-unreadable: the merge did not proceed"
+  pass "fm-pr-merge distinguishes an unreadable behind_by from a compare call that failed"
 }
 
 test_glob_in_check_name_is_not_expanded() {
@@ -766,8 +830,10 @@ test_override_does_not_apply_to_conflicts
 test_stale_green_warns_but_merges
 test_override_cannot_be_smuggled_through_passthrough
 test_repo_without_ci_still_merges
+test_dispatch_only_workflows_still_merge
 test_unregistered_checks_refuse
 test_missing_ci_signal_refuses
 test_compare_failure_warns_instead_of_going_silent
+test_unreadable_behind_by_is_not_reported_as_a_failed_call
 test_glob_in_check_name_is_not_expanded
 test_check_name_cannot_forge_the_verdict

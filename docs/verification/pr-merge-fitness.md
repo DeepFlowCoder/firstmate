@@ -121,23 +121,29 @@ The incident this gate answers had `behind_by=24` on three pull requests reporte
 ## An empty check list is told apart from a repository with no CI
 
 A pull request that reports no checks renders zero `check` lines whether the repository has no PR CI or GitHub has simply not registered a check run against this head commit yet.
-The gate resolves that with a second, positive signal about the repository rather than about the reading:
+The gate resolves that with a second, positive signal: how many check runs GitHub actually produced on the settled head of the base branch.
 
 ```sh
-gh api repos/kunchenguid/firstmate/actions/workflows -q .total_count
-gh api repos/DeepFlowCoder/dotfiles/actions/workflows -q .total_count
+gh api repos/kunchenguid/firstmate/commits/main/check-runs -q .total_count
+gh api repos/DeepFlowCoder/dotfiles/commits/main/check-runs -q .total_count
 ```
 
 ```
-5
+12
 0
 ```
 
-`kunchenguid/firstmate` has CI; `DeepFlowCoder/dotfiles` is a registered project with no `.github/workflows` directory at all.
+`kunchenguid/firstmate` demonstrably produces checks; `DeepFlowCoder/dotfiles` is a registered project with no `.github/workflows` directory at all.
 Zero merges on an empty check list; anything else refuses, and so does a count that cannot be obtained.
+The base branch head is the right commit to ask because it is settled: it has already had all the time it will ever get to accumulate the checks it gets, so a zero there is evidence rather than silence, unlike the freshly pushed PR head whose emptiness is exactly what is ambiguous.
 
-Two other candidates were measured and rejected.
-The first, the check-suite count for the head commit, returns a non-zero count on the repository that has no CI:
+Trigger accuracy was measured rather than assumed.
+`.github/workflows/windows-herdr-spike.yml` is `on: workflow_dispatch` only and contributed none of those 12 runs, so a repository whose workflows are all dispatch, schedule, or release reads `0` and keeps merging.
+The reading is behavioural rather than configurational, which also means third-party check apps that are no Actions workflow at all (Greptile, Copilot) are counted.
+
+Three other candidates were measured and rejected.
+
+The check-suite count for the head commit returns a non-zero count on the repository that has no CI:
 
 ```sh
 gh api repos/DeepFlowCoder/dotfiles/commits/<sha>/check-suites \
@@ -148,12 +154,43 @@ gh api repos/DeepFlowCoder/dotfiles/commits/<sha>/check-suites \
 total_count=1 app=cursor status=queued runs=0
 ```
 
-So "zero suites means no CI" never holds on that repository and it would refuse forever.
-The second candidate, "any queued suite means checks are coming", fails on the same evidence: that `cursor` suite is permanently queued, so it would produce the same permanent false refusal.
+So "zero suites means no CI" never holds on that repository and it would refuse forever, and the related rule "any queued suite means checks are coming" fails on the same evidence, because that `cursor` suite is permanently queued.
 
-This signal counts Actions workflows only.
-A repository with zero workflows whose only PR CI is a third-party check app that never touches the base branch would still report `0` and be merged on an empty check list, so the gate narrows this race window rather than closing it.
-`bin/fm-pr-merge.sh`'s header records that limit alongside the rule.
+The Actions workflow count measures "has any workflow entry", not "has PR CI":
+
+```sh
+gh api repos/kunchenguid/firstmate/actions/workflows \
+  -q '.total_count, (.workflows[] | "\(.state) \(.path)")'
+```
+
+```
+5
+active .github/workflows/ci.yml
+active .github/workflows/merge-check.yml
+active .github/workflows/no-mistakes-required.yml
+active .github/workflows/windows-herdr-spike.yml
+active dynamic/agents/copilot-pull-request-reviewer
+```
+
+Two of those five cannot raise a PR check at all: the `windows-herdr-spike` workflow is `workflow_dispatch` only, and the `copilot-pull-request-reviewer` entry is a dynamic pseudo-workflow rather than a file.
+A repository whose only workflows are of that kind would report a non-zero count against an empty check list and be refused forever, which is the same permanent-false-refusal mode the check-suite count was rejected for.
+
+Branch protection's required status checks cannot distinguish the two repositories, because it is absent on both:
+
+```sh
+gh api repos/kunchenguid/firstmate/branches/main/protection/required_status_checks
+gh api repos/DeepFlowCoder/dotfiles/branches/main/protection/required_status_checks
+```
+
+```
+HTTP 404: Not Found
+HTTP 404: Branch not protected
+```
+
+Two windows stay open, and `bin/fm-pr-merge.sh`'s header records both as known limits rather than implying full coverage.
+The first is partial registration: the empty-list rule only fires on a reading carrying exactly zero checks, so a reading taken while some checks have registered and passed and others have not registered yet still reads as `ok` and merges.
+The gate deliberately does not refuse on that, because a pull request legitimately runs fewer checks than its base head under path filters and conditional jobs, so comparing the two counts would refuse honest pull requests.
+The second is a repository whose base branch never receives checks because its CI runs only on `pull_request`, which reads `0` on the base head.
 
 ## Portable regression
 
@@ -161,7 +198,7 @@ A repository with zero workflows whose only PR CI is a third-party check app tha
 bash tests/fm-pr-merge.test.sh
 ```
 
-The gate's own cases, out of the twenty-six the file runs:
+The gate's own cases, out of the twenty-eight the file runs:
 
 ```
 ok - fm-pr-merge refuses a PR with a failed check and changes no state
@@ -175,14 +212,16 @@ ok - fm-pr-merge refuses a conflicting PR even under the captain override
 ok - fm-pr-merge warns loudly about a green measured against a moved base, and still merges
 ok - fm-pr-merge refuses the override flag passed through to gh-axi
 ok - fm-pr-merge still merges a green PR on a repository with no PR CI
-ok - fm-pr-merge refuses an empty check list on a repository that has CI workflows
-ok - fm-pr-merge refuses an empty check list when it cannot establish whether the repo has PR CI
+ok - fm-pr-merge merges where workflows exist but produce no checks: the signal counts checks, not workflows
+ok - fm-pr-merge refuses an empty check list where the base branch head demonstrably carries checks
+ok - fm-pr-merge refuses an empty check list when it cannot establish whether the repo has PR CI, and reports why
 ok - fm-pr-merge warns that staleness could not be measured when the compare call fails
+ok - fm-pr-merge distinguishes an unreadable behind_by from a compare call that failed
 ok - fm-pr-merge names a check containing a glob character instead of matching files
 ok - fm-pr-merge refuses a reading whose check name forged a second pull request record
 ```
 
-Fourteen of those sixteen fail against the pre-gate script.
-The two that do not, the `SKIPPED`/`NEUTRAL` case and the no-PR-CI case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
+Fifteen of those eighteen fail against the pre-gate script.
+The three that do not, the `SKIPPED`/`NEUTRAL` case, the no-PR-CI case, and the workflows-that-produce-no-checks case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
 
-The four cases covering the empty check list, the failed compare call, and the glob-bearing check name, together with the added assertion that the unreadable-forge refusal carries `gh`'s own words, were each run in isolation against the gate's first version and failed there before those fixes landed.
+The cases covering the empty check list, the two compare-call failure modes, and the glob-bearing check name, together with the assertions that the unreadable-forge and unavailable-signal refusals carry `gh`'s own words, were each run in isolation against the version of the gate that preceded them and failed there.
