@@ -829,7 +829,7 @@ absorb_class_for_stale() {  # <window> <task>
 # recovered only for a confidently dead ordinary crew, or for a secondmate, whose
 # endpoint liveness this function deliberately never reads.
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive kind
+  local win=$1 task=$2 key last recheck_file class agent_alive kind held=0
   key=$(window_key "$win")
   last=$(last_status_line "$STATE/$task.status")
   recheck_file="$STATE/.paused-rechecked-$key"
@@ -842,8 +842,22 @@ pause_state_class() {  # <window> <task>
   # so a mate's stale poll costs one metadata scan rather than one per gate, and the
   # far more common no-declaration path above still costs none.
   kind=$(window_kind "$win")
+  # A VERIFIED captain-held transfer needs no liveness corroboration, and is the one
+  # declared wait that does not. bin/fm-captain-hold.sh writes that verb only after
+  # the matching backlog hold exists, so the decision is already tracked off the pane
+  # and no agent verdict can add to it. A worker-declared `paused:` is free text that
+  # can hide a live decision gate, so it still requires a confident death; phases B
+  # and C of tests/fm-watch-triage.test.sh pin that split.
+  #
+  # Without this, a hold on a harness that leaves a live-looking pane behind reads as
+  # `none` on every new stale hash and wakes on each one, which is the unbounded churn
+  # this path exists to stop. With it, the hold is absorbed AND handle_paused_stale
+  # arms the bounded re-surface, so it comes back once per FM_PAUSE_RESURFACE_SECS
+  # instead of never - closing the hole where a wedged captain-held crew was invisible
+  # to the stale path entirely, without paying that churn.
+  status_is_captain_held "$last" && held=1
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$kind" != secondmate ]; then
+    if [ "$kind" != secondmate ] && [ "$held" -ne 1 ]; then
       agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
       if [ "$agent_alive" != dead ]; then
         rm -f "$recheck_file"
@@ -860,7 +874,7 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if [ "$kind" != secondmate ]; then
+  if [ "$kind" != secondmate ] && [ "$held" -ne 1 ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"

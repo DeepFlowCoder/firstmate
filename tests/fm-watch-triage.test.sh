@@ -2047,8 +2047,12 @@ test_captain_held_absorbs_without_a_confident_death() {
   pid=$!
   wait_for_exit "$pid" 100 || fail "an aged captain-held hold never re-surfaced for its recheck"
   grep -F "stale: $window" "$out" >/dev/null || fail "aged captain-held hold printed no stale recheck"
-  grep -F "awaiting external" "$out" >/dev/null \
-    || fail "aged captain-held recheck was not labeled a bounded external wait"
+  # The recheck names WHICH human the wait is on, which is the adopted upstream
+  # wording: a captain hold is on the captain, not on an external dependency.
+  grep -F "awaiting the captain" "$out" >/dev/null \
+    || fail "aged captain-held recheck did not say the wait is on the captain: $(cat "$out")"
+  grep -F "verified hold transfer" "$out" >/dev/null \
+    || fail "aged captain-held recheck did not name it a verified hold transfer: $(cat "$out")"
   grep -F "possible wedge" "$out" >/dev/null && fail "captain-held hold was mislabeled a possible wedge"
   bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
   [ "$bare" -eq 0 ] || fail "aged captain-held hold surfaced as $bare bare stopped-crew wakes"
@@ -3338,7 +3342,15 @@ test_terminal_first_sight_drops_a_finished_write_deferral_chain() {
 
   # Same pane, first sight again, but nothing overrides the status line now, so it
   # surfaces. That path drops the idle-window timer, so it must drop the chain too.
-  rm -f "$state/.stale-$key" "$state/.stale-since-$key"
+  #
+  # The remembered absorb class goes with the rest of this window's stale
+  # bookkeeping. It records the last ANSWERED crew-state read so an `unknown`
+  # verdict - absence of evidence, never evidence of a wedge - cannot flip a
+  # window an answered read already classified absorbable. This phase deliberately
+  # replays the same status line with a different crew reality, so leaving the
+  # previous phase's answered `working` behind would have the reset simulate a
+  # fresh sighting everywhere except the one read this phase turns on.
+  rm -f "$state/.stale-$key" "$state/.stale-since-$key" "$state/.absorb-class-$key"
   printf '1\n' > "$state/.count-$key"
   : > "$state/.writing-since-$key"
   set_mtime "$back" "$state/.writing-since-$key"
