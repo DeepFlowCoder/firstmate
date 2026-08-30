@@ -811,16 +811,31 @@ spawn_abort_cleanup() {
 }
 trap spawn_abort_cleanup EXIT
 
+# How many 0.1s attempts a caller that CANNOT degrade waits for the lock. The
+# holder keeps it for its whole launch - reclaim, `treehouse get` (itself
+# bounded at 60s), pooled-worktree freshening, and the launch sends - so the
+# degradable default below expires on a peer that is merely still working, the
+# more reliably the busier the machine is. This bound outlasts that critical
+# section; a holder that DIED is still reclaimed immediately by
+# fm_lock_try_acquire's stale-owner path, so waiting this long only ever
+# happens behind a live holder and the bound stays a tripwire, not a race.
+HERDR_PRESENTATION_RESUME_LOCK_ATTEMPTS=1200
+
 # One bounded lock per live Herdr session/socket, shared across all homes.
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
+# <attempts> is how long this caller is willing to wait, in 0.1s attempts. The
+# default is the DEGRADABLE bound: a caller that can fall back flat (or skip an
+# abort cleanup) gives up in five seconds rather than stalling the captain
+# behind another home's spawn. A caller whose only alternative is refusing the
+# spawn passes a bound that covers the holder's own critical section instead.
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path
+  local session=${1:-} attempts=${2:-50} attempt lock_path
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  while [ "$attempt" -lt "$attempts" ]; do
     if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
       HERDR_PRESENTATION_ORDER_LOCK_HELD=1
       return 0
@@ -2065,7 +2080,12 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
           exit 1
         }
-        spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" || {
+        # A journal already binds this task to a projected workspace, so this
+        # path cannot fall back flat: losing the lock refuses the resume
+        # outright. Wait out a peer spawn's whole launch rather than refuse a
+        # concurrent recovery that only needed to queue behind it.
+        spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" \
+          "$HERDR_PRESENTATION_RESUME_LOCK_ATTEMPTS" || {
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }

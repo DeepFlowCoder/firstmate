@@ -1295,10 +1295,40 @@ PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/
 PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not reprovision the isolated session for concurrent recovery"
 CONCURRENT_RECOVERY_FOCUS=$(focus_snapshot)
+# A resume cannot fall back flat, so it must WAIT for whoever holds the session
+# lock instead of refusing a peer that is still working. The real holder is
+# another spawn keeping the lock for its whole launch, which outlasts the five
+# seconds a degradable caller waits; hold the lock here for longer than that
+# bound so the wait is proven rather than left to whichever runner is faster.
+CONCURRENT_HOLD_READY="$TMP_ROOT/concurrent-hold-ready"
+CONCURRENT_HOLD_RELEASE="$TMP_ROOT/concurrent-hold-release"
+CONCURRENT_HOLD_PATH=$(session_presentation_lock_path) \
+  || fail "could not resolve the session presentation lock for concurrent recovery"
+ROOT="$ROOT" READY="$CONCURRENT_HOLD_READY" RELEASE="$CONCURRENT_HOLD_RELEASE" \
+  LOCK="$CONCURRENT_HOLD_PATH" bash -c '
+  . "$ROOT/bin/fm-wake-lib.sh"
+  fm_lock_try_acquire "$LOCK" || exit 1
+  : > "$READY"
+  while [ ! -e "$RELEASE" ]; do sleep 0.05; done
+  fm_lock_release "$LOCK"
+' &
+LOCK_CONTENTION_OWNER_PID=$!
+while [ ! -e "$CONCURRENT_HOLD_READY" ] && kill -0 "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null; do sleep 0.01; done
+[ -e "$CONCURRENT_HOLD_READY" ] || fail "could not hold the session lock for concurrent recovery"
 spawn_task "$PRIMARY_WAVE_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/primary-wave-resume.out" 2> "$TMP_ROOT/primary-wave-resume.err" &
 PRIMARY_WAVE_PID=$!
 spawn_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" "$PROJECT_DIR" > "$TMP_ROOT/bravo-wave-resume.out" 2> "$TMP_ROOT/bravo-wave-resume.err" &
 BRAVO_WAVE_PID=$!
+sleep 8
+# Past the five-second degradable bound, and the only exit from the acquire
+# while the lock is held is that refusal - so its absence IS the wait.
+if grep -F "refusing a concurrent resume" "$TMP_ROOT/primary-wave-resume.err" >/dev/null 2>&1 \
+   || grep -F "refusing a concurrent resume" "$TMP_ROOT/bravo-wave-resume.err" >/dev/null 2>&1; then
+  fail "a concurrent recovery refused the held session lock instead of waiting for its holder"
+fi
+: > "$CONCURRENT_HOLD_RELEASE"
+wait "$LOCK_CONTENTION_OWNER_PID" || fail "concurrent recovery session lock owner failed"
+LOCK_CONTENTION_OWNER_PID=
 wait "$PRIMARY_WAVE_PID" || fail "concurrent primary recovery failed: $(cat "$TMP_ROOT/primary-wave-resume.err")"
 wait "$BRAVO_WAVE_PID" || fail "concurrent secondmate recovery failed: $(cat "$TMP_ROOT/bravo-wave-resume.err")"
 PRIMARY_WAVE_NEW_WT=$(remember_meta_worktree "$PRIMARY_WAVE_META")
@@ -1324,7 +1354,7 @@ teardown_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" > "$TMP_ROOT/bravo-wave-teardown
 "$REAL_TREEHOUSE" return --force "$BRAVO_WAVE_OLD_WT" >/dev/null 2>&1 || true
 "$REAL_TREEHOUSE" return --force "$PRIMARY_WAVE_NEW_WT" >/dev/null 2>&1 || true
 "$REAL_TREEHOUSE" return --force "$BRAVO_WAVE_NEW_WT" >/dev/null 2>&1 || true
-pass "real Herdr lab: concurrent cross-home recoveries replace exact husks under one session lock with no focus drift"
+pass "real Herdr lab: concurrent cross-home recoveries wait out a held session lock, replace exact husks, and never drift focus"
 
 # Seed a legacy old-format primary projection and a flat secondmate tab; correction must not migrate them.
 LEGACY_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label "firstmate/legacy-seed · p:AbCdEfGhIjKlMnOpQrStUv" --no-focus) \
