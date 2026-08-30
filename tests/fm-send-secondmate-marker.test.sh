@@ -279,7 +279,7 @@ FM_TEST_SEND_CAP=4096
 FM_TEST_MARKER_BYTES=44
 
 test_secondmate_cap_measures_the_marked_payload() {
-  local dir fb log home err rc body got
+  local dir fb log home err rc body got record delivered
   dir="$TMP_ROOT/sm-cap"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
   home=$(setup_home smcap)
@@ -314,9 +314,17 @@ test_secondmate_cap_measures_the_marked_payload() {
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" \
     FM_SEND_SETTLE=0 "$SEND" "fm-domain" "$body" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "a marked payload exactly at the cap should still send"
-  got=$(LC_ALL=C wc -c < "$log" | tr -d '[:space:]')
+  # A task resolved through this home's metadata rides the inbox plane, so the
+  # delivered bytes are the durable record's body and only a fixed-size doorbell
+  # is typed. The guarantee is unchanged - a payload at the cap arrives whole,
+  # never quietly shortened - and it is asserted where the payload now lands.
+  record=$(ls "$home/state"/*.inbox/*.msg 2>/dev/null | LC_ALL=C sort | tail -1)
+  [ -n "$record" ] || fail "a marked payload at the cap left no durable steer record; state holds: $(ls -A "$home/state" | tr '\n' ' ') | typed $(LC_ALL=C wc -c < "$log" | tr -d '[:space:]') bytes"
+  delivered=$(bash -c '. "$1"; fm_task_inbox_body "$2"' _ \
+    "$ROOT/bin/fm-task-inbox-lib.sh" "$record")
+  got=$(printf '%s' "$delivered" | LC_ALL=C wc -c | tr -d '[:space:]')
   [ "$got" = "$FM_TEST_SEND_CAP" ] \
-    || fail "a marked payload at the cap should be typed whole: typed $got bytes, expected $FM_TEST_SEND_CAP"
+    || fail "a marked payload at the cap should arrive whole: delivered $got bytes, expected $FM_TEST_SEND_CAP"
   pass "fm-send: the size cap measures the marked payload, so both legs enforce the same limit"
 }
 
