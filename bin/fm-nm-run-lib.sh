@@ -167,6 +167,26 @@ fm_nm_runs_word_for_terminal() {  # <outcome-or-status word>
   esac
 }
 
+# The newest `no-mistakes runs` row belonging to <branch> in captured list
+# output $1, echoed as "<status><TAB><sha>". The list is newest-first, so the
+# first matching row IS that branch's most recent run. Returns 1 when the list
+# names no run for the branch; for a bounded fail-open query that answer is
+# "no evidence", never "no run exists". bin/fm-crew-state.sh reads the same
+# newest row inside its own single-pass coarse scan, which must additionally
+# bind every row it walks to decide which one may answer.
+fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
+  local out=$1 branch=$2 row parsed st br sha
+  [ -n "$out" ] && [ -n "$branch" ] || return 1
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    IFS=$'\t' read -r st br sha <<< "$parsed"
+    [ "$br" = "$branch" ] || continue
+    printf '%s\t%s' "$st" "$sha"
+    return 0
+  done <<< "$out"
+  return 1
+}
+
 # Split one `no-mistakes runs` row into "<status><TAB><branch><TAB><sha>".
 # Rows are plain, unquoted, column-padded text -
 # "<status> <branch> <short-sha> <date> [<pr-url>]" - so splitting on the first
