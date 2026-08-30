@@ -532,6 +532,10 @@ nm_coarse_head_matches_worktree() {  # <short-sha>
 }
 
 HAVE_RUN=0
+# Why `axi status` did not attribute a run to this crew, in the reader's own
+# terms. Recorded at the moment the attribution is refused so the unknown paths
+# below can say WHICH refusal happened instead of guessing after the fact.
+ATTRIBUTION_MISS=""
 # RUN_SOURCE distinguishes the two ways HAVE_RUN=1 can happen: "full" means
 # $RUN_OUT is real `axi status` TOON with step/gate detail; "coarse" means only
 # a bare status word came back from the runs-list fallback above, so the
@@ -554,6 +558,13 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # The active-or-most-recent run is for another branch, or its same-branch
       # attribution failed (the CLI is alive and answered) - try the coarse
       # fallback.
+      if [ -z "$run_branch" ]; then
+        ATTRIBUTION_MISS="axi status reported no branch"
+      elif [ "$run_branch" != "$CREW_BRANCH" ]; then
+        ATTRIBUTION_MISS="axi status answered for $run_branch, not $CREW_BRANCH"
+      else
+        ATTRIBUTION_MISS="axi status answered for $CREW_BRANCH but its run head does not bind to this worktree"
+      fi
       # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
       # primary call means the CLI itself did not respond, so retrying it
       # immediately with a second bounded call would just double the wait
@@ -774,8 +785,15 @@ fi
 # a verdict the run has already moved past - so an idle pane reports an honest
 # unknown instead. A busy pane above still answers first, because a live harness
 # IS current-state evidence; this only refuses to invent one where there is none.
+#
+# NOTHING was reported for this crew on this path, so the detail must not borrow
+# the supersession wording the arbitrated path above uses: there is no reported
+# terminal run here to be superseded, and claiming one sends the reader hunting
+# for a run that does not exist. It states what is actually true instead -
+# attribution could not be determined, and WHICH refusal caused that - so the
+# reader knows whether to look further.
 [ "$RUNS_UNKNOWN_ATTRIBUTION" != 1 ] || emit unknown run-step \
-  "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run (runs list); its head does not bind to this worktree"
+  "run attribution for $CREW_BRANCH could not be determined ($ATTRIBUTION_MISS); its newest runs-list row is a $BRANCH_NEWEST_STATUS run whose head does not bind to this worktree, so no run may answer for this crew"
 
 # Fall back to the status log's last line, but ONLY when its verb maps to a real
 # run-state. A decision-closing event - resolved: (fm-classify-lib.sh's

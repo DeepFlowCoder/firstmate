@@ -1772,8 +1772,76 @@ EOF
   assert_not_contains "$out" "state: failed" "an older terminal row must not outrank a newer terminal row"
   assert_contains "$out" "state: unknown" "a newer terminal run leaves the older verdict at unknown"
   assert_contains "$out" "source: run-step" "the superseded verdict is still run-step sourced"
-  assert_contains "$out" "supersedes the reported terminal run" "the detail names the supersession"
+  assert_contains "$out" "could not be determined" "the detail names the refused attribution"
   pass "coarse scan does not let an older terminal row outrank a newer terminal run"
+}
+
+# The unknown-attribution stop has NO reported run behind it: `axi status`
+# answered for another crew, and the single runs-list row for this branch does
+# not bind, so the scan stops before anything is attributed. The detail must say
+# that attribution itself failed and WHY. Borrowing the arbitrated path's
+# supersession wording here would assert a terminal run that was never reported
+# and send a supervisor hunting for a cancelled run that does not exist.
+test_unknown_attribution_names_its_reason_not_a_supersession() {
+  reset_fakes
+  local d out
+  d=$(new_case attrib-cross-branch)
+  make_repo_on_branch "$d/wt" fm/feat-attrib-x
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/attrib-x.meta" "window=fm:fm-attrib-x" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/attrib-x.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  # One row for this branch, at a head this worktree cannot resolve, and NO older
+  # row beneath it: there is nothing here that could have been reported at all.
+  FM_FAKE_RUNS_LIST="$(cat <<'EOF'
+  running    fm/other-crew aaaaaaa  2026-08-29 08:00
+  running    fm/feat-attrib-x 9999999  2026-08-29 07:45
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" attrib-x
+  out=$(run_crew_state "$d" attrib-x)
+  assert_contains "$out" "state: unknown" "unknown attribution reports an honest unknown"
+  assert_contains "$out" "source: run-step" "the unknown-attribution verdict is run-step sourced"
+  assert_contains "$out" "run attribution for fm/feat-attrib-x could not be determined" \
+    "the detail states that attribution itself could not be made"
+  assert_contains "$out" "axi status answered for fm/other-crew, not fm/feat-attrib-x" \
+    "the detail names WHY attribution failed, so the reader knows where to look"
+  assert_not_contains "$out" "supersedes the reported terminal run" \
+    "nothing terminal was reported here, so nothing may be called superseded"
+  pass "unknown attribution states its own reason instead of borrowing supersession wording"
+}
+
+# The other route into the same stop: `axi status` DID answer for this branch,
+# but its run head does not bind to this worktree, so attribution falls to the
+# coarse scan and that scan hits an unresolvable row. The named reason must be
+# the binding refusal, not a cross-branch answer, or the reader checks the wrong
+# thing.
+test_unknown_attribution_names_a_head_binding_refusal() {
+  reset_fakes
+  local d out
+  d=$(new_case attrib-head-bind)
+  make_repo_on_branch "$d/wt" fm/feat-attrib-h
+  make_fakebin "$d" >/dev/null
+  # The reported run is for THIS branch, at a head that is not a commit here.
+  FM_FAKE_RUN_HEAD=f0f0f0f0
+  export FM_FAKE_RUN_HEAD
+  fm_write_meta "$d/state/attrib-h.meta" "window=fm:fm-attrib-h" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/attrib-h.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-attrib-h)"
+  FM_FAKE_RUNS_LIST="  running    fm/feat-attrib-h 9999999  2026-08-29 07:45"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" attrib-h
+  out=$(run_crew_state "$d" attrib-h)
+  assert_contains "$out" "state: unknown" "a same-branch run that cannot bind reports unknown"
+  assert_contains "$out" "source: run-step" "the unknown-attribution verdict is run-step sourced"
+  assert_contains "$out" "axi status answered for fm/feat-attrib-h but its run head does not bind to this worktree" \
+    "the detail names the head-binding refusal, not a cross-branch answer"
+  assert_not_contains "$out" "supersedes the reported terminal run" \
+    "a refused head binding is not a supersession"
+  # The status log's `working:` must not answer over the refusal above.
+  assert_not_contains "$out" "source: status-log" "the honest unknown outranks the stale status log"
+  pass "unknown attribution distinguishes a head-binding refusal from a cross-branch answer"
 }
 
 # The runs list costs a real CLI call on a script that runs every heartbeat, and
@@ -1961,6 +2029,8 @@ test_unbindable_live_successor_is_unknown_not_failed
 test_pending_live_successor_is_unknown_not_failed
 test_coarse_older_terminal_row_does_not_outrank_newer_active_row
 test_coarse_older_terminal_row_does_not_outrank_newer_terminal_row
+test_unknown_attribution_names_its_reason_not_a_supersession
+test_unknown_attribution_names_a_head_binding_refusal
 test_runs_list_is_read_once_per_invocation
 test_full_path_terminal_successor_disagreement_is_not_failed
 test_runs_list_silence_is_unknown_not_failed
