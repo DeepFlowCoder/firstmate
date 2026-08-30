@@ -107,6 +107,32 @@
 # while ACTING on it is firstmate's judgement, so the capture stays unacknowledged
 # and its `check` wake reaches the handler exactly as it would have anyway.
 #
+# Freeform captain prose is adapter-owned through one more seam of the same kind,
+# and exists because the keyed-answer seam above is deliberately narrow. It reads
+# only structured choices, so prose can never forge a decision key - which left
+# prose with no reader at all. A review board closed with a message delivered the
+# captain's words in the same result that ended the session, every content
+# command a handler could ask reported nothing, and acknowledging the capture
+# retired the only copy. So after capture, the result is passed to
+# `bin/fm-procevent-<adapter>.sh messages <result-file>` and whatever that prints
+# is piped into the one durable captain-note intake, `bin/fm-inbox.sh note`,
+# which writes its own record, appends its own wake, and stays pending until its
+# own separate acknowledgement. This runner names no adapter, parses no result,
+# and adds no control plane; an adapter with no `messages` command is a quiet
+# no-op. Like the keyed-answer feed, it runs once per capture and never on
+# re-announcement, so a reconcile republishing an unhandled result cannot turn
+# one message into a second note.
+#
+# LAST RESULT POLICY, owned here and applying to every seam above. A source's
+# final result is delivered on its CONTENT, never on its lifecycle. Ending a
+# source stops the polling; it never retires what the source said. That is why
+# publication strictly precedes terminal retirement below, why both feeds run
+# once per capture regardless of what the adapter later calls terminal, and why
+# content that no automatic intake consumed gets a durable channel with an
+# acknowledgement of its own. A captured result's handled marker keeps its exact
+# and only role - stopping one capture from being handled twice - and is no
+# longer able to retire the captain's words along with it.
+#
 # Ownership is machine-wide per canonical source, because separate Firstmate
 # homes can share one underlying source store. A live owner is never displaced;
 # only a claim whose whole generation is gone is reclaimed. A runner leads its
@@ -135,7 +161,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,119p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,145p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -214,6 +240,41 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   "$script" answers "$result" 2>/dev/null \
     | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
+}
+
+# Pass a captured result's freeform captain prose to the one durable captain-note
+# intake (see the captain-prose note in the header). Unlike the keyed-answer feed
+# above this is NOT gated on a captain-hold binding: a binding declares that a
+# source feeds the decision intake, which says nothing about whether the captain
+# also typed words, and gating on it would leave exactly the same silent loss for
+# every unbound source. The adapter's own `messages` command is the declaration,
+# so an adapter without one routes nothing.
+#
+# Three outcomes the caller must keep apart: 0 the prose is durably queued, 1
+# there was no prose to queue, and 2 there WAS prose and the intake refused it.
+# Only 1 is silent, because prose this runner found and could not durably queue
+# is the one case that must never pass quietly.
+feed_captain_messages() {  # <adapter> <source-id> <result-file>
+  local adapter=$1 id=$2 result=$3 script seq records body
+  script=$(adapter_script "$adapter")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  seq=$(fm_procevent_result_sequence "$result") || return 1
+  records=$("$script" messages "$result" 2>/dev/null) || return 1
+  [ -n "$records" ] || return 1
+  # The captain's words lead, so the note's own one-line summary carries what he
+  # said rather than where it came from; provenance closes the record. The
+  # adapter guarantees one record per line with control characters flattened, so
+  # a tab-split read cannot merge two messages or split one.
+  body=$(
+    printf '%s\n' "$records" | while IFS=$'\t' read -r message context; do
+      printf '%s\n' "$message"
+      [ -n "$context" ] && printf '  (%s)\n' "$context"
+      printf '\n'
+    done
+    printf -- '-- captured result %s sequence %s\n' "$id" "$seq"
+  )
+  printf '%s\n' "$body" | "$SCRIPT_DIR/fm-inbox.sh" note - >/dev/null 2>&1 || return 2
+  return 0
 }
 
 read_adapter() {  # <source-id>
@@ -460,6 +521,15 @@ cmd_start() {
   if feed_keyed_answers "$adapter" "$id" "$durable"; then
     printf 'answers-fed: %s\n' "$id"
   fi
+
+  # Same independence, and strictly before the terminal retirement below, so the
+  # captain's own words are durably queued whether or not this result ends the
+  # source (last-result policy in the header).
+  feed_captain_messages "$adapter" "$id" "$durable"
+  case "$?" in
+    0) printf 'messages-noted: %s\n' "$id" ;;
+    2) printf 'cannot queue the captain message from %s; it remains only in the captured result\n' "$id" >&2 ;;
+  esac
 
   # A self-announcing adapter's autohandle announces through its own durable
   # downstream channel, so publication waits until after application and covers

@@ -7,6 +7,7 @@
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh silent <result-file>
 #   fm-procevent-lavish.sh answers <result-file>
+#   fm-procevent-lavish.sh messages <result-file>
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html>
 #   fm-procevent-lavish.sh poll <artifact.html>
@@ -60,6 +61,28 @@
 # Only rows tagged `choice` are read. A freeform captain message is prose that may
 # contain anything, and must never be able to forge a decision key.
 #
+# `messages` is the deliberate complement of `answers`, and exists because that
+# narrowness left the captain's own prose with no reader at all. A review board
+# closed with a freeform message delivered the words in the same result that
+# ended the session; `answers` skipped the row because its tag was not `choice`,
+# every other command reported nothing, and acknowledging the capture retired
+# the only copy. The words were lost in silence.
+#
+# So the two commands read DISJOINT rows and never overlap: `answers` takes only
+# `choice`, and `messages` takes everything that is not `choice`. Each fails in
+# the safe direction for what it carries. `answers` fails toward silence,
+# because an unfamiliar row must never mint a decision key. `messages` fails
+# toward reporting, because an unfamiliar row is prose nobody else will read,
+# and dropping it for having a tag this adapter has not seen before is exactly
+# the defect above. It reads no decision keys, so prose still forges nothing.
+#
+# Which field holds the captain's words depends on the row shape - the observed
+# `Send & End` message carries them in `prompt` with a static label in `text`,
+# while a bare annotation carries them in `text` - so neither is assumed: the
+# `prompt` is the message when it has content, the `text` is the message
+# otherwise, and the unused one travels along as context. A row with no words in
+# any field is not news and is not reported.
+#
 # It wraps ONLY the currently published interface, verified against 0.1.45:
 #   Usage: lavish-axi poll <html-file> [--agent-reply "..."]
 # and that command "long-polls indefinitely" server-side. The adapter therefore
@@ -104,7 +127,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,92p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,115p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -455,6 +478,70 @@ cmd_answers() {
   ' "$file"
 }
 
+# Print `message<TAB>context` for every row of a captured result that is the
+# captain's own prose rather than a structured choice; see the complementarity
+# note in the header for why the two commands read disjoint rows and why this
+# one fails toward reporting. The published response frames queued feedback as a
+# `prompts[N]{field,...}:` header followed by exactly N indented CSV rows whose
+# quoted fields carry JSON-style escapes, so this reads the declared field ORDER
+# exactly as `answers` does. Control characters are flattened, so one captain
+# message is always one record and a multi-line message can never split into
+# rows that read as separate utterances. The message itself is never truncated -
+# losing the captain's words is the defect this exists to close, and the runner
+# already bounds a captured result as a whole - while the context is a label and
+# is capped like every other decoration here.
+cmd_messages() {
+  local file=${1-}
+  [ -n "$file" ] || usage
+  [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  perl -e '
+    use strict; use warnings;
+    my ($path) = @ARGV;
+    open my $fh, "<", $path or exit 1;
+    my (@fields, $want, @rows);
+    while (my $line = <$fh>) {
+      if (!@fields) {
+        next unless $line =~ /^prompts\[(\d+)\]\{([^}]*)\}:\s*$/;
+        ($want, @fields) = ($1, split /,/, $2);
+        next;
+      }
+      last unless $line =~ /^\s/;
+      last if @rows >= $want;
+      chomp $line;
+      push @rows, $line;
+    }
+    close $fh;
+    for my $row (@rows) {
+      $row =~ s/^\s+//;
+      my @vals;
+      while (length $row) {
+        if ($row =~ s/^"((?:[^"\\]|\\.)*)"//) {
+          my $v = $1;
+          $v =~ s/\\(.)/$1 eq "n" ? "\n" : $1 eq "t" ? "\t" : $1 eq "r" ? "\r" : $1/ge;
+          push @vals, $v;
+        } else {
+          $row =~ s/^([^,]*)//;
+          push @vals, $1;
+        }
+        last unless $row =~ s/^,//;
+      }
+      my %f;
+      $f{$fields[$_]} = $vals[$_] for 0 .. $#fields;
+      # Everything that is not a structured choice, including a row whose tag
+      # this adapter has never seen and a row that declares no tag at all.
+      next if defined $f{tag} && $f{tag} eq "choice";
+      my ($prompt, $text) = (defined $f{prompt} ? $f{prompt} : "",
+                             defined $f{text}   ? $f{text}   : "");
+      s/[\x00-\x1f\x7f]/ /g for ($prompt, $text);
+      s/\A\s+//, s/\s+\z// for ($prompt, $text);
+      my ($message, $context) = length $prompt ? ($prompt, $text) : ($text, "");
+      next unless length $message;
+      $context = substr($context, 0, 512);
+      print "$message\t$context\n";
+    }
+  ' "$file"
+}
+
 case "${1-}" in
   arm)       shift; cmd_arm "$@" ;;
   retire)    shift; cmd_retire "$@" ;;
@@ -464,6 +551,7 @@ case "${1-}" in
   terminal)  shift; cmd_terminal "$@" ;;
   silent)    shift; cmd_silent "$@" ;;
   answers)   shift; cmd_answers "$@" ;;
+  messages)  shift; cmd_messages "$@" ;;
   ''|-h|--help|help) usage ;;
   *) die "unknown command: $1" ;;
 esac

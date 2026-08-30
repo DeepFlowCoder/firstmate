@@ -668,6 +668,16 @@ The adapter reports only what the captain chose; the intake owns every rule abou
 Feeding is independent of handling: it never acknowledges a result and never suppresses a wake, because recording the answer is transcription while acting on it is firstmate's judgement.
 An unbound source, an adapter with no `answers` command, and a failure on either side all leave the capture untouched and still announced.
 
+Freeform captain prose uses one more seam of the same kind, and exists because the keyed-answer seam above is deliberately narrow.
+It reads only structured choices, so prose can never forge a decision key, which left prose with no reader at all: a review surface closed with a message delivered the captain's words in the same result that ended it, no content command reported anything, and acknowledging the capture retired the only copy.
+After capture, the runner therefore passes the result to `bin/fm-procevent-<adapter>.sh messages <result-file>` and queues whatever that prints into the captain inbox through `bin/fm-inbox.sh note`, which writes its own durable record, appends its own `check` wake, and stays pending until its own `bin/fm-inbox.sh drain --ack <id>`.
+This seam is not gated on a captain-hold binding, because a binding says the source feeds the decision intake and says nothing about whether the captain also typed words.
+It runs once per capture and never on re-announcement, so a reconcile republishing an unhandled result cannot turn one message into a second note, and an adapter with no `messages` command routes nothing.
+
+A source's final result is delivered on its content, never on its lifecycle: ending a source stops the polling, and never retires what the source said.
+That is why publication strictly precedes terminal retirement, why both feeds run once per capture regardless of what the adapter later calls terminal, and why content that no automatic intake consumed gets a durable channel with an acknowledgement of its own.
+A captured result's handled marker keeps its exact and only role, stopping one capture from being handled twice, and can no longer retire the captain's words along with it.
+
 Ownership is machine-wide per canonical source, because separate homes can share one underlying source store.
 Claims live under `$XDG_STATE_HOME/firstmate/procevent-claims` (override with `FM_PROCEVENT_CLAIM_ROOT`).
 Each claim binds its home and runner PID to a process identity, unique claim generation, and exact registration-file generation.
