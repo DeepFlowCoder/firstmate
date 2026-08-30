@@ -13,6 +13,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
 
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
+GRANT="$ROOT/bin/fm-wake-grant.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-wake-drain-unread-status-tests)
 
@@ -306,6 +307,40 @@ test_snapshot_failure_is_visible() {
   pass "an unreadable status surface refuses loudly instead of exiting green"
 }
 
+# The refusal has to hold at EVERY exit that presents status, not at most of
+# them: one green empty exit is enough to make "nothing is open" a lie. This
+# case pins the main-actor exit taken when the queue is non-empty but every
+# queued row belongs to a live branch grant, so main claims nothing and returns
+# early. It is the common shape of a silent drain, and it is the one exit that
+# historically skipped the gate. Add a case here for any further early exit.
+test_main_actor_exit_with_no_claimable_rows_refuses_on_unreadable_status() {
+  local dir state out err reader rc=0
+  dir=$(make_case snapshot-failure-main-no-claim); state="$dir/state"
+  out="$dir/drain.out"; err="$dir/drain.err"; reader="$dir/identity-reader"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"; chmod +x "$reader"
+  printf 'needs-decision: choose target\n' > "$state/fail.status"
+
+  append_wake "$state" signal task-granted.status "signal: task-granted.status" \
+    || fail "queueing the branch-granted row failed"
+  FM_STATE_OVERRIDE="$state" "$GRANT" activate "$$" main-no-claim \
+    || fail "branch owner activation failed"
+  FM_STATE_OVERRIDE="$state" "$GRANT" publish main-no-claim 1 \
+    || fail "branch grant publication failed"
+
+  FM_STATUS_IDENTITY_READER="$reader" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || rc=$?
+
+  [ "$rc" -ne 0 ] \
+    || fail "the main drain claimed no rows and exited green after it could not read the durable status: $(cat "$out")"
+  grep -F 'STATUS PRESENTATION INCOMPLETE:' "$out" >/dev/null \
+    || fail "the main no-claimable-rows exit drained silently incomplete: $(cat "$out")"
+  grep -F 'the durable status could not be read' "$err" >/dev/null \
+    || fail "the main no-claimable-rows refusal named nothing that went unpresented: $(cat "$err")"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "an unreadable status still printed an OPEN DECISIONS verdict: $(cat "$out")"
+  fi
+  pass "a main drain that claims no rows refuses loudly when the durable status is unreadable"
+}
+
 test_open_decisions_fold_is_unchanged() {
   local dir state out
   dir=$(make_case open-decisions-regression)
@@ -386,6 +421,7 @@ test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread
 test_weak_identity_still_presents_and_advances
 test_snapshot_failure_is_visible
+test_main_actor_exit_with_no_claimable_rows_refuses_on_unreadable_status
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
 test_routine_working_lines_stay_silent_on_the_empty_queue

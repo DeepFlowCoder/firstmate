@@ -561,8 +561,9 @@ if [ "$ACTOR" = main ]; then
   if [ ! -s "$MAIN_ROWS_FILE" ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     DRAIN_LOCK_HELD=false
-    (print_status_presentation) || true
+    present_status_or_refuse
     assert_watcher_liveness
+    [ "$STATUS_PRESENTATION_FAILED" = false ] || exit 1
     exit 0
   fi
 fi

@@ -98,7 +98,12 @@ The single longest script, `tests/fm-pr-check-security.test.sh` at 252478 ms, is
 A wholesale refresh is DUE and is the real fix for the cap being raised.
 On run 33296163782 shard 3 ran 15m18s against a 412 s estimate while the other seven shards each finished between 6 and 7 minutes, so the imbalance is real rather than runner noise.
 That run's shard 3 timing artifact never uploaded, so the overrunning script is not identified here rather than guessed at; the next green run supplies it.
-Note when refreshing that `tests/fm-remote-secondmate-lifecycle-e2e.test.sh` is the heaviest script in that shard, hinted at 211342 ms from a CI artifact and measured at 346202 ms locally on 2026-08-30, which is a different platform and therefore evidence that it is worth re-measuring rather than a replacement value.
+Look first at the two scripts in that shard carrying `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` rather than a measurement: `tests/fm-send-inbox-doorbell-live-e2e.test.sh`, a live e2e, and `tests/fm-branch-supervision.test.sh`, 552 new lines on the same 20000 ms placeholder.
+An unmeasured script is where the estimate can be wrong by the ~500 s between shard 3's 412833 ms estimate and the >900 s it ran.
+
+This note first blamed `tests/fm-remote-secondmate-lifecycle-e2e.test.sh` for that gap, which was wrong: it is the heaviest script in the shard, but its 211342 ms hint is already inside the 412833 ms estimate, so it cannot by itself explain a gap against that estimate.
+It is still worth re-measuring - it ran 346202 ms locally on 2026-08-30, a different platform, so that number is evidence rather than a replacement value - but the default weights are the likelier cause.
+A local measurement did not settle the question either way: `tests/fm-branch-supervision.test.sh` ran 8.4 s locally, which almost certainly means locally-skipped gated work that CI runs in full, so a local number cannot stand in for a CI one here.
 
 Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above.
 
