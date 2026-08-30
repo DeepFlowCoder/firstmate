@@ -53,7 +53,7 @@ run_decisions() {  # <home> <command args...>
 write_valid_payload() {  # <path>
   cat > "$1" <<'EOF'
 {
-  "schema": "fm-bearings-board.v1",
+  "schema": "fm-bearings-board.v2",
   "home": "test-home",
   "generated": "2026-08-19T00:00Z",
   "prs_live": false,
@@ -91,7 +91,8 @@ write_valid_payload() {  # <path>
   "underway": [],
   "landed": [],
   "charted": [
-    { "id": "sample-queued", "repo": "sample", "title": "Queued work", "reason": "", "dispatchable": true }
+    { "id": "sample-queued", "repo": "sample", "title": "Queued work", "reason": "",
+      "dispatchable": true, "since": "2026-08-11" }
   ],
   "charted_more": 0
 }
@@ -123,10 +124,10 @@ test_build_refuses_malformed_payloads_before_touching_the_board() {
   [ "$rc" -ne 0 ] || fail "a non-JSON payload was accepted"
   assert_contains "$out" "not valid JSON" "the non-JSON refusal did not say why: $out"
 
-  printf '{"schema":"fm-bearings-board.v2"}\n' > "$data"
+  printf '{"schema":"fm-bearings-board.v1"}\n' > "$data"
   set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
-  [ "$rc" -ne 0 ] || fail "a wrong-schema payload was accepted"
-  assert_contains "$out" "fm-bearings-board.v1" "the schema refusal did not name the contract: $out"
+  [ "$rc" -ne 0 ] || fail "a superseded-schema payload was accepted"
+  assert_contains "$out" "fm-bearings-board.v2" "the schema refusal did not name the contract: $out"
 
   write_valid_payload "$data"
   jq '.captains_call[0].key = (reduce range(129) as $i (""; . + "x"))' "$data" > "$data.tmp" \
@@ -196,6 +197,7 @@ test_build_refuses_malformed_payloads_before_touching_the_board() {
     "repo": "sample",
     "what": "Landed work",
     "owner": "firstmate",
+    "landed_on": "2026-08-18",
     "pr_url": "data:text/html,unsafe"
   }]' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
   set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
@@ -203,6 +205,58 @@ test_build_refuses_malformed_payloads_before_touching_the_board() {
 
   assert_absent "$board" "a refused payload still produced a board"
   pass "build refuses malformed payloads before touching the board"
+}
+
+# The v2 invariants exist so the yard read cannot silently degrade back into a
+# flat checklist: the board measures every age against `generated`, states a
+# recorded date or an explicit "none", and can always say what holds a berth.
+test_v2_refuses_rows_the_yard_could_not_read() {
+  local home data board rc out
+  home=$(make_home yardschema)
+  board="$home/.lavish/bearings-board.html"
+  data="$home/payload.json"
+
+  write_valid_payload "$data"
+  jq '.generated = "just now"' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "a generated stamp with no date was accepted"
+
+  write_valid_payload "$data"
+  jq 'del(.charted[0].since)' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "a charted row that omits its since marker was accepted"
+
+  write_valid_payload "$data"
+  jq '.charted[0].since = "a while back"' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "a charted since that is not a date was accepted"
+
+  write_valid_payload "$data"
+  jq '.landed = [{"id":"l","repo":"sample","what":"Landed","owner":"firstmate"}]' "$data" \
+    > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "a landed row that omits its landed_on marker was accepted"
+
+  # a dry-dock berth that cannot say what holds it is indistinguishable from an
+  # order that is merely waiting for a crew, which is the defect being fixed
+  write_valid_payload "$data"
+  jq '.charted[0].dispatchable = false' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "a held charted row with no reason was accepted"
+
+  assert_absent "$board" "a refused payload still produced a board"
+
+  # an explicit null is the deliberate "this row records no date" marker, and
+  # a held row that names its blocker is exactly what dry dock renders
+  write_valid_payload "$data"
+  jq '.charted[0].since = null
+      | .charted += [{"id":"held","repo":"sample","title":"Held work",
+                      "reason":"blocked on the cutover","dispatchable":false,"since":"2026-08-01"}]
+      | .landed = [{"id":"l","repo":"sample","what":"Landed","owner":"firstmate","landed_on":null}]' \
+    "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  run_board "$home" build "$data" >/dev/null \
+    || fail "explicit null dates and a reasoned held row were refused"
+  pass "v2 refuses undated and unexplained rows while accepting explicit null dates"
 }
 
 test_build_injects_binds_then_arms() {
@@ -391,9 +445,9 @@ test_charted_kind_is_optional_and_accepts_both_values() {
   data="$home/payload.json"
   write_valid_payload "$data"
   jq '.charted = [
-        {"id":"a","repo":"sample","title":"Queued","reason":"","dispatchable":true},
-        {"id":"b","repo":"sample","title":"Queued too","reason":"gated","dispatchable":true,"kind":"queued"},
-        {"id":"c","repo":"sample","title":"Integrity notice","reason":"main inventory","dispatchable":false,"kind":"warning"}
+        {"id":"a","repo":"sample","title":"Queued","reason":"","dispatchable":true,"since":"2026-08-10"},
+        {"id":"b","repo":"sample","title":"Queued too","reason":"gated","dispatchable":true,"kind":"queued","since":null},
+        {"id":"c","repo":"sample","title":"Integrity notice","reason":"main inventory","dispatchable":false,"kind":"warning","since":null}
       ] | .charted_warning_more = 2' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
   run_board "$home" build "$data" >/dev/null \
     || fail "an omitted, queued, and warning charted kind was refused"
@@ -406,6 +460,7 @@ test_charted_kind_is_optional_and_accepts_both_values() {
 
 test_path_is_stable_and_home_scoped
 test_build_refuses_malformed_payloads_before_touching_the_board
+test_v2_refuses_rows_the_yard_could_not_read
 test_charted_kind_is_optional_and_accepts_both_values
 test_build_injects_binds_then_arms
 test_registration_cannot_consume_before_any_origin_binding

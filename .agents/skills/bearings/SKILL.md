@@ -15,7 +15,7 @@ metadata:
 Generate a complete current snapshot from the fleet's current state, so the captain can resume in one read after a break, a night, or a context reset.
 Plain `/bearings` returns only the concise four-section chat digest.
 Only `/bearings file` writes the dated markdown report artifact and then returns the concise four-section chat digest linked to that report.
-Only `/bearings lavish` builds the interactive fleet board beside that digest, through `bin/fm-bearings-board.sh` (its header owns every board mechanic and the fm-bearings-board.v1 payload contract).
+Only `/bearings lavish` builds the interactive fleet board beside that digest, through `bin/fm-bearings-board.sh` (its header owns every board mechanic and the fm-bearings-board.v2 payload contract).
 A digest/build invocation is operationally read-only apart from the cooldown-limited reconcile instruction and its `state/<id>.reconcile-nudged` record, plus the explicit per-mode artifacts: the dated report in file mode, and in lavish mode the board file plus the answer binding and source registration that `bin/fm-bearings-board.sh build` records through their own owners.
 During that invocation it never tears down a task, merges a PR, dispatches new work, steers a worker except through that reconcile hook, answers a decision, cleans up work, or mutates backlog or task state beyond the reconcile record.
 Board answers are acted on later under the normal authority rules; this skill's board-wake section explicitly owns the guarded routing at that time.
@@ -81,7 +81,11 @@ Board answers are acted on later under the normal authority rules; this skill's 
 ## Lavish board mode
 
 `/bearings lavish` adds one deliverable beside the unchanged chat digest: the interactive fleet board, a myfirstmate-styled Lavish page where the captain answers Captain's Call items directly instead of replying in chat.
-`bin/fm-bearings-board.sh` owns every board mechanic - the stable board path, fm-bearings-board.v1 payload validation, template injection, Lavish session establishment, the any-origin answer binding, and arm-if-absent registration - so the per-invocation work is composing the payload and running its `build`.
+`bin/fm-bearings-board.sh` owns every board mechanic - the stable board path, fm-bearings-board.v2 payload validation, template injection, Lavish session establishment, the any-origin answer binding, and arm-if-absent registration - so the per-invocation work is composing the payload and running its `build`.
+
+The board renders the same four buckets as a shipyard rather than a list: the template folds every row into one lane per project and shows, per lane, what is on the ways, what is held in dry dock, how deep the order book is, and what has launched.
+That fold is the template's job, not yours; your job is to give it rows it can fold honestly, which is what the payload rules below are for.
+The board's own detail is allowed to exceed the chat digest, but it never replaces it: the four-section chat contract below is unchanged by lavish mode.
 
 Compose the payload from the same snapshot with the same ranking judgment as the chat digest, plus these board rules:
 
@@ -90,9 +94,13 @@ Compose the payload from the same snapshot with the same ranking judgment as the
 - Decision cards carry agent-authored copy: a short noun-phrase title, one-line `about` and `decide` context rows, and option labels with hints, with the recommended option marked.
 - Card `type` (decision, merge, credential) is your composing judgment from the row's content; no backlog field types a card for you.
 - When the card's task is a captain-gated WORK item (the answer should free it to proceed rather than complete it), set the card's `close: "release"` so the answer lifts the hold instead of closing the task; question-shaped items omit it.
-- A Charted Next row's optional `kind` separates work from alarms: omit it (or set `"queued"`) for real queued work, and set `"warning"` on every action-free fleet-integrity notice - the `(main-inventory)` gate, an unavailable secondmate home, and an inventory-mismatch repair notice. The board badges a warning row `needs repair` instead of `waiting` and leaves it out of the Charted Next count, so those rows never read as dispatchable queued work.
+- A Charted Next row's optional `kind` separates work from alarms: omit it (or set `"queued"`) for real queued work, and set `"warning"` on every action-free fleet-integrity notice - the `(main-inventory)` gate, an unavailable secondmate home, and an inventory-mismatch repair notice. The board keeps every warning out of the project lanes entirely, in its own notices band, and out of every count of queued work, so an alarm about the fleet's own books can never be read or picked as a project's work.
 - `charted_more` counts omitted queued rows only, while `charted_warning_more` counts omitted warning rows only; keep both counts separate whenever the board payload truncates Charted Next.
 - Every Captain's Call item and every Underway, Recently Landed, and Charted Next row carries an explicit `repo` field. Fill it from the snapshot and task records wherever known; use null or an empty string only as the deliberate genuinely-no-repo marker, in which case the template may show the internal id. Ids otherwise stay in the payload only as the routing channel, and composed reasons name blockers in plain words.
+- `repo` is also the lane key, so a wrong or missing repo does not just hide an id, it files that work under the wrong project or into the explicit unassigned lane. Resolve it before falling back to the marker.
+- A Charted Next row's `dispatchable` decides which berth it lands in: dispatchable rows are the order book, work the fleet could start now, and non-dispatchable rows are dry dock. A dry-dock row must carry a non-empty `reason` naming what holds it, because that reason is the only thing separating held work from available capacity. Write that reason in plain words from the blocker or hold; never pass the snapshot's `-` placeholder through, which satisfies the check while telling the captain nothing.
+- Every Charted Next row carries `since` and every Recently Landed row carries `landed_on`, taken from the snapshot's `gates.since` and `landed.landed_on`. Use an explicit null when the record holds no date; omitting the field is refused. The board reads both against `generated`, so pass `generated` with a real `YYYY-MM-DD` prefix.
+- Underway rows carry no date. The only date the records hold for in-flight work is when it was filed, not when a worker picked it up, so the board shows live state there instead of an age. Do not invent a start date to fill the gap.
 
 Run `build` once after composing the payload.
 Its serve-first sequence publishes the board, establishes or resumes its Lavish session with `lavish-axi`, and only then binds and arms the polling source; use the session URL it prints in the chat digest.
