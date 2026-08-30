@@ -13,6 +13,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
 
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
+GRANT="$ROOT/bin/fm-wake-grant.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-wake-drain-unread-status-tests)
 
@@ -212,7 +213,7 @@ test_snapshot_does_not_ack_a_later_append() {
 }
 
 test_retired_task_id_starts_new_status_unread() {
-  local dir state out
+  local dir state out offset event old_ident
   dir=$(make_case retired-task-reuse)
   state="$dir/state"
   out="$dir/drain.out"
@@ -224,9 +225,34 @@ test_retired_task_id_starts_new_status_unread() {
   FM_STATE_OVERRIDE="$state" bash -c '
     . "$1/bin/fm-wake-lib.sh"
     . "$1/bin/fm-classify-lib.sh"
-    status_retire_presentation_task "$STATE" reused
-  ' _ "$ROOT" || fail "retiring the reused task presentation state failed"
-  printf 'note: first event from reused task id\n' > "$state/reused.status"
+    _fm_open_decisions_file_ident "$STATE/reused.status" > "$2"
+    printf "40@$(cat "$2")" > "$(status_signal_seen_marker_path "$STATE" reused)"
+    printf "40@$(cat "$2")" > "$(status_heartbeat_seen_marker_path "$STATE" reused)"
+    printf "40@$(cat "$2")" > "$(status_daemon_seen_marker_path "$STATE" reused)"
+    status_retire_presentation_task "$STATE" reused || exit 1
+    for marker in \
+      "$(status_signal_seen_marker_path "$STATE" reused)" \
+      "$(status_heartbeat_seen_marker_path "$STATE" reused)" \
+      "$(status_daemon_seen_marker_path "$STATE" reused)"; do
+      [ ! -e "$marker" ] && [ ! -L "$marker" ] || exit 1
+    done
+  ' _ "$ROOT" "$dir/old-ident" || fail "retiring the reused task presentation state failed"
+  printf 'blocked: release host unavailable\nworking: routine padding after the reused task started again\nnote: first event from reused task id\n' \
+    > "$state/reused.status"
+  old_ident=$(cat "$dir/old-ident")
+  printf '40@%s' "$old_ident" > "$state/.seen-reused_status"
+  offset=$(bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    . "$1/bin/fm-classify-lib.sh"
+    fm_wake_signal_seen_size "$2" "$2/reused.status"
+  ' _ "$ROOT" "$state")
+  [ "$offset" = 0 ] || fail "a retired file identity restored a stale offset after task reuse"
+  event=$(bash -c '
+    . "$1/bin/fm-classify-lib.sh"
+    status_span_first_actionable "$2/reused.status" "$3"
+  ' _ "$ROOT" "$state" "$offset")
+  [ "$event" = 'blocked: release host unavailable' ] \
+    || fail "retired supervision offsets hid the replacement task blocker: $event"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "drain failed after reusing a retired task id"
@@ -236,6 +262,83 @@ test_retired_task_id_starts_new_status_unread() {
     fail "retiring one task replayed a neighboring task's handled history: $(cat "$out")"
   fi
   pass "a reused task id starts its replacement status log unread at byte zero"
+}
+
+test_weak_identity_still_presents_and_advances() {
+  local dir state out second reader
+  dir=$(make_case weak-identity); state="$dir/state"
+  out="$dir/first.out"; second="$dir/second.out"; reader="$dir/identity-reader"
+  printf '#!/usr/bin/env bash\nprintf "weak:7:8"\n' > "$reader"; chmod +x "$reader"
+  printf 'needs-decision [key=release]: choose target\nnote: release context attached\n' > "$state/weak.status"
+  FM_STATUS_IDENTITY_READER="$reader" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "drain failed with the platform-strength fallback identity"
+  grep -F 'weak [key=release] needs-decision: choose target' "$out" >/dev/null \
+    || fail "weak identity omitted OPEN DECISIONS: $(cat "$out")"
+  grep -F 'weak note: release context attached' "$out" >/dev/null \
+    || fail "weak identity omitted unread status: $(cat "$out")"
+  FM_STATUS_IDENTITY_READER="$reader" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second" \
+    || fail "second drain failed with the platform-strength fallback identity"
+  grep -F 'release context attached' "$second" >/dev/null \
+    && fail "weak identity did not advance the presented-status cursor"
+  pass "fallback identity still presents and advances status state"
+}
+
+test_snapshot_failure_is_visible() {
+  local dir state out err reader
+  dir=$(make_case snapshot-failure); state="$dir/state"; out="$dir/drain.out"
+  err="$dir/drain.err"; reader="$dir/identity-reader"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"; chmod +x "$reader"
+  printf 'needs-decision: choose target\n' > "$state/fail.status"
+  # Decided behavior, not a weakened assertion: when the durable status cannot be
+  # read, the drain refuses non-zero rather than exiting green with an incomplete
+  # surface. A green, empty drain has to keep MEANING that nothing is open, and a
+  # printed marker only holds if every reader notices it. The visible marker is
+  # still required alongside the refusal, so the turn says what went unpresented.
+  # Nothing is lost by refusing: the presentation writes no cursor when it fails,
+  # so the same records surface on the re-run.
+  local rc=0
+  FM_STATUS_IDENTITY_READER="$reader" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "drain exited green after it could not read the durable status: $(cat "$out")"
+  grep -F 'STATUS PRESENTATION INCOMPLETE:' "$out" >/dev/null \
+    || fail "snapshot failure produced a silently incomplete drain: $(cat "$out")"
+  grep -F 'the durable status could not be read' "$err" >/dev/null \
+    || fail "the refusal named nothing that went unpresented: $(cat "$err")"
+  pass "an unreadable status surface refuses loudly instead of exiting green"
+}
+
+# The refusal has to hold at EVERY exit that presents status, not at most of
+# them: one green empty exit is enough to make "nothing is open" a lie. This
+# case pins the main-actor exit taken when the queue is non-empty but every
+# queued row belongs to a live branch grant, so main claims nothing and returns
+# early. It is the common shape of a silent drain, and it is the one exit that
+# historically skipped the gate. Add a case here for any further early exit.
+test_main_actor_exit_with_no_claimable_rows_refuses_on_unreadable_status() {
+  local dir state out err reader rc=0
+  dir=$(make_case snapshot-failure-main-no-claim); state="$dir/state"
+  out="$dir/drain.out"; err="$dir/drain.err"; reader="$dir/identity-reader"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"; chmod +x "$reader"
+  printf 'needs-decision: choose target\n' > "$state/fail.status"
+
+  append_wake "$state" signal task-granted.status "signal: task-granted.status" \
+    || fail "queueing the branch-granted row failed"
+  FM_STATE_OVERRIDE="$state" "$GRANT" activate "$$" main-no-claim \
+    || fail "branch owner activation failed"
+  FM_STATE_OVERRIDE="$state" "$GRANT" publish main-no-claim 1 \
+    || fail "branch grant publication failed"
+
+  FM_STATUS_IDENTITY_READER="$reader" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || rc=$?
+
+  [ "$rc" -ne 0 ] \
+    || fail "the main drain claimed no rows and exited green after it could not read the durable status: $(cat "$out")"
+  grep -F 'STATUS PRESENTATION INCOMPLETE:' "$out" >/dev/null \
+    || fail "the main no-claimable-rows exit drained silently incomplete: $(cat "$out")"
+  grep -F 'the durable status could not be read' "$err" >/dev/null \
+    || fail "the main no-claimable-rows refusal named nothing that went unpresented: $(cat "$err")"
+  if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
+    fail "an unreadable status still printed an OPEN DECISIONS verdict: $(cat "$out")"
+  fi
+  pass "a main drain that claims no rows refuses loudly when the durable status is unreadable"
 }
 
 test_open_decisions_fold_is_unchanged() {
@@ -316,6 +419,9 @@ test_pending_reply_resolution_surfaces_once
 test_unread_output_over_cap_remains_recoverable
 test_snapshot_does_not_ack_a_later_append
 test_retired_task_id_starts_new_status_unread
+test_weak_identity_still_presents_and_advances
+test_snapshot_failure_is_visible
+test_main_actor_exit_with_no_claimable_rows_refuses_on_unreadable_status
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
 test_routine_working_lines_stay_silent_on_the_empty_queue

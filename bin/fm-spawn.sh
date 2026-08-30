@@ -150,6 +150,15 @@
 #   consult it. FM_SPAWN_ALLOW_LOW_DISK=1 dispatches this one spawn anyway, and
 #   config/disk-space-min-gb=0 - or FM_DISK_SPACE_MIN_GB=0 for one run - retires
 #   the guard; bin/fm-disk-space-lib.sh owns the threshold and the measurement.
+#   A slot whose only deviation is a stale submodule gitlink is refused by that
+#   same clean check, but is reported as a stale checkout naming each submodule
+#   and both pins; nothing is converged or removed, and no remedy is suggested.
+#   That report is only reached when each submodule's checked-out commit is
+#   already contained in one of its remotes, so a submodule carrying an unpushed
+#   commit keeps the conservative uncommitted-work refusal instead. That
+#   containment test reads local refs only and never fetches, so this gate stays
+#   usable offline; a stale remote-tracking ref can therefore make an unpushed
+#   commit look contained, which is exactly why no remedy command is printed.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -384,7 +393,7 @@ else
       exit 1
     }
     [ "$YOLO_SET" -eq 1 ] || {
-      echo "error: ship spawns require --yolo <on|off>; it is this task's routine approval authority, not a project lookup" >&2
+      echo "error: ship spawns require --yolo <on|off>; it is this task's merge authority, not a project lookup" >&2
       exit 1
     }
     case "$MODE" in
@@ -650,6 +659,7 @@ spawn_remote_secondmate() {
   fm_lock_release "$remote_lock" || true
   fm_lock_release "$registry_lock" || true
   fm_lock_release "$SPAWN_TASK_LOCK" || true
+  "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
   if ! "$SCRIPT_DIR/fm-procevent-remote-reply.sh" arm "$id" >/dev/null; then
     echo "error: remote secondmate $id launched, but its reply source could not be armed; endpoint metadata is preserved" >&2
     return 1
@@ -801,16 +811,31 @@ spawn_abort_cleanup() {
 }
 trap spawn_abort_cleanup EXIT
 
+# How many 0.1s attempts a caller that CANNOT degrade waits for the lock. The
+# holder keeps it for its whole launch - reclaim, `treehouse get` (itself
+# bounded at 60s), pooled-worktree freshening, and the launch sends - so the
+# degradable default below expires on a peer that is merely still working, the
+# more reliably the busier the machine is. This bound outlasts that critical
+# section; a holder that DIED is still reclaimed immediately by
+# fm_lock_try_acquire's stale-owner path, so waiting this long only ever
+# happens behind a live holder and the bound stays a tripwire, not a race.
+HERDR_PRESENTATION_RESUME_LOCK_ATTEMPTS=1200
+
 # One bounded lock per live Herdr session/socket, shared across all homes.
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
+# <attempts> is how long this caller is willing to wait, in 0.1s attempts. The
+# default is the DEGRADABLE bound: a caller that can fall back flat (or skip an
+# abort cleanup) gives up in five seconds rather than stalling the captain
+# behind another home's spawn. A caller whose only alternative is refusing the
+# spawn passes a bound that covers the holder's own critical section instead.
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path
+  local session=${1:-} attempts=${2:-50} attempt lock_path
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  while [ "$attempt" -lt "$attempts" ]; do
     if fm_lock_try_acquire "$HERDR_PRESENTATION_ORDER_LOCK"; then
       HERDR_PRESENTATION_ORDER_LOCK_HELD=1
       return 0
@@ -935,11 +960,26 @@ if [ "$DISK_GUARD_IN_SCOPE" -eq 1 ] && [ -z "${FM_SPAWN_ALLOW_LOW_DISK:-}" ] \
   echo "$DISK_REFUSAL" >&2
   exit 1
 fi
+# Role partition: spawning NEW work is MAIN-owned. A relaunch of an existing
+# task is legitimate branch recovery (fm-control drives it through this same
+# entrypoint), so only a fresh spawn refuses the branch actor (contract:
+# bin/fm-lease-lib.sh; no-op in homes without a branch actor).
+# shellcheck source=bin/fm-lease-lib.sh
+. "$SCRIPT_DIR/fm-lease-lib.sh"
+if [ "$RELAUNCH" -ne 1 ]; then
+  fm_lease_forbid_branch "new-task spawn (fm-spawn)"
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
   if [ "$control_owner" = "$PPID" ] && fm_pid_alive "$control_owner"; then
     SPAWN_CONTROL_PARENT=1
+  elif [ "$(fm_lease_actor)" = branch ]; then
+    # Role partition refinement: branch recovery relaunches only through the
+    # fm-control transaction that owns the control lock, never by invoking
+    # this entrypoint directly (contract: bin/fm-lease-lib.sh).
+    echo "error: relaunch (fm-spawn) refused - the supervision branch must relaunch through fm-control" >&2
+    exit "$FM_LEASE_REFUSE_EXIT"
   elif fm_lock_try_acquire "$SPAWN_CONTROL_LOCK"; then
     SPAWN_CONTROL_LOCK_HELD=1
   else
@@ -1789,6 +1829,47 @@ spawn_origin_is_local_repository() {  # <worktree>
   [ -d "$origin_path" ] && git -C "$origin_path" rev-parse --git-dir >/dev/null 2>&1
 }
 
+# A pooled slot whose only deviation is a submodule gitlink is stale, not dirty:
+# an earlier refresh moved the superproject and left the submodule checkout on
+# the pin the previous base recorded. The refusal still stands and this gate
+# never touches the slot; it only names the cause, because "is not clean" while
+# the operator's own `git status` reads clean gives neither a cause nor a remedy.
+# A pin is only reported as stale when the commit the slot holds is already
+# contained in one of the submodule's remotes. Anything that cannot be proven
+# contained - an unpushed commit, a submodule with no remote, a git error - falls
+# through to the conservative uncommitted-work refusal, as does any entry that is
+# not exactly a clean submodule sitting on a different pin. The diagnosis is
+# buffered and only emitted once every entry qualifies, so it can never
+# contradict the verdict.
+#
+# No remedy command is printed, deliberately. That containment check reads local
+# refs only and never fetches, because this gate has to stay usable offline. A
+# remote-tracking ref that has gone stale - its upstream branch deleted or
+# force-pushed, and never pruned - therefore still reads as containment, so a
+# commit that is really unpushed can look contained. Naming the submodule and both
+# pins is what the operator actually needs; printing a checkout command on a
+# judgement that can be fooled could cost them that commit, so the remedy is left
+# to the operator, who can see the whole picture.
+describe_stale_submodule_pins() {  # <worktree> <status>
+  local worktree=$1 status=$2 line path want have unpushed lines=
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case $line in ' M '*) path=${line#' M '} ;; *) return 1 ;; esac
+    [ "$(git -C "$worktree" ls-files --stage -- "$path" 2>/dev/null | cut -c1-6)" = 160000 ] || return 1
+    [ -z "$(git -C "$worktree/$path" status --porcelain 2>/dev/null)" ] || return 1
+    want=$(git -C "$worktree" rev-parse --verify --quiet "HEAD:$path" 2>/dev/null) || return 1
+    have=$(git -C "$worktree/$path" rev-parse --verify --quiet HEAD 2>/dev/null) || return 1
+    [ "$want" != "$have" ] || return 1
+    unpushed=$(git -C "$worktree/$path" log --format=%H --max-count=1 "$have" --not --remotes -- 2>/dev/null) || return 1
+    [ -z "$unpushed" ] || return 1
+    lines+="error: submodule '$path' is checked out at $have, but this base records $want"$'\n'
+  done <<EOF
+$status
+EOF
+  [ -n "$lines" ] || return 1
+  printf '%s' "$lines" >&2
+}
+
 freshen_spawn_worktree_base() {  # <worktree>
   local worktree=$1 default target expected actual status local_ref local_head
   if ! git -C "$worktree" fetch --quiet origin; then
@@ -1839,12 +1920,16 @@ freshen_spawn_worktree_base() {  # <worktree>
       # A local branch that is merely behind origin keeps the origin tip below.
     fi
   fi
-  status=$(git -C "$worktree" status --porcelain) || {
+  status=$(git -C "$worktree" -c core.quotePath=false status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
   }
   if [ -n "$status" ]; then
-    echo "error: pooled worktree '$worktree' is not clean; refusing to discard uncommitted work while refreshing its base" >&2
+    if describe_stale_submodule_pins "$worktree" "$status"; then
+      echo "error: pooled worktree '$worktree' has a stale submodule checkout, not uncommitted work; refusing to launch and leaving it untouched" >&2
+    else
+      echo "error: pooled worktree '$worktree' is not clean; refusing to discard uncommitted work while refreshing its base" >&2
+    fi
     return 1
   fi
   if ! git -C "$worktree" reset --hard "$target" >/dev/null; then
@@ -1995,7 +2080,12 @@ case "$BACKEND" in
           echo "error: herdr presentation recovery could not ensure its exact named session" >&2
           exit 1
         }
-        spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" || {
+        # A journal already binds this task to a projected workspace, so this
+        # path cannot fall back flat: losing the lock refuses the resume
+        # outright. Wait out a peer spawn's whole launch rather than refuse a
+        # concurrent recovery that only needed to queue behind it.
+        spawn_herdr_presentation_order_lock_acquire "$HERDR_SES" \
+          "$HERDR_PRESENTATION_RESUME_LOCK_ATTEMPTS" || {
           echo "error: herdr presentation recovery could not acquire its session lock; refusing a concurrent resume" >&2
           exit 1
         }
@@ -2792,6 +2882,7 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   SPAWN_TASK_SET_LOCK_HELD=0
   fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
+"$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")

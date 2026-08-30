@@ -421,6 +421,15 @@ teardown_task() {  # <id> <home>
     "$ROOT/bin/fm-teardown.sh" "$id" --force
 }
 
+finish_concurrent_teardown() {  # <id> <status> <stdout> <stderr>
+  local id=$1 status=$2 out=$3 err=$4
+  [ "$status" -ne 0 ] || return 0
+  grep -F "session presentation lock is contended" "$err" >/dev/null 2>&1 \
+    || fail "projected teardown $id failed unexpectedly: $(cat "$err")"
+  teardown_task "$id" "$HOME_DIR" > "$out" 2> "$err" \
+    || fail "projected teardown $id retry failed after presentation cleanup completed: $(cat "$err")"
+}
+
 normalize_meta() {  # <meta>
   sed -E \
     -e 's|^window=.*$|window=<herdr-container-id>|' \
@@ -886,8 +895,10 @@ teardown_task order-a "$HOME_DIR" > "$TMP_ROOT/order-a-teardown.out" 2> "$TMP_RO
 ORDER_A_TEARDOWN_PID=$!
 teardown_task order-b "$HOME_DIR" > "$TMP_ROOT/order-b-teardown.out" 2> "$TMP_ROOT/order-b-teardown.err" &
 ORDER_B_TEARDOWN_PID=$!
-wait "$ORDER_A_TEARDOWN_PID" || fail "projected ordering fixture A teardown failed"
-wait "$ORDER_B_TEARDOWN_PID" || fail "projected ordering fixture B teardown failed"
+if wait "$ORDER_A_TEARDOWN_PID"; then ORDER_A_TEARDOWN_STATUS=0; else ORDER_A_TEARDOWN_STATUS=$?; fi
+if wait "$ORDER_B_TEARDOWN_PID"; then ORDER_B_TEARDOWN_STATUS=0; else ORDER_B_TEARDOWN_STATUS=$?; fi
+finish_concurrent_teardown order-a "$ORDER_A_TEARDOWN_STATUS" "$TMP_ROOT/order-a-teardown.out" "$TMP_ROOT/order-a-teardown.err"
+finish_concurrent_teardown order-b "$ORDER_B_TEARDOWN_STATUS" "$TMP_ROOT/order-b-teardown.out" "$TMP_ROOT/order-b-teardown.err"
 assert_focus_is "$CAPTAIN_FOCUS" "concurrent projected teardowns"
 teardown_task order-fail "$HOME_DIR" > "$TMP_ROOT/order-fail-teardown.out" 2> "$TMP_ROOT/order-fail-teardown.err" \
   || fail "projected ordering failure fixture teardown failed"
@@ -928,8 +939,10 @@ for ROUND in 1 2 3; do
   WAVE_A_TEARDOWN_PID=$!
   teardown_task "focus-$ROUND-b" "$HOME_DIR" > "$TMP_ROOT/focus-$ROUND-b-teardown.out" 2> "$TMP_ROOT/focus-$ROUND-b-teardown.err" &
   WAVE_B_TEARDOWN_PID=$!
-  wait "$WAVE_A_TEARDOWN_PID" || fail "focus wave $ROUND teardown A failed"
-  wait "$WAVE_B_TEARDOWN_PID" || fail "focus wave $ROUND teardown B failed"
+  if wait "$WAVE_A_TEARDOWN_PID"; then WAVE_A_TEARDOWN_STATUS=0; else WAVE_A_TEARDOWN_STATUS=$?; fi
+  if wait "$WAVE_B_TEARDOWN_PID"; then WAVE_B_TEARDOWN_STATUS=0; else WAVE_B_TEARDOWN_STATUS=$?; fi
+  finish_concurrent_teardown "focus-$ROUND-a" "$WAVE_A_TEARDOWN_STATUS" "$TMP_ROOT/focus-$ROUND-a-teardown.out" "$TMP_ROOT/focus-$ROUND-a-teardown.err"
+  finish_concurrent_teardown "focus-$ROUND-b" "$WAVE_B_TEARDOWN_STATUS" "$TMP_ROOT/focus-$ROUND-b-teardown.out" "$TMP_ROOT/focus-$ROUND-b-teardown.err"
   assert_focus_is "$CAPTAIN_FOCUS" "focus wave $ROUND concurrent teardowns"
   WAVE_REMAINING=$(lab workspace list | jq -r '.result.workspaces[].label')
   [ "$WAVE_REMAINING" = $'firstmate\n2ndmate-alpha\n2ndmate-bravo' ] \
@@ -1282,10 +1295,40 @@ PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/
 PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
   || fail "could not reprovision the isolated session for concurrent recovery"
 CONCURRENT_RECOVERY_FOCUS=$(focus_snapshot)
+# A resume cannot fall back flat, so it must WAIT for whoever holds the session
+# lock instead of refusing a peer that is still working. The real holder is
+# another spawn keeping the lock for its whole launch, which outlasts the five
+# seconds a degradable caller waits; hold the lock here for longer than that
+# bound so the wait is proven rather than left to whichever runner is faster.
+CONCURRENT_HOLD_READY="$TMP_ROOT/concurrent-hold-ready"
+CONCURRENT_HOLD_RELEASE="$TMP_ROOT/concurrent-hold-release"
+CONCURRENT_HOLD_PATH=$(session_presentation_lock_path) \
+  || fail "could not resolve the session presentation lock for concurrent recovery"
+ROOT="$ROOT" READY="$CONCURRENT_HOLD_READY" RELEASE="$CONCURRENT_HOLD_RELEASE" \
+  LOCK="$CONCURRENT_HOLD_PATH" bash -c '
+  . "$ROOT/bin/fm-wake-lib.sh"
+  fm_lock_try_acquire "$LOCK" || exit 1
+  : > "$READY"
+  while [ ! -e "$RELEASE" ]; do sleep 0.05; done
+  fm_lock_release "$LOCK"
+' &
+LOCK_CONTENTION_OWNER_PID=$!
+while [ ! -e "$CONCURRENT_HOLD_READY" ] && kill -0 "$LOCK_CONTENTION_OWNER_PID" 2>/dev/null; do sleep 0.01; done
+[ -e "$CONCURRENT_HOLD_READY" ] || fail "could not hold the session lock for concurrent recovery"
 spawn_task "$PRIMARY_WAVE_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/primary-wave-resume.out" 2> "$TMP_ROOT/primary-wave-resume.err" &
 PRIMARY_WAVE_PID=$!
 spawn_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" "$PROJECT_DIR" > "$TMP_ROOT/bravo-wave-resume.out" 2> "$TMP_ROOT/bravo-wave-resume.err" &
 BRAVO_WAVE_PID=$!
+sleep 8
+# Past the five-second degradable bound, and the only exit from the acquire
+# while the lock is held is that refusal - so its absence IS the wait.
+if grep -F "refusing a concurrent resume" "$TMP_ROOT/primary-wave-resume.err" >/dev/null 2>&1 \
+   || grep -F "refusing a concurrent resume" "$TMP_ROOT/bravo-wave-resume.err" >/dev/null 2>&1; then
+  fail "a concurrent recovery refused the held session lock instead of waiting for its holder"
+fi
+: > "$CONCURRENT_HOLD_RELEASE"
+wait "$LOCK_CONTENTION_OWNER_PID" || fail "concurrent recovery session lock owner failed"
+LOCK_CONTENTION_OWNER_PID=
 wait "$PRIMARY_WAVE_PID" || fail "concurrent primary recovery failed: $(cat "$TMP_ROOT/primary-wave-resume.err")"
 wait "$BRAVO_WAVE_PID" || fail "concurrent secondmate recovery failed: $(cat "$TMP_ROOT/bravo-wave-resume.err")"
 PRIMARY_WAVE_NEW_WT=$(remember_meta_worktree "$PRIMARY_WAVE_META")
@@ -1311,7 +1354,7 @@ teardown_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" > "$TMP_ROOT/bravo-wave-teardown
 "$REAL_TREEHOUSE" return --force "$BRAVO_WAVE_OLD_WT" >/dev/null 2>&1 || true
 "$REAL_TREEHOUSE" return --force "$PRIMARY_WAVE_NEW_WT" >/dev/null 2>&1 || true
 "$REAL_TREEHOUSE" return --force "$BRAVO_WAVE_NEW_WT" >/dev/null 2>&1 || true
-pass "real Herdr lab: concurrent cross-home recoveries replace exact husks under one session lock with no focus drift"
+pass "real Herdr lab: concurrent cross-home recoveries wait out a held session lock, replace exact husks, and never drift focus"
 
 # Seed a legacy old-format primary projection and a flat secondmate tab; correction must not migrate them.
 LEGACY_OUT=$(lab workspace create --cwd "$PROJECT_DIR" --label "firstmate/legacy-seed · p:AbCdEfGhIjKlMnOpQrStUv" --no-focus) \

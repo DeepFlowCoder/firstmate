@@ -41,10 +41,10 @@
 # Each form queues the canonical Lavish choice payload - `tag: 'choice'` with
 # `data: { question: <decision key>, answer: <choice> }` - which is exactly what
 # bin/fm-procevent-lavish.sh's `answers` command reads. Arm the page with that
-# adapter and bind it with `bin/fm-decision-hold.sh bind`, and an answer closes
+# adapter and bind it with `bin/fm-captain-hold.sh bind`, and an answer closes
 # its hold through the one keyed-answer intake with no hand translation:
 #   bin/fm-tablero.sh render <draft> --out <page.html>
-#   bin/fm-decision-hold.sh bind "$(bin/fm-procevent-lavish.sh source-id <page.html>)" <origin-id>
+#   bin/fm-captain-hold.sh bind "$(bin/fm-procevent-lavish.sh source-id <page.html>)" <origin-id>
 #   bin/fm-procevent-lavish.sh arm <page.html>
 #   lavish-axi <page.html>
 # A binding names ONE origin, and a board that spans several investigations
@@ -62,11 +62,12 @@
 # record. `hold_kind` is the filter and `kind` is not: a captain-gated thread is
 # often an ordinary task carrying a captain hold, and filtering on `kind`
 # silently drops it. This script reads report prose, chat, and terminal output
-# never; .agents/skills/decision-hold-lifecycle/SKILL.md owns what a decision is
-# and bin/fm-decision-hold.sh owns every close path.
+# never; .agents/skills/captain-hold-lifecycle/SKILL.md owns what a captain hold
+# is and bin/fm-captain-hold.sh owns every close path. (bin/fm-decision-hold.sh
+# still maps the retired decision commands onto it for one release.)
 #
 # The blocked-work count is a RANKING hint read from one `tasks-axi list
-# --blocked` call. bin/fm-decision-hold.sh owns the authoritative answer to what
+# --blocked` call. bin/fm-captain-hold.sh owns the authoritative answer to what
 # a hold still blocks, confirmed per candidate, because there it gates a close.
 # Here it only orders cards, so a cheap token match is the right cost.
 #
@@ -220,7 +221,7 @@ held_ids() {
 
 # Ranking hint only: how many backlog items name <hold-id> in blocked_by, matched
 # on comma or quote boundaries so a longer identity sharing a prefix does not
-# count. bin/fm-decision-hold.sh owns the authoritative per-candidate answer.
+# count. bin/fm-captain-hold.sh owns the authoritative per-candidate answer.
 count_blocked_by() {  # <listing> <hold-id>
   printf '%s\n' "$1" | awk -v id="$2" '
     index($0, id) == 0 { next }
@@ -790,12 +791,12 @@ cmd_render() {
   if [ "$sinorigen" -gt 0 ]; then
     printf 'aviso: %s decision(es) de esta pagina no traen origen registrado.\n' "$sinorigen"
     printf '       ninguna vinculacion las alcanza; sus respuestas NO se cierran\n'
-    printf '       solas, cierralas con bin/fm-decision-hold.sh una por una.\n'
+    printf '       solas, cierralas con bin/fm-captain-hold.sh una por una.\n'
   fi
   if [ "$origins" -gt 1 ]; then
     printf 'aviso: esta pagina lleva %s origenes y una vinculacion nombra solo uno.\n' "$origins"
     printf '       las respuestas de los otros origenes NO se cierran solas; cierralas\n'
-    printf '       con bin/fm-decision-hold.sh una por una.\n'
+    printf '       con bin/fm-captain-hold.sh una por una.\n'
   elif [ "$origins" -eq 1 ] && [ "$sinorigen" -eq 0 ]; then
     printf 'nota: vinculala a su origen antes de armarla y las respuestas cierran solas.\n'
   fi

@@ -220,7 +220,7 @@ The gate deliberately does not refuse on that, because a pull request legitimate
 bash tests/fm-pr-merge.test.sh
 ```
 
-The gate's own cases, out of the thirty-one the file runs:
+The gate's own cases, out of the eighty-two the file runs:
 
 ```
 ok - fm-pr-merge refuses a PR with a failed check and changes no state
