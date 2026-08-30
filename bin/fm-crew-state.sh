@@ -50,8 +50,9 @@
 #      question - nm_terminal_verdict_standing, below - and every terminal
 #      verdict reaches the captain only through it; the rule lives THERE, and
 #      this paragraph only describes it. Its three answers: `current` asserts
-#      failed/done as read, `superseded` reports the live successor when its head
-#      binds here and `unknown` when it does not, and `unestablished` (the runs
+#      failed/done as read, `superseded` reports the live successor as working
+#      only when its head binds here AND that successor is still running - any
+#      other superseding row reports `unknown` - and `unestablished` (the runs
 #      list never answered, so nothing was checked) reports `unknown`. A stale or
 #      unverifiable terminal verdict is never asserted as failed or done.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
