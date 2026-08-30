@@ -113,6 +113,16 @@
 #     that verified run instance. A run already terminal
 #     (an outcome is set) or not parked at a gate is left untouched. Idempotent:
 #     an already-aborted run reads back terminal and is skipped on retry.
+#     KNOWN GAP, deliberately not closed here: branch+head identity cannot
+#     separate an aborted run from the live run that replaced it (measured; see
+#     the runs-list primitives in bin/fm-nm-run-lib.sh), and this path takes the
+#     single repo-scoped `axi status` answer without corroborating it against the
+#     runs list, which bin/fm-crew-state.sh now does before reporting a terminal
+#     verdict. So an older terminal run on the same branch and head can mask a
+#     genuinely parked live one, and teardown then orphans exactly the run Fix 1
+#     exists to conclude. Closing it here newly aborts runs teardown previously
+#     left alone - a destructive-path change, unlike a read-only reporter - so it
+#     needs its own change with its own evidence.
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground

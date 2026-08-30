@@ -122,3 +122,64 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   [ "$(fm_nm_branch_sync_state "$1")" = pipeline_owned ] || return 1
   fm_nm_run_is_active "$1"
 }
+
+# --- runs-list primitives ---------------------------------------------------
+#
+# Why the runs list is needed at all, measured 2026-08-29 against the real store
+# (~/.no-mistakes/state.sqlite; runs 01M166T3Z9WVJDV1V2JJM8F7HG cancelled and
+# 01M16WA7F47FKSF3459NSH7E7K live, both on branch fm/fm-merge-puerta-aptitud):
+# branch + head identity CANNOT separate an aborted run from the live run that
+# replaced it. A run's reported `head:` is its last PUSHED sha (head_sha equals
+# last_pushed_sha for every run in the store) and the pipeline commits in its own
+# managed worktree, so the crew worktree sits at the submitted head - the exact
+# sha the aborted run also reports - for the whole successor run. `axi status`
+# returns ONE run and offers no way to ask for a specific branch's active run
+# (verified: `axi status --help` exposes only --run, and `runs --help` has no
+# branch or status filter), so the runs list, which carries every run
+# newest-first WITH its own status, is the only discriminator available.
+#
+# 0 if a `no-mistakes runs` status word belongs to a run that has not reached a
+# terminal outcome. The store's terminal vocabulary is completed/failed/
+# cancelled; pending and running are the non-terminal words the binary carries.
+fm_nm_status_is_active() {  # <status-word>
+  case "$1" in
+    pending|running) return 0 ;;
+  esac
+  return 1
+}
+
+# The `no-mistakes runs` status word that a run `axi status` reports as terminal
+# must carry in the list, so the two surfaces can be compared word to word. The
+# `outcome:` field appears only in a FINAL state (the installed binary's own help
+# text: "A final state instead shows outcome:
+# <checks-passed|passed|failed|cancelled>"), and the store's run statuses are
+# pending/running/completed/failed/cancelled (measured 2026-08-29 by tallying
+# ~/.no-mistakes/state.sqlite: completed 10, cancelled 3, running 2, failed 2,
+# with every merged-PR run completed), so a finished run that is neither failed
+# nor cancelled is completed. Echoes NOTHING for a word whose list
+# correspondence is not established; a caller must read that as "no evidence",
+# never as a mismatch.
+fm_nm_runs_word_for_terminal() {  # <outcome-or-status word>
+  case "${1:-}" in
+    passed|checks-passed|completed) printf 'completed' ;;
+    failed)                         printf 'failed' ;;
+    cancelled)                      printf 'cancelled' ;;
+  esac
+}
+
+# Split one `no-mistakes runs` row into "<status><TAB><branch><TAB><sha>".
+# Rows are plain, unquoted, column-padded text -
+# "<status> <branch> <short-sha> <date> [<pr-url>]" - so splitting on the first
+# two whitespace runs is exact. Echoes nothing for a blank row.
+fm_nm_runs_parse_row() {  # <row>
+  local row status rest branch sha
+  row=$(fm_nm_trim "${1:-}")
+  [ -n "$row" ] || return 1
+  status=${row%% *}
+  rest=$(fm_nm_trim "${row#* }")
+  branch=${rest%% *}
+  rest=$(fm_nm_trim "${rest#* }")
+  sha=${rest%% *}
+  [ -n "$status" ] && [ -n "$branch" ] || return 1
+  printf '%s\t%s\t%s' "$status" "$branch" "$sha"
+}
