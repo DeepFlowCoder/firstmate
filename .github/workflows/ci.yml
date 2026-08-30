@@ -129,14 +129,17 @@ jobs:
   tests-portable-serial:
     name: Behavior portable serial ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Measured whole remainder is ~49 min of serial work. The ~6.2 min per shard
-    # is only the hint-sum estimate; the number the cap has to clear is the worst
-    # shard actually observed. On green run 33246490613 the measured shard sums
-    # were 306/367/347/314/565/372/348/300 s, so the worst ran 565 s (9.41 min),
-    # 53% above its 369800 ms estimate and leaving ~1.6x margin against the cap
-    # rather than 2x. An estimate cannot stand in for that margin:
+    # Measured whole remainder is ~55 min of serial work across 8 shards. The
+    # ~6.9 min per shard is only the hint-sum estimate; the number the cap has to
+    # clear is the worst shard actually observed. On green run 33246490613 the
+    # measured shard sums were 306/367/347/314/565/372/348/300 s, so the worst ran
+    # 565 s (9.41 min), 53% above its 369800 ms estimate and leaving ~1.6x margin
+    # against the cap rather than 2x. An estimate cannot stand in for that margin:
     # tests/fm-bootstrap.test.sh alone drifted 38766 -> 139280 ms in that run.
-    # Cap is a hang tripwire, not the expected healthy end of the lane.
+    # That run predates the upstream reconciliation, which added scripts the hint
+    # table has not measured yet, so the margin is the floor to re-measure against
+    # rather than a current reading. Cap is a hang tripwire, not the expected
+    # healthy end of the lane.
     timeout-minutes: 15
     strategy:
       # Every shard reports so one failure never hides another shard's result.
@@ -390,8 +393,8 @@ jobs:
           bearings_output=$(/bin/bash tests/fm-bearings-snapshot.test.sh)
           printf '%s\n' "$bearings_output"
           bearings_count=$(printf '%s\n' "$bearings_output" | grep -c '^ok - ')
-          [ "$bearings_count" -eq 41 ] || {
-            echo "::error::expected 41 Bearings tests, got $bearings_count"
+          [ "$bearings_count" -eq 42 ] || {
+            echo "::error::expected 42 Bearings tests, got $bearings_count"
             exit 1
           }
 

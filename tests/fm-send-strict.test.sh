@@ -102,8 +102,11 @@ test_exact_lane_id_send_still_works() {
     "$SEND" mpf-lane-m8 "lost dispatch" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "exact task id send should succeed when metadata exists"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=1 arg=lost dispatch" "exact id should type literal text to the meta target"
-  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=0 arg=Enter" "exact id should submit with Enter"
+  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=1 arg=Firstmate instruction waiting" \
+    "exact id should ring the doorbell at the meta target"
+  assert_contains "$got" "target=sess:fm-mpf-lane-m8 literal=0 arg=Enter" "exact id should submit the doorbell with Enter"
+  grep -qF 'lost dispatch' "$home/state/mpf-lane-m8.inbox/001.msg" \
+    || fail "exact id should record the steer in the task inbox"
   pass "fm-send strict: exact task/lane ids resolve through home metadata"
 }
 
@@ -192,10 +195,13 @@ test_healthy_fm_id_send_still_works() {
     "$SEND" fm-lane-ok "hello captain" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "healthy fm-id send should succeed"
   got=$(cat "$log")
-  assert_contains "$got" "target=sess:fm-lane-ok literal=1 arg=hello captain" "healthy send should type literal text to the meta target"
-  assert_contains "$got" "target=sess:fm-lane-ok literal=0 arg=Enter" "healthy send should submit with Enter"
+  assert_contains "$got" "target=sess:fm-lane-ok literal=1 arg=Firstmate instruction waiting" \
+    "healthy send should ring the doorbell at the meta target"
+  assert_contains "$got" "target=sess:fm-lane-ok literal=0 arg=Enter" "healthy send should submit the doorbell with Enter"
+  grep -qF 'hello captain' "$home/state/lane-ok.inbox/001.msg" \
+    || fail "healthy send should record the steer in the task inbox"
   assert_contains "$(cat "$err")" "requested message WILL still be sent" "fm-send guard banner should keep send-specific continuation wording"
-  pass "fm-send strict: healthy fm-<id> sends still type once and submit"
+  pass "fm-send strict: healthy fm-<id> sends record the steer and ring once"
 }
 
 # A --key send is how firstmate interrupts a worker, so its exit status is the
@@ -233,7 +239,7 @@ test_key_send_exit_status_follows_delivery() {
 # are asserted from one stub: a message at the cap must still be typed in full,
 # or the refusal could pass while quietly blocking ordinary steers.
 test_oversized_message_is_refused_before_it_reaches_the_endpoint() {
-  local dir fb home err log rc big at_cap
+  local dir fb home err log rc big at_cap at_cap_body
   dir="$TMP_ROOT/oversize"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); home=$(setup_home oversize); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
   fm_write_meta "$home/state/lane-big.meta" "window=sess:fm-lane-big" "kind=ship"
@@ -248,14 +254,19 @@ test_oversized_message_is_refused_before_it_reaches_the_endpoint() {
   assert_contains "$(cat "$err")" "send its path instead" "the refusal should name the file route for long instructions"
   [ ! -s "$log" ] || fail "an oversized message still reached the endpoint"$'\n'"$(head -c 200 "$log")"
 
-  # A message at the cap is ordinary traffic and must still be typed in full,
-  # never quietly shortened.
+  # A message at the cap is ordinary traffic and must still arrive in full,
+  # never quietly shortened. A task resolved through this home's metadata rides
+  # the inbox plane, so the delivered bytes are the durable record's body rather
+  # than the typed doorbell (bin/fm-task-inbox-lib.sh owns that format).
   : > "$log"
   at_cap=$(head -c 4096 /dev/zero | tr '\0' b)
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_SEND_SETTLE=0 \
     "$SEND" lane-big "$at_cap" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "a message at the cap should still send"
-  assert_contains "$(cat "$log")" "arg=$at_cap" "a message at the cap must be typed whole, not truncated"
+  at_cap_body=$(bash -c '. "$1"; fm_task_inbox_body "$2"' _ \
+    "$ROOT/bin/fm-task-inbox-lib.sh" "$home/state/lane-big.inbox/001.msg")
+  [ "$at_cap_body" = "$at_cap" ] \
+    || fail "a message at the cap must arrive whole, not truncated (got ${#at_cap_body} of ${#at_cap} bytes)"
   pass "fm-send: an oversized message is refused loudly before the endpoint, and a message at the cap still sends whole"
 }
 
