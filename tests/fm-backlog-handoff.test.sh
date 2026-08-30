@@ -355,6 +355,11 @@ case " $* " in
       handoff_pid=$(ps -o ppid= -p "$PPID" | tr -d '[:space:]')
       kill -KILL "$handoff_pid"
       sleep 1
+      # The crash this fixture stages happens *before* the move lands, so the
+      # move must never reach the real binary. Delegating here would leave an
+      # orphaned mv that completes after the handoff is gone and races the
+      # recovery retry for the source item.
+      exit 137
     fi
     ;;
 esac
