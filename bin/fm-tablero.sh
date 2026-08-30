@@ -221,7 +221,7 @@ held_ids() {
 
 # Ranking hint only: how many backlog items name <hold-id> in blocked_by, matched
 # on comma or quote boundaries so a longer identity sharing a prefix does not
-# count. bin/fm-decision-hold.sh owns the authoritative per-candidate answer.
+# count. bin/fm-captain-hold.sh owns the authoritative per-candidate answer.
 count_blocked_by() {  # <listing> <hold-id>
   printf '%s\n' "$1" | awk -v id="$2" '
     index($0, id) == 0 { next }
@@ -791,12 +791,12 @@ cmd_render() {
   if [ "$sinorigen" -gt 0 ]; then
     printf 'aviso: %s decision(es) de esta pagina no traen origen registrado.\n' "$sinorigen"
     printf '       ninguna vinculacion las alcanza; sus respuestas NO se cierran\n'
-    printf '       solas, cierralas con bin/fm-decision-hold.sh una por una.\n'
+    printf '       solas, cierralas con bin/fm-captain-hold.sh una por una.\n'
   fi
   if [ "$origins" -gt 1 ]; then
     printf 'aviso: esta pagina lleva %s origenes y una vinculacion nombra solo uno.\n' "$origins"
     printf '       las respuestas de los otros origenes NO se cierran solas; cierralas\n'
-    printf '       con bin/fm-decision-hold.sh una por una.\n'
+    printf '       con bin/fm-captain-hold.sh una por una.\n'
   elif [ "$origins" -eq 1 ] && [ "$sinorigen" -eq 0 ]; then
     printf 'nota: vinculala a su origen antes de armarla y las respuestas cierran solas.\n'
   fi
