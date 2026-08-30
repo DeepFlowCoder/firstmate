@@ -226,6 +226,74 @@ test_read_failure_refuses_loudly_and_preserves_state_for_retry() {
   pass "a failed presentation read refuses loudly and preserves status state for retry"
 }
 
+# One refusal message for every cause sent every cause to firstmate. A reader
+# the host kills mid-read and a reader that reports a genuine I/O error are
+# different owners' problems, and the drain now says which it saw. Drive all
+# three failure shapes through the real script and assert each refuses AND is
+# told apart - a reader that prints the correct value and then dies on a signal
+# is the shape a host whose forked subshells crash presents from in here, and it
+# must not be reported as a fault of the status file.
+test_refusal_tells_a_killed_reader_apart_from_a_genuine_io_failure() {
+  local dir state statusfile out err rc crash_reader err_reader garbage_reader
+  dir=$(make_case cursor-read-failure-diagnosis)
+  state="$dir/state"
+  statusfile="$state/task7.status"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  crash_reader="$dir/crash-reader"
+  err_reader="$dir/err-reader"
+  garbage_reader="$dir/garbage-reader"
+
+  # Correct output, then death by signal: the value is on stdout but the reader
+  # never returned, so the drain must discard it rather than trust it.
+  cat > "$crash_reader" <<'CRASH'
+#!/usr/bin/env bash
+LC_ALL=C stat -f '%z' "$1" 2>/dev/null || LC_ALL=C stat -c '%s' "$1" 2>/dev/null
+kill -SEGV $$
+CRASH
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$err_reader"
+  printf '#!/usr/bin/env bash\necho notanumber\n' > "$garbage_reader"
+  chmod +x "$crash_reader" "$err_reader" "$garbage_reader"
+
+  printf 'needs-decision [key=d]: a call the captain still owes\n' > "$statusfile"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the injected read failures failed"
+
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SIZE_READER="$crash_reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "a size reader killed by a signal let the drain exit green, so a discarded read reads as nothing being open"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "a signal-killed reader stopped refusing loudly: $(command cat "$err")"
+  grep -F 'was killed by signal 11' "$err" >/dev/null \
+    || fail "the refusal did not identify the read as killed by a signal: $(command cat "$err")"
+  grep -F "$statusfile" "$err" >/dev/null \
+    || fail "the refusal did not name the status file whose read failed: $(command cat "$err")"
+
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SIZE_READER="$err_reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a failing size reader let the drain exit green"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "an I/O failure stopped refusing loudly: $(command cat "$err")"
+  grep -F 'genuine I/O failure' "$err" >/dev/null \
+    || fail "an ordinary read failure was not reported as a genuine I/O failure: $(command cat "$err")"
+  grep -F 'killed by signal' "$err" >/dev/null \
+    && fail "an ordinary read failure was misreported as a signal death: $(command cat "$err")"
+
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_SIZE_READER="$garbage_reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a size reader returning an unusable value let the drain exit green"
+  grep -F 'returned no usable value' "$err" >/dev/null \
+    || fail "a successful reader with unusable output was not reported as such: $(command cat "$err")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "wake drain did not recover after the injected read failures"
+  grep -F 'task7' "$out" | grep -F '[key=d]' >/dev/null \
+    || fail "the open decision disappeared once reads recovered: $(command cat "$out")"
+
+  pass "the refusal tells a host-killed read apart from a genuine I/O failure and still refuses on both"
+}
+
 # The captain's decisions reach the captain through this drain, so "nothing
 # printed, exit 0" is an affirmative claim that nothing is open. Drive the real
 # script repeatedly with the size read failing and assert it can never make that
@@ -564,6 +632,7 @@ test_previous_fold_cache_is_refolded_under_current_semantics() {
 test_truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision
 test_same_size_rewrite_is_detected_via_inode_identity
 test_read_failure_refuses_loudly_and_preserves_state_for_retry
+test_refusal_tells_a_killed_reader_apart_from_a_genuine_io_failure
 test_unreadable_status_never_exits_green_and_empty_while_a_decision_is_open
 test_open_decisions_fold_read_failure_refuses_instead_of_claiming_nothing_is_open
 test_cursor_commit_failure_after_a_full_presentation_notices_and_stays_green
