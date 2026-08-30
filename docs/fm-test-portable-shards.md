@@ -103,7 +103,8 @@ An unmeasured script is where the estimate can be wrong by the ~500 s between sh
 
 This note first blamed `tests/fm-remote-secondmate-lifecycle-e2e.test.sh` for that gap, which was wrong: it is the heaviest script in the shard, but its 211342 ms hint is already inside the 412833 ms estimate, so it cannot by itself explain a gap against that estimate.
 It is still worth re-measuring - it ran 346202 ms locally on 2026-08-30, a different platform, so that number is evidence rather than a replacement value - but the default weights are the likelier cause.
-A local measurement did not settle the question either way: `tests/fm-branch-supervision.test.sh` ran 8.4 s locally, which almost certainly means locally-skipped gated work that CI runs in full, so a local number cannot stand in for a CI one here.
+`tests/fm-branch-supervision.test.sh` ran 8.4 s locally and its CI cost is unmeasured, so its 20000 ms placeholder may over-count it rather than under-count it: a local number did not settle a CI question.
+That sentence first explained the 8.4 s as locally gate-skipped work CI runs in full, which was itself an unverified premise — the file has no environment gating and `tests/lib.sh` has no skip helper — and review caught it, inside the very note whose subject is relying on unverified premises.
 
 Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above.
 
