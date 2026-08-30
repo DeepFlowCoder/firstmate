@@ -318,8 +318,9 @@ test_secondmate_cap_measures_the_marked_payload() {
   # delivered bytes are the durable record's body and only a fixed-size doorbell
   # is typed. The guarantee is unchanged - a payload at the cap arrives whole,
   # never quietly shortened - and it is asserted where the payload now lands.
-  record=$(ls "$home/state"/*.inbox/*.msg 2>/dev/null | LC_ALL=C sort | tail -1)
-  [ -n "$record" ] || fail "a marked payload at the cap left no durable steer record; state holds: $(ls -A "$home/state" | tr '\n' ' ') | typed $(LC_ALL=C wc -c < "$log" | tr -d '[:space:]') bytes"
+  record=$(find "$home/state" -maxdepth 2 -path '*.inbox/*' -name '*.msg' 2>/dev/null \
+    | LC_ALL=C sort | tail -1)
+  [ -n "$record" ] || fail "a marked payload at the cap left no durable steer record"
   delivered=$(bash -c '. "$1"; fm_task_inbox_body "$2"' _ \
     "$ROOT/bin/fm-task-inbox-lib.sh" "$record")
   got=$(printf '%s' "$delivered" | LC_ALL=C wc -c | tr -d '[:space:]')
