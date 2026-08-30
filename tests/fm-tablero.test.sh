@@ -738,6 +738,15 @@ test_render_warns_when_a_page_spans_several_origins() {
   assert_contains "$out" "2 origenes" \
     "render stayed silent about a page whose answers cannot all close themselves"
   assert_contains "$out" "NO se cierran solas" "the warning did not say what will not happen"
+  # A warning is only useful if the command it hands the captain still exists
+  # once the shim is dropped. Upstream collapsed decisions into captain-held
+  # tasks, so bin/fm-captain-hold.sh owns closing them and bin/fm-decision-hold.sh
+  # survives only as a one-release shim: naming the shim here would send the
+  # captain to a command that disappears.
+  assert_contains "$out" "bin/fm-captain-hold.sh" \
+    "the warning did not name the command that actually closes a hold"
+  assert_not_contains "$out" "bin/fm-decision-hold.sh" \
+    "the warning sends the captain to the one-release shim instead of its replacement"
   pass "render warns plainly when a board spans more origins than one binding covers"
 }
 
@@ -771,6 +780,12 @@ test_render_says_a_decision_with_no_origin_will_not_close_itself() {
   assert_contains "$out" "no traen origen registrado" \
     "render stayed silent about an answer that no binding can ever close"
   assert_contains "$out" "NO se cierran" "the warning did not say what will not happen"
+  # Same reason as the several-origins warning above: the command handed to the
+  # captain has to be the one that survives the shim being dropped.
+  assert_contains "$out" "bin/fm-captain-hold.sh" \
+    "the no-origin warning did not name the command that actually closes a hold"
+  assert_not_contains "$out" "bin/fm-decision-hold.sh" \
+    "the no-origin warning sends the captain to the one-release shim instead of its replacement"
   assert_not_contains "$out" "las respuestas cierran solas" \
     "render still promised that every answer on this page closes itself"
 
