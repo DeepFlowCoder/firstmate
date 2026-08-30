@@ -154,10 +154,13 @@ CHANGED_DEFAULT_TIMEOUT_SECS=900
 # How many separate-runner shards the portable serial remainder splits into.
 # One owner: CI lane names carry this count and are refused when they disagree.
 # Derived from the measured remainder against the CI job cap, not chosen freely:
-# the lane now measures about 2959 s of serial work, so four shards carried
-# 903/633/880/543 s and the worst crossed the 900 s cap and timed out. Eight puts
-# the balanced estimate near 370 s; the worst shard measured on green run
-# 33246490613 ran 565 s, so the cap stays a hang tripwire with real margin.
+# at 2959 s of serial work four shards carried 903/633/880/543 s and the worst
+# crossed the 900 s cap and timed out. Eight put the balanced estimate near 370 s
+# then, and the worst shard measured on green run 33246490613 ran 565 s, 53%
+# above that estimate, so the cap stays a hang tripwire with real margin. The
+# lane has since grown to about 3303 s, which the same eight shards balance near
+# 413 s; docs/fm-test-portable-shards.md owns the current per-shard table and the
+# refresh procedure.
 PORTABLE_SERIAL_SHARDS=8
 
 # Balance hint for a portable-serial script with no measured duration. The

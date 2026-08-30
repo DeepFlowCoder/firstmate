@@ -336,10 +336,11 @@ Measured on 2026-08-19 against herdr 0.8.0 by sending payloads of increasing siz
 Past that cliff the bytes arrive OUT OF ORDER, with the start of the message embedded in the middle of the payload, so an oversized steer is not a slow steer, it is a corrupted one that nothing reports.
 
 `bin/fm-send.sh` therefore refuses a text send over `FM_SEND_MAX_BYTES` = 4096 bytes before the backend is touched and before any durable record exists, and never truncates.
-The cap is measured on the bytes that will actually reach the pane, which for a from-firstmate secondmate request includes the 44-byte carrier and correlation token that `bin/fm-pending-reply-lib.sh` prepends; measuring the same point on the local and remote legs is what keeps one limit from accepting a message that the other refuses.
+The cap is measured on the delivered bytes, which for a from-firstmate secondmate request include the 44-byte carrier and correlation token that `bin/fm-pending-reply-lib.sh` prepends; measuring the same point on the local and remote legs is what keeps one limit from accepting a message that the other refuses.
+The check runs before the delivery plane is chosen, so the same single cap also bounds an ordinary steer whose payload lands in the durable steering inbox rather than on the pane; that is deliberate conservatism rather than a measured inbox limit, and `bin/fm-send.sh`'s header owns the reasoning.
 4096 sits deliberately below the 6000-byte figure measured as safe: the margin is the distance from a cliff whose exact location is vendor-controlled and moves between releases.
 There is no override, because the route for anything longer is always available and always intact - write the long instruction to a file and send its path (`AGENTS.md` section 7).
-The refusal itself is pinned by `tests/fm-send-strict.test.sh`.
+The refusal is pinned by `tests/fm-send-strict.test.sh`, and the marked from-firstmate carrier's share of the cap by `tests/fm-send-secondmate-marker.test.sh`; both measure a payload at the cap on the delivered bytes of the durable record.
 
 ### Prune and respawn
 
