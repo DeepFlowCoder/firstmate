@@ -1016,6 +1016,13 @@ test_github_no_queue_rule_says_nothing_about_a_queue() {
 
 test_github_fallback_view_refusal_says_the_queue_was_unobservable() {
   local case_dir ghless_path rc
+  # These cases are about how the merge is PERFORMED without gh, not about how
+  # check fitness is READ. The fitness gate needs gh for its reading and refuses
+  # when it cannot measure (tests/fm-pr-merge.test.sh::test_missing_gh_binary_names_itself
+  # owns that refusal), so reaching the execution path on a gh-less host is
+  # exactly what --captain-override-red is for. The override is passed here to
+  # get past the reading, never to weaken it: everything asserted below is
+  # upstream's unchanged execution and outcome-verification behavior.
   case_dir=$(make_case github-fallback-unobservable-queue)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" 8686868686868686868686868686868686868686
@@ -1036,7 +1043,7 @@ SH
 
   set +e
   PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/73 -- --auto --merge \
+    https://github.com/example/repo/pull/73 --captain-override-red -- --auto --merge \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -1155,6 +1162,13 @@ test_github_failed_merge_names_an_observed_landed_state() {
 
 test_github_without_gh_still_uses_gh_axi_merge() {
   local case_dir ghless_path rc
+  # These cases are about how the merge is PERFORMED without gh, not about how
+  # check fitness is READ. The fitness gate needs gh for its reading and refuses
+  # when it cannot measure (tests/fm-pr-merge.test.sh::test_missing_gh_binary_names_itself
+  # owns that refusal), so reaching the execution path on a gh-less host is
+  # exactly what --captain-override-red is for. The override is passed here to
+  # get past the reading, never to weaken it: everything asserted below is
+  # upstream's unchanged execution and outcome-verification behavior.
   case_dir=$(make_case github-without-gh)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" 4141414141414141414141414141414141414141
@@ -1165,7 +1179,7 @@ test_github_without_gh_still_uses_gh_axi_merge() {
 
   set +e
   PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/60 \
+    https://github.com/example/repo/pull/60 --captain-override-red \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -1182,6 +1196,13 @@ test_github_without_gh_still_uses_gh_axi_merge() {
 
 test_github_without_gh_failed_read_keeps_bookkeeping() {
   local case_dir ghless_path rc
+  # These cases are about how the merge is PERFORMED without gh, not about how
+  # check fitness is READ. The fitness gate needs gh for its reading and refuses
+  # when it cannot measure (tests/fm-pr-merge.test.sh::test_missing_gh_binary_names_itself
+  # owns that refusal), so reaching the execution path on a gh-less host is
+  # exactly what --captain-override-red is for. The override is passed here to
+  # get past the reading, never to weaken it: everything asserted below is
+  # upstream's unchanged execution and outcome-verification behavior.
   case_dir=$(make_case github-without-gh-read-fails)
   mkdir -p "$case_dir/wt"
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
@@ -1200,7 +1221,7 @@ SH
 
   set +e
   PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/61 \
+    https://github.com/example/repo/pull/61 --captain-override-red \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
