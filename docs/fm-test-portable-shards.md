@@ -55,12 +55,12 @@ Membership is derived rather than enumerated, so a newly added test lands here b
 
 ## Portable serial CI shards
 
-That remainder now measures about 55 minutes of serial work (3302594 ms, from the hints recorded below), so `portable-serial-<k>of<n>` splits it across `n` separate CI runners, each under a 15-minute job cap.
+That remainder now measures about 55 minutes of serial work (3302594 ms, from the hints recorded below), so `portable-serial-<k>of<n>` splits it across `n` separate CI runners, each under a 20-minute job cap.
 Each shard is still strictly serial in itself, and separate runners mean no two of these stateful scripts ever share a machine, so the split needs no concurrency isolation proof.
 
 The split exists because the unsharded lane outgrew its cap. The figures below are pre-shard history, not a current measurement:
 on green CI run [30725985757](https://github.com/kunchenguid/firstmate/actions/runs/30725985757) the whole remainder accumulated 19m04s of script time against the 20-minute job timeout of that era, and on [PR 1495](https://github.com/kunchenguid/firstmate/pull/1495) its main step ran about 19m51s before the job was cancelled at that boundary.
-Neither number is live: the portable serial lane no longer runs under that 20-minute cap, since the `tests-portable-serial` job now caps each shard at 15 minutes, and the lane has since been measured at roughly two and a half times the ~19 minutes recorded there.
+Neither number is live: that 20-minute cap applied to the whole unsharded lane, whereas each shard now carries its own 20-minute cap, and the lane has since been measured at roughly two and a half times the ~19 minutes recorded there.
 A 20-minute timeout does still exist elsewhere in `.github/workflows/ci.yml` — the real-Herdr family-run step, recorded in the Timeouts table below — so it is only this lane's cap that changed.
 
 `bin/fm-test-run.sh` owns `n` and refuses any lane whose `of<n>` disagrees with it.
@@ -94,6 +94,11 @@ The shard count is derived from the refreshed measurement rather than chosen fre
 | imbalance | | 18 ms |
 
 The single longest script, `tests/fm-pr-check-security.test.sh` at 252478 ms, is the floor for any shard count, and every security case added to it raises that floor.
+
+A wholesale refresh is DUE and is the real fix for the cap being raised.
+On run 33296163782 shard 3 ran 15m18s against a 412 s estimate while the other seven shards each finished between 6 and 7 minutes, so the imbalance is real rather than runner noise.
+That run's shard 3 timing artifact never uploaded, so the overrunning script is not identified here rather than guessed at; the next green run supplies it.
+Note when refreshing that `tests/fm-remote-secondmate-lifecycle-e2e.test.sh` is the heaviest script in that shard, hinted at 211342 ms from a CI artifact and measured at 346202 ms locally on 2026-08-30, which is a different platform and therefore evidence that it is worth re-measuring rather than a replacement value.
 
 Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above.
 
@@ -129,7 +134,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-8 | job `timeout-minutes: 15` | The balanced estimate is about 6.9 min, but the worst shard measured on green run 33246490613 ran 53% above its estimate, which is the number the cap has to clear: roughly 1.4x margin against that projection, not 2x. |
+| portable serial 1-8 | job `timeout-minutes: 20` | Raised from 15 after shard 3 hit that cap at 15m18s on run 33296163782, which GitHub reports as a cancelled job rather than a timeout. The balanced estimate is about 6.9 min, but it is known optimistic: 13 scripts the upstream reconciliation added still carry the default weight, and the run was cut before shard 3's timing artifact uploaded, so which script overran is unmeasured. 20 min restores tripwire margin without guessing at the cause. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
