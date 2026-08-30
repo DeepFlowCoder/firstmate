@@ -31,6 +31,9 @@
 # Each shard writes separate diagnostics, and the parent replays those outputs in
 # deterministic shard and root order after every worker finishes. FM_LINT_JOBS=1
 # runs the same shards serially with byte-identical diagnostics and exit selection.
+# Because that replay is the only place a verdict is produced, a run cut short by
+# a signal - a cancelled job, a reclaimed CI runner - has proven nothing, and the
+# parent says so on stderr before exiting 129 (HUP), 130 (INT), or 143 (TERM).
 #
 # Optional quiet telemetry writes one bounded TSV snapshot of content and source
 # graph identity, wall/CPU/RSS, shard load, and competing ShellCheck processes.
@@ -313,9 +316,19 @@ fm_lint_cleanup() {
   rm -rf "$TMP_ROOT"
 }
 trap fm_lint_cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# Diagnostics replay only after every shard finishes, so a signalled run has
+# proven nothing about the file set. Say that on the way out: otherwise the only
+# trace is the worker shell's bare "Killed" job line for the ShellCheck the EXIT
+# cleanup above reaps, which reads as a lint failure rather than as a run that
+# never reached a verdict.
+# shellcheck disable=SC2329 # Registered by the signal traps below.
+fm_lint_interrupted() {  # <signal-name> <exit-status>
+  printf 'fm-lint.sh: interrupted by SIG%s before every shard reported; no lint verdict was reached.\n' "$1" >&2
+  exit "$2"
+}
+trap 'fm_lint_interrupted HUP 129' HUP
+trap 'fm_lint_interrupted INT 130' INT
+trap 'fm_lint_interrupted TERM 143' TERM
 
 TAB=$(printf '\t')
 WEIGHTS="$TMP_ROOT/weights"

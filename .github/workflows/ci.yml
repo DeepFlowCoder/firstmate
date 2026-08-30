@@ -10,6 +10,22 @@ permissions:
   contents: read
 
 jobs:
+  # Run 33307176505 lost this job 5m44s in: ShellCheck took SIGKILL and the
+  # runner logged "The runner has received a shutdown signal", so the step ended
+  # 143 with no diagnostics. The trigger is NOT attributable from that log and is
+  # deliberately not guessed at here - a reclaimed VM and a host out of memory
+  # both produce exactly those two lines in that order. What IS measured, from
+  # bin/fm-lint.sh --telemetry over the full 343-root set at this head: jobs=2
+  # peaks at 1.84 GiB in one worker and 3.36 GiB summed, against the 7 GiB a
+  # private-repo ubuntu-latest runner has. That figure is macOS, not this
+  # runner's Linux, so treat it as an order of magnitude and not as a budget:
+  # it says headroom is thin, not that it ran out. Green runs took 15m03s,
+  # 15m19s, and 15m27s (33302016000, 33303193664, 33305702246) and the lane is
+  # clean at this head. Before trading that wall time away for headroom - the
+  # obvious lever is FM_LINT_JOBS=1, which halves the peak and needs a cap here -
+  # get a run that actually names memory: fm-lint.sh now says on stderr when it
+  # was signalled before reaching a verdict, so the next occurrence separates
+  # "the lint failed" from "the lint never finished".
   lint:
     name: Lint
     runs-on: ubuntu-latest

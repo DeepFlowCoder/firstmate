@@ -914,6 +914,13 @@ SH
       fi
       [ "$parent_rc" -eq 143 ] \
         || fail "jobs=$jobs telemetry=$telemetry signal exit was $parent_rc, expected 143"
+      # A signalled run never reaches the replay that produces a verdict, so it
+      # must say it was interrupted. Without this the whole trace is the worker
+      # shell's bare "Killed" job line for the reaped ShellCheck, which reads as
+      # a lint failure instead of an unfinished run.
+      assert_grep 'fm-lint.sh: interrupted by SIGTERM before every shard reported; no lint verdict was reached.' \
+        "$out_file" \
+        "jobs=$jobs telemetry=$telemetry did not report the interrupted run"
       [ "$survivor" -eq 0 ] \
         || fail "jobs=$jobs telemetry=$telemetry left ShellCheck running"
       [ -z "$(find "$lint_tmp" -mindepth 1 -maxdepth 1 -name 'fm-lint.*' -print -quit)" ] \
