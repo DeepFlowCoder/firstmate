@@ -283,15 +283,27 @@ test_weak_identity_still_presents_and_advances() {
 }
 
 test_snapshot_failure_is_visible() {
-  local dir state out reader
-  dir=$(make_case snapshot-failure); state="$dir/state"; out="$dir/drain.out"; reader="$dir/identity-reader"
+  local dir state out err reader
+  dir=$(make_case snapshot-failure); state="$dir/state"; out="$dir/drain.out"
+  err="$dir/drain.err"; reader="$dir/identity-reader"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$reader"; chmod +x "$reader"
   printf 'needs-decision: choose target\n' > "$state/fail.status"
-  FM_STATUS_IDENTITY_READER="$reader" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
-    || fail "drain aborted instead of reporting its incomplete status surface"
+  # Decided behavior, not a weakened assertion: when the durable status cannot be
+  # read, the drain refuses non-zero rather than exiting green with an incomplete
+  # surface. A green, empty drain has to keep MEANING that nothing is open, and a
+  # printed marker only holds if every reader notices it. The visible marker is
+  # still required alongside the refusal, so the turn says what went unpresented.
+  # Nothing is lost by refusing: the presentation writes no cursor when it fails,
+  # so the same records surface on the re-run.
+  local rc=0
+  FM_STATUS_IDENTITY_READER="$reader" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "drain exited green after it could not read the durable status: $(cat "$out")"
   grep -F 'STATUS PRESENTATION INCOMPLETE:' "$out" >/dev/null \
     || fail "snapshot failure produced a silently incomplete drain: $(cat "$out")"
-  pass "snapshot failures are reported visibly"
+  grep -F 'the durable status could not be read' "$err" >/dev/null \
+    || fail "the refusal named nothing that went unpresented: $(cat "$err")"
+  pass "an unreadable status surface refuses loudly instead of exiting green"
 }
 
 test_open_decisions_fold_is_unchanged() {
