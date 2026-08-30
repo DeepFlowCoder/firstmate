@@ -444,8 +444,6 @@ nm_scan_runs_for_branch() {  # <branch>
     fi
     # Same code-identity rule as axi status: a same-branch row whose short-sha
     # does not match this worktree (rewritten or advanced tip) cannot answer.
-    # Same code-identity rule as axi status: a same-branch row whose short-sha
-    # does not match this worktree (rewritten or advanced tip) cannot answer.
     if [ -z "$COARSE_STATUS" ]; then
       if nm_coarse_head_matches_worktree "$sha"; then
         COARSE_STATUS=$st

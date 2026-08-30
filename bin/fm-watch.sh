@@ -635,10 +635,11 @@ status_idle_age() {  # <task>
 # dead-agent captain-held transfer, and re-surface it once every
 # PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
 # stale poll once pause_state_class permits the bounded cadence, so it must be
-# cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
-# status file mtime, not a per-hash marker, so a churny idle pane (a ticking
-# clock, a token counter) cannot keep resetting the cadence the way a hash-tied
-# timer would. The bounded re-surface itself is the shared resurface_absorbed
+# cheap: it NEVER re-reads crew state. The re-surface age comes from the shared
+# status_idle_age, the single owner of the age every bounded cadence is measured
+# against, so this route and the healthy-idle route cannot drift apart and both
+# inherit its spawn-record fallback for a task with no status log yet.
+# The bounded re-surface itself is the shared resurface_absorbed
 # above, throttled by this window's own .paused-resurfaced-<key> marker. Advances
 # the stale suppressor to <hash> and flags the key paused.
 #
@@ -648,16 +649,14 @@ status_idle_age() {  # <task>
 # wording; a caller that reached the bounded cadence off pause tracking alone, with
 # no declaring verb left on the log, keeps the external-wait wording it always had.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age detail reason
+  local win=$1 task=$2 h=$3 key statusf age detail reason
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
   clear_write_tracking "$key"
   statusf="$STATE/$task.status"
-  mtime=$(stat_mtime "$statusf")
-  case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
-  age=$(( $(date +%s) - mtime ))
+  age=$(status_idle_age "$task")
   if status_is_captain_held "$(last_status_line "$statusf")"; then
     detail="captain-held, awaiting the captain"
     reason="captain-held ${age}s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
@@ -826,8 +825,10 @@ absorb_class_for_stale() {  # <window> <task>
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
 # After fm-crew-state has fallen back to stopped or unknown, paused classification is
-# recovered only for a confidently dead ordinary crew, or for a secondmate, whose
-# endpoint liveness this function deliberately never reads.
+# recovered in exactly three cases: a confidently dead ordinary crew; a secondmate,
+# whose endpoint liveness this function deliberately never reads; or a VERIFIED
+# captain-held transfer, which skips both liveness gates because the hold is already
+# tracked off the pane. A worker-declared `paused:` never skips them.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive kind held=0
   key=$(window_key "$win")
@@ -883,10 +884,13 @@ pause_state_class() {  # <window> <task>
     fi
   fi
   # Recover paused classification for a declared wait that authoritative crew state
-  # could not name. Reaching here already proves the only two admissible cases: an
+  # could not name. Reaching here already proves the only three admissible cases: an
   # ordinary crew whose agent the gate above confirmed dead, so no live decision gate
-  # is being silenced, or a secondmate, whose endpoint liveness is deliberately never
-  # read and so cannot supply that confirmation. Without the mate case a mate's
+  # is being silenced; a secondmate, whose endpoint liveness is deliberately never
+  # read and so cannot supply that confirmation; or a verified captain-held transfer,
+  # whose hold bin/fm-captain-hold.sh recorded in the backlog before writing the verb,
+  # so the decision is tracked off the pane and needs no liveness corroboration at
+  # all. Without the mate case a mate's
   # captain hold - which has no current-state mapping and so arrives as `none` -
   # would be silenced by every caller rather than taking the bounded re-surface
   # cadence, and a forgotten hold would rot invisibly.
@@ -1810,7 +1814,7 @@ EOF
                 handle_paused_stale "$w" "$task" "$h"
                 ;;
               parked|done)
-                clear_pause_tracking "$w"
+                clear_pause_tracking "$key"
                 handle_healthy_idle_stale "$w" "$task" "$h" "$stale_class"
                 ;;
               *)
