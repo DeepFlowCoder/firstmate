@@ -9,7 +9,9 @@
 #
 # Most functions are pure, side-effect-free reads of status files: each takes
 # what it needs as arguments and touches no globals beyond the optional
-# FM_CAPTAIN_RE override. Consumers layer their own dedup/marker state on top (the
+# FM_CAPTAIN_RE override and the memoized platform answer the stat readers share
+# (_fm_classify_resolve_platform owns that cache and why a failed uname read is
+# never what it keeps). Consumers layer their own dedup/marker state on top (the
 # daemon keeps its escalation-digest seen-markers; the watcher keeps its .seen-*
 # signatures).
 # Status-span classification captures one file endpoint and reports every
@@ -640,6 +642,44 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # discarded and rebuilt from byte 0 under the new reading.
 FM_OPEN_DECISIONS_FOLD_VERSION=5
 
+# Resolved once and reused rather than forked per call, the same way
+# fm-wake-lib.sh resolves _FM_UNAME and for a sharper reason: the three stat
+# readers below run once per status file per presentation pass, so forking uname
+# inside them multiplied every drain's fork count (17 uname forks for a single
+# status file). Each of those forks is a place where a broken fork on the host -
+# not a firstmate fault - can fail a read and push the drain into its refusal, so
+# collapsing them to one shrinks that exposure without changing any verdict.
+# uname -s cannot change inside a process, so one read is as correct as many.
+#
+# What is NEVER cached is a FAILED read. A host whose forks break is the exact
+# host this classification exists for, and two of this library's consumers hold
+# it for hours - bin/fm-supervise-daemon.sh and the watcher through
+# bin/fm-pending-reply-lib.sh - so pinning one crashed fork's non-answer would
+# send every later read down the wrong platform's stat syntax for the life of
+# the process. That is strictly worse than the per-call fork it replaced: it
+# turns one transient host fault into permanent misreads reported as I/O
+# failures of the status file. An ABSENT uname is a different thing - it is a
+# stable answer about the host, it cannot heal on a retry, and the non-Darwin
+# stat syntax is the right reading of it - so 127 is cached like any success.
+# Anything else leaves the platform unresolved for the next call to re-read, and
+# the read that found it unresolved refuses instead of guessing a syntax.
+_FM_CLASSIFY_UNAME=''
+_FM_STATUS_PLATFORM_UNRESOLVED=125
+
+_fm_classify_resolve_platform() {  # -> 0 with _FM_CLASSIFY_UNAME set, non-zero unresolved
+  local rc
+  [ -z "$_FM_CLASSIFY_UNAME" ] || return 0
+  _FM_CLASSIFY_UNAME=$(uname -s 2>/dev/null) || {
+    rc=$?
+    _FM_CLASSIFY_UNAME=''
+    [ "$rc" -eq 127 ] || return 1
+    _FM_CLASSIFY_UNAME=unknown
+    return 0
+  }
+  [ -n "$_FM_CLASSIFY_UNAME" ] || return 1
+}
+_fm_classify_resolve_platform || true
+
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
   local f=$1 epoch birth ident
@@ -647,12 +687,13 @@ _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
     "$FM_STATUS_IDENTITY_READER" "$f"
     return
   fi
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    ident=$(LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null) || return 1
+  _fm_classify_resolve_platform || return "$_FM_STATUS_PLATFORM_UNRESOLVED"
+  if [ "$_FM_CLASSIFY_UNAME" = Darwin ]; then
+    ident=$(LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null) || return
     epoch=$(LC_ALL=C stat -f '%B' "$f" 2>/dev/null) || epoch=0
     if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -f '%FB' "$f" 2>/dev/null) || birth=''; else birth=''; fi
   else
-    ident=$(LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null) || return 1
+    ident=$(LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null) || return
     epoch=$(LC_ALL=C stat -c '%W' "$f" 2>/dev/null) || epoch=0
     if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -c '%w' "$f" 2>/dev/null) || birth=''; else birth=''; fi
   fi
@@ -693,7 +734,8 @@ _fm_status_file_size() {  # <status-file>
     "$FM_STATUS_SIZE_READER" "$f"
     return
   fi
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+  _fm_classify_resolve_platform || return "$_FM_STATUS_PLATFORM_UNRESOLVED"
+  if [ "$_FM_CLASSIFY_UNAME" = Darwin ]; then
     LC_ALL=C stat -f '%z' "$f" 2>/dev/null
   else
     LC_ALL=C stat -c '%s' "$f" 2>/dev/null
@@ -871,18 +913,54 @@ EOF
   return 0
 }
 
+# Name the read that actually failed, and say whether its reader died on a
+# signal or merely reported an error. Both still refuse - a drain that cannot
+# read the durable status must never print an empty OPEN DECISIONS section as if
+# nothing were open - but they point at different owners, and the undifferentiated
+# refusal sent every one of them to firstmate. A reader killed by a signal is the
+# host's fork or tooling breaking under us, which is what a bash whose forked
+# subshells crash looks like from in here: correct output, then a signal death.
+# An ordinary non-zero status is a genuine I/O failure on a file that is still a
+# readable regular file. Only the classification is new; the verdict is unchanged.
+_fm_status_read_diagnosis() {  # <status-file> <size> <size-rc> <ident> <ident-rc>
+  local f=$1 size=$2 size_rc=$3 ident=$4 ident_rc=$5 which rc
+  if [ -z "$size" ]; then
+    which=size; rc=$size_rc
+  elif [ -z "$ident" ]; then
+    which=identity; rc=$ident_rc
+  else
+    which=size; rc=$size_rc
+  fi
+  if [ "$rc" -eq "$_FM_STATUS_PLATFORM_UNRESOLVED" ]; then
+    printf 'status read: %s: the %s reader could not resolve this platform, so it refused to guess a stat syntax rather than read the file through the wrong one; this is the host breaking a uname fork, not a status-file fault - re-run the drain, and if it recurs check the shell and uname tooling on this machine\n' \
+      "$f" "$which"
+  elif [ "$rc" -gt 128 ]; then
+    printf 'status read: %s: the %s reader was killed by signal %s, so its result was discarded; this is the host breaking the read, not a status-file fault - re-run the drain, and if it recurs check the shell and stat tooling on this machine\n' \
+      "$f" "$which" "$((rc - 128))"
+  elif [ "$rc" -ne 0 ]; then
+    printf 'status read: %s: the %s reader failed with status %s while the path is still a readable regular file, so this is a genuine I/O failure on that file\n' \
+      "$f" "$which" "$rc"
+  else
+    printf 'status read: %s: the %s reader reported success but returned no usable value, so the read could not be trusted\n' \
+      "$f" "$which"
+  fi
+}
+
 status_presentation_snapshot() {  # <state>
-  local state=$1 f task size ident
+  local state=$1 f task size ident size_rc ident_rc
   for f in "$state"/*.status; do
     [ -e "$f" ] || continue
     [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
-    size=$(_fm_status_file_size "$f") || size=
+    size_rc=0
+    size=$(_fm_status_file_size "$f") || { size_rc=$?; size=; }
     size=${size//[[:space:]]/}
     case "$size" in *[!0-9]*) size= ;; esac
-    ident=$(_fm_open_decisions_file_ident "$f") || ident=
+    ident_rc=0
+    ident=$(_fm_open_decisions_file_ident "$f") || { ident_rc=$?; ident=; }
     if [ -z "$size" ] || [ -z "$ident" ]; then
       _fm_status_file_departed "$f" && continue
+      _fm_status_read_diagnosis "$f" "$size" "$size_rc" "$ident" "$ident_rc" >&2
       return 1
     fi
     printf '%s\t%s\t%s\n' "$task" "$size" "$ident" || return 1
@@ -990,7 +1068,8 @@ status_presentation_marker_parse() {
 }
 
 _status_observed_path_state() {
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+  _fm_classify_resolve_platform || return "$_FM_STATUS_PLATFORM_UNRESOLVED"
+  if [ "$_FM_CLASSIFY_UNAME" = Darwin ]; then
     LC_ALL=C stat -f '%HT:%p' "$1" 2>/dev/null
   else
     LC_ALL=C stat -c '%F:%f' "$1" 2>/dev/null
