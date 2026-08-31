@@ -988,13 +988,15 @@ __FM_BEARINGS_BOARD_DATA__
       if (l.dock.length) {
         var dockRows = berth(drawer, "Dry dock");
         l.dock.forEach(function (t) {
+          var heldFor = agoText(t.since);
+          var holds = reasonText(t);
           dockRows.appendChild(workRow({
             spacer: true,
             badgeTone: "warn",
             badgeText: "held",
             title: t.title,
-            sub: t.reason,
-            when: agoText(t.since)
+            sub: holds || (heldFor ? "held " + heldFor : "held with no reason recorded"),
+            when: heldFor && holds ? heldFor : null
           }));
         });
       }

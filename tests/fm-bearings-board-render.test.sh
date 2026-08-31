@@ -353,9 +353,11 @@ test_a_lane_holding_only_a_captains_call_still_reads_as_recorded() {
 }
 
 # ---------------------------------------------------------------------------
-# The snapshot writes "-" when a queued row has neither a hold nor a blocked
-# reason. It is a placeholder, not a sentence, so it must never displace the
-# one datum a dispatchable row does carry: how long it has waited.
+# The snapshot writes "-" when a row has neither a hold nor a blocked reason. It
+# is a placeholder, not a sentence, so on either berth it must never displace
+# the one datum the row does carry: how long it has waited. The v2 validator
+# accepts "-" as a held row's reason (it is a non-empty string), so the board
+# has to survive it rather than assume it was filtered upstream.
 # ---------------------------------------------------------------------------
 test_a_placeholder_reason_never_displaces_the_wait_age() {
   local home out
@@ -363,13 +365,22 @@ test_a_placeholder_reason_never_displaces_the_wait_age() {
   out=$(render "$home" '{
     "charted": [
       {"id":"placeholder-order","repo":"sample","title":"Ready order","reason":"-",
-       "dispatchable":true,"since":"2026-08-24"}
+       "dispatchable":true,"since":"2026-08-24"},
+      {"id":"placeholder-held","repo":"sample","title":"Held order","reason":"-",
+       "dispatchable":false,"since":"2026-08-16"}
     ]}')
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Clear to start") | .rows[] | {s:.sub, w:.when}]
       == [{s:"ordered 2 days ago", w:""}]
   ' >/dev/null || fail "a placeholder reason was rendered instead of the wait age: $out"
-  pass "a placeholder reason falls back to the row's wait age"
+  # a dry-dock row is the one the reason invariant exists for, so a bare dash
+  # there is the worst case: still badged held, still saying nothing
+  printf '%s' "$out" | jq -e '
+    [.lanes[0].berths[] | select(.label == "Dry dock") | .rows[]
+     | {s:.sub, w:.when, b:[.badges[].text]}]
+      == [{s:"held 10 days ago", w:"", b:["held"]}]
+  ' >/dev/null || fail "a held row rendered a bare dash instead of how long it has waited: $out"
+  pass "a placeholder reason falls back to the row's wait age on either berth"
 }
 
 # ---------------------------------------------------------------------------

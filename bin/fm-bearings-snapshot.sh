@@ -114,7 +114,7 @@ Default is LOCAL-ONLY (no network); --include-prs is the only path that fetches.
 Default fields: schema, home, generated, prs, in_flight{id,kind,repo,state,doing},
   secondmates{id,state,doing,provenance,freshness,age_seconds,contradiction,reason},
   secondmate_reconcile{id,spawn_gen,host,kind,ids},
-  decisions_open{id,key,verb,summary,owner}, landed{id,what,repo,artifact,owner,landed_on},
+  decisions_open{id,key,verb,summary,owner,repo}, landed{id,what,repo,artifact,owner,landed_on},
   gates{id,title,blocked_by,reason,owner,repo,since}, reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 repo is the backlog row's own recorded repo, null when the row records none. It is what
