@@ -122,9 +122,20 @@
 #     and "the run I could see is not this branch's live one" look identical
 #     here, and acting on the second orphans exactly the run Fix 1 exists to
 #     conclude. task_branch_has_uninspected_live_run corroborates against the
-#     runs list before teardown may proceed without concluding anything, and
-#     REFUSES when that list shows this branch's most recent run still active
-#     while the status answer was terminal, unbindable, or about another branch.
+#     runs list on BOTH paths out of this fix - before teardown proceeds without
+#     having concluded anything, AND after it concludes a run of its own - and
+#     REFUSES when that list shows this branch's most recent run still active.
+#     The post-abort corroboration exists because the same head-equality property
+#     applies to the run just aborted: it may have been the superseded one while
+#     the live successor, possibly parked, was never touched. It runs AFTER the
+#     abort and after the existing terminal confirmation, so the list it reads
+#     already shows the concluded run terminal and only a surviving run active;
+#     the successor is never aborted, only refused over. An answered list that
+#     carries NO row for a branch already known to have a run is unestablished,
+#     not permission: the same reading bin/fm-crew-state.sh gives it, because a
+#     window exhausted by newer repo-wide runs means the answer was truncated,
+#     not that the run ended. A run is known to exist when `axi status` answered
+#     with one for THIS branch, or when teardown just concluded one here.
 #     It refuses rather than aborting because the runs list it reads cannot tell
 #     a PARKED live run from an autonomously running one: that listing carries no
 #     run id to inspect (verified: `runs --help` exposes only --limit) and its
@@ -138,7 +149,10 @@
 #     while refusing costs one manual check. A bound, still-active status answer
 #     for this branch IS this branch's live run, so an autonomous run under way
 #     is still left alone as above; a list that does not answer proves nothing
-#     and never blocks teardown.
+#     and never blocks teardown. Together these corroborations refuse in
+#     strictly more situations than the code they replaced, which is the
+#     intended direction on a destructive path: a needless refusal costs one
+#     manual check, while a needless teardown strands live work at a gate.
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground
@@ -1473,24 +1487,37 @@ TASK_LIVE_RUN_DETAIL=
 # as the live run that replaced it, so the status answer alone can be a run this
 # branch has already moved past - or another branch's entirely. The runs list is
 # the only surface that carries every run newest-first with its own status, so
-# it arbitrates. Returns 0 only on positive evidence of an uninspected live run,
-# publishing TASK_LIVE_RUN_DETAIL; every other answer, including silence from
-# the bounded fail-open list query, returns 1 and changes nothing. Which status
-# words count as live stays owned by bin/fm-nm-run-lib.sh's measured vocabulary
-# rather than being re-decided here, so a word that owner does not model reads
-# as no evidence in either direction - the same reading every other caller gives
-# it, and the one that cannot turn an unrelated CLI change into a fleet-wide
-# teardown block.
-task_branch_has_uninspected_live_run() {  # <worktree> <axi-status-output>
-  local wt=$1 out=$2 branch run_branch run_head newest st reason
+# it arbitrates. Returns 0 only on evidence that a live run on this branch was
+# not accounted for, publishing TASK_LIVE_RUN_DETAIL; every other answer,
+# including silence from the bounded fail-open list query, returns 1 and changes
+# nothing. Which status words count as live stays owned by bin/fm-nm-run-lib.sh's
+# measured vocabulary rather than being re-decided here, so a word that owner
+# does not model reads as no evidence in either direction - the same reading
+# every other caller gives it, and the one that cannot turn an unrelated CLI
+# change into a fleet-wide teardown block.
+#
+# <run-known-to-exist> is this caller's own evidence that this branch HAS a run,
+# independent of the listing: the attributed-abort path passes 1 because it just
+# concluded one here. A same-branch status answer establishes it too. It matters
+# only when the listing answers WITHOUT a row for this branch, which is then a
+# truncated window rather than proof the run ended - bin/fm-crew-state.sh reads
+# the same absence the same way - so the honest answer is that nothing was
+# established, and on this destructive path that refuses.
+task_branch_has_uninspected_live_run() {  # <worktree> <axi-status-output> [run-known-to-exist]
+  local wt=$1 out=$2 known=${3:-0} branch run_branch run_head listed newest st reason
   TASK_LIVE_RUN_DETAIL=
   branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
   [ -n "$branch" ] || return 1
-  reason="the run it reported belongs to another branch, or it reported none"
+  if [ "$known" = 1 ]; then
+    reason="the run this teardown concluded is not this branch's current one"
+  else
+    reason="the run it reported belongs to another branch, or it reported none"
+  fi
   if [ -n "$out" ]; then
     run_branch=$(fm_nm_strip_quotes "$(fm_nm_field "$out" branch)")
     run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$out" head)")
     if [ "$run_branch" = "$branch" ]; then
+      known=1
       # A run bound to this branch AND this worktree's code identity that is
       # still in flight IS this branch's live run: teardown has just inspected
       # it and found no gate to conclude, so nothing is uninspected and the
@@ -1503,9 +1530,17 @@ task_branch_has_uninspected_live_run() {  # <worktree> <axi-status-output>
       reason="the run it reported for this branch is not this branch's current one"
     fi
   fi
-  newest=$(fm_nm_runs_newest_for_branch \
-    "$(fm_nm_run "$wt" "$NM_TEARDOWN_TIMEOUT" runs --limit "$NM_TEARDOWN_RUNS_LIMIT")" \
-    "$branch") || return 1
+  # Silence stays fail-open: an empty answer from the bounded query is a
+  # timeout or an unavailable daemon, and making no-mistakes availability a
+  # teardown prerequisite would block every ship task, including the many that
+  # never had a run at all.
+  listed=$(fm_nm_run "$wt" "$NM_TEARDOWN_TIMEOUT" runs --limit "$NM_TEARDOWN_RUNS_LIMIT")
+  [ -n "$listed" ] || return 1
+  if ! newest=$(fm_nm_runs_newest_for_branch "$listed" "$branch"); then
+    [ "$known" = 1 ] || return 1
+    TASK_LIVE_RUN_DETAIL="$branch is known to have a run and the listing answered without a row for it, so nothing established that run ended"
+    return 0
+  fi
   st=${newest%%$'\t'*}
   fm_nm_status_is_active "$st" || return 1
   # Deliberately NOT filtered by code identity. An unbindable live row is a
@@ -1514,6 +1549,18 @@ task_branch_has_uninspected_live_run() {  # <worktree> <axi-status-output>
   # path an unprovable "not mine" must not read as "safe to remove".
   TASK_LIVE_RUN_DETAIL="$branch has a $st run, and $reason"
   return 0
+}
+
+# The one refusal both corroboration paths emit, so the operator reads the same
+# remediation whether teardown concluded a run of its own first or never
+# attributed one. TASK_LIVE_RUN_DETAIL must be published by the predicate above.
+refuse_over_uninspected_live_run() {  # <worktree>
+  local wt=$1
+  echo "REFUSED: $ID has a live no-mistakes run this teardown cannot identify ($TASK_LIVE_RUN_DETAIL)." >&2
+  echo "Removing the worker now would orphan that run if it is parked at a gate, leaving nothing to answer it." >&2
+  echo "Letting that run finish and then retrying teardown resolves this." >&2
+  echo "To stop it instead, run 'cd $wt && no-mistakes axi': its table lists id, branch, status, head and pr, so take the id of the still-active row whose branch is the one named above, confirm that exact run with 'no-mistakes axi status --run <id>', and only once it is this task's run waiting at a gate stop it with 'no-mistakes axi abort --run <id>'." >&2
+  echo "Do not abort without --run: the run-id-less form resolves repository-scoped, so under multi-crew load it can discard another branch's in-flight work." >&2
 }
 
 task_status_is_terminal_run() {  # <axi-status-output> <run-id>
@@ -1541,7 +1588,7 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
 # a run not attributed to this exact branch+head is never acted on - teardown
 # either proceeds past it or refuses, but never aborts what it cannot identify.
 conclude_task_no_mistakes_run() {  # <worktree>
-  local wt=$1 status_out out run_id
+  local wt=$1 status_out out run_id concluded=0
   [ "$KIND" = ship ] || return 0
   [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
@@ -1556,11 +1603,7 @@ conclude_task_no_mistakes_run() {  # <worktree>
     # what orphans a parked run, so it refuses instead: an unnecessary refusal
     # costs one manual check, and an unnecessary teardown costs live work.
     task_branch_has_uninspected_live_run "$wt" "$status_out" || return 0
-    echo "REFUSED: $ID has a live no-mistakes run this teardown cannot identify ($TASK_LIVE_RUN_DETAIL)." >&2
-    echo "Removing the worker now would orphan that run if it is parked at a gate, leaving nothing to answer it." >&2
-    echo "Letting that run finish and then retrying teardown resolves this." >&2
-    echo "To stop it instead, run 'cd $wt && no-mistakes axi': its table lists id, branch, status, head and pr, so take the id of the still-active row whose branch is the one named above, confirm that exact run with 'no-mistakes axi status --run <id>', and only once it is this task's run waiting at a gate stop it with 'no-mistakes axi abort --run <id>'." >&2
-    echo "Do not abort without --run: the run-id-less form resolves repository-scoped, so under multi-crew load it can discard another branch's in-flight work." >&2
+    refuse_over_uninspected_live_run "$wt"
     return 1
   fi
   run_id=$TASK_RUN_ID
@@ -1569,9 +1612,19 @@ conclude_task_no_mistakes_run() {  # <worktree>
   # live-state condition; fully closing the resume race needs upstream compare-and-cancel.
   fm_nm_run_checked "$wt" "$NM_TEARDOWN_TIMEOUT" axi abort --run "$run_id" >/dev/null 2>&1 || true
   if out=$(fm_nm_run_bounded "$wt" "$NM_TEARDOWN_TIMEOUT" axi status --run "$run_id" 2>&1); then
-    task_status_is_terminal_run "$out" "$run_id" && return 0
+    if task_status_is_terminal_run "$out" "$run_id"; then concluded=1; fi
   elif task_status_is_run_not_found "$out" "$run_id"; then
-    return 0
+    concluded=1
+    out=
+  fi
+  if [ "$concluded" = 1 ]; then
+    # Concluding the run teardown OWNS proves nothing about a successor: branch
+    # and head are shared by both, so the run just aborted may be the one this
+    # branch already moved past. The list is read only now, when it shows that
+    # run terminal and any run still live as still live.
+    task_branch_has_uninspected_live_run "$wt" "$out" 1 || return 0
+    refuse_over_uninspected_live_run "$wt"
+    return 1
   fi
   echo "REFUSED: no-mistakes run for $ID is still parked after axi abort; confirm it stopped (no-mistakes axi status) or abort it manually (no-mistakes axi abort --run <id>) before retrying teardown." >&2
   return 1

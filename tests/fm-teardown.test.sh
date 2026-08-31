@@ -114,7 +114,11 @@ SH
   # step is then a no-op), the top-level `runs` listing answers FM_FAKE_NM_RUNS
   # verbatim (empty by default, i.e. a list naming no run for this branch), and
   # `axi abort` appends one line to
-  # FM_FAKE_NM_ABORT_LOG when set. This keeps every case hermetic - without it,
+  # FM_FAKE_NM_ABORT_LOG when set. Once an abort has been logged the listing
+  # answers FM_FAKE_NM_RUNS_AFTER_ABORT instead when that is set, which is how
+  # the real store behaves: the concluded run's row turns terminal while any
+  # other run of that branch keeps its own status. This keeps every case
+  # hermetic - without it,
   # `command -v no-mistakes` would fall through to whatever real binary
   # happens to be on the test runner's own PATH. Tests exercising the run-abort
   # path override FM_FAKE_AXI_STATUS, FM_FAKE_NM_RUNS, and FM_FAKE_NM_ABORT_LOG
@@ -153,7 +157,11 @@ case "${1:-}" in
     esac
     ;;
   runs)
-    printf '%s\n' "${FM_FAKE_NM_RUNS:-}" ;;
+    if [ -n "${FM_FAKE_NM_RUNS_AFTER_ABORT:-}" ] && [ -s "${FM_FAKE_NM_ABORT_LOG:-/dev/null}" ]; then
+      printf '%s\n' "$FM_FAKE_NM_RUNS_AFTER_ABORT"
+    else
+      printf '%s\n' "${FM_FAKE_NM_RUNS:-}"
+    fi ;;
 esac
 exit 0
 SH
@@ -2399,7 +2407,10 @@ test_unbindable_live_row_refuses() {
 
 # The corroboration must not disarm the abort it exists to protect: a run parked
 # at a gate that teardown DOES own is still aborted, and the same run showing as
-# this branch's live row in the list is that same run, not a second one.
+# this branch's live row in the list is that same run, not a second one. This is
+# the ordinary successful shape of the post-abort corroboration too: once the
+# task's own run is concluded its row is terminal, so nothing on the branch is
+# active and teardown proceeds exactly as before.
 test_parked_own_run_is_aborted_even_when_list_shows_it_active() {
   local case_dir rc head short
   case_dir=$(make_case parked-run-abort-with-list)
@@ -2411,6 +2422,7 @@ test_parked_own_run_is_aborted_even_when_list_shows_it_active() {
   rc=0
   FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
   FM_FAKE_NM_RUNS="$(runs_list_rows "running    fm/task-x1 ${short}  2026-08-29 07:45")" \
+  FM_FAKE_NM_RUNS_AFTER_ABORT="$(runs_list_rows "cancelled  fm/task-x1 ${short}  2026-08-29 07:45")" \
   FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
@@ -2418,6 +2430,101 @@ test_parked_own_run_is_aborted_even_when_list_shows_it_active() {
   assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
     "parked-run-abort-with-list: the task's own parked run was not aborted"
   pass "the live-run corroboration never blocks the abort of a run teardown does own"
+}
+
+# The abort teardown owns concludes ONE run, and branch plus head cannot tell it
+# apart from a live successor sharing both. So after the abort is confirmed
+# terminal, the list is consulted with the same predicate: a row for this branch
+# still active names a second run that was never inspected, and removing the
+# worker would orphan it exactly as the masking case would. The successor is
+# refused over, never aborted.
+test_live_successor_after_own_run_abort_refuses() {
+  local case_dir rc head short
+  case_dir=$(make_case live-successor-after-abort)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  short=$(git -C "$case_dir/wt" rev-parse --short=8 HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/task-x1 ${short}  2026-08-29 07:45" \
+    "pending    fm/task-x1 ${short}  2026-08-29 01:30")" \
+  FM_FAKE_NM_RUNS_AFTER_ABORT="$(runs_list_rows \
+    "running    fm/task-x1 ${short}  2026-08-29 07:45" \
+    "cancelled  fm/task-x1 ${short}  2026-08-29 01:30")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "live-successor-after-abort: teardown proceeded with a live successor uninspected"
+  assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
+    "live-successor-after-abort: teardown stopped concluding the run it does own"
+  [ "$(awk 'END {print NR + 0}' "$case_dir/nm-abort.log")" = 1 ] \
+    || fail "live-successor-after-abort: teardown aborted a run beyond the one it owns"
+  assert_grep "REFUSED: task-x1 has a live no-mistakes run" "$case_dir/stderr" \
+    "live-successor-after-abort: teardown did not explain the live-successor refusal"
+  assert_present "$case_dir/wt" \
+    "live-successor-after-abort: teardown removed the worktree while a successor run was live"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "live-successor-after-abort: teardown removed task metadata while a successor run was live"
+  pass "a live successor surviving the abort of this task's own run still refuses"
+}
+
+# A listing that ANSWERED but carries no row for a branch already known to have
+# a run is a window exhausted by newer repo-wide runs, not proof the run ended -
+# the same reading bin/fm-crew-state.sh gives that absence. Here `axi status`
+# answered with a run for THIS branch, so a run is known to exist, and the
+# destructive path must not read an incomplete answer as permission.
+test_answered_list_without_row_for_known_run_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case answered-list-no-branch-row)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(cancelled_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/some-other-task aaaaaaa1  2026-08-29 07:45" \
+    "completed  fm/third-task bbbbbbb2  2026-08-29 07:40")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "answered-list-no-branch-row: a truncated listing was read as permission"
+  assert_grep "REFUSED: task-x1 has a live no-mistakes run" "$case_dir/stderr" \
+    "answered-list-no-branch-row: teardown did not explain the unestablished refusal"
+  assert_present "$case_dir/wt" \
+    "answered-list-no-branch-row: teardown removed the worktree on an unestablished answer"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "answered-list-no-branch-row: teardown removed task metadata on an unestablished answer"
+  assert_absent "$case_dir/nm-abort.log" \
+    "answered-list-no-branch-row: teardown aborted a run it could not identify"
+  pass "an answered listing with no row for a branch known to have a run refuses rather than guessing"
+}
+
+# The same absence with NO run known to exist is the ordinary quiet branch: the
+# status answer was about another crew's run and this branch simply never had
+# one, so the listing carrying no row for it is exactly what it looks like and
+# teardown must still proceed.
+test_answered_list_without_row_for_unknown_branch_tears_down() {
+  local case_dir rc
+  case_dir=$(make_case answered-list-quiet-branch)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/some-other-task deadbeef)" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/some-other-task deadbeef  2026-08-29 07:45" \
+    "completed  fm/third-task bbbbbbb2  2026-08-29 07:40")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "answered-list-quiet-branch: a branch that never had a run must still tear down"
+  assert_absent "$case_dir/nm-abort.log" \
+    "answered-list-quiet-branch: teardown aborted another branch's run"
+  pass "a branch with no run of its own still tears down when the listing carries no row for it"
 }
 
 # The list query is bounded and fail-open (bin/fm-nm-run-lib.sh), so silence -
@@ -2883,6 +2990,9 @@ test_live_run_on_another_branch_never_blocks_teardown
 test_cross_branch_status_answer_with_live_own_run_refuses
 test_unbindable_live_row_refuses
 test_parked_own_run_is_aborted_even_when_list_shows_it_active
+test_live_successor_after_own_run_abort_refuses
+test_answered_list_without_row_for_known_run_refuses
+test_answered_list_without_row_for_unknown_branch_tears_down
 test_silent_runs_list_does_not_block_teardown
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
