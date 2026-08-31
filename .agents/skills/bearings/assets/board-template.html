@@ -879,14 +879,14 @@ __FM_BEARINGS_BOARD_DATA__
   }
 
   /* An empty lane is calm, never "abandoned": the fleet records current state,
-     not intent, so the board says WHICH empty this is and stops there. Two
-     empties can render: "clear to start - N orders wait for a crew" and "quiet
-     since the last launch". A third, "no recorded activity in the current
-     baseline", is deferred with its producer: a lane exists only because a row
-     created it, so a wholly unrecorded project has no lane to read. It needs
-     lanes seeded from a known project list, which is separate queued work, and
-     it returns together with that seeding rather than as an unreachable branch
-     here. */
+     not intent, so the board says WHICH empty this is and stops there. Three
+     empties can render: "clear to start - N orders wait for a crew", "quiet
+     since the last launch", and "quiet - everything here has launched". A
+     fourth, "no recorded activity in the current baseline", is deferred with
+     its producer: a lane exists only because a row created it, so a wholly
+     unrecorded project has no lane to read. It needs lanes seeded from a known
+     project list, which is separate queued work, and it returns together with
+     that seeding rather than as an unreachable branch here. */
   function laneReading(l) {
     if (l.ways.length) return plural(l.ways.length, "hull", "hulls") + " on the ways";
     if (l.order.length) return "clear to start - " + plural(l.order.length, "order waits", "orders wait") + " for a crew";
@@ -895,11 +895,15 @@ __FM_BEARINGS_BOARD_DATA__
        recorded activity, so a lane holding only one must not read as empty. */
     if (l.call.length) return "waiting on your word";
     /* The reading and the launch chip beside it must agree: a lane can only say
-       it has been quiet SINCE a launch when it has a launch date to show. When
-       every launch it holds is undated or unusable, it says that instead of
-       pointing at a date the head does not carry. */
+       it has been quiet SINCE a launch when it has a launch date to show.
+       Reaching past that means the lane has nothing on the ways, nothing
+       ordered, nothing held, nothing awaiting the captain, and every launch it
+       holds is undated - so everything in it has already sailed. That is a
+       whole truth about the operation with no date needed to tell it, which is
+       the register this board answers in: how the work is going, not how the
+       paperwork is kept. */
     if (l.lastLaunch !== null) return "quiet since the last launch";
-    return "quiet - no launch here carries a usable date";
+    return "quiet - everything here has launched";
   }
   function laneTone(l) {
     if (l.call.length) return "call";
