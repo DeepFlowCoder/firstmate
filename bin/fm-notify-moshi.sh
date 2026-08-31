@@ -99,15 +99,18 @@ captured_detail() {  # <stderr-file>
   printf '%s' "$detail"
 }
 
-# The reader's exit status carries what its stderr does not. Measured on macOS
-# 15.7.5 against a throwaway keychain: an item present behind a LOCKED keychain
-# fails with a non-zero status and prints NOTHING on stderr, while a genuinely
-# absent item fails 44 and prints "The specified item could not be found in the
-# keychain." The locked status itself varied by invocation form (128 naming the
-# keychain directly, 143 through the default search list), so what separates the
-# two cases is the not-found 44 plus its message against a silent other status -
-# which is why both the status and the stderr are reported rather than either
-# alone, and why neither is interpreted here into a cause the script cannot know.
+# When a reader RETURNS a failure, both its exit status and its own words are
+# reported and neither is interpreted, because the script cannot know the cause:
+# a reader that says "The specified item could not be found in the keychain."
+# has named a missing item, while a reader that returns some other status
+# without saying anything has not named anything, and inventing a cause for it
+# would be the guess this reporting exists to remove.
+#
+# NOT established, and deliberately not promised: whether a locked keychain
+# returns a failure here at all rather than BLOCKING on an unlock prompt. If it
+# blocks, nothing below runs - a hand run waits on that dialog, and on the alarm
+# path the daemon's per-channel watchdog kills the process group and logs 124,
+# so this detail never reaches the log through that path.
 reader_failure() {  # <reader> <status> <stderr-file>
   local detail
   detail=$(captured_detail "$3")

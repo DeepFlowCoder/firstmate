@@ -180,6 +180,50 @@ test_missing_token_is_reported_and_sends_nothing() {
   pass "fm-notify-moshi.sh: names the missing Keychain service instead of sending a tokenless alert"
 }
 
+# A failed credential read reports the reader's exit status and its own words,
+# and the message prefix alone cannot separate a missing item from a keychain
+# that refused: both cases carry the same prefix. These two drive a stub reader
+# for every case. This suite never invokes the real `security`, because a real
+# read can raise an interactive unlock dialog on the operator's own desktop.
+test_a_returning_keychain_failure_carries_its_status_and_its_own_words() {
+  local dir rc
+  dir=$(make_case keychain-not-found)
+  cat > "$dir/bin/security" <<'EOF'
+#!/usr/bin/env bash
+echo "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain." >&2
+exit 44
+EOF
+  chmod +x "$dir/bin/security"
+  run_notify "$dir" "away-mode WEDGED 900s"
+  rc=$?
+  expect_code 2 "$rc" "an unreadable Keychain must be a configuration error"
+  assert_absent "$dir/request-body" "a request was sent with no token available"
+  assert_grep 'firstmate-moshi' "$dir/stderr" "the failure did not name the Keychain service to fix"
+  assert_grep 'exit 44' "$dir/stderr" "the reader's own exit status was not reported"
+  assert_grep 'could not be found in the keychain' "$dir/stderr" \
+    "the reader's own words were discarded instead of reported"
+  pass "fm-notify-moshi.sh: a returning Keychain failure carries its status and the reader's own words"
+}
+
+test_a_silent_keychain_failure_carries_its_status_and_invents_no_cause() {
+  local dir rc
+  dir=$(make_case keychain-silent)
+  cat > "$dir/bin/security" <<'EOF'
+#!/usr/bin/env bash
+exit 51
+EOF
+  chmod +x "$dir/bin/security"
+  run_notify "$dir" "away-mode WEDGED 900s"
+  rc=$?
+  expect_code 2 "$rc" "an unreadable Keychain must be a configuration error"
+  assert_absent "$dir/request-body" "a request was sent with no token available"
+  assert_grep 'firstmate-moshi' "$dir/stderr" "the failure did not name the Keychain service to fix"
+  assert_grep 'exit 51' "$dir/stderr" "a reader that said nothing still must have its status reported"
+  assert_no_grep 'could not be found in the keychain' "$dir/stderr" \
+    "a cause the reader never reported was invented in the message"
+  pass "fm-notify-moshi.sh: a silent Keychain failure carries its status without inventing a cause"
+}
+
 test_empty_summary_is_refused_before_sending() {
   local dir rc
   dir=$(make_case empty-summary)
@@ -318,6 +362,8 @@ test_stored_token_newline_is_stripped
 test_one_password_reference_is_preferred_over_the_keychain
 test_locked_vault_is_reported_and_sends_nothing
 test_missing_token_is_reported_and_sends_nothing
+test_a_returning_keychain_failure_carries_its_status_and_its_own_words
+test_a_silent_keychain_failure_carries_its_status_and_invents_no_cause
 test_empty_summary_is_refused_before_sending
 test_rejected_delivery_fails_without_disclosing_the_token
 test_unreachable_endpoint_reports_curls_own_reason

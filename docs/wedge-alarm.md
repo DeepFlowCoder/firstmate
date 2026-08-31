@@ -52,7 +52,9 @@ Moshi rate-limits a free host to 10 events per 60 seconds, well above this alarm
 The helper reports a refused delivery as a non-zero exit, which the daemon logs and continues past, so a Moshi outage still leaves the durable marker and every other configured channel intact.
 The daemon runs the `command:` channel with its stderr discarded, so the log records only the non-zero exit and cannot tell a rejected token, an empty Keychain, and a Moshi outage apart.
 Run `bin/fm-notify-moshi.sh 'test summary'` by hand to see the specific reason, which the helper prints to stderr.
-A failed credential read carries the reader's own exit status and whatever it wrote to stderr, so a keychain that would not open is not reported as a token that was never stored: measured against a throwaway keychain, a genuinely absent item fails 44 with "The specified item could not be found in the keychain.", while an item sitting behind a locked keychain fails with a different, silent status.
+When a credential read returns a failure, it carries the reader's own exit status and whatever it wrote to stderr, so an item that is genuinely absent says so in the keychain's own words rather than being collapsed into a generic message.
+What that does NOT cover is a locked keychain: whether such a read returns a failure at all, or instead blocks on an unlock prompt, is not measured and is recorded that way in [`verification/supervision.md`](verification/supervision.md).
+If it blocks, a hand run waits on that dialog rather than printing anything, and through the alarm channel the per-channel watchdog kills the process group and the log records only rc 124.
 Whether the alert actually arrives on the phone is the one part no host-side check can prove; send a test alarm and confirm the phone before relying on it.
 
 ## Test safety

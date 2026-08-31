@@ -567,22 +567,13 @@ security delete-keychain "$KC"
 Observed output: the `find` step exited 0 and printed `probe-token-value`, with no authorization prompt, consistent with `security`'s documented "the application which creates an item is trusted to access its data without warning".
 That is the trusted-application dimension only: the creating application read its own item back from a keychain that was unlocked.
 
-A locked keychain is distinguishable from a missing item by exit status, not by stderr.
-Measured on 2026-08-31 against the same kind of throwaway keychain, created, unlocked, loaded, then locked in one session:
+When a credential reader RETURNS a failure, `bin/fm-notify-moshi.sh` reports that reader's exit status and its own stderr, and interprets neither into a cause.
+`tests/fm-notify-moshi.test.sh` owns that contract against a stub reader; nothing here needs the real keychain to establish it.
 
-```sh
-security lock-keychain "$KC"
-security find-generic-password -s fm-moshi-probe -a "$USER" -w "$KC"   # item IS present
-```
-
-Observed output: exit 128 with an empty stderr, repeated twice.
-Driving the real helper against the same locked item through the default search list instead reported exit 143, also with an empty stderr, so the locked status is NOT a stable constant across invocation forms — only its silence was constant.
-The same lookup for a service that was never added returns exit 44 and prints `security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.`
-That is why `bin/fm-notify-moshi.sh` reports the reader's exit status alongside its stderr and interprets neither: the not-found 44 and its message identify a missing item, and any other, silent status is the signal to look at the keychain rather than at the item.
-
-NOT MEASURED: lock state of the login keychain specifically.
+NOT MEASURED: lock state.
 `bin/fm-notify-moshi.sh` names no keychain, so at run time it reads the default search list — the login keychain — and that keychain's lock state was never exercised here.
 A login keychain locked by "lock when sleeping", or one whose password diverges from the login password, can block the read on an unlock prompt: the same prompt-blocks-the-read failure the 1Password path is rejected for.
+Whether such a read RETURNS a failure or BLOCKS on that prompt is exactly what is unmeasured, and it is not idly measurable: an attempt to probe it raised an interactive keychain unlock dialog on the operator's own desktop, which is why this dimension stays recorded rather than tested.
 The Keychain stays the default and the 1Password trade-off stands, but the evidence above reaches no further than the unlocked, trusted-application read-back.
 
 Delivery to a physical phone is NOT verified here and cannot be: it needs a live account token, and a successful POST only proves Moshi accepted the alert.
