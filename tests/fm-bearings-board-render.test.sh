@@ -622,6 +622,53 @@ test_a_day_the_calendar_does_not_have_renders_no_age() {
 }
 
 # ---------------------------------------------------------------------------
+# The other way into a forward-dated age needs no impossible day at all: one
+# wrong digit in the year is a real date the calendar has, so it survives every
+# shape check and lands AFTER `generated`. An age measured backwards is not an
+# age - a year-old order would read as filed today, and a launch dated ahead
+# would crown its lane as the yard's most recent - so a record the snapshot
+# cannot yet have seen renders no age, exactly as prose and an impossible day
+# already do. A real past date on the same board proves the rule did not eat
+# legitimate ages with it.
+# ---------------------------------------------------------------------------
+test_a_record_dated_after_the_snapshot_renders_no_age() {
+  local home out lane
+  home=$(make_home future-dates)
+  # `generated` is 2026-08-26; 2027 is the ordinary year-typo slip
+  out=$(render "$home" '{
+    "landed": [
+      {"id":"future-landed","repo":"sample","what":"Landed ahead of the snapshot",
+       "owner":"firstmate","landed_on":"2027-01-05"}
+    ],
+    "charted": [
+      {"id":"future-order","repo":"sample","title":"Ordered ahead of the snapshot","reason":"",
+       "dispatchable":true,"since":"2027-08-24"},
+      {"id":"past-order","repo":"sample","title":"Ordered before the snapshot","reason":"",
+       "dispatchable":true,"since":"2026-08-24"}
+    ]}')
+  lane=$(printf '%s' "$out" | jq -c '.lanes[0]')
+
+  printf '%s' "$out" | jq -e '.error == ""' >/dev/null \
+    || fail "a forward-dated record made the board render its fail-closed error: $out"
+  # the forward-dated order carries no age; the real past date beside it does
+  printf '%s' "$lane" | jq -e '
+    [.berths[] | select(.label == "Clear to start") | .rows[] | {t:.title, w:.when, s:.sub}] == [
+      {t:"Ordered ahead of the snapshot", w:"", s:"waiting for a crew"},
+      {t:"Ordered before the snapshot", w:"", s:"ordered 2 days ago"}
+    ]
+  ' >/dev/null || fail "a forward-dated order was aged, or a real one beside it was lost: $lane"
+  printf '%s' "$lane" | jq -e '
+    [.berths[] | select(.label == "Launched") | .rows[] | .when] == [""]
+  ' >/dev/null || fail "a launch dated after the snapshot was given an age: $lane"
+  # neither the lane head nor the yard report may claim a launch it cannot date
+  printf '%s' "$lane" | jq -e '.launch == ""' >/dev/null \
+    || fail "the lane claimed a last launch dated after the snapshot: $lane"
+  printf '%s' "$out" | jq -e '(.headlineSub | test("last launch") | not)' >/dev/null \
+    || fail "the yard report promoted a forward-dated launch as its most recent: $out"
+  pass "a record dated after the snapshot renders no age instead of reading as today"
+}
+
+# ---------------------------------------------------------------------------
 # Work under construction deliberately carries no age: the only date the
 # records hold is when it was FILED, so a tempo would be invented.
 # ---------------------------------------------------------------------------
@@ -696,4 +743,5 @@ test_ages_are_read_against_the_payload_not_the_clock
 test_only_the_unnamed_lane_carries_a_row_identity
 test_a_recorded_value_that_is_not_a_date_renders_no_age
 test_a_day_the_calendar_does_not_have_renders_no_age
+test_a_record_dated_after_the_snapshot_renders_no_age
 test_work_on_the_ways_shows_state_and_never_an_invented_age

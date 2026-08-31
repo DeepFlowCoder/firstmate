@@ -571,7 +571,13 @@ __FM_BEARINGS_BOARD_DATA__
   }
   function agoDays(n) {
     if (n === null) return null;
-    if (n <= 0) return "today";
+    /* A record the calendar places AFTER the snapshot is a typo, not a tempo:
+       one wrong digit in the year would otherwise read as filed today, and a
+       launch dated ahead would crown its lane as the yard's most recent. An age
+       that runs backwards is not an age, so it gets the same no-age answer an
+       unparseable value and an impossible day already get. */
+    if (n < 0) return null;
+    if (n === 0) return "today";
     if (n === 1) return "yesterday";
     return n + " days ago";
   }
@@ -956,9 +962,9 @@ __FM_BEARINGS_BOARD_DATA__
     head.appendChild(el("span", "bb-lane__name", l.name));
     head.appendChild(el("span", "bb-lane__reading", laneReading(l)));
     if (l.call.length) head.appendChild(badge("solid", plural(l.call.length, "needs you", "need you")));
-    if (l.lastLaunch !== null) {
-      head.appendChild(el("span", "bb-lane__launch",
-        "last launch " + agoDay(l.lastLaunch)));
+    var laneLaunch = agoDay(l.lastLaunch);
+    if (laneLaunch) {
+      head.appendChild(el("span", "bb-lane__launch", "last launch " + laneLaunch));
     }
     card.appendChild(head);
 
