@@ -235,6 +235,7 @@ test_read_failure_refuses_loudly_and_preserves_state_for_retry() {
 # must not be reported as a fault of the status file.
 test_refusal_tells_a_killed_reader_apart_from_a_genuine_io_failure() {
   local dir state statusfile out err rc crash_reader err_reader garbage_reader
+  local ident_crash_reader
   dir=$(make_case cursor-read-failure-diagnosis)
   state="$dir/state"
   statusfile="$state/task7.status"
@@ -243,6 +244,7 @@ test_refusal_tells_a_killed_reader_apart_from_a_genuine_io_failure() {
   crash_reader="$dir/crash-reader"
   err_reader="$dir/err-reader"
   garbage_reader="$dir/garbage-reader"
+  ident_crash_reader="$dir/ident-crash-reader"
 
   # Correct output, then death by signal: the value is on stdout but the reader
   # never returned, so the drain must discard it rather than trust it.
@@ -251,9 +253,18 @@ test_refusal_tells_a_killed_reader_apart_from_a_genuine_io_failure() {
 LC_ALL=C stat -f '%z' "$1" 2>/dev/null || LC_ALL=C stat -c '%s' "$1" 2>/dev/null
 kill -SEGV $$
 CRASH
+  # The same shape on the other read. The identity read forks more stats than
+  # the size read does, so it carries more of the exposure to a host that
+  # breaks a fork, and its diagnosis must survive the trip out of the reader
+  # rather than arriving flattened into an ordinary I/O error.
+  cat > "$ident_crash_reader" <<'IDENTCRASH'
+#!/usr/bin/env bash
+printf 'weak:7:8'
+kill -SEGV $$
+IDENTCRASH
   printf '#!/usr/bin/env bash\nexit 1\n' > "$err_reader"
   printf '#!/usr/bin/env bash\necho notanumber\n' > "$garbage_reader"
-  chmod +x "$crash_reader" "$err_reader" "$garbage_reader"
+  chmod +x "$crash_reader" "$ident_crash_reader" "$err_reader" "$garbage_reader"
 
   printf 'needs-decision [key=d]: a call the captain still owes\n' > "$statusfile"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
@@ -286,12 +297,93 @@ CRASH
   grep -F 'returned no usable value' "$err" >/dev/null \
     || fail "a successful reader with unusable output was not reported as such: $(command cat "$err")"
 
+  # Size read healthy, identity read killed: the branch the size seam can never
+  # reach, and the one a broken host fork lands in most often.
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$ident_crash_reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "an identity reader killed by a signal let the drain exit green, so a discarded read reads as nothing being open"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "a signal-killed identity reader stopped refusing loudly: $(command cat "$err")"
+  grep -F 'the identity reader was killed by signal 11' "$err" >/dev/null \
+    || fail "a host-killed identity read was not reported as a signal death: $(command cat "$err")"
+  grep -F 'genuine I/O failure' "$err" >/dev/null \
+    && fail "a host-killed identity read was blamed on the status file: $(command cat "$err")"
+  grep -F "$statusfile" "$err" >/dev/null \
+    || fail "the identity refusal did not name the status file whose read failed: $(command cat "$err")"
+
+  rc=0
+  FM_STATE_OVERRIDE="$state" FM_STATUS_IDENTITY_READER="$err_reader" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "a failing identity reader let the drain exit green"
+  grep -F 'the identity reader failed with status 1' "$err" >/dev/null \
+    || fail "an ordinary identity read failure was not reported as a genuine I/O failure: $(command cat "$err")"
+  grep -F 'killed by signal' "$err" >/dev/null \
+    && fail "an ordinary identity read failure was misreported as a signal death: $(command cat "$err")"
+
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "wake drain did not recover after the injected read failures"
   grep -F 'task7' "$out" | grep -F '[key=d]' >/dev/null \
     || fail "the open decision disappeared once reads recovered: $(command cat "$out")"
 
   pass "the refusal tells a host-killed read apart from a genuine I/O failure and still refuses on both"
+}
+
+# The identity reader seam returns before the library's own stat calls, so it
+# cannot pin whether THOSE preserve a killed reader's status on the way out.
+# That is the path a real host runs, and the one that forks the most, so drive
+# it directly: a `stat` shim on PATH that answers every other question honestly
+# and dies on a signal only on the device:inode read the identity function makes.
+# A status flattened anywhere between that stat and the diagnosis reports a host
+# fault as an I/O failure of the status file, which is the misattribution the
+# whole classification exists to prevent.
+test_a_host_killed_identity_stat_is_not_reported_as_a_status_file_fault() {
+  local dir state statusfile out err rc shim real_stat crashes
+  dir=$(make_case ident-stat-killed-by-signal)
+  state="$dir/state"
+  statusfile="$state/task8.status"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  shim="$dir/shim"
+  crashes="$dir/crashes"
+  real_stat=$(command -v stat) || fail "no stat on PATH to build the shim from"
+
+  mkdir -p "$shim"
+  cat > "$shim/stat" <<SH
+#!/usr/bin/env bash
+case " \$* " in
+  *'%d:%i'*)
+    "$real_stat" "\$@"
+    printf 'x' >> "$crashes"
+    kill -TERM \$\$
+    ;;
+esac
+exec "$real_stat" "\$@"
+SH
+  chmod +x "$shim/stat"
+
+  printf 'needs-decision [key=e]: a call the captain still owes\n' > "$statusfile"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the injected stat failure failed"
+
+  rc=0
+  PATH="$shim:$PATH" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ -s "$crashes" ] \
+    || fail "the stat shim was never reached, so nothing about the identity read was exercised"
+  [ "$rc" -ne 0 ] \
+    || fail "an identity stat killed by a signal let the drain exit green, so a discarded read reads as nothing being open"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "a signal-killed identity stat stopped refusing loudly: $(command cat "$err")"
+  grep -F 'the identity reader was killed by signal 15' "$err" >/dev/null \
+    || fail "the killed identity stat was flattened into an ordinary failure: $(command cat "$err")"
+  grep -F 'genuine I/O failure' "$err" >/dev/null \
+    && fail "a host-killed identity stat was blamed on the status file: $(command cat "$err")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "wake drain did not recover after the injected stat failure"
+  grep -F 'task8' "$out" | grep -F '[key=e]' >/dev/null \
+    || fail "the open decision disappeared once the identity stat recovered: $(command cat "$out")"
+
+  pass "a host-killed identity stat keeps its signal status out to the refusal"
 }
 
 # The captain's decisions reach the captain through this drain, so "nothing
@@ -633,6 +725,7 @@ test_truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision
 test_same_size_rewrite_is_detected_via_inode_identity
 test_read_failure_refuses_loudly_and_preserves_state_for_retry
 test_refusal_tells_a_killed_reader_apart_from_a_genuine_io_failure
+test_a_host_killed_identity_stat_is_not_reported_as_a_status_file_fault
 test_unreadable_status_never_exits_green_and_empty_while_a_decision_is_open
 test_open_decisions_fold_read_failure_refuses_instead_of_claiming_nothing_is_open
 test_cursor_commit_failure_after_a_full_presentation_notices_and_stays_green

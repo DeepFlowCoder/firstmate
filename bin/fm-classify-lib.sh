@@ -658,11 +658,11 @@ _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
     return
   fi
   if [ "$_FM_CLASSIFY_UNAME" = Darwin ]; then
-    ident=$(LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null) || return 1
+    ident=$(LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null) || return
     epoch=$(LC_ALL=C stat -f '%B' "$f" 2>/dev/null) || epoch=0
     if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -f '%FB' "$f" 2>/dev/null) || birth=''; else birth=''; fi
   else
-    ident=$(LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null) || return 1
+    ident=$(LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null) || return
     epoch=$(LC_ALL=C stat -c '%W' "$f" 2>/dev/null) || epoch=0
     if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -c '%w' "$f" 2>/dev/null) || birth=''; else birth=''; fi
   fi
@@ -892,7 +892,13 @@ EOF
 # readable regular file. Only the classification is new; the verdict is unchanged.
 _fm_status_read_diagnosis() {  # <status-file> <size> <size-rc> <ident> <ident-rc>
   local f=$1 size=$2 size_rc=$3 ident=$4 ident_rc=$5 which rc
-  if [ -z "$size" ]; then which=size; rc=$size_rc; else which=identity; rc=$ident_rc; fi
+  if [ -z "$size" ]; then
+    which=size; rc=$size_rc
+  elif [ -z "$ident" ]; then
+    which=identity; rc=$ident_rc
+  else
+    which=size; rc=$size_rc
+  fi
   if [ "$rc" -gt 128 ]; then
     printf 'status read: %s: the %s reader was killed by signal %s, so its result was discarded; this is the host breaking the read, not a status-file fault - re-run the drain, and if it recurs check the shell and stat tooling on this machine\n' \
       "$f" "$which" "$((rc - 128))"
