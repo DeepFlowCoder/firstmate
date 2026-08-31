@@ -88,17 +88,48 @@ for tool in curl jq; do
   command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool is required" >&2; exit 2; }
 done
 
+# One bounded, single-line excerpt of a captured stderr file. Every reader here
+# emits its secret on stdout only, so these files carry diagnostics and nothing
+# else; the cap keeps a verbose reader from flooding the message.
+captured_detail() {  # <stderr-file>
+  local detail
+  detail=$(tr '\n' ' ' < "$1" 2>/dev/null | cut -c1-200)
+  detail="${detail#"${detail%%[![:space:]]*}"}"
+  detail="${detail%"${detail##*[![:space:]]}"}"
+  printf '%s' "$detail"
+}
+
+# The reader's exit status carries what its stderr does not. Measured on macOS
+# 15.7.5 against a throwaway keychain: an item present behind a LOCKED keychain
+# fails with a non-zero status and prints NOTHING on stderr, while a genuinely
+# absent item fails 44 and prints "The specified item could not be found in the
+# keychain." The locked status itself varied by invocation form (128 naming the
+# keychain directly, 143 through the default search list), so what separates the
+# two cases is the not-found 44 plus its message against a silent other status -
+# which is why both the status and the stderr are reported rather than either
+# alone, and why neither is interpreted here into a cause the script cannot know.
+reader_failure() {  # <reader> <status> <stderr-file>
+  local detail
+  detail=$(captured_detail "$3")
+  if [ -n "$detail" ]; then
+    printf '%s exit %s: %s' "$1" "$2" "$detail"
+  else
+    printf '%s exit %s' "$1" "$2"
+  fi
+}
+
 # Print the API token on stdout. Never logs or echoes the value itself.
 resolve_token() {
-  local ref=${FM_MOSHI_TOKEN_OP_REF:-} token
+  local ref=${FM_MOSHI_TOKEN_OP_REF:-} token status
   local -a lookup=()
   if [ -n "$ref" ]; then
     command -v op >/dev/null 2>&1 || {
       echo "error: FM_MOSHI_TOKEN_OP_REF is set but the 1Password CLI (op) is not installed" >&2
       return 1
     }
-    token=$(op read -n -- "$ref" 2>/dev/null) || {
-      echo "error: could not read the Moshi token from 1Password (is the vault unlocked?)" >&2
+    token=$(op read -n -- "$ref" 2>"$TOKEN_ERR") || {
+      status=$?
+      echo "error: could not read the Moshi token from 1Password (is the vault unlocked?): $(reader_failure op "$status" "$TOKEN_ERR")" >&2
       return 1
     }
   else
@@ -108,8 +139,9 @@ resolve_token() {
       echo "error: no Moshi token source; set FM_MOSHI_TOKEN_OP_REF or install a Keychain" >&2
       return 1
     }
-    token=$(security find-generic-password "${lookup[@]}" -w 2>/dev/null) || {
-      echo "error: no Moshi token in the Keychain for service '${FM_MOSHI_KEYCHAIN_SERVICE:-$KEYCHAIN_SERVICE_DEFAULT}'" >&2
+    token=$(security find-generic-password "${lookup[@]}" -w 2>"$TOKEN_ERR") || {
+      status=$?
+      echo "error: no Moshi token in the Keychain for service '${FM_MOSHI_KEYCHAIN_SERVICE:-$KEYCHAIN_SERVICE_DEFAULT}': $(reader_failure security "$status" "$TOKEN_ERR")" >&2
       return 1
     }
   fi
@@ -123,6 +155,26 @@ resolve_token() {
   printf '%s' "$token"
 }
 
+umask 077
+BODY=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-body.XXXXXX") || {
+  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for the response body" >&2
+  exit 2
+}
+CURL_ERR=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-curlerr.XXXXXX") || {
+  rm -f -- "$BODY"
+  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for curl's diagnostics" >&2
+  exit 2
+}
+TOKEN_ERR=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-tokenerr.XXXXXX") || {
+  rm -f -- "$BODY" "$CURL_ERR"
+  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for the token reader's diagnostics" >&2
+  exit 2
+}
+trap 'rm -f -- "$BODY" "$CURL_ERR" "$TOKEN_ERR"' EXIT
+trap 'rm -f -- "$BODY" "$CURL_ERR" "$TOKEN_ERR"; exit 129' HUP
+trap 'rm -f -- "$BODY" "$CURL_ERR" "$TOKEN_ERR"; exit 130' INT
+trap 'rm -f -- "$BODY" "$CURL_ERR" "$TOKEN_ERR"; exit 143' TERM
+
 TOKEN=$(resolve_token) || exit 2
 
 case "${FM_MOSHI_UNIFIED:-}" in
@@ -135,21 +187,6 @@ case "$TIMEOUT" in
   ''|*[!0-9]*) TIMEOUT=$TIMEOUT_SECS_DEFAULT ;;
   *) [ "$TIMEOUT" -gt 0 ] 2>/dev/null || TIMEOUT=$TIMEOUT_SECS_DEFAULT ;;
 esac
-
-umask 077
-BODY=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-body.XXXXXX") || {
-  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for the response body" >&2
-  exit 2
-}
-CURL_ERR=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-curlerr.XXXXXX") || {
-  rm -f -- "$BODY"
-  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for curl's diagnostics" >&2
-  exit 2
-}
-trap 'rm -f -- "$BODY" "$CURL_ERR"' EXIT
-trap 'rm -f -- "$BODY" "$CURL_ERR"; exit 129' HUP
-trap 'rm -f -- "$BODY" "$CURL_ERR"; exit 130' INT
-trap 'rm -f -- "$BODY" "$CURL_ERR"; exit 143' TERM
 
 # The token reaches jq as raw stdin (-Rs), not as --arg, so it stays out of
 # jq's argv too; the summary and title are not secret and are escaped by --arg.
@@ -172,9 +209,7 @@ if [ "$RC" -ne 0 ]; then
   # curl's own line is what separates DNS failure, TLS failure and the deadline;
   # -S already asks for it, and the token cannot appear in it because it travels
   # in the request body on stdin, never on curl's command line.
-  DETAIL=$(tr '\n' ' ' < "$CURL_ERR" 2>/dev/null | cut -c1-200)
-  DETAIL="${DETAIL#"${DETAIL%%[![:space:]]*}"}"
-  DETAIL="${DETAIL%"${DETAIL##*[![:space:]]}"}"
+  DETAIL=$(captured_detail "$CURL_ERR")
   if [ -n "$DETAIL" ]; then
     printf 'error: could not reach Moshi (curl exit %s): %s\n' "$RC" "$DETAIL" >&2
   else
