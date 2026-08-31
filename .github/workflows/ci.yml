@@ -449,21 +449,32 @@ jobs:
           done < "$shell_inventory"
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
-          snapshot_output=$(/bin/bash tests/fm-fleet-snapshot-view.test.sh)
-          printf '%s\n' "$snapshot_output"
-          snapshot_count=$(printf '%s\n' "$snapshot_output" | grep -c '^ok - ')
-          [ "$snapshot_count" -eq 16 ] || {
-            echo "::error::expected 16 snapshot/fleet-view tests, got $snapshot_count"
-            exit 1
+          # Both guards a suite needs here: it exited clean, and every one of
+          # its tests actually ran. Capture the status instead of letting
+          # `set -e` end the step at the command substitution - that path threw
+          # the captured output away before printing it, so a test that fails
+          # only under stock Bash 3.2 reached this log with no `not ok` line and
+          # no failing test named, and this job is the matrix's only 3.2 signal.
+          # The expected count is authored here on purpose: it is what proves a
+          # suite ran whole rather than exiting 0 partway, so it must be bumped
+          # with every test added to either script.
+          run_stock_bash_suite() { # <script> <expected-ok-count> <label>
+            local script=$1 expected=$2 label=$3 output count status=0
+            output=$(/bin/bash "$script") || status=$?
+            printf '%s\n' "$output"
+            [ "$status" -eq 0 ] || {
+              echo "::error::$label tests failed under stock macOS Bash 3.2 (exit $status)"
+              return 1
+            }
+            count=$(printf '%s\n' "$output" | grep -c '^ok - ') || count=0
+            [ "$count" -eq "$expected" ] || {
+              echo "::error::expected $expected $label tests, got $count"
+              return 1
+            }
           }
 
-          bearings_output=$(/bin/bash tests/fm-bearings-snapshot.test.sh)
-          printf '%s\n' "$bearings_output"
-          bearings_count=$(printf '%s\n' "$bearings_output" | grep -c '^ok - ')
-          [ "$bearings_count" -eq 43 ] || {
-            echo "::error::expected 43 Bearings tests, got $bearings_count"
-            exit 1
-          }
+          run_stock_bash_suite tests/fm-fleet-snapshot-view.test.sh 16 snapshot/fleet-view
+          run_stock_bash_suite tests/fm-bearings-snapshot.test.sh 43 Bearings
 
   invariants:
     name: Repo invariants
