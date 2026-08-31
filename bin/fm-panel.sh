@@ -1,19 +1,77 @@
 #!/usr/bin/env bash
-# Convoke a panel of LLM judges on a decision, or collect their verdicts.
+# Convoke a panel of LLM judges on a decision or on a change, and collect their
+# verdicts as one decision instead of a pile of reports.
 #
 # Each judge is a scout crewmate (read-only, no code changes) that receives the
-# SAME question and context; only the harness differs, so the comparison is fair.
+# SAME subject and context; only the harness differs, so the comparison is fair.
 # Verdicts land in data/<panel>-<judge>/report.md.
 #
 # Usage:
-#   fm-panel.sh convocar <panel-id> --question "<text>" --judges <h1,h2,...> [--context "<text>"] [--repo <name>] [--effort <low|medium|high|xhigh>]
+#   fm-panel.sh convocar <panel-id> --judges <h1,h2,...> <subject> [options]
 #   fm-panel.sh recoger <panel-id> [--timeout <seconds>]
 #
-# convocar scaffolds one scout brief per judge, fills the {TASK} placeholder
-# with the shared question/context, and spawns each on its harness. It refuses
-# to overwrite an existing judge task. recoger waits until every judge appended
-# a done: line to its status file (or the timeout elapses), then prints each
-# verdict's one-line conclusion and report path.
+# <subject> is exactly one of:
+#   --question "<text>"    judge a prose decision
+#   --diff <branch>        judge a change: <branch> against the project's default branch
+#   --pr <url-or-number>   judge a change: that PR's head against the same base
+#
+# options:
+#   --context "<text>"         shared background, handed to every judge
+#   --criteria "<text>"        acceptance criteria the change is judged against
+#   --criteria-from <task-id>  take them from data/<task-id>/brief.md's "# Task" section
+#   --repo <name>              project clone under projects/ (default: finanzas-control)
+#   --effort <low|medium|high|xhigh>
+#   --max-diff-bytes <n>       refuse a diff bigger than this (default: 200000)
+#   --timeout <seconds>        recoger only: how long to wait for every verdict
+#
+# convocar scaffolds one scout brief per judge, fills it with the shared
+# subject, and spawns each on its harness. It refuses to overwrite an existing
+# judge task. recoger waits until every judge appended a done: line, then prints
+# where the judges AGREE, where they SPLIT, and each dissenter's objection.
+# It exits non-zero when the panel is incomplete, so a timeout never reads as a
+# finished collection.
+#
+# A panel costs one full judgement per judge. It is for expensive,
+# hard-to-reverse decisions, not for routine changes: a delivery's own
+# validation already reviews, tests and documents with one reviewer, and the
+# panel buys provider DISAGREEMENT on top of that, not more review. Nothing
+# invokes this script automatically, and nothing should.
+#
+# ---
+# Design notes, not printed by --help.
+#
+# One code path. --question, --diff and --pr differ only in how the "subject"
+# block of the shared judge prompt is built; scaffolding, filling, spawning,
+# waiting and classifying are identical afterwards. The fair-comparison property
+# (same bytes to every judge, only the harness differs) is the whole point of the
+# tool, so it is guaranteed in exactly one place rather than re-guaranteed in a
+# second branch that can drift.
+#
+# The diff is materialized ONCE into data/<panel>/subject.diff and every judge is
+# pointed at that file. Judges do not each run their own git command: two judges
+# reading a branch that moved mid-panel would silently be judging different
+# changes. Passing a path rather than inlining the diff also keeps the launch
+# prompt small and lets each judge page through a large change with its own file
+# tools.
+#
+# Size is refused, never truncated. A silently shortened diff produces confident
+# verdicts about code the judge never saw, which is worse than no panel at all.
+# The 200000-byte default is about 50k tokens per judge; a change past that
+# should be narrowed, or the ceiling raised deliberately with the N-times cost in
+# view.
+#
+# --pr resolves through the CLONE's own origin (refs/pull/<n>/head), not through
+# a forge API, and --diff needs no remote at all. Judging a change therefore never
+# assumes a remote exists: local-only projects use --diff, which is the primary
+# path, and --pr refuses with that pointer rather than failing obscurely. The
+# fetch writes only an additive private ref under refs/fm-panel/, never a branch,
+# HEAD, index or working tree, and the ref is removed once the diff bytes are
+# captured.
+#
+# Judges must open their report with a VEREDICTO: line so verdicts can be
+# counted. An unparseable report is reported as unclassified and never guessed
+# into agreement: a fabricated consensus is the one output this tool must not
+# produce.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,34 +84,126 @@ PROJECTS="$FM_HOME/projects"
 DEFAULT_REPO="finanzas-control"
 DEFAULT_EFFORT="high"
 DEFAULT_TIMEOUT="1800"
+DEFAULT_MAX_DIFF_BYTES="200000"
+
+# Verdict buckets, in the order recoger prints them. The two trailing buckets are
+# not verdicts: they are the ways a judge can fail to deliver one.
+VERDICTS=(aprobar condicional rechazar sin-clasificar sin-veredicto)
 
 usage() {
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 && /^# ---$/ { exit } NR > 1 && /^#/ { sub(/^# ?/, ""); print }' "$0"
 }
 
 die() { echo "error: $*" >&2; exit 1; }
 
-# fill_brief <brief-path> <question> <context>
-# Replaces the {TASK} line of a scaffolded brief with the shared judge prompt.
-fill_brief() {
-  local brief=$1 question=$2 context=$3 body
-  body=$(mktemp)
+# --- subject resolution -----------------------------------------------------
+
+# default_branch <dir>: the project's default branch, remote-tracking first so a
+# pooled clone stranded on a feature branch still resolves the real default.
+default_branch() {
+  local dir=$1 ref branch
+  ref=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$ref" ]; then
+    printf '%s\n' "${ref#origin/}"
+    return 0
+  fi
+  for branch in main master; do
+    if git -C "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
+      printf '%s\n' "$branch"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# pr_number <url-or-number>: the PR number, or non-zero when the target is not a
+# PR reference at all.
+pr_number() {
+  local target=$1 n
+  case "$target" in
+    *"/pull/"*) n=${target##*/pull/}; n=${n%%[!0-9]*} ;;
+    [0-9]*) n=${target%%[!0-9]*} ;;
+    *) return 1 ;;
+  esac
+  [ -n "$n" ] || return 1
+  printf '%s\n' "$n"
+}
+
+# github_slug <url>: owner/repo from a GitHub URL, empty when it is not one.
+github_slug() {
+  local url=$1 rest
+  case "$url" in
+    *github.com[/:]*) rest=${url#*github.com} ; rest=${rest#[/:]} ;;
+    *) return 0 ;;
+  esac
+  rest=${rest%%/pull/*}
+  rest=${rest%.git}
+  case "$rest" in
+    */*) printf '%s\n' "$rest" ;;
+  esac
+}
+
+# brief_task_section <brief>: the "# Task" section of a scaffolded brief, which
+# is where a firstmate task records what the change must achieve. Non-zero when
+# the file has no such section or it is empty.
+brief_task_section() {
+  local brief=$1 body
+  [ -f "$brief" ] || return 1
+  body=$(awk '
+    /^# Task[[:space:]]*$/ { inside = 1; next }
+    inside && /^# / { exit }
+    inside { print }
+  ' "$brief")
+  body=$(printf '%s\n' "$body" | sed -e '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+  [ -n "$body" ] || return 1
+  printf '%s\n' "$body"
+}
+
+# --- judge prompt -----------------------------------------------------------
+
+# report_format_contract: the machine-countable part of every judge prompt.
+# recoger can only report a split it can read, so this text is the contract that
+# makes N independent reports comparable.
+report_format_contract() {
+  printf '%s\n' '## Formato obligatorio del reporte'
+  printf '%s\n' 'La PRIMERA línea de tu reporte debe ser exactamente una de estas tres:'
+  printf '%s\n' '    VEREDICTO: aprobar'
+  printf '%s\n' '    VEREDICTO: condicional'
+  printf '%s\n' '    VEREDICTO: rechazar'
+  printf '%s\n' 'Si tu veredicto NO es "aprobar", añade después una línea por cada objeción concreta:'
+  printf '%s\n' '    OBJECION: <una frase; el problema concreto, no una categoría>'
+  printf '%s\n' 'Esa objeción es lo único que se muestra junto a tu voto, así que escríbela sola en pie.'
+  printf '%s\n' 'Sin ese formato tu voto no se puede contar y el panel te reporta como sin clasificar.'
+  printf '%s\n' 'Debajo del formato, escribe el razonamiento completo: el reporte ES tu veredicto.'
+}
+
+# build_prompt <out-file> <subject-block-file> <context>
+# Assembles the shared judge prompt. Every judge gets these exact bytes.
+build_prompt() {
+  local out=$1 subject=$2 context=$3
   {
-    printf '%s\n' 'Eres un juez en un panel de decisiones. Emite un veredicto razonado sobre la decisión planteada. No busques en internet; razona desde el criterio y sus consecuencias. Sé concreto.'
-    printf '\n## La decisión\n%s\n' "$question"
+    printf '%s\n' 'Eres un juez en un panel de decisiones. Emite un veredicto razonado y concreto. No busques en internet; razona desde el criterio, el código y sus consecuencias.'
+    printf '%s\n' 'Los demás jueces reciben exactamente este mismo texto. Tu valor está en lo que tú ves y otro podría no ver, así que no te ablandes hacia el consenso.'
+    printf '\n'
+    cat "$subject"
     printf '\n## Contexto\n%s\n' "$context"
     printf '\n## Tu tarea\n'
     printf '%s\n' '1. Da tu veredicto: apruebas, rechazas, o apruebas con condiciones.'
     printf '%s\n' '2. Qué huecos, casos límite o ambigüedades ves.'
     printf '%s\n' '3. Qué precisarías o cambiarías.'
-    printf '%s\n' 'El reporte ES tu veredicto: escríbelo completo en el archivo del Definition of done.'
-  } > "$body"
-  awk -v body="$body" '
+    printf '\n'
+    report_format_contract
+  } > "$out"
+}
+
+# fill_brief <brief-path> <prompt-file>: replace the scaffold's {TASK} line.
+fill_brief() {
+  local brief=$1 prompt=$2
+  awk -v body="$prompt" '
     /\{TASK\}/ { while ((getline line < body) > 0) print line; close(body); next }
     { print }
   ' "$brief" > "$brief.new"
   mv "$brief.new" "$brief"
-  rm -f "$body"
 }
 
 # split_judges <h1,h2,...> -> prints one harness per line
@@ -61,78 +211,459 @@ split_judges() {
   printf '%s\n' "$1" | tr ',' '\n' | sed '/^[[:space:]]*$/d'
 }
 
+# --- convocar ---------------------------------------------------------------
+
+# resolve_change_subject <panel-dir> <project-dir> <repo> <kind> <target> <max-bytes>
+# Materializes data/<panel>/subject.diff and echoes "<base>|<head-label>|<shortstat>|<task-hint>".
+# Refuses rather than truncating, and refuses an empty change.
+resolve_change_subject() {
+  local panel_dir=$1 project_dir=$2 repo=$3 kind=$4 target=$5 max_bytes=$6
+  local base head_ref head_label task_hint n slug origin size shortstat
+  local -a cleanup_refs=()
+
+  git -C "$project_dir" rev-parse --git-dir >/dev/null 2>&1 ||
+    die "project clone is not a git repository: $project_dir"
+  base=$(default_branch "$project_dir") ||
+    die "cannot determine the default branch of '$repo'; expected origin/HEAD, main, or master"
+
+  if [ "$kind" = pr ]; then
+    n=$(pr_number "$target") ||
+      die "--pr expects a PR URL or number (got: $target)"
+    origin=$(git -C "$project_dir" remote get-url origin 2>/dev/null) ||
+      die "project '$repo' has no 'origin' remote, so a PR cannot describe its changes; judge the local branch instead with --diff <branch>"
+    # Cross-check owner/repo only when BOTH sides are GitHub, so a PR URL can
+    # never quietly resolve against a different repository's clone. A non-GitHub
+    # origin has no slug to compare, and the fetch below is the check there.
+    slug=$(github_slug "$target")
+    case "$origin" in
+      *github.com*)
+        if [ -n "$slug" ]; then
+          case "$origin" in
+            *"$slug"*) ;;
+            *) die "PR $target names $slug but '$repo' points at $origin; refusing to judge a different repository's change" ;;
+          esac
+        fi
+        ;;
+    esac
+    git -C "$project_dir" fetch --quiet origin \
+      "+refs/pull/$n/head:refs/fm-panel/pull/$n/head" 2>/dev/null ||
+      die "cannot fetch PR #$n from '$repo' origin; check the PR number and network access"
+    cleanup_refs+=("refs/fm-panel/pull/$n/head")
+    if git -C "$project_dir" fetch --quiet origin \
+      "+refs/heads/$base:refs/fm-panel/base/$base" 2>/dev/null; then
+      cleanup_refs+=("refs/fm-panel/base/$base")
+      base="refs/fm-panel/base/$base"
+    fi
+    head_ref="refs/fm-panel/pull/$n/head"
+    head_label="PR #$n"
+    # refs/pull/<n>/head carries no branch name, so a PR has no task to infer
+    # from. --criteria-from names it explicitly when the change has one.
+    task_hint=""
+  else
+    git -C "$project_dir" rev-parse --verify --quiet "$target^{commit}" >/dev/null ||
+      die "branch '$target' does not exist in '$repo'"
+    head_ref=$target
+    head_label="rama $target"
+    task_hint=${target#fm/}
+  fi
+
+  git -C "$project_dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
+    die "base '$base' does not resolve in '$repo'"
+
+  mkdir -p "$panel_dir"
+  if ! git -C "$project_dir" diff "$base...$head_ref" -- > "$panel_dir/subject.diff"; then
+    rm -f "$panel_dir/subject.diff"
+    die "cannot diff $base...$head_label in '$repo'"
+  fi
+  shortstat=$(git -C "$project_dir" diff --shortstat "$base...$head_ref" -- | sed 's/^[[:space:]]*//')
+
+  # The clone is left with its ref space exactly as found. The fetched objects
+  # stay, which is what any fetch leaves behind and is harmless.
+  local ref
+  for ref in "${cleanup_refs[@]:-}"; do
+    if [ -n "$ref" ]; then
+      git -C "$project_dir" update-ref -d "$ref" 2>/dev/null || true
+    fi
+  done
+
+  size=$(wc -c < "$panel_dir/subject.diff" | tr -d '[:space:]')
+  if [ "$size" -eq 0 ]; then
+    rm -f "$panel_dir/subject.diff"
+    die "$head_label has no changes against ${base#refs/fm-panel/base/}; there is nothing for a panel to judge"
+  fi
+  if [ "$size" -gt "$max_bytes" ]; then
+    rm -f "$panel_dir/subject.diff"
+    die "the change is too big for a panel: $size bytes against a $max_bytes-byte ceiling ($shortstat).
+  Every judge pays this in full, so it is refused rather than shortened - a judge that
+  silently sees half a change still returns a confident verdict.
+  Narrow the subject to the part that needs N opinions, or raise the ceiling
+  deliberately with --max-diff-bytes <n>."
+  fi
+
+  printf '%s|%s|%s|%s\n' "${base#refs/fm-panel/base/}" "$head_label" "$shortstat" "$task_hint"
+}
+
 convocar() {
-  local panel=$1 question=$2 context=$3 repo=$4 effort=$5 judges=$6
-  local project_dir task_id brief judge
+  local panel=$1 kind=$2 target=$3 context=$4 criteria=$5 criteria_from=$6
+  local repo=$7 effort=$8 judges=$9 max_bytes=${10}
+  local project_dir panel_dir task_id brief judge subject prompt
+  local base head_label shortstat task_hint criteria_src resolved
+
   project_dir="$PROJECTS/$repo"
   [ -d "$project_dir" ] || die "project clone not found: $project_dir"
+  panel_dir="$DATA/$panel"
+
+  # A panel's subject is fixed at convocation. Re-convoking the same id with a
+  # different roster would re-materialize the subject from a branch that may
+  # have moved, so the late judge would be answering about different bytes than
+  # the others - the exact comparison this tool exists to make honest.
+  [ ! -e "$panel_dir/judges" ] ||
+    die "panel '$panel' was already convoked (roster: $panel_dir/judges); its subject is fixed, so a judge added now would be judging different bytes. Convoke a new panel id instead."
+  for judge in $(split_judges "$judges"); do
+    [ ! -e "$DATA/$panel-$judge/brief.md" ] ||
+      die "judge task already exists: $panel-$judge (refusing to overwrite)"
+  done
+
+  subject=$(mktemp)
+  prompt=$(mktemp)
+  # convocar runs once per invocation, so an EXIT trap reaps the scratch prompt
+  # on every path out, including a die() from the subject resolution below.
+  # shellcheck disable=SC2064  # expand the paths now; they are gone by exit time
+  trap "rm -f '$subject' '$prompt'" EXIT
+
+  criteria_src=""
+  if [ "$kind" = question ]; then
+    mkdir -p "$panel_dir"
+    {
+      printf '## La decisión\n%s\n' "$target"
+    } > "$subject"
+    printf 'panel %s: pregunta en prosa\n\npregunta:\n%s\n' "$panel" "$target" > "$panel_dir/subject.md"
+  else
+    resolved=$(resolve_change_subject "$panel_dir" "$project_dir" "$repo" "$kind" "$target" "$max_bytes")
+    IFS='|' read -r base head_label shortstat task_hint <<< "$resolved"
+
+    if [ -z "$criteria" ]; then
+      [ -n "$criteria_from" ] || criteria_from=$task_hint
+      if [ -n "$criteria_from" ] && criteria=$(brief_task_section "$DATA/$criteria_from/brief.md"); then
+        criteria_src="$DATA/$criteria_from/brief.md"
+      else
+        criteria=""
+      fi
+    else
+      criteria_src="--criteria"
+    fi
+
+    {
+      printf '## El cambio\n'
+      printf 'Proyecto: %s\n' "$repo"
+      printf 'Sujeto: %s\n' "$head_label"
+      printf 'Base de comparación: %s\n' "$base"
+      printf 'Resumen: %s\n' "${shortstat:-sin resumen}"
+      printf 'Diff completo (léelo entero antes de opinar): %s\n' "$panel_dir/subject.diff"
+      printf '\n## Criterios de aceptación\n'
+      if [ -n "$criteria" ]; then
+        printf '%s\n' "$criteria"
+      else
+        printf '%s\n' 'NO HAY CRITERIOS REGISTRADOS para este cambio: no tiene una tarea detrás.'
+        printf '%s\n' 'Júzgalo contra su propia intención declarada (mensajes de commit, descripción del PR, el código mismo) y contra lo que el proyecto ya promete.'
+        printf '%s\n' 'Que falten criterios es en sí mismo un hallazgo: dilo en tu reporte si te impide juzgar algo.'
+      fi
+    } > "$subject"
+
+    {
+      printf 'panel %s: %s de %s\n' "$panel" "$head_label" "$repo"
+      printf '\nbase: %s\n' "$base"
+      printf 'resumen: %s\n' "${shortstat:-sin resumen}"
+      printf 'diff: %s\n' "$panel_dir/subject.diff"
+      printf 'criterios: %s\n' "${criteria_src:-NINGUNO (cambio sin tarea registrada)}"
+    } > "$panel_dir/subject.md"
+  fi
+
+  build_prompt "$prompt" "$subject" "$context"
+
+  split_judges "$judges" > "$panel_dir/judges"
+  echo "panel '$panel': $(split_judges "$judges" | paste -sd, -)"
+  echo "  sujeto: $(sed -n '1p' "$panel_dir/subject.md")"
+  if [ "$kind" != question ]; then
+    echo "  diff: $(wc -c < "$panel_dir/subject.diff" | tr -d '[:space:]') bytes  ($shortstat)"
+    if [ -z "$criteria" ]; then
+      echo "  AVISO: sin criterios de aceptación registrados; los jueces juzgan contra la intención declarada del cambio."
+    else
+      echo "  criterios: $criteria_src"
+    fi
+  fi
+  echo "  coste: $(split_judges "$judges" | wc -l | tr -d '[:space:]') veredictos de pago, uno por juez."
+
   for judge in $(split_judges "$judges"); do
     task_id="$panel-$judge"
     brief="$DATA/$task_id/brief.md"
-    [ ! -e "$brief" ] || die "judge task already exists: $task_id (refusing to overwrite)"
     "$SCRIPT_DIR/fm-brief.sh" "$task_id" "$repo" --scout >/dev/null
-    fill_brief "$brief" "$question" "$context"
+    fill_brief "$brief" "$prompt"
     "$SCRIPT_DIR/fm-spawn.sh" "$task_id" "$project_dir" --scout --harness "$judge" --effort "$effort"
   done
-  echo "panel '$panel' convocado: $(split_judges "$judges" | paste -sd, -)"
+  echo "panel '$panel' convocado."
+}
+
+# --- recoger ----------------------------------------------------------------
+
+# verdict_of <report>: one of VERDICTS. Never guesses: a report without the
+# contract's marker is unclassified, not agreement.
+verdict_of() {
+  local report=$1 line token
+  if [ ! -f "$report" ]; then
+    printf '%s\n' sin-veredicto
+    return 0
+  fi
+  line=$(grep -m1 -iE '^[[:space:]]*[-*#[:space:]]*VEREDICTO[[:space:]]*:' "$report" 2>/dev/null || true)
+  if [ -z "$line" ]; then
+    printf '%s\n' sin-clasificar
+    return 0
+  fi
+  # ASCII-only on purpose, under LC_ALL=C so the classification is byte-identical
+  # everywhere: the three contract tokens are ASCII, and folding any other byte
+  # (an accent, a markdown bullet, a stray emoji) to a separator is exactly what
+  # keeps "VEREDICTO: **aprobar**." and "veredicto:  aprobar" reading the same
+  # while anything genuinely off-contract still falls through to sin-clasificar.
+  # shellcheck disable=SC2018,SC2019  # accent-folding is the intent, not an oversight
+  token=$(printf '%s' "${line#*:}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z' ' ' | awk '{print $1}')
+  case "$token" in
+    aprobar | condicional | rechazar) printf '%s\n' "$token" ;;
+    *) printf '%s\n' sin-clasificar ;;
+  esac
+}
+
+# objections_of <report>: the judge's concrete objection lines, one per line.
+objections_of() {
+  local report=$1
+  [ -f "$report" ] || return 0
+  grep -iE '^[[:space:]]*[-*#[:space:]]*OBJECI[^:]*:' "$report" 2>/dev/null |
+    sed -e 's/^[^:]*://' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
+    sed '/^$/d' || true
+}
+
+# panel_roster <panel>: the judges convocar recorded, falling back to the status
+# files of a panel convoked before the roster existed.
+panel_roster() {
+  local panel=$1 f
+  if [ -s "$DATA/$panel/judges" ]; then
+    sed '/^[[:space:]]*$/d' "$DATA/$panel/judges"
+    return 0
+  fi
+  for f in "$STATE/$panel"-*.status; do
+    [ -e "$f" ] || continue
+    basename "$f" .status | sed "s/^$panel-//"
+  done
+}
+
+# band <label>: a fixed-width labelled separator, so the eye finds the sections
+# of a verdict without reading them.
+band() {
+  local line="--- $1 "
+  while [ "${#line}" -lt 60 ]; do line="$line-"; done
+  printf '  %s\n' "$line"
 }
 
 recoger() {
-  local panel=$1 timeout=$2 judge task_id verdict pending deadline
-  local -a judge_list
-  mapfile -t judge_list < <(for f in "$STATE"/"$panel"-*.status; do
-    [ -e "$f" ] || continue
-    basename "$f" .status | sed "s/^$panel-//"
-  done)
+  local panel=$1 timeout=$2
+  local judge task_id pending deadline verdict distinct headline missing
+  local -a judge_list=() verdicts=()
+
+  mapfile -t judge_list < <(panel_roster "$panel")
   [ "${#judge_list[@]}" -gt 0 ] || die "no judges found for panel '$panel'"
+
   deadline=$(( $(date +%s) + timeout ))
   pending=1
   while [ "$pending" -ne 0 ] && [ "$(date +%s)" -lt "$deadline" ]; do
     pending=0
     for judge in "${judge_list[@]}"; do
-      task_id="$panel-$judge"
-      grep -q '^done:' "$STATE/$task_id.status" 2>/dev/null || pending=1
+      grep -q '^done:' "$STATE/$panel-$judge.status" 2>/dev/null || pending=1
     done
     [ "$pending" -ne 0 ] && sleep 5
   done
+
   for judge in "${judge_list[@]}"; do
-    task_id="$panel-$judge"
-    verdict=$(grep '^done:' "$STATE/$task_id.status" 2>/dev/null | tail -1 || true)
-    echo "=== $judge ==="
-    if [ -n "$verdict" ]; then
-      echo "$verdict"
-      echo "  report: $DATA/$task_id/report.md"
+    verdicts+=("$(verdict_of "$DATA/$panel-$judge/report.md")")
+  done
+
+  # "They disagree" and "we cannot tell" are different answers, and collapsing
+  # them would either invent a split out of a judge that never answered or hide
+  # a real one behind a formatting failure. So the headline is read from the
+  # COUNTABLE verdicts alone, and whatever could not be counted is stated
+  # separately - and makes the collection exit non-zero either way.
+  local -a countable=()
+  missing=0
+  for verdict in "${verdicts[@]}"; do
+    case "$verdict" in
+      sin-veredicto | sin-clasificar) missing=$((missing + 1)) ;;
+      *) countable+=("$verdict") ;;
+    esac
+  done
+  if [ "${#countable[@]}" -eq 0 ]; then
+    distinct=0
+    headline="SIN VEREDICTOS LEGIBLES"
+  else
+    distinct=$(printf '%s\n' "${countable[@]}" | sort -u | wc -l | tr -d '[:space:]')
+    if [ "$distinct" -gt 1 ]; then
+      headline="VEREDICTO DIVIDIDO"
+    elif [ "$missing" -gt 0 ]; then
+      # Agreement among a subset is not unanimity, and must not read as it.
+      headline="ACUERDO PARCIAL: ${countable[0]}"
     else
-      echo "(sin veredicto aún; timeout)"
+      headline="UNÁNIME: ${countable[0]}"
+    fi
+  fi
+  if [ "$missing" -gt 0 ]; then
+    headline="$headline  ·  INCOMPLETO: $missing sin contar"
+  fi
+
+  echo
+  printf '  %s\n' '============================================================'
+  printf '   PANEL %s  ·  %s jueces  ·  %s\n' "$panel" "${#judge_list[@]}" "$headline"
+  printf '  %s\n' '============================================================'
+  if [ -f "$DATA/$panel/subject.md" ]; then
+    printf '   sujeto: %s\n' "$(sed -n "1s/^panel $panel: //p" "$DATA/$panel/subject.md")"
+  fi
+  echo
+
+  # One row per verdict that got a vote, weighted by a bar so the shape of the
+  # panel reads before the words do. The bar column is padded by COUNT rather
+  # than by printf width: the block is three bytes, and a byte-counted width
+  # would leave the names column ragged.
+  local bucket i names count bar pad
+  for bucket in "${VERDICTS[@]}"; do
+    names=""
+    count=0
+    bar=""
+    for i in "${!judge_list[@]}"; do
+      if [ "${verdicts[$i]}" = "$bucket" ]; then
+        names="${names:+$names, }${judge_list[$i]}"
+        count=$((count + 1))
+        bar="${bar}█"
+      fi
+    done
+    if [ "$count" -gt 0 ]; then
+      pad=""
+      while [ "${#pad}" -lt $((6 - count)) ]; do pad="$pad "; done
+      printf '   %-14s %s%s %s\n' "$bucket" "$bar" "$pad" "$names"
     fi
   done
+  echo
+
+  if [ "$distinct" -gt 1 ]; then
+    band 'LA GRIETA: donde los jueces NO coinciden'
+    printf '   %s\n' 'Esto es lo único que un solo juez no te podía dar. Léelo antes que nada.'
+  elif [ "$distinct" -eq 1 ] && [ "$missing" -eq 0 ]; then
+    band 'SIN GRIETA'
+    printf '   %s\n' 'Los jueces coinciden. Un panel unánime no enseña nada nuevo: el valor'
+    printf '   %s\n' 'estaba en el desacuerdo, y no lo hubo. Trátalo como una sola opinión.'
+  elif [ "$distinct" -eq 1 ]; then
+    band 'GRIETA NO DESCARTADA'
+    printf '   %s\n' 'Los votos que llegaron coinciden, pero faltan votos: el desacuerdo que'
+    printf '   %s\n' 'justificaba pagar el panel todavía podría estar en lo que no llegó.'
+  else
+    band 'NADA QUE CONTAR'
+    printf '   %s\n' 'Ningún juez dejó un veredicto legible; no hay acuerdo ni desacuerdo que leer.'
+  fi
+  if [ "$missing" -gt 0 ]; then
+    printf '   %s\n' "Faltan $missing de ${#judge_list[@]} votos, así que esta lectura es provisional."
+  fi
+  echo
+
+  local objections
+  for i in "${!judge_list[@]}"; do
+    judge=${judge_list[$i]}
+    verdict=${verdicts[$i]}
+    objections=$(objections_of "$DATA/$panel-$judge/report.md")
+    case "$verdict" in
+      aprobar) [ -n "$objections" ] || continue ;;
+      sin-veredicto)
+        printf '   %s · %s\n' "$judge" "$verdict"
+        printf '     %s\n' 'no entregó reporte dentro del plazo'
+        continue
+        ;;
+      sin-clasificar)
+        printf '   %s · %s\n' "$judge" "$verdict"
+        printf '     %s\n' 'entregó reporte pero sin la línea VEREDICTO:; su voto no se cuenta'
+        printf '     reporte: %s\n' "$DATA/$panel-$judge/report.md"
+        continue
+        ;;
+    esac
+    printf '   %s · %s\n' "$judge" "$verdict"
+    if [ -n "$objections" ]; then
+      printf '%s\n' "$objections" | sed 's/^/     · /'
+    else
+      printf '     %s\n' '(sin objeción concreta declarada)'
+    fi
+  done
+  echo
+
+  band 'reportes completos'
+  for judge in "${judge_list[@]}"; do
+    task_id="$panel-$judge"
+    printf '   %-12s %s\n' "$judge" "$DATA/$task_id/report.md"
+  done
+  echo
+
+  [ "$missing" -eq 0 ] || return 1
+  return 0
+}
+
+# --- argument handling ------------------------------------------------------
+
+# set_subject <kind> <target>: record the one subject flag, refusing a second.
+# Two subjects would mean two different panels sharing one roster.
+set_subject() {
+  [ -z "$kind" ] || die "--question, --diff and --pr are alternatives; pick one subject (already have --$kind)"
+  kind=$1
+  target=$2
 }
 
 subcommand=${1:-}
 case "$subcommand" in
-  -h|--help) usage; exit 0 ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
   convocar)
     shift
-    panel=${1:?usage: fm-panel.sh convocar <panel-id> --question ... --judges ...}
+    panel=${1:?usage: fm-panel.sh convocar <panel-id> --judges ... (--question|--diff|--pr) ...}
     shift
-    question=""
+    kind=""
+    target=""
     judges=""
     context=""
+    criteria=""
+    criteria_from=""
     repo="$DEFAULT_REPO"
     effort="$DEFAULT_EFFORT"
+    max_bytes="$DEFAULT_MAX_DIFF_BYTES"
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --question) question=${2:?--question requires a value}; shift 2 ;;
+        --question) set_subject question "${2:?--question requires a value}"; shift 2 ;;
+        --diff) set_subject diff "${2:?--diff requires a value}"; shift 2 ;;
+        --pr) set_subject pr "${2:?--pr requires a value}"; shift 2 ;;
         --judges) judges=${2:?--judges requires a value}; shift 2 ;;
         --context) context=${2:?--context requires a value}; shift 2 ;;
+        --criteria) criteria=${2:?--criteria requires a value}; shift 2 ;;
+        --criteria-from) criteria_from=${2:?--criteria-from requires a value}; shift 2 ;;
         --repo) repo=${2:?--repo requires a value}; shift 2 ;;
         --effort) effort=${2:?--effort requires a value}; shift 2 ;;
+        --max-diff-bytes) max_bytes=${2:?--max-diff-bytes requires a value}; shift 2 ;;
         *) die "unknown flag: $1" ;;
       esac
     done
-    [ -n "$question" ] || die "--question is required"
+    [ -n "$kind" ] || die "a subject is required: --question <text>, --diff <branch>, or --pr <url>"
     [ -n "$judges" ] || die "--judges is required"
-    convocar "$panel" "$question" "${context:-sin contexto adicional}" "$repo" "$effort" "$judges"
+    [ -z "$criteria_from" ] || [ "$kind" != question ] ||
+      die "--criteria-from applies to a change (--diff/--pr), not to --question"
+    [ -z "$criteria" ] || [ "$kind" != question ] ||
+      die "--criteria applies to a change (--diff/--pr), not to --question"
+    case "$max_bytes" in
+      '' | *[!0-9]*) die "--max-diff-bytes requires a whole number of bytes (got: $max_bytes)" ;;
+    esac
+    [ "$max_bytes" -gt 0 ] || die "--max-diff-bytes must be greater than 0"
+    convocar "$panel" "$kind" "$target" "${context:-sin contexto adicional}" \
+      "$criteria" "$criteria_from" "$repo" "$effort" "$judges" "$max_bytes"
     ;;
   recoger)
     shift
@@ -145,7 +676,13 @@ case "$subcommand" in
         *) die "unknown flag: $1" ;;
       esac
     done
+    case "$timeout" in
+      '' | *[!0-9]*) die "--timeout requires a whole number of seconds (got: $timeout)" ;;
+    esac
     recoger "$panel" "$timeout"
     ;;
-  *) usage; exit 1 ;;
+  *)
+    usage
+    exit 1
+    ;;
 esac
