@@ -35,14 +35,20 @@ jobs:
   # on. Latest telemetry, same macOS method as the earlier figure: 3.03 GiB peak
   # in one worker and 5.84 GiB summed at 345 roots, up from 1.84/3.36 GiB at
   # 343. That is tight against the 7 GiB a private-repo ubuntu-latest runner has
-  # and deserves a Linux re-measurement, but no observed failure here has been a
-  # memory kill.
+  # and deserves a Linux re-measurement. Whether memory is a real risk on this
+  # lane stays an OPEN question: no failure carrying fm-lint.sh's own diagnostic
+  # has been a memory kill, but the one occurrence predating that diagnostic -
+  # run 33307176505, job 99245658478 - reported ShellCheck as "Killed", the
+  # SIGKILL signature, so it is not excluded as one. Leaving FM_LINT_JOBS=1
+  # unpulled is unchanged; only its justification stops claiming more than it
+  # measures.
   lint:
     name: Lint
     runs-on: ubuntu-latest
     # Cap is a tripwire, not the expected end of the lane: green runs take
-    # 15m03s-15m34s, while run 33353469575 sat 61 minutes on the 6-hour default
-    # before reporting.
+    # 15m03s-15m47s - the upper extreme is job 99565342352's green attempt,
+    # measured at 15m47s - while run 33353469575 sat 61 minutes on the 6-hour
+    # default before reporting.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
