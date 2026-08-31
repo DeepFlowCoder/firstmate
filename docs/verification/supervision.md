@@ -532,3 +532,33 @@ Observed output:
 ```
 
 The safe command-channel contract is covered without a notification by `tests/fm-daemon.test.sh`: the summary reaches both `$1` and stdin, every channel is process-group bounded, and a failed channel falls through.
+
+### Moshi phone channel
+
+`bin/fm-notify-moshi.sh` was bounded on 2026-08-30 on macOS 15.7.5 (Darwin 24.6.0) with curl 8.7.1 and jq 1.8.2.
+`tests/fm-notify-moshi.test.sh` owns the request-shape, token-source, failure, and argv-safety contracts against recorders, so only the facts that need the real service or the real Keychain are recorded here.
+
+The public webhook is reachable and validates the request this helper builds:
+
+```sh
+printf '%s' '{"token":"fm-invalid-probe-token-000","title":"probe","message":"shape check"}' \
+  | curl -sS -o /tmp/probe.out -w 'HTTP %{http_code}\n' \
+      -X POST https://api.getmoshi.app/api/webhook \
+      -H 'Content-Type: application/json' --data-binary @-
+```
+
+Observed output: `HTTP 404` with body `{"error":"Invalid token"}`, which is the endpoint parsing the body and rejecting the token rather than refusing the shape.
+A deliberately invalid token is used because a valid one would send a real notification.
+
+The Keychain default reads back without a prompt, which is what makes it usable while the captain is away.
+Verified against a throwaway keychain so no real credential was created:
+
+```sh
+security add-generic-password -s firstmate-moshi -a "$USER" -w 'probe-token-value' "$KC"
+security find-generic-password -s firstmate-moshi -a "$USER" -w "$KC"
+```
+
+Observed output: exit 0 and `probe-token-value`, with no authorization prompt, consistent with `security`'s documented "the application which creates an item is trusted to access its data without warning".
+
+Delivery to a physical phone is NOT verified here and cannot be: it needs a live account token, and a successful POST only proves Moshi accepted the alert.
+Confirming the phone actually alerts stays a one-time manual check by the account holder.
