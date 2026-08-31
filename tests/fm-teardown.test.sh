@@ -2044,6 +2044,26 @@ gate: review
 EOF
 }
 
+# What `axi status --run <id>` really returns once that run has been aborted:
+# the SAME TOON shape as the repo-scoped query, carrying branch and head, not a
+# reduced id/outcome pair. The post-abort corroboration reads branch and head
+# from this payload, so the double must carry them or the tests would cover a
+# path production never takes.
+concluded_axi_status_toon() {  # <branch> <head> [run-id]
+  cat <<EOF
+run:
+  id: "${3:-01RUN}"
+  branch: $1
+  status: cancelled
+  head: "$2"
+  pr: ""
+  findings: none
+steps[1]{step,status,findings,summary}:
+  review,cancelled,0,"aborted before teardown"
+outcome: cancelled
+EOF
+}
+
 running_axi_status_toon() {  # <branch> <head> [run-id]
   cat <<EOF
 run:
@@ -2421,6 +2441,7 @@ test_parked_own_run_is_aborted_even_when_list_shows_it_active() {
 
   rc=0
   FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(concluded_axi_status_toon fm/task-x1 "$head")" \
   FM_FAKE_NM_RUNS="$(runs_list_rows "running    fm/task-x1 ${short}  2026-08-29 07:45")" \
   FM_FAKE_NM_RUNS_AFTER_ABORT="$(runs_list_rows "cancelled  fm/task-x1 ${short}  2026-08-29 07:45")" \
   FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
@@ -2448,6 +2469,7 @@ test_live_successor_after_own_run_abort_refuses() {
 
   rc=0
   FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(concluded_axi_status_toon fm/task-x1 "$head")" \
   FM_FAKE_NM_RUNS="$(runs_list_rows \
     "running    fm/task-x1 ${short}  2026-08-29 07:45" \
     "pending    fm/task-x1 ${short}  2026-08-29 01:30")" \
@@ -2464,6 +2486,8 @@ test_live_successor_after_own_run_abort_refuses() {
     || fail "live-successor-after-abort: teardown aborted a run beyond the one it owns"
   assert_grep "REFUSED: task-x1 has a live no-mistakes run" "$case_dir/stderr" \
     "live-successor-after-abort: teardown did not explain the live-successor refusal"
+  assert_grep "the run this teardown concluded is not this branch's current one" "$case_dir/stderr" \
+    "live-successor-after-abort: the refusal credited the status query rather than the run teardown concluded"
   assert_present "$case_dir/wt" \
     "live-successor-after-abort: teardown removed the worktree while a successor run was live"
   assert_present "$case_dir/state/task-x1.meta" \
@@ -2492,8 +2516,15 @@ test_answered_list_without_row_for_known_run_refuses() {
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 1 "$rc" "answered-list-no-branch-row: a truncated listing was read as permission"
-  assert_grep "REFUSED: task-x1 has a live no-mistakes run" "$case_dir/stderr" \
+  assert_grep "REFUSED: task-x1 could not establish whether a no-mistakes run is still live on fm/task-x1" \
+    "$case_dir/stderr" \
     "answered-list-no-branch-row: teardown did not explain the unestablished refusal"
+  assert_grep "FM_TEARDOWN_NM_RUNS_LIMIT" "$case_dir/stderr" \
+    "answered-list-no-branch-row: the refusal did not name the wider-window retry"
+  assert_no_grep "still-active row" "$case_dir/stderr" \
+    "answered-list-no-branch-row: the refusal told the operator to use a row the listing did not carry"
+  assert_no_grep "axi abort" "$case_dir/stderr" \
+    "answered-list-no-branch-row: the refusal offered an abort for a run it never located"
   assert_present "$case_dir/wt" \
     "answered-list-no-branch-row: teardown removed the worktree on an unestablished answer"
   assert_present "$case_dir/state/task-x1.meta" \
@@ -2525,6 +2556,56 @@ test_answered_list_without_row_for_unknown_branch_tears_down() {
   assert_absent "$case_dir/nm-abort.log" \
     "answered-list-quiet-branch: teardown aborted another branch's run"
   pass "a branch with no run of its own still tears down when the listing carries no row for it"
+}
+
+# The real `no-mistakes runs` stdout carries a trailer after its rows (measured
+# against v1.48.0: a blank line, then " (20 more runs, use --limit to see more)"),
+# and the row splitter accepts that line's first three tokens. Non-empty stdout
+# is therefore not evidence of anything: a window whose rows all scrolled past,
+# leaving only the trailer, must read as silence and let the teardown of a task
+# whose own run was just concluded proceed - the path where the caller declares
+# the run known, so a wrong reading here would block ship teardowns fleet-wide.
+test_trailer_only_listing_does_not_block_teardown() {
+  local case_dir rc head
+  case_dir=$(make_case trailer-only-listing)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(concluded_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(printf '\n%s\n' " (20 more runs, use --limit to see more)")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "trailer-only-listing: a listing carrying no run row must not block teardown"
+  assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
+    "trailer-only-listing: the task's own parked run was not concluded"
+  pass "a listing with only a pagination trailer reads as silence, never as a live run"
+}
+
+# The same discipline the status vocabulary already has: a listing whose shape
+# this fleet does not model - a reformatted, JSON, or otherwise unrecognized
+# answer - is no evidence in either direction, so an unrelated CLI change cannot
+# turn into a teardown block no retry and no --force can clear.
+test_unrecognized_listing_shape_does_not_block_teardown() {
+  local case_dir rc head
+  case_dir=$(make_case unrecognized-listing)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(cancelled_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(printf '%s\n' '{"runs": [' '  {"branch": "fm/task-x1", "state": "running"},' ']}')" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "unrecognized-listing: an unmodeled listing shape blocked teardown"
+  assert_absent "$case_dir/nm-abort.log" \
+    "unrecognized-listing: teardown aborted a run on evidence it could not read"
+  pass "a listing shape this fleet does not model reads as no evidence in either direction"
 }
 
 # The list query is bounded and fail-open (bin/fm-nm-run-lib.sh), so silence -
@@ -2993,6 +3074,8 @@ test_parked_own_run_is_aborted_even_when_list_shows_it_active
 test_live_successor_after_own_run_abort_refuses
 test_answered_list_without_row_for_known_run_refuses
 test_answered_list_without_row_for_unknown_branch_tears_down
+test_trailer_only_listing_does_not_block_teardown
+test_unrecognized_listing_shape_does_not_block_teardown
 test_silent_runs_list_does_not_block_teardown
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped

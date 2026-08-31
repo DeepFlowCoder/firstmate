@@ -187,6 +187,28 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
   return 1
 }
 
+# 0 when captured list output $1 carries EVIDENCE - at least one line that parses
+# as a run row AND whose status word this library models, active or terminal.
+# Non-empty stdout alone is not evidence: the real listing prints a trailer after
+# its rows (measured against v1.48.0: a blank line, then
+# " (20 more runs, use --limit to see more)"), which the row splitter happily
+# accepts as "(20 / more / runs,". A banner, a reformatted listing, or a future
+# shape reads the same way. Callers must treat a listing that is not answered as
+# silence, exactly as they treat a timed-out query, so an unrelated CLI change
+# cannot convert into a fleet-wide block. The vocabulary stays the one this
+# library already owns rather than a second private copy.
+fm_nm_runs_listing_is_answered() {  # <runs-output>
+  local out=${1:-} row parsed st
+  [ -n "$out" ] || return 1
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    st=${parsed%%$'\t'*}
+    fm_nm_status_is_active "$st" && return 0
+    [ -n "$(fm_nm_runs_word_for_terminal "$st")" ] && return 0
+  done <<< "$out"
+  return 1
+}
+
 # Split one `no-mistakes runs` row into "<status><TAB><branch><TAB><sha>".
 # Rows are plain, unquoted, column-padded text -
 # "<status> <branch> <short-sha> <date> [<pr-url>]" - so splitting on the first
