@@ -862,7 +862,7 @@ __FM_BEARINGS_BOARD_DATA__
     return "quiet";
   }
 
-  function workRow(opts) {  // {title, sub, badgeTone, badgeText, pick, when, pr_url}
+  function workRow(opts) {  // {title, sub, id, badgeTone, badgeText, pick, when, pr_url}
     var row = el("div", "bb-row");
     if (opts.pick) {
       anyPickable = true;
@@ -891,6 +891,9 @@ __FM_BEARINGS_BOARD_DATA__
     main.appendChild(el("div", "bb-row__title", opts.title));
     if (opts.sub) main.appendChild(el("div", "bb-row__sub", opts.sub));
     row.appendChild(main);
+    /* Identity rides outside .bb-row__main, which truncates: a sentence-length
+       reason must never be what decides whether the row can still be named. */
+    if (opts.id) row.appendChild(el("span", "bb-row__id", opts.id));
     if (opts.when) row.appendChild(el("span", "bb-row__when", opts.when));
     if (opts.pr_url) {
       var a = el("a", "bb-row__pr", "#" + opts.pr_url.split("/").pop());
@@ -953,7 +956,8 @@ __FM_BEARINGS_BOARD_DATA__
           badgeTone: t.state === "working" ? "online" : "info",
           badgeText: t.state,
           title: t.doing,
-          sub: t.kind + " · " + rowId(t)
+          sub: t.kind,
+          id: rowId(t)
         }));
       });
     }
@@ -983,8 +987,8 @@ __FM_BEARINGS_BOARD_DATA__
           orderRows.appendChild(workRow({
             pick: t.id,
             title: t.title,
-            sub: (why || (waited ? "ordered " + waited : "waiting for a crew"))
-              + " · " + rowId(t),
+            sub: why || (waited ? "ordered " + waited : "waiting for a crew"),
+            id: rowId(t),
             when: waited && why ? waited : null
           }));
         });
@@ -999,8 +1003,8 @@ __FM_BEARINGS_BOARD_DATA__
             badgeTone: "warn",
             badgeText: "held",
             title: t.title,
-            sub: (holds || (heldFor ? "held " + heldFor : "held with no reason recorded"))
-              + " · " + rowId(t),
+            sub: holds || (heldFor ? "held " + heldFor : "held with no reason recorded"),
+            id: rowId(t),
             when: heldFor && holds ? heldFor : null
           }));
         });
@@ -1014,7 +1018,8 @@ __FM_BEARINGS_BOARD_DATA__
         launched.appendChild(workRow({
           check: true,
           title: t.what,
-          sub: (t.pr_url ? "merged · " : "delivered · ") + t.owner + " · " + rowId(t),
+          sub: (t.pr_url ? "merged · " : "delivered · ") + t.owner,
+          id: rowId(t),
           when: agoText(t.landed_on),
           pr_url: t.pr_url
         }));

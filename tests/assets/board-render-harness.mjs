@@ -134,6 +134,9 @@ const rowOf = (row) => {
   return {
     title: main ? firstText(main, "bb-row__title") : "",
     sub: main ? firstText(main, "bb-row__sub") : "",
+    // Rendered outside .bb-row__main, which truncates, so it is reported apart
+    // from the sub rather than as a tail of it.
+    id: firstText(row, "bb-row__id"),
     when: firstText(row, "bb-row__when"),
     pr: firstText(row, "bb-row__pr"),
     badges: badgesOf(row),

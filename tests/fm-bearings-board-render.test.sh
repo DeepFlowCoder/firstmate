@@ -168,7 +168,8 @@ test_dry_dock_and_clear_to_start_are_different_berths() {
       and (.berths[1].rows[0]
            | .pickable == false
              and ([.badges[] | .text] == ["held"])
-             and .sub == "blocked on the cutover · sample")
+             and .sub == "blocked on the cutover"
+             and .id == "sample")
   ' >/dev/null || fail "held work is still pickable or still unexplained: $lane"
   printf '%s' "$lane" | jq -e '.drawer.split == "in the order book · 1 clear to start, 1 held in dry dock"' \
     >/dev/null || fail "the order-book summary does not state the split: $lane"
@@ -376,14 +377,14 @@ test_a_placeholder_reason_never_becomes_a_subtitle() {
     ]}')
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Clear to start") | .rows[] | {s:.sub, w:.when}]
-      == [{s:"ordered 2 days ago · sample", w:""}]
+      == [{s:"ordered 2 days ago", w:""}]
   ' >/dev/null || fail "a placeholder reason was rendered instead of the wait age: $out"
   # a dry-dock row is the one the reason invariant exists for, so a bare dash
   # there is the worst case: still badged held, still saying nothing
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Dry dock") | .rows[]
      | {s:.sub, w:.when, b:[.badges[].text]}]
-      == [{s:"held 10 days ago · sample", w:"", b:["held"]}]
+      == [{s:"held 10 days ago", w:"", b:["held"]}]
   ' >/dev/null || fail "a held row rendered a bare dash instead of how long it has waited: $out"
   # the notices band reads a reason by the same rule as the two berths: an
   # alarm falls back to when it was recorded, or to the project alone
@@ -442,7 +443,8 @@ test_a_row_with_no_recorded_project_keeps_its_own_lane() {
        "dispatchable":true,"since":"2026-08-21"},
       {"id":"orphan-order","repo":null,"title":"Orphan order","reason":"",
        "dispatchable":true,"since":"2026-08-23"},
-      {"id":"orphan-held","repo":null,"title":"Orphan held","reason":"waiting on upstream",
+      {"id":"orphan-held","repo":null,"title":"Orphan held",
+       "reason":"waiting on the vendor to confirm the cutover window",
        "dispatchable":false,"since":"2026-08-11"}
     ]}')
   printf '%s' "$out" | jq -e '
@@ -450,15 +452,21 @@ test_a_row_with_no_recorded_project_keeps_its_own_lane() {
   ' >/dev/null || fail "a row with no recorded project was dropped or merged: $out"
 
   orphan=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "no project recorded")')
-  # every berth in the unassigned lane names the row it is showing
+  # Every berth names the row it is showing, and the identity is reported apart
+  # from the sub because it renders outside the block that truncates - a
+  # sentence-length reason must not be what decides whether a row can be named.
   printf '%s' "$orphan" | jq -e '
-    [.berths[] | {l:.label, subs:[.rows[].sub]}] == [
-      {l:"On the ways",   subs:["scout · orphan-task"]},
-      {l:"Clear to start",subs:["ordered 3 days ago · orphan-order"]},
-      {l:"Dry dock",      subs:["waiting on upstream · orphan-held"]},
-      {l:"Launched",      subs:["delivered · firstmate · orphan-landed"]}
+    [.berths[] | {l:.label, ids:[.rows[].id]}] == [
+      {l:"On the ways",   ids:["orphan-task"]},
+      {l:"Clear to start",ids:["orphan-order"]},
+      {l:"Dry dock",      ids:["orphan-held"]},
+      {l:"Launched",      ids:["orphan-landed"]}
     ]
   ' >/dev/null || fail "a berth in the unassigned lane rendered a row with no identity: $orphan"
+  printf '%s' "$orphan" | jq -e '
+    [.berths[] | select(.label == "Dry dock") | .rows[].sub]
+      == ["waiting on the vendor to confirm the cutover window"]
+  ' >/dev/null || fail "the held row lost its reason: $orphan"
   pass "a row with no recorded project keeps its own lane and shows its id"
 }
 
@@ -489,9 +497,7 @@ test_a_recorded_value_that_is_not_a_date_renders_no_age() {
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | .rows[] | .when] == ["", "", ""]
       and ([.lanes[0].berths[] | .rows[] | .sub]
-           == ["waiting for a crew · sample",
-               "waiting on legal · sample",
-               "delivered · firstmate · sample"])
+           == ["waiting for a crew", "waiting on legal", "delivered · firstmate"])
   ' >/dev/null || fail "a value that is not a date was rendered as an age: $out"
   # the lane cannot claim a last launch it could not date
   printf '%s' "$out" | jq -e '.lanes[0].launch == ""' >/dev/null \
