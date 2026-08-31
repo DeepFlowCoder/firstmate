@@ -231,26 +231,39 @@ EOF
 # kill. SIGHUP is the case a test can drive: a shell started asynchronously
 # inherits SIGINT ignored, so an INT trap cannot be installed in a background
 # run at all, while HUP reaches the script exactly as it would in the field.
+#
+# The request is held open by a release marker rather than by a sleep, because
+# bash defers a trap until the running foreground command finishes: the signal
+# must be pending on the script while curl is still in flight. `kill` returns
+# only once the signal is pending on the target, so releasing curl afterwards
+# orders the two with no wall-clock window. Each deadline below is a hang
+# tripwire, never the assertion.
 test_an_interrupted_send_exits_with_the_signal_that_stopped_it() {
-  local dir pid rc waited=0
+  local dir pid rc deadline
   dir=$(make_case interrupted)
   cat > "$dir/bin/curl" <<EOF
 #!/usr/bin/env bash
 cat >/dev/null
 : > '$dir/curl-started'
-sleep 1
+stub_deadline=\$((SECONDS + 60))
+while [ ! -e '$dir/curl-release' ]; do
+  [ "\$SECONDS" -lt "\$stub_deadline" ] || exit 28
+  sleep 0.02
+done
 printf '200'
 EOF
   chmod +x "$dir/bin/curl"
   PATH="$dir/bin:$PATH" FM_MOSHI_ENDPOINT='https://endpoint.invalid/api/webhook' \
     "$NOTIFY" "away-mode WEDGED 900s" >/dev/null 2>"$dir/stderr" &
   pid=$!
-  while [ ! -f "$dir/curl-started" ] && [ "$waited" -lt 200 ]; do
-    sleep 0.05
-    waited=$((waited + 1))
+  deadline=$((SECONDS + 60))
+  while [ ! -e "$dir/curl-started" ]; do
+    [ "$SECONDS" -lt "$deadline" ] \
+      || fail "the request never started, so interrupting it proves nothing"
+    sleep 0.02
   done
-  [ -f "$dir/curl-started" ] || fail "the request never started, so interrupting it proves nothing"
   kill -HUP "$pid" 2>/dev/null || fail "could not signal the running notifier"
+  : > "$dir/curl-release"
   wait "$pid"
   rc=$?
   expect_code 129 "$rc" "a hung-up send must exit 129 rather than be reported as a SIGTERM kill"
