@@ -538,7 +538,7 @@ The safe command-channel contract is covered without a notification by `tests/fm
 `bin/fm-notify-moshi.sh` was bounded on 2026-08-30 on macOS 15.7.5 (Darwin 24.6.0) with curl 8.7.1 and jq 1.8.2.
 `tests/fm-notify-moshi.test.sh` owns the request-shape, token-source, failure, and argv-safety contracts against recorders, so only the facts that need the real service or the real Keychain are recorded here.
 
-The public webhook is reachable and validates the request this helper builds:
+The public webhook is reachable and parses a JSON body of this shape:
 
 ```sh
 printf '%s' '{"token":"fm-invalid-probe-token-000","title":"probe","message":"shape check"}' \
@@ -549,16 +549,27 @@ printf '%s' '{"token":"fm-invalid-probe-token-000","title":"probe","message":"sh
 
 Observed output: `HTTP 404` with body `{"error":"Invalid token"}`, which is the endpoint parsing the body and rejecting the token rather than refusing the shape.
 A deliberately invalid token is used because a valid one would send a real notification.
+The probed body omits the `unified` field that `bin/fm-notify-moshi.sh` always sends, and the 404 fired on token validation before any field validation, so what this measures is reachability and token rejection — it is not evidence that the helper's full field set is accepted.
 
-The Keychain default reads back without a prompt, which is what makes it usable while the captain is away.
-Verified against a throwaway keychain so no real credential was created:
+The Keychain default reads back without an authorization prompt.
+Measured against a throwaway keychain, created and unlocked in the same session, so no real credential was created:
 
 ```sh
+KC="${TMPDIR:-/tmp}/fm-moshi-probe.keychain"
+security create-keychain -p probe-keychain-pass "$KC"
+security unlock-keychain -p probe-keychain-pass "$KC"
 security add-generic-password -s firstmate-moshi -a "$USER" -w 'probe-token-value' "$KC"
 security find-generic-password -s firstmate-moshi -a "$USER" -w "$KC"
+security delete-keychain "$KC"
 ```
 
-Observed output: exit 0 and `probe-token-value`, with no authorization prompt, consistent with `security`'s documented "the application which creates an item is trusted to access its data without warning".
+Observed output: the `find` step exited 0 and printed `probe-token-value`, with no authorization prompt, consistent with `security`'s documented "the application which creates an item is trusted to access its data without warning".
+That is the trusted-application dimension only: the creating application read its own item back from a keychain that was unlocked.
+
+NOT MEASURED: lock state.
+`bin/fm-notify-moshi.sh` names no keychain, so at run time it reads the default search list — the login keychain — and that keychain's lock state was never exercised here.
+A login keychain locked by "lock when sleeping", or one whose password diverges from the login password, can block the read on an unlock prompt: the same prompt-blocks-the-read failure the 1Password path is rejected for.
+The Keychain stays the default and the 1Password trade-off stands, but the evidence above reaches no further than the unlocked, trusted-application read-back.
 
 Delivery to a physical phone is NOT verified here and cannot be: it needs a live account token, and a successful POST only proves Moshi accepted the alert.
 Confirming the phone actually alerts stays a one-time manual check by the account holder.

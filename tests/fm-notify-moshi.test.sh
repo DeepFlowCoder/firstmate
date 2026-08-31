@@ -104,15 +104,18 @@ test_summary_is_read_from_stdin_when_no_argument_is_given() {
 # The alarm summary is machine-built text that embeds a filesystem path; it must
 # travel as inert JSON data, never as shell or JSON syntax.
 test_hostile_summary_travels_as_inert_json_data() {
-  local dir hostile
-  # shellcheck disable=SC2016 # Literal, unexpanded metacharacters are the fixture.
-  hostile='he said "hi" \ then $(touch /tmp/fm-notify-moshi-pwned) `id`
-second line'
+  local dir hostile canary
   dir=$(make_case hostile-summary)
+  # Scoped to this case's fixture, so a stale file from anywhere else cannot
+  # make the canary report an execution that did not happen.
+  canary="$dir/pwned"
+  # shellcheck disable=SC2016 # Literal, unexpanded metacharacters are the fixture.
+  hostile='he said "hi" \ then $(touch '"$canary"') `id`
+second line'
   run_notify "$dir" "$hostile" || fail "a summary with shell and JSON metacharacters must still send"
   [ "$(body_field "$dir" .message)" = "$hostile" ] \
     || fail "the summary was altered in transit instead of being carried verbatim"
-  assert_absent /tmp/fm-notify-moshi-pwned "summary text was executed as a shell command"
+  assert_absent "$canary" "summary text was executed as a shell command"
   pass "fm-notify-moshi.sh: carries quotes, backslashes, newlines and \$( ) as data, not code"
 }
 

@@ -43,8 +43,9 @@ Setup is three steps.
 The configured line holds no secret because the helper reads the token at alarm time.
 That is deliberate: macOS `ps` shows full command lines to every local user, so a token written into `config/wedge-alarm` would be published to the machine every time the alarm fired.
 
-The Keychain is the default source because `security` reads back an item it created without a prompt, which is the only behavior that works while the captain is away.
+The Keychain is the default source because `security` reads back an item it created without an authorization prompt, as long as the keychain holding it is unlocked.
 Setting `FM_MOSHI_TOKEN_OP_REF` to a 1Password secret reference instead trades that away: a locked vault blocks the read on a biometric prompt, so the alarm fails in exactly the situation it exists for.
+Neither source is unconditional, and the residual is recorded in [`verification/supervision.md`](verification/supervision.md): the login keychain's own lock state was never measured, and a keychain locked by "lock when sleeping" can block the read the same way.
 `bin/fm-notify-moshi.sh --help` owns the rest of the environment and the exit codes.
 
 Moshi rate-limits a free host to 10 events per 60 seconds, well above this alarm's own ceiling of one per max-defer window.

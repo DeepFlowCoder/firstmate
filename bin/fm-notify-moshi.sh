@@ -20,11 +20,11 @@
 #   FM_MOSHI_TOKEN_OP_REF   1Password secret reference, read with `op read`
 #   Keychain                `security find-generic-password -w`, service
 #                           FM_MOSHI_KEYCHAIN_SERVICE (default firstmate-moshi)
-# The Keychain is the default because it answers without a prompt while the
-# captain is away, which is the only time this alarm fires. A locked 1Password
-# vault blocks `op read` on a biometric prompt instead, so an op reference
-# trades away-mode reliability for vault-managed storage; docs/wedge-alarm.md
-# records that trade-off for the captain.
+# The Keychain is the default because `security` reads back an item it created
+# without an authorization prompt, as long as the keychain holding it is
+# unlocked. A locked 1Password vault instead blocks `op read` on a biometric
+# prompt, so an op reference trades away-mode reliability for vault-managed
+# storage; docs/wedge-alarm.md records that trade-off for the captain.
 #
 # Environment:
 #   FM_MOSHI_TOKEN_OP_REF      1Password secret reference (op://vault/item/field)
@@ -40,6 +40,12 @@
 # exit rather than as a process-group kill with no diagnostic.
 #
 # Exit: 0 delivered (2xx), 1 delivery failed, 2 usage or configuration error.
+# Those codes cover the failures this script observes and returns from. `op
+# read` carries no deadline of its own, so against a genuinely locked vault it
+# blocks on the unlock prompt instead of returning: the alarm's per-channel
+# watchdog then kills the process group and the daemon logs rc 124, not the
+# exit 2 above. The daemon bounds every channel already, so this script adds no
+# second watchdog.
 set -u
 
 ENDPOINT_DEFAULT='https://api.getmoshi.app/api/webhook'
@@ -48,7 +54,7 @@ TITLE_DEFAULT='Firstmate alert'
 TIMEOUT_SECS_DEFAULT=8
 
 usage() {
-  sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 case "${1-}" in
@@ -126,7 +132,10 @@ case "$TIMEOUT" in
 esac
 
 umask 077
-BODY=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-body.XXXXXX") || exit 1
+BODY=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-body.XXXXXX") || {
+  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for the response body" >&2
+  exit 2
+}
 trap 'rm -f -- "$BODY"' EXIT
 trap 'rm -f -- "$BODY"; exit 143' HUP INT TERM
 
