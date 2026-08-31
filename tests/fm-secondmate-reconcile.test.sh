@@ -157,9 +157,19 @@ run_remote_notify() {  # <home> <fakebin> <snapshot>
     "$RECONCILE" notify --snapshot "$snap"
 }
 
+# Write the home's cooldown record at an exact epoch second.
+stamp_cooldown() {  # <state-dir> <mate-id> <epoch>
+  printf '%s\n' "$3" > "$1/$2.reconcile-nudged"
+}
+
 # Age the home's cooldown record so the next run sees the window as elapsed.
+# The age is relative to THIS clock read, so the run that follows observes it
+# plus however long the run takes to reach its own clock. Callers that sit on
+# the one-second window boundary must use stamp_cooldown with
+# FM_RECONCILE_NOW_OVERRIDE instead; the margins here are wide enough to absorb
+# a slow runner.
 age_cooldown() {  # <state-dir> <mate-id> <seconds-ago>
-  printf '%s\n' "$(( $(date +%s) - $3 ))" > "$1/$2.reconcile-nudged"
+  stamp_cooldown "$1" "$2" "$(( $(date +%s) - $3 ))"
 }
 
 run_notify() {  # <home> <fakebin> <name> <snapshot> [extra args...]
@@ -167,6 +177,7 @@ run_notify() {  # <home> <fakebin> <name> <snapshot> [extra args...]
   shift 4
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" \
+    FM_RECONCILE_NOW_OVERRIDE="${FM_RECONCILE_NOW_OVERRIDE:-}" \
     FM_FAKE_TMUX_WINDOW="firstmate:fm-mate" \
     FM_FAKE_TMUX_LOG="$TMP_ROOT/$name-tmux.log" \
     FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/$name-fake/pane.txt" \
@@ -279,17 +290,23 @@ SH
 }
 
 test_the_window_is_four_hours() {
-  local home mate fakebin snap out
+  local home mate fakebin snap out now
   { read -r home; read -r mate; read -r fakebin; } < <(make_main_home fourhours mate)
   snap="$home/snapshot.json"
   write_snapshot "$snap" mate '{"kind":"terminal_in_flight","ids":["done-row"]}'
   run_notify "$home" "$fakebin" fourhours "$snap" >/dev/null || fail "the first ask failed"
+  # Both sides of the boundary are measured against one pinned "now" rather than
+  # against the wall clock. Stamping the nudge 14399s before this test's own
+  # clock read and then letting the run spend a second reaching the script's
+  # clock put the observed age at 14400 and sent the ask instead of suppressing
+  # it (CI run 33321479280, portable serial shard 1).
+  now=$(date +%s)
   # One second short of four hours is still inside; one second past is not.
-  age_cooldown "$home/state" mate 14399
-  out=$(run_notify "$home" "$fakebin" fourhours "$snap")
+  stamp_cooldown "$home/state" mate "$((now - 14399))"
+  out=$(FM_RECONCILE_NOW_OVERRIDE=$now run_notify "$home" "$fakebin" fourhours "$snap")
   assert_contains "$out" "cooldown: mate" "the window was shorter than four hours: $out"
-  age_cooldown "$home/state" mate 14401
-  out=$(run_notify "$home" "$fakebin" fourhours "$snap")
+  stamp_cooldown "$home/state" mate "$((now - 14401))"
+  out=$(FM_RECONCILE_NOW_OVERRIDE=$now run_notify "$home" "$fakebin" fourhours "$snap")
   assert_contains "$out" "sent: mate" "the window was longer than four hours: $out"
   pass "the cooldown window is four hours"
 }

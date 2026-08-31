@@ -47,6 +47,12 @@
 # identity guard. The current metadata must still have no spawn_gen and must still
 # name that host. A row with neither identity fails loudly.
 #
+# Environment:
+#   FM_RECONCILE_COOLDOWN_SECONDS  cooldown window in seconds (default: 14400)
+#   FM_RECONCILE_NOW_OVERRIDE      pin the epoch second the cooldown gate
+#                                  compares against, so a test can sit on the
+#                                  window boundary without racing the wall clock
+#
 # Exit status: 0 when no delivery or cooldown-recording failure is known,
 # including when a home was skipped for lock contention or a stale endpoint;
 # 1 when at least one due send failed or its cooldown could not be recorded.
@@ -248,7 +254,13 @@ cmd_notify() {
       continue
     fi
     ACTIVE_RECONCILE_LOCK=$reconcile_lock
-    now=$(date +%s)
+    # FM_RECONCILE_NOW_OVERRIDE pins the clock this gate compares against;
+    # production always uses the wall clock. The window boundary is one second
+    # wide, so a test that stamps the nudge relative to its own clock read races
+    # this one: a second of real time between the two crosses the boundary and
+    # flips the verdict. The delivery timestamp below is deliberately NOT pinned,
+    # so "the cooldown begins when delivery finishes" still measures real time.
+    now=${FM_RECONCILE_NOW_OVERRIDE:-$(date +%s)}
     last=
     if [ -f "$path" ] && [ ! -L "$path" ]; then last=$(cat "$path" 2>/dev/null || true); fi
     case "$last" in ''|*[!0-9]*) last= ;; esac
