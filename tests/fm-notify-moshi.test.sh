@@ -221,7 +221,35 @@ EOF
   assert_grep 'exit 51' "$dir/stderr" "a reader that said nothing still must have its status reported"
   assert_no_grep 'could not be found in the keychain' "$dir/stderr" \
     "a cause the reader never reported was invented in the message"
+  # The read failing is the observation; WHY it failed is not knowable from a
+  # bare non-zero status, and the anticipated locked-keychain case is exactly
+  # the one where "no token stored" would be false and would send the operator
+  # to re-add an item that already exists.
+  assert_no_grep 'no Moshi token in the Keychain' "$dir/stderr" \
+    "the message concluded the token is absent from a status that cannot establish it"
   pass "fm-notify-moshi.sh: a silent Keychain failure carries its status without inventing a cause"
+}
+
+test_an_op_failure_carries_its_status_and_its_own_words() {
+  local dir rc
+  dir=$(make_case op-diagnostic)
+  cat > "$dir/bin/op" <<'EOF'
+#!/usr/bin/env bash
+echo "[ERROR] account is not signed in, run 'op signin' to authenticate" >&2
+exit 6
+EOF
+  chmod +x "$dir/bin/op"
+  FM_MOSHI_TOKEN_OP_REF='op://Private/Moshi/credential' \
+    run_notify "$dir" "away-mode WEDGED 900s"
+  rc=$?
+  expect_code 2 "$rc" "an unreadable 1Password reference must be a configuration error"
+  assert_absent "$dir/request-body" "a request was sent without a token"
+  assert_grep '1Password' "$dir/stderr" "the failure did not name 1Password as the unreadable source"
+  assert_grep 'op exit 6' "$dir/stderr" "the reader's own exit status was not reported"
+  assert_grep 'not signed in' "$dir/stderr" "the reader's own words were discarded instead of reported"
+  assert_no_grep 'vault unlocked' "$dir/stderr" \
+    "the message concluded the vault is locked from a status that cannot establish it"
+  pass "fm-notify-moshi.sh: an op failure carries its status and the reader's own words"
 }
 
 test_empty_summary_is_refused_before_sending() {
@@ -364,6 +392,7 @@ test_locked_vault_is_reported_and_sends_nothing
 test_missing_token_is_reported_and_sends_nothing
 test_a_returning_keychain_failure_carries_its_status_and_its_own_words
 test_a_silent_keychain_failure_carries_its_status_and_invents_no_cause
+test_an_op_failure_carries_its_status_and_its_own_words
 test_empty_summary_is_refused_before_sending
 test_rejected_delivery_fails_without_disclosing_the_token
 test_unreachable_endpoint_reports_curls_own_reason

@@ -45,12 +45,11 @@
 # TERM, so a hand-run `fm-notify-moshi.sh 'test summary'` reports which signal
 # ended it instead of reporting every signal as a SIGTERM. Those codes cover the
 # failures this script observes and returns from, and no other signal is trapped
-# here. `op
-# read` carries no deadline of its own, so against a genuinely locked vault it
-# blocks on the unlock prompt instead of returning: the alarm's per-channel
-# watchdog then kills the process group and the daemon logs rc 124, not the
-# exit 2 above. The daemon bounds every channel already, so this script adds no
-# second watchdog.
+# here. `op read` carries no deadline of its own, so against a genuinely locked
+# vault it blocks on the unlock prompt instead of returning: the alarm's
+# per-channel watchdog then kills the process group and the daemon logs rc 124,
+# not the exit 2 above. The daemon bounds every channel already, so this script
+# adds no second watchdog.
 set -u
 
 ENDPOINT_DEFAULT='https://api.getmoshi.app/api/webhook'
@@ -132,7 +131,7 @@ resolve_token() {
     }
     token=$(op read -n -- "$ref" 2>"$TOKEN_ERR") || {
       status=$?
-      echo "error: could not read the Moshi token from 1Password (is the vault unlocked?): $(reader_failure op "$status" "$TOKEN_ERR")" >&2
+      echo "error: could not read the Moshi token from 1Password (reference '$ref'): $(reader_failure op "$status" "$TOKEN_ERR")" >&2
       return 1
     }
   else
@@ -144,7 +143,7 @@ resolve_token() {
     }
     token=$(security find-generic-password "${lookup[@]}" -w 2>"$TOKEN_ERR") || {
       status=$?
-      echo "error: no Moshi token in the Keychain for service '${FM_MOSHI_KEYCHAIN_SERVICE:-$KEYCHAIN_SERVICE_DEFAULT}': $(reader_failure security "$status" "$TOKEN_ERR")" >&2
+      echo "error: could not read the Moshi token from the Keychain (service '${FM_MOSHI_KEYCHAIN_SERVICE:-$KEYCHAIN_SERVICE_DEFAULT}'): $(reader_failure security "$status" "$TOKEN_ERR")" >&2
       return 1
     }
   fi
