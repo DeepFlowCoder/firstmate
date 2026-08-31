@@ -1039,11 +1039,16 @@ __FM_BEARINGS_BOARD_DATA__
   document.getElementById("bb-notices-section").hidden = !anyNotice;
   if (anyNotice) {
     chartedWarnings.forEach(function (t) {
+      var wrong = reasonText(t);
+      var where = t.repo || t.id;
+      var noticed = agoText(t.since);
       notices.appendChild(workRow({
         badgeTone: "danger",
         badgeText: "needs repair",
         title: t.title,
-        sub: t.reason ? t.reason + " · " + (t.repo || t.id) : (t.repo || t.id)
+        sub: wrong ? wrong + " · " + where
+          : noticed ? "recorded " + noticed + " · " + where
+          : where
       }));
     });
     if (chartedMoreWarnings) {

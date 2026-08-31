@@ -354,12 +354,13 @@ test_a_lane_holding_only_a_captains_call_still_reads_as_recorded() {
 
 # ---------------------------------------------------------------------------
 # The snapshot writes "-" when a row has neither a hold nor a blocked reason. It
-# is a placeholder, not a sentence, so on either berth it must never displace
-# the one datum the row does carry: how long it has waited. The v2 validator
-# accepts "-" as a held row's reason (it is a non-empty string), so the board
-# has to survive it rather than assume it was filtered upstream.
+# is a placeholder, not a sentence, so in no band may it become a subtitle: it
+# must never displace what the row does carry, and never render as a bare dash.
+# The v2 validator accepts "-" as a held row's reason (it is a non-empty
+# string), so the board has to survive it rather than assume it was filtered
+# upstream. All three bands read it by the same rule.
 # ---------------------------------------------------------------------------
-test_a_placeholder_reason_never_displaces_the_wait_age() {
+test_a_placeholder_reason_never_becomes_a_subtitle() {
   local home out
   home=$(make_home placeholder)
   out=$(render "$home" '{
@@ -367,7 +368,11 @@ test_a_placeholder_reason_never_displaces_the_wait_age() {
       {"id":"placeholder-order","repo":"sample","title":"Ready order","reason":"-",
        "dispatchable":true,"since":"2026-08-24"},
       {"id":"placeholder-held","repo":"sample","title":"Held order","reason":"-",
-       "dispatchable":false,"since":"2026-08-16"}
+       "dispatchable":false,"since":"2026-08-16"},
+      {"id":"placeholder-warn-dated","repo":"sample","title":"Dated repair notice",
+       "reason":"-","dispatchable":false,"kind":"warning","since":"2026-08-21"},
+      {"id":"placeholder-warn-undated","repo":"sample","title":"Undated repair notice",
+       "reason":"-","dispatchable":false,"kind":"warning","since":null}
     ]}')
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Clear to start") | .rows[] | {s:.sub, w:.when}]
@@ -380,7 +385,15 @@ test_a_placeholder_reason_never_displaces_the_wait_age() {
      | {s:.sub, w:.when, b:[.badges[].text]}]
       == [{s:"held 10 days ago", w:"", b:["held"]}]
   ' >/dev/null || fail "a held row rendered a bare dash instead of how long it has waited: $out"
-  pass "a placeholder reason falls back to the row's wait age on either berth"
+  # the notices band reads a reason by the same rule as the two berths: an
+  # alarm falls back to when it was recorded, or to the project alone
+  printf '%s' "$out" | jq -e '
+    [.notices[] | .sub] == ["recorded 5 days ago · sample", "sample"]
+  ' >/dev/null || fail "a repair notice rendered a bare dash for its reason: $out"
+  printf '%s' "$out" | jq -e '
+    [.notices[] | select(.sub | startswith("-"))] == []
+  ' >/dev/null || fail "a placeholder reason survived into the notices band: $out"
+  pass "a placeholder reason never becomes a subtitle in any band"
 }
 
 # ---------------------------------------------------------------------------
@@ -499,7 +512,7 @@ test_omitted_queued_work_is_reported_against_the_yard
 test_omitted_queued_work_is_never_reported_as_available_capacity
 test_an_empty_lane_names_which_empty_it_is
 test_a_lane_holding_only_a_captains_call_still_reads_as_recorded
-test_a_placeholder_reason_never_displaces_the_wait_age
+test_a_placeholder_reason_never_becomes_a_subtitle
 test_ages_are_read_against_the_payload_not_the_clock
 test_a_row_with_no_recorded_project_keeps_its_own_lane
 test_work_on_the_ways_shows_state_and_never_an_invented_age
