@@ -175,10 +175,13 @@ test_dry_dock_and_clear_to_start_are_different_berths() {
   ' >/dev/null || fail "held work is still pickable or still unexplained: $lane"
   printf '%s' "$lane" | jq -e '.drawer.split == "in the order book · 1 clear to start, 1 held in dry dock"' \
     >/dev/null || fail "the order-book summary does not state the split: $lane"
-  # this book is shallow enough to render already open, so the summary must not
-  # tell the captain to open what is on screen in front of him
-  printf '%s' "$lane" | jq -e '.drawer.open == true and .drawer.hint == ""' >/dev/null \
-    || fail "an already-open book still instructed the captain to open it: $lane"
+  # this book is shallow enough to render already open. The hint is still put on
+  # the page - collapsing it makes the hint true again - and the stylesheet is
+  # what withdraws it while it is open; that half is covered by
+  # test_opening_the_order_book_withdraws_its_hint, which the DOM shim cannot
+  # see because it has no cascade.
+  printf '%s' "$lane" | jq -e '.drawer.open == true and .drawer.hint == "open to pick"' >/dev/null \
+    || fail "a shallow book lost the hint it needs the moment it is collapsed: $lane"
   pass "dry dock and clear-to-start are separate berths with separate affordances"
 }
 
@@ -340,6 +343,36 @@ test_omitted_queued_work_is_never_reported_as_available_capacity() {
     [.lanes[] | select(.name == "sample") | .berths[].rows[] | select(.pickable)] == []
   ' >/dev/null || fail "a held row rendered a dispatch checkbox: $out"
   pass "omitted queued work is disclosed as depth and never counted as clear to start"
+}
+
+# ---------------------------------------------------------------------------
+# The hint tells the captain that opening the order book reveals something, so
+# it must be gone the moment the book is open and back the moment it is
+# collapsed - in both directions, whoever moved it. That is declared in the
+# stylesheet rather than in the script, so it leaves no trace in the rendered
+# DOM. The assertion is on the BUILT BOARD's own <style> - the generated
+# artifact a browser consumes - parsed into rules and resolved through the
+# cascade for the real rendered hint element in each drawer state, never on the
+# template's source text. A property the hint declares in both states is
+# asserted as a control, so a probe that resolved nothing could not pass here.
+# ---------------------------------------------------------------------------
+test_opening_the_order_book_withdraws_its_hint() {
+  local home out
+  home=$(make_home hint-style)
+  out=$(render "$home" "$(jq -n \
+    --argjson q "$(rows sample 9 true '' 2026-08-12)" '{charted: $q}')")
+
+  printf '%s' "$out" | jq -e '.stylesheet.rules > 20 and .hintStyle != null' >/dev/null \
+    || fail "the built board's stylesheet did not resolve against the rendered hint: $out"
+  printf '%s' "$out" | jq -e '
+    [.hintStyle.closed.whiteSpace, .hintStyle.open.whiteSpace] == ["nowrap","nowrap"]
+  ' >/dev/null || fail "the cascade probe never reached the hint element: $out"
+
+  printf '%s' "$out" | jq -e '.hintStyle.closed.display == null' >/dev/null \
+    || fail "a closed order book withheld the hint that its rows are worth opening: $out"
+  printf '%s' "$out" | jq -e '.hintStyle.open.display == "none"' >/dev/null \
+    || fail "an open order book still told the captain to open it: $out"
+  pass "opening the order book withdraws the hint that told him to open it"
 }
 
 # ---------------------------------------------------------------------------
@@ -611,6 +644,7 @@ test_a_yard_of_only_warnings_reports_no_work_at_all
 test_omitted_warnings_never_count_as_more_queued
 test_omitted_queued_work_is_reported_against_the_yard
 test_omitted_queued_work_is_never_reported_as_available_capacity
+test_opening_the_order_book_withdraws_its_hint
 test_an_empty_lane_names_which_empty_it_is
 test_a_lane_holding_only_a_captains_call_still_reads_as_recorded
 test_a_placeholder_reason_never_becomes_a_subtitle

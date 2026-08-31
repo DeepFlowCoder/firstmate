@@ -6,7 +6,8 @@
 // Prints one JSON document describing the rendered yard:
 //   { headline, headlineSub, stats:[{n,label}],
 //     lanes:[{name, reading, badges, launch, gauge, drawer, berths, empty}],
-//     notices:[{title,sub,badges}], noticeMore, yardEmpty, more, error }
+//     notices:[{title,sub,badges}], noticeMore, yardEmpty, more, answers,
+//     stylesheet:{rules,conditional}, hintStyle:{closed,open}, error }
 import { readFileSync } from "node:fs";
 
 const html = readFileSync(process.argv[2], "utf8");
@@ -191,6 +192,190 @@ const lanes = kids(yard, "bb-lane").map((lane) => {
 const notices = node("bb-notices");
 const noticeRows = notices.querySelectorAll(".bb-row").map(rowOf);
 
+// ---------------------------------------------------------------------------
+// Some board behaviour is declared in the stylesheet rather than in the script:
+// the order-book hint is rendered always and withdrawn by `.bb-drawer[open]`,
+// which follows the drawer in both directions and so cannot be observed as
+// rendered DOM. The built board is the generated artifact a browser consumes,
+// so its own <style> is parsed into rules and the cascade is resolved for a REAL
+// rendered element in each drawer state. This is a semantic model of the
+// stylesheet - selectors matched against the live node tree, winners picked by
+// importance, specificity and source order - not a search for rule text, so it
+// survives reformatting, reordering and equivalent selector spellings.
+// ---------------------------------------------------------------------------
+const parseStylesheet = (css) => {
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [];
+  let conditional = 0;
+  let i = 0;
+  while (i < src.length) {
+    const brace = src.indexOf("{", i);
+    if (brace < 0) break;
+    const semi = src.indexOf(";", i);
+    if (semi >= 0 && semi < brace) { i = semi + 1; continue; } // statement at-rule
+    const prelude = src.slice(i, brace).trim();
+    let depth = 1, j = brace + 1;
+    while (j < src.length && depth) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}") depth--;
+      j++;
+    }
+    if (prelude.startsWith("@")) {
+      // @media and friends are conditional; the probe resolves the
+      // unconditional cascade, so they are counted rather than folded in.
+      conditional++;
+    } else {
+      const decls = Object.create(null);
+      for (const d of src.slice(brace + 1, j - 1).split(";")) {
+        const c = d.indexOf(":");
+        if (c < 0) continue;
+        const prop = d.slice(0, c).trim().toLowerCase();
+        let value = d.slice(c + 1).trim();
+        if (!prop || !value) continue;
+        const important = /!important$/i.test(value);
+        if (important) value = value.replace(/!important$/i, "").trim();
+        decls[prop] = { value, important };
+      }
+      for (const sel of prelude.split(",")) {
+        const selector = sel.trim();
+        if (selector) rules.push({ selector, decls, order: rules.length });
+      }
+    }
+    i = j;
+  }
+  return { rules, conditional };
+};
+
+const parseCompound = (text) => {
+  const out = { tag: null, ids: [], classes: [], attrs: [], unsupported: false };
+  const token = /(::?[\w-]+(?:\([^)]*\))?|\[[^\]]*\]|[.#][\w-]+|[\w-]+|\*)/g;
+  let m, consumed = 0;
+  while ((m = token.exec(text))) {
+    const t = m[0];
+    consumed += t.length;
+    if (t === "*") continue;
+    else if (t.startsWith("::") || t.startsWith(":")) out.unsupported = true;
+    else if (t.startsWith("#")) out.ids.push(t.slice(1));
+    else if (t.startsWith(".")) out.classes.push(t.slice(1));
+    else if (t.startsWith("[")) {
+      const body = t.slice(1, -1);
+      const eq = body.indexOf("=");
+      if (eq < 0) out.attrs.push({ name: body.trim().toLowerCase(), value: null });
+      else out.attrs.push({
+        name: body.slice(0, eq).trim().toLowerCase(),
+        value: body.slice(eq + 1).trim().replace(/^["']|["']$/g, ""),
+      });
+    } else out.tag = t.toLowerCase();
+  }
+  if (consumed !== text.length) out.unsupported = true;
+  return out;
+};
+
+const parseSelector = (sel) => {
+  const toks = sel.trim().replace(/\s*([>+~])\s*/g, " $1 ").replace(/\s+/g, " ").split(" ");
+  const seq = [];
+  let comb = null;
+  for (const t of toks) {
+    if (t === ">" || t === "+" || t === "~") { comb = t; continue; }
+    if (!t) continue;
+    seq.push({ combinator: seq.length === 0 ? null : comb || " ", compound: parseCompound(t) });
+    comb = null;
+  }
+  return seq;
+};
+
+// A boolean content attribute and its IDL property are the same state in a real
+// DOM (`details.open = true` makes `[open]` match), and the shipped script sets
+// the property, so honour that reflection here.
+const attrValue = (n, name) => {
+  if (Object.prototype.hasOwnProperty.call(n.attributes, name)) return n.attributes[name];
+  if (n[name] === true) return "";
+  return undefined;
+};
+
+const matchCompound = (n, c) => {
+  if (c.unsupported) return false;
+  if (c.tag && String(n.tagName).toLowerCase() !== c.tag) return false;
+  const classes = n.className.split(/\s+/);
+  for (const cls of c.classes) if (!classes.includes(cls)) return false;
+  for (const id of c.ids) if (n.attributes.id !== id) return false;
+  for (const a of c.attrs) {
+    const v = attrValue(n, a.name);
+    if (v === undefined) return false;
+    if (a.value !== null && v !== a.value) return false;
+  }
+  return true;
+};
+
+const matchSelector = (node, seq) => {
+  if (!seq.length) return false;
+  if (!matchCompound(node, seq[seq.length - 1].compound)) return false;
+  let cur = node;
+  for (let k = seq.length - 2; k >= 0; k--) {
+    const combinator = seq[k + 1].combinator;
+    if (combinator === " ") {
+      let a = cur.parentNode, found = null;
+      while (a && !found) { if (matchCompound(a, seq[k].compound)) found = a; else a = a.parentNode; }
+      if (!found) return false;
+      cur = found;
+    } else if (combinator === ">") {
+      const p = cur.parentNode;
+      if (!p || !matchCompound(p, seq[k].compound)) return false;
+      cur = p;
+    } else return false; // sibling combinators: not modelled, so never claimed
+  }
+  return true;
+};
+
+const specificity = (seq) => {
+  let ids = 0, mid = 0, tags = 0;
+  for (const s of seq) {
+    ids += s.compound.ids.length;
+    mid += s.compound.classes.length + s.compound.attrs.length;
+    if (s.compound.tag) tags += 1;
+  }
+  return ids * 10000 + mid * 100 + tags;
+};
+
+const sheet = parseStylesheet(
+  [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join("\n"),
+);
+const parsedSelectors = sheet.rules.map((r) => ({ ...r, seq: parseSelector(r.selector) }));
+
+const resolve = (n, prop) => {
+  let best = null;
+  for (const r of parsedSelectors) {
+    const d = r.decls[prop];
+    if (!d || !matchSelector(n, r.seq)) continue;
+    const rank = [d.important ? 1 : 0, specificity(r.seq), r.order];
+    if (!best || rank[0] > best.rank[0]
+        || (rank[0] === best.rank[0] && rank[1] > best.rank[1])
+        || (rank[0] === best.rank[0] && rank[1] === best.rank[1] && rank[2] > best.rank[2])) {
+      best = { rank, value: d.value };
+    }
+  }
+  return best ? best.value : null;
+};
+
+const hintNode = yard.querySelectorAll(".bb-drawer__hint")[0] || null;
+const hintDrawer = (() => {
+  let p = hintNode ? hintNode.parentNode : null;
+  while (p && !has(p, "bb-drawer")) p = p.parentNode;
+  return p;
+})();
+const probeHint = (open) => {
+  const was = hintDrawer.open;
+  hintDrawer.open = open;
+  // whiteSpace is a control: the hint declares it in both states, so a matcher
+  // that reached nothing could not report it and pass the probe vacuously.
+  const seen = { display: resolve(hintNode, "display"), whiteSpace: resolve(hintNode, "white-space") };
+  hintDrawer.open = was;
+  return seen;
+};
+const hintStyle = hintNode && hintDrawer
+  ? { closed: probeHint(false), open: probeHint(true) }
+  : null;
+
 // A fail-closed render replaces the page body instead of the board sections, so
 // surface it rather than reporting an empty board as a successful render.
 const errorText = [...byId.entries()]
@@ -244,6 +429,8 @@ process.stdout.write(
     yardEmpty: kids(yard, "bb-empty").map((c) => c.textContent),
     more: kids(yard, "bb-morechip").map((c) => c.textContent),
     answers,
+    stylesheet: { rules: sheet.rules.length, conditional: sheet.conditional },
+    hintStyle,
     error: errorText,
   }) + "\n",
 );

@@ -998,18 +998,16 @@ __FM_BEARINGS_BOARD_DATA__
       if (l.order.length) split.push(l.order.length + " clear to start");
       if (l.dock.length) split.push(l.dock.length + " held in dry dock");
       summary.appendChild(el("span", "bb-drawer__split", "in the order book · " + split.join(", ")));
-      /* A summary reads the same open or closed, so the hint belongs only to a
-         book still behind its depth figure: on an open drawer the rows are on
-         screen and it would instruct the captain to open what is open. It takes
-         BOTH guards, and neither is redundant - this gate settles the drawer's
-         initial state, and `.bb-drawer[open] .bb-drawer__hint` withdraws the
-         hint again the moment he opens a deep one himself, which no render-time
-         test can see. Only l.order rows carry a checkbox, so a wholly held book
+      /* A summary reads the same open or closed, so the hint is only true while
+         the book is still behind its depth figure. The withdrawal is the
+         stylesheet's job, never a render-time branch: `.bb-drawer[open]
+         .bb-drawer__hint` follows the drawer in BOTH directions, so it also
+         gives the hint back when the captain collapses a shallow lane that
+         opened by default - a state a render-time test of the initial value
+         cannot reach. Only l.order rows carry a checkbox, so a wholly held book
          names what it does hold instead of advertising a pick no row accepts. */
-      if (!drawer.open) {
-        summary.appendChild(el("span", "bb-drawer__hint",
-          l.order.length ? "open to pick" : "open to read what holds them"));
-      }
+      summary.appendChild(el("span", "bb-drawer__hint",
+        l.order.length ? "open to pick" : "open to read what holds them"));
       drawer.appendChild(summary);
 
       if (l.order.length) {
