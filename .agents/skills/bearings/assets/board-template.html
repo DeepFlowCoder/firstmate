@@ -575,9 +575,11 @@ __FM_BEARINGS_BOARD_DATA__
     var r = t && typeof t.reason === "string" ? t.reason.trim() : "";
     return r === "-" ? "" : r;
   }
-  /* Every row names what it belongs to. In a named lane that repeats the lane
-     head; in the deliberate no-project lane it is the row's only identity, and
-     the routing id is what the captain would answer with. */
+  /* Names a row whose surroundings do not name it: the no-project lane, whose
+     head says only that, and the notices band, which sits outside every lane.
+     A notice records the project it is about; a work row that reached the
+     no-project lane by definition records none, so it falls back to the
+     routing id, which is what the captain would answer with. */
   function rowId(t) { return t.repo || t.id; }
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
 
