@@ -100,6 +100,9 @@ test_two_projects_with_the_same_queue_read_differently() {
   # depth, not a checklist: the order book is one number per lane
   printf '%s' "$fm" | jq -e '.drawer.depth == "13" and .drawer.open == false' >/dev/null \
     || fail "firstmate's order book is not presented as depth: $fm"
+  # a book still behind its depth figure is where the hint earns its keep
+  printf '%s' "$fm" | jq -e '.drawer.hint == "open to pick"' >/dev/null \
+    || fail "a closed book holding startable work does not offer the pick: $fm"
   printf '%s' "$bg" | jq -e '.drawer.depth == "18" and (.drawer.split | test("18 clear to start"))' >/dev/null \
     || fail "seawall's order book is not presented as depth: $bg"
 
@@ -172,9 +175,10 @@ test_dry_dock_and_clear_to_start_are_different_berths() {
   ' >/dev/null || fail "held work is still pickable or still unexplained: $lane"
   printf '%s' "$lane" | jq -e '.drawer.split == "in the order book · 1 clear to start, 1 held in dry dock"' \
     >/dev/null || fail "the order-book summary does not state the split: $lane"
-  # a book that does hold something dispatchable is the one allowed to offer it
-  printf '%s' "$lane" | jq -e '.drawer.hint == "open to pick"' >/dev/null \
-    || fail "a book holding startable work stopped offering the pick: $lane"
+  # this book is shallow enough to render already open, so the summary must not
+  # tell the captain to open what is on screen in front of him
+  printf '%s' "$lane" | jq -e '.drawer.open == true and .drawer.hint == ""' >/dev/null \
+    || fail "an already-open book still instructed the captain to open it: $lane"
   pass "dry dock and clear-to-start are separate berths with separate affordances"
 }
 
@@ -312,25 +316,25 @@ test_an_empty_lane_names_which_empty_it_is() {
 test_omitted_queued_work_is_never_reported_as_available_capacity() {
   local home out
   home=$(make_home held-more)
-  out=$(render "$home" '{
-    "charted": [
-      {"id":"held-visible","repo":"sample","title":"Held order","reason":"waiting on the vendor",
-       "dispatchable":false,"since":"2026-08-10"}
-    ],
-    "charted_more": 3}')
+  out=$(render "$home" "$(jq -n \
+    --argjson held "$(rows sample 5 false 'waiting on the vendor' 2026-08-10)" '{
+      charted: $held,
+      charted_more: 3}')")
 
   printf '%s' "$out" | jq -e '(.headline | test("clear to start") | not)' >/dev/null \
     || fail "omitted queued rows were reported as work the fleet could start: $out"
   printf '%s' "$out" | jq -e '
-    .headline == "Nothing is being built right now. 1 order is held in dry dock."
+    .headline == "Nothing is being built right now. 5 orders are held in dry dock."
   ' >/dev/null || fail "the yard report does not name what actually holds the book: $out"
   # the omitted rows are still disclosed as depth, just never as capacity
-  [ "$(stat_n "$out" "order book")" = 4 ] \
+  [ "$(stat_n "$out" "order book")" = 8 ] \
     || fail "the order-book tally dropped omitted queued work: $out"
-  # the drawer's own summary line must agree: a book with nothing dispatchable
-  # in it offers no pick, because no row inside it accepts one
+  # the drawer's own summary line must agree: this book is deep enough to stay
+  # closed, and what it offers to reveal is the hold, never a pick, because no
+  # row inside it accepts one
   printf '%s' "$out" | jq -e '
-    [.lanes[] | select(.name == "sample") | .drawer.hint] == ["open to read what holds them"]
+    [.lanes[] | select(.name == "sample") | .drawer | {open, hint}]
+      == [{open:false, hint:"open to read what holds them"}]
   ' >/dev/null || fail "a wholly held order book advertised a pick it cannot accept: $out"
   printf '%s' "$out" | jq -e '
     [.lanes[] | select(.name == "sample") | .berths[].rows[] | select(.pickable)] == []

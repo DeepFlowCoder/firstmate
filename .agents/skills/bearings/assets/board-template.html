@@ -997,11 +997,15 @@ __FM_BEARINGS_BOARD_DATA__
       if (l.order.length) split.push(l.order.length + " clear to start");
       if (l.dock.length) split.push(l.dock.length + " held in dry dock");
       summary.appendChild(el("span", "bb-drawer__split", "in the order book · " + split.join(", ")));
-      /* Only order-book rows carry a checkbox, so a wholly held book must not
-         advertise a pick: that is the ready-vs-held conflation this board
-         exists to remove, re-entering through the summary line. */
-      summary.appendChild(el("span", "bb-drawer__hint",
-        l.order.length ? "open to pick" : "open to read what holds them"));
+      /* A summary reads the same open or closed, so the hint belongs only to a
+         book still behind its depth figure: on an already-open drawer the rows
+         are on screen and it would instruct the captain to open what is open.
+         Only l.order rows carry a checkbox, so a wholly held book names what it
+         does hold instead of advertising a pick no row in it accepts. */
+      if (!drawer.open) {
+        summary.appendChild(el("span", "bb-drawer__hint",
+          l.order.length ? "open to pick" : "open to read what holds them"));
+      }
       drawer.appendChild(summary);
 
       if (l.order.length) {
