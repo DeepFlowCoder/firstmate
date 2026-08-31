@@ -270,6 +270,43 @@ EOF
   pass "fm-notify-moshi.sh: reports SIGHUP as 129 instead of collapsing every signal onto 143"
 }
 
+# TERM is the signal the field path actually sends: the daemon stops an active
+# notifier with `kill -TERM "-$pid"` over the process group
+# (bin/fm-supervise-daemon.sh). It gets its own case so the TERM arm cannot
+# regress to another code, or back into a trap shared with HUP and INT, without
+# a test failing. Same release-marker handshake as the SIGHUP case above.
+test_a_terminated_send_exits_143() {
+  local dir pid rc deadline
+  dir=$(make_case terminated)
+  cat > "$dir/bin/curl" <<EOF
+#!/usr/bin/env bash
+cat >/dev/null
+: > '$dir/curl-started'
+stub_deadline=\$((SECONDS + 60))
+while [ ! -e '$dir/curl-release' ]; do
+  [ "\$SECONDS" -lt "\$stub_deadline" ] || exit 28
+  sleep 0.02
+done
+printf '200'
+EOF
+  chmod +x "$dir/bin/curl"
+  PATH="$dir/bin:$PATH" FM_MOSHI_ENDPOINT='https://endpoint.invalid/api/webhook' \
+    "$NOTIFY" "away-mode WEDGED 900s" >/dev/null 2>"$dir/stderr" &
+  pid=$!
+  deadline=$((SECONDS + 60))
+  while [ ! -e "$dir/curl-started" ]; do
+    [ "$SECONDS" -lt "$deadline" ] \
+      || fail "the request never started, so terminating it proves nothing"
+    sleep 0.02
+  done
+  kill -TERM "$pid" 2>/dev/null || fail "could not signal the running notifier"
+  : > "$dir/curl-release"
+  wait "$pid"
+  rc=$?
+  expect_code 143 "$rc" "a terminated send must exit 143, the code the daemon's own TERM produces"
+  pass "fm-notify-moshi.sh: reports SIGTERM as 143, the signal the daemon actually sends"
+}
+
 test_request_is_posted_as_json_to_the_configured_endpoint() {
   local dir
   dir=$(make_case wire-shape)
@@ -307,5 +344,6 @@ test_empty_summary_is_refused_before_sending
 test_rejected_delivery_fails_without_disclosing_the_token
 test_unreachable_endpoint_reports_curls_own_reason
 test_an_interrupted_send_exits_with_the_signal_that_stopped_it
+test_a_terminated_send_exits_143
 test_request_is_posted_as_json_to_the_configured_endpoint
 test_title_and_unified_are_configurable

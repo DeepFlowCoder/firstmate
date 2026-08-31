@@ -452,6 +452,13 @@ test_busy_lifecycle_locks_never_hold_up_the_digest() {
     # would use fm_lock_acquire_wait, which polls forever against a lock this
     # test never releases. Blocked is unbounded, so no amount of slowness can
     # be mistaken for it.
+    #
+    # The residual that trade accepts, recorded rather than assumed away: a
+    # regression to a BOUNDED wait shorter than the tripwire would pass here,
+    # where the old 0.2s sample would have failed it. No current code path can
+    # produce one - fm_lock_acquire_wait is the only waiting acquire and it
+    # polls forever - so what is given up is a guard against a failure mode
+    # this path cannot reach, in exchange for not measuring process startup.
     deadline=$((SECONDS + 60))
     while kill -0 "$notify" 2>/dev/null; do
       if [ "$SECONDS" -ge "$deadline" ]; then
