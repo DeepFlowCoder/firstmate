@@ -217,14 +217,14 @@ test_title_and_unified_are_configurable() {
   local dir
   dir=$(make_case title-unified)
   run_notify "$dir" "away-mode WEDGED 900s" || fail "the default case must deliver"
-  [ "$(body_field "$dir" .unified)" = false ] \
-    || fail "unified defaulted to true, changing delivery without being asked"
+  [ "$(body_field "$dir" 'has("unified")')" = false ] \
+    || fail "the default request carried a unified field, which the live probe never exercised"
   dir=$(make_case title-unified-on)
   FM_MOSHI_TITLE='Firstmate needs you' FM_MOSHI_UNIFIED=1 \
     run_notify "$dir" "away-mode WEDGED 900s" || fail "the configured case must deliver"
   [ "$(body_field "$dir" .title)" = "Firstmate needs you" ] || fail "the configured title was not sent"
   [ "$(body_field "$dir" .unified)" = true ] || fail "the unified opt-in was not sent"
-  pass "fm-notify-moshi.sh: defaults unified off and honors a configured title and unified opt-in"
+  pass "fm-notify-moshi.sh: omits unified by default and honors a configured title and unified opt-in"
 }
 
 test_summary_argument_becomes_the_notification_body

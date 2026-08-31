@@ -549,7 +549,8 @@ printf '%s' '{"token":"fm-invalid-probe-token-000","title":"probe","message":"sh
 
 Observed output: `HTTP 404` with body `{"error":"Invalid token"}`, which is the endpoint parsing the body and rejecting the token rather than refusing the shape.
 A deliberately invalid token is used because a valid one would send a real notification.
-The probed body omits the `unified` field that `bin/fm-notify-moshi.sh` always sends, and the 404 fired on token validation before any field validation, so what this measures is reachability and token rejection — it is not evidence that the helper's full field set is accepted.
+The probed body is the same field set `bin/fm-notify-moshi.sh` sends by default, so the probe covers the default request shape; the `FM_MOSHI_UNIFIED` opt-in adds a `unified` field the live probe never exercised.
+The 404 fired on token validation before any field validation, so what this measures is reachability and token rejection — it is not evidence that a valid token yields a delivered notification.
 
 The Keychain default reads back without an authorization prompt.
 Measured against a throwaway keychain, created and unlocked in the same session, so no real credential was created:

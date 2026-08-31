@@ -50,6 +50,8 @@ Neither source is unconditional, and the residual is recorded in [`verification/
 
 Moshi rate-limits a free host to 10 events per 60 seconds, well above this alarm's own ceiling of one per max-defer window.
 The helper reports a refused delivery as a non-zero exit, which the daemon logs and continues past, so a Moshi outage still leaves the durable marker and every other configured channel intact.
+The daemon runs the `command:` channel with its stderr discarded, so the log records only the non-zero exit and cannot tell a rejected token, an empty Keychain, and a Moshi outage apart.
+Run `bin/fm-notify-moshi.sh 'test summary'` by hand to see the specific reason, which the helper prints to stderr.
 Whether the alert actually arrives on the phone is the one part no host-side check can prove; send a test alarm and confirm the phone before relying on it.
 
 ## Test safety

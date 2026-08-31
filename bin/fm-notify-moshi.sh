@@ -31,7 +31,8 @@
 #   FM_MOSHI_KEYCHAIN_SERVICE  Keychain service name (default: firstmate-moshi)
 #   FM_MOSHI_KEYCHAIN_ACCOUNT  optional Keychain account name
 #   FM_MOSHI_TITLE             notification title (default: Firstmate alert)
-#   FM_MOSHI_UNIFIED           1/true: notify every opted-in device on the license
+#   FM_MOSHI_UNIFIED           1/true: add `unified: true`, notifying every
+#                              opted-in device on the license; omitted otherwise
 #   FM_MOSHI_ENDPOINT          webhook URL (default: Moshi's public endpoint)
 #   FM_MOSHI_TIMEOUT_SECS      curl deadline in seconds (default: 8)
 #
@@ -146,7 +147,8 @@ CODE=$(printf '%s' "$TOKEN" \
       --arg title "${FM_MOSHI_TITLE:-$TITLE_DEFAULT}" \
       --arg message "$SUMMARY" \
       --argjson unified "$UNIFIED" \
-      '{token: ., title: $title, message: $message, unified: $unified}' \
+      '{token: ., title: $title, message: $message}
+       + (if $unified then {unified: true} else {} end)' \
   | curl -sS -o "$BODY" -w '%{http_code}' \
       --max-time "$TIMEOUT" \
       -X POST \
