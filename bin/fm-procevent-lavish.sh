@@ -83,6 +83,30 @@
 # otherwise, and the unused one travels along as context. A row with no words in
 # any field is not news and is not reported.
 #
+# Both commands read rows only from the published `prompts[N]{...}` frame, which
+# is the only frame the poll can produce them in: a feedback response is one
+# object whose only key carrying captain rows is `prompts`, and a block is named
+# after its key. The `feedback[N]` alternative the `silent` seam's content check
+# accepts is deliberately over-broad DETECTION, not a second content frame -
+# that check fails toward announcing, so admitting a frame that never arrives
+# costs nothing, while reading rows out of it here would report utterances the
+# poll never published. Should a future Lavish ever publish captain rows under
+# another key, `messages` must widen with it or the loss above returns for that
+# key.
+#
+# Two published rows are machine-shaped rather than typed prose - a
+# `layout-warnings` tag carrying queued layout issues, and a `whiteboard` tag
+# carrying an edit summary plus local scene files - and both are reported here on
+# purpose. No other command reads them either, so excluding them would recreate
+# exactly the loss above for those two shapes; the accepted cost is that acting
+# on one also leaves a captain note to acknowledge.
+#
+# `messages` exits 0 whenever it read the result, whatever it found there, and 3
+# when it could not read the result at all. Those are kept apart from the exit an
+# adapter gives for a command it does not implement, because an adapter without
+# the command must stay a quiet no-op while a `messages` that ran and failed is
+# possible prose going unread - which is the one thing it exists to prevent.
+#
 # It wraps ONLY the currently published interface, verified against 0.1.45:
 #   Usage: lavish-axi poll <html-file> [--agent-reply "..."]
 # and that command "long-polls indefinitely" server-side. The adapter therefore
@@ -127,7 +151,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,115p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,139p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -490,10 +514,17 @@ cmd_answers() {
 # losing the captain's words is the defect this exists to close, and the runner
 # already bounds a captured result as a whole - while the context is a label and
 # is capped like every other decoration here.
+#
+# Reading the result and failing to read it are reported apart, per the exit
+# contract in the header: 0 once the result has been read, 3 for every way this
+# can fail to read it, including an interpreter that never ran.
 cmd_messages() {
   local file=${1-}
   [ -n "$file" ] || usage
-  [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  if [ ! -f "$file" ] || [ -L "$file" ]; then
+    printf 'error: result file does not exist: %s\n' "$file" >&2
+    exit 3
+  fi
   perl -e '
     use strict; use warnings;
     my ($path) = @ARGV;
@@ -539,7 +570,7 @@ cmd_messages() {
       $context = substr($context, 0, 512);
       print "$message\t$context\n";
     }
-  ' "$file"
+  ' "$file" || exit 3
 }
 
 case "${1-}" in

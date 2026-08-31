@@ -422,8 +422,21 @@ case "${1-}" in
   *) exit 2 ;;
 esac
 SH
+cat > "$ADAPTER_ROOT/bin/fm-procevent-msgfail.sh" <<'SH'
+#!/usr/bin/env bash
+# Fixture adapter that implements the captain-message seam and cannot read the
+# result it is handed. It answers with the seam's read-failure exit, which is
+# what separates "this adapter tried and failed" from "this adapter has no such
+# command" - the second is a no-op, the first is possible prose going unread.
+case "${1-}" in
+  messages) printf 'error: cannot read the result\n' >&2; exit 3 ;;
+  terminal) [ -f "${2-}" ] && exit 0 || exit 1 ;;
+esac
+exit 2
+SH
 chmod +x "$ADAPTER_ROOT/bin/fm-procevent-endnow.sh" "$ADAPTER_ROOT/bin/fm-procevent-openended.sh" \
-  "$ADAPTER_ROOT/bin/fm-procevent-applying.sh" "$ADAPTER_ROOT/bin/fm-procevent-selfann.sh"
+  "$ADAPTER_ROOT/bin/fm-procevent-applying.sh" "$ADAPTER_ROOT/bin/fm-procevent-selfann.sh" \
+  "$ADAPTER_ROOT/bin/fm-procevent-msgfail.sh"
 
 pe_adapter() {  # <home> <command>...: run the runner against the fixture adapters
   local home=$1
@@ -1661,6 +1674,23 @@ printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{uid,prompt,sel
   || fail "freeform prose forged a keyed decision answer"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" "forged-key" \
   "prose that looks like a decision is still delivered as prose"
+
+# Two published rows are machine-shaped rather than typed prose, and are reported
+# here on purpose: no other command reads them either, so dropping them would
+# recreate exactly this loss for those two shapes.
+for tag in layout-warnings whiteboard; do
+  printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  "%s","ctx","queued edits to the header diagram"\n' "$tag" > "$MSGS"
+  assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" \
+    "queued edits to the header diagram" \
+    "a published $tag row was dropped instead of reported"
+done
+
+# Failing to read a result and reading one that said nothing are different
+# answers, so they are reported apart: only the second may pass in silence.
+msg_rc=0
+"$ROOT/bin/fm-procevent-lavish.sh" messages "$TMP_ROOT/no-such-result" >/dev/null 2>&1 || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "an unreadable result answered $msg_rc instead of the read-failure exit"
 pass "the adapter owns which Lavish rows are the captain's prose, and prose still forges no decision key"
 
 # The runner's captain-message seam is generic and closed by default: an adapter
@@ -1668,10 +1698,43 @@ pass "the adapter owns which Lavish rows are the captain's prose, and prose stil
 # for every adapter whose results carry no captain prose.
 printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  "message","ctx","words"\n' > "$MSGS"
 for adapter in remote-reply when; do
-  ! "$ROOT/bin/fm-procevent-$adapter.sh" messages "$MSGS" >/dev/null 2>&1 \
+  msg_rc=0
+  "$ROOT/bin/fm-procevent-$adapter.sh" messages "$MSGS" >/dev/null 2>&1 || msg_rc=$?
+  [ "$msg_rc" -ne 0 ] \
     || fail "the $adapter adapter reported captain prose without implementing the seam"
+  [ "$msg_rc" -ne 3 ] \
+    || fail "the unimplemented $adapter seam claimed a captain-message read failure"
 done
 pass "an adapter with no captain-message command routes no prose"
+
+# The runner acts on that difference. An adapter that HAS the command and could
+# not read the result must not be filed alongside one that never had it: the
+# first is possible prose going unread, which is the whole defect, so it is
+# reported and the capture is still announced on its own.
+HMSGFAIL="$TMP_ROOT/hmsgfail"; new_home "$HMSGFAIL"
+PE_TRACKED+=("$HMSGFAIL|msgfail-src")
+pe_adapter "$HMSGFAIL" register msgfail msgfail-src -- /bin/echo "board output" >/dev/null
+out=$(pe_adapter "$HMSGFAIL" start msgfail-src 2>&1)
+assert_contains "$out" "cannot read the captain message from msgfail-src" \
+  "a captain-message read that ran and failed passed in silence"
+[ "$(count_notes "$HMSGFAIL")" -eq 0 ] \
+  || fail "a failed captain-message read invented a note out of prose it never read"
+assert_contains "$(wake_payloads "$HMSGFAIL")" "procevent msgfail msgfail-src 1" \
+  "a failed captain-message read suppressed the capture's own announcement"
+
+# The counterpart, so the report is not simply always on: an adapter with no
+# `messages` command at all stays a quiet no-op through the same seam.
+HMSGQUIET="$TMP_ROOT/hmsgquiet"; new_home "$HMSGQUIET"
+PE_TRACKED+=("$HMSGQUIET|msgquiet-src")
+pe_adapter "$HMSGQUIET" register endnow msgquiet-src -- /bin/echo "board output" >/dev/null
+out=$(pe_adapter "$HMSGQUIET" start msgquiet-src 2>&1)
+case "$out" in
+  *"captain message"*)
+    fail "an adapter with no captain-message command was reported as a failed read" ;;
+esac
+assert_contains "$(wake_payloads "$HMSGQUIET")" "procevent endnow msgquiet-src 1" \
+  "the quiet no-op seam cost the capture its own announcement"
+pass "a captain-message read that ran and failed is reported apart from an adapter that has no such command"
 
 # --- the loss limitation is stated on the public interface ------------------
 # Checked through --help, the operator-facing surface, rather than by reading

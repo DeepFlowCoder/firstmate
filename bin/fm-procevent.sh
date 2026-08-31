@@ -119,9 +119,13 @@
 # which writes its own record, appends its own wake, and stays pending until its
 # own separate acknowledgement. This runner names no adapter, parses no result,
 # and adds no control plane; an adapter with no `messages` command is a quiet
-# no-op. Like the keyed-answer feed, it runs once per capture and never on
-# re-announcement, so a reconcile republishing an unhandled result cannot turn
-# one message into a second note.
+# no-op. An adapter that HAS one and could not read the result is not: it says so
+# with the read-failure exit that seam defines, and this runner reports it,
+# because the whole point is that possible prose never goes unread in silence.
+# Likewise the intake's own error is relayed rather than replaced, since only the
+# intake knows whether its note reached disk. Like the keyed-answer feed, it runs
+# once per capture and never on re-announcement, so a reconcile republishing an
+# unhandled result cannot turn one message into a second note.
 #
 # LAST RESULT POLICY, owned here and applying to every seam above. A source's
 # final result is delivered on its CONTENT, never on its lifecycle. Ending a
@@ -161,7 +165,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,145p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,149p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -250,16 +254,29 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
 # every unbound source. The adapter's own `messages` command is the declaration,
 # so an adapter without one routes nothing.
 #
-# Three outcomes the caller must keep apart: 0 the prose is durably queued, 1
-# there was no prose to queue, and 2 there WAS prose and the intake refused it.
-# Only 1 is silent, because prose this runner found and could not durably queue
-# is the one case that must never pass quietly.
+# Four outcomes the caller must keep apart: 0 the prose is durably queued, 1
+# there was no prose to queue, 2 there WAS prose and the intake did not accept
+# it, and 3 the adapter's own `messages` ran and could not read the result, so
+# whether prose was there is unknown. Only 1 is silent. An adapter that does not
+# implement the command at all is outcome 1, because a seam no adapter opted into
+# is not a loss; a read that ran and failed IS one, which is why the adapter's
+# documented read-failure exit keeps the two apart rather than folding them into
+# one silent code.
 feed_captain_messages() {  # <adapter> <source-id> <result-file>
-  local adapter=$1 id=$2 result=$3 script seq records body
+  local adapter=$1 id=$2 result=$3 script seq records body rc
   script=$(adapter_script "$adapter")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
-  records=$("$script" messages "$result" 2>/dev/null) || return 1
+  # Silenced like the seams above, so an adapter with no `messages` command stays
+  # a quiet no-op; the caller's own one-line warning names the result to re-read
+  # when the command did run and failed.
+  records=$("$script" messages "$result" 2>/dev/null)
+  rc=$?
+  case "$rc" in
+    0) ;;
+    3) return 3 ;;
+    *) return 1 ;;
+  esac
   [ -n "$records" ] || return 1
   # The captain's words lead, so the note's own one-line summary carries what he
   # said rather than where it came from; provenance closes the record. The
@@ -273,7 +290,11 @@ feed_captain_messages() {  # <adapter> <source-id> <result-file>
     done
     printf -- '-- captured result %s sequence %s\n' "$id" "$seq"
   )
-  printf '%s\n' "$body" | "$SCRIPT_DIR/fm-inbox.sh" note - >/dev/null 2>&1 || return 2
+  # The intake's own error is relayed rather than suppressed, because only the
+  # intake knows how far it got: its note can be durably on disk with just the
+  # wake missing, and a runner line that guessed would send the operator looking
+  # for the words where they are not.
+  printf '%s\n' "$body" | "$SCRIPT_DIR/fm-inbox.sh" note - >/dev/null || return 2
   return 0
 }
 
@@ -528,7 +549,9 @@ cmd_start() {
   feed_captain_messages "$adapter" "$id" "$durable"
   case "$?" in
     0) printf 'messages-noted: %s\n' "$id" ;;
-    2) printf 'cannot queue the captain message from %s; it remains only in the captured result\n' "$id" >&2 ;;
+    2) printf 'the captain-note intake did not complete for %s; its own error above states what it saved and what it did not\n' "$id" >&2 ;;
+    3) printf 'cannot read the captain message from %s; re-run `%s messages %s` for the detail\n' \
+         "$id" "$(adapter_script "$adapter")" "$durable" >&2 ;;
   esac
 
   # A self-announcing adapter's autohandle announces through its own durable
