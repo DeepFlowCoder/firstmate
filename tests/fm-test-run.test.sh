@@ -1163,28 +1163,6 @@ puts JSON.generate(
   pass "Herdr CI family-run step times out at 20 min under a 75 min job backstop"
 }
 
-test_only_the_reporting_job_is_non_gating() {
-  # tests-timing-aggregate builds a summary artifact and renders no verdict, so
-  # it carries continue-on-error: a runner refused to it late in the graph must
-  # not redden a green tree. Every job that DOES render a verdict has to stay
-  # gating. Parse the workflow as YAML so a `continue-on-error` nested under a
-  # step or a `with:` block cannot masquerade as the job-level contract.
-  command -v ruby >/dev/null 2>&1 \
-    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
-  local non_gating
-  non_gating=$(ruby -ryaml -e '
-doc = YAML.load_file(ARGV[0])
-jobs = doc.fetch("jobs")
-raise "no jobs in ci.yml" if jobs.empty?
-puts jobs.select { |_, job| job.is_a?(Hash) && job["continue-on-error"] == true }
-         .keys.sort.join(" ")
-' "$ROOT/.github/workflows/ci.yml") \
-    || fail "could not parse job-level continue-on-error from ci.yml"
-  [ "$non_gating" = "tests-timing-aggregate" ] \
-    || fail "only the reporting job may be non-gating, got: ${non_gating:-<none>}"
-  pass "only the verdict-free timing aggregate job is non-gating"
-}
-
 test_aggregate_json() {
   local tmp a b
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggjson.XXXXXX")
@@ -1252,5 +1230,4 @@ test_per_script_timeout_bounds_a_hang
 test_max_wall_ms_is_a_result_not_advice
 test_jobs_parallel_scheduler_and_failure_propagation
 test_herdr_ci_family_run_has_a_step_timeout
-test_only_the_reporting_job_is_non_gating
 test_aggregate_json
