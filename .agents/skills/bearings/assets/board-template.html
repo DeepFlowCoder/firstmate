@@ -313,6 +313,7 @@ a { color: inherit; text-decoration: none; }
 .bb-drawer__depth { font-family: var(--font-mono); font-size: var(--fs-h4); font-weight: 600; color: var(--text-strong); line-height: 1; }
 .bb-drawer__split { flex: 1 1 200px; min-width: 0; color: var(--text-muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
 .bb-drawer__hint { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
+.bb-drawer[open] .bb-drawer__hint { display: none; }
 
 /* ---- compact rows ---- */
 .bb-rows { display: flex; flex-direction: column; min-width: 0; }
@@ -998,10 +999,13 @@ __FM_BEARINGS_BOARD_DATA__
       if (l.dock.length) split.push(l.dock.length + " held in dry dock");
       summary.appendChild(el("span", "bb-drawer__split", "in the order book · " + split.join(", ")));
       /* A summary reads the same open or closed, so the hint belongs only to a
-         book still behind its depth figure: on an already-open drawer the rows
-         are on screen and it would instruct the captain to open what is open.
-         Only l.order rows carry a checkbox, so a wholly held book names what it
-         does hold instead of advertising a pick no row in it accepts. */
+         book still behind its depth figure: on an open drawer the rows are on
+         screen and it would instruct the captain to open what is open. It takes
+         BOTH guards, and neither is redundant - this gate settles the drawer's
+         initial state, and `.bb-drawer[open] .bb-drawer__hint` withdraws the
+         hint again the moment he opens a deep one himself, which no render-time
+         test can see. Only l.order rows carry a checkbox, so a wholly held book
+         names what it does hold instead of advertising a pick no row accepts. */
       if (!drawer.open) {
         summary.appendChild(el("span", "bb-drawer__hint",
           l.order.length ? "open to pick" : "open to read what holds them"));
