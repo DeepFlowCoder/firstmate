@@ -54,13 +54,16 @@
 #
 # Three v2 invariants exist so the board cannot silently fall back to reading
 # like a flat checklist:
-#   - `generated` carries a YYYY-MM-DD prefix, and every charted `since` and
-#     landed `landed_on` carries one too or an explicit null for "this row
-#     records no date". A row that simply omits the field is refused, the same
-#     deliberate-marker discipline `repo` already uses, because a missing date
-#     and an unrecorded date must not look alike. `generated` is the reference
-#     the template measures both ages against, so the page never depends on the
-#     reader's clock.
+#   - `generated` carries a YYYY-MM-DD prefix. It is the reference the template
+#     measures both ages against, so the page never depends on the reader's
+#     clock, and the snapshot produces it, so the requirement is strict.
+#     Every charted `since` and landed `landed_on` carries either a value or an
+#     explicit null for "this row records no date". A row that simply omits the
+#     field is refused, the same deliberate-marker discipline `repo` already
+#     uses, because a missing date and an unrecorded date must not look alike.
+#     The value itself is NOT required to be a date: it comes from hand-edited
+#     backlog markdown, so the board tolerates whatever the record holds and
+#     renders an age only for a value it can parse.
 #   - a queued row that is NOT dispatchable and is not a warning must carry a
 #     non-empty `reason`. A dry-dock berth is only distinguishable from an
 #     order clear to start if the board can say what holds it.
@@ -108,8 +111,12 @@ validate_payload() {  # <data.json>
     def date_prefixed: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}");
     # Same deliberate-marker discipline as repo_marker: the field is always
     # present, and null is how the composer says "this row records no date".
+    # The VALUE is not required to be a date. These come from hand-edited
+    # backlog markdown, where "(since the pivot)" is an ordinary note, and
+    # refusing the whole build over one would leave the captain with no board
+    # at all. The template renders an age only when the value parses.
     def date_marker($name):
-      has($name) and (.[$name] == null or (.[$name] | date_prefixed));
+      has($name) and (.[$name] == null or (.[$name] | type == "string"));
     def optional_string($name): (has($name) | not) or (.[$name] | type == "string");
     def optional_https_url($name):
       (has($name) | not)

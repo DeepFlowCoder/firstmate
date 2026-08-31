@@ -168,7 +168,7 @@ test_dry_dock_and_clear_to_start_are_different_berths() {
       and (.berths[1].rows[0]
            | .pickable == false
              and ([.badges[] | .text] == ["held"])
-             and .sub == "blocked on the cutover")
+             and .sub == "blocked on the cutover · sample")
   ' >/dev/null || fail "held work is still pickable or still unexplained: $lane"
   printf '%s' "$lane" | jq -e '.drawer.split == "in the order book · 1 clear to start, 1 held in dry dock"' \
     >/dev/null || fail "the order-book summary does not state the split: $lane"
@@ -376,14 +376,14 @@ test_a_placeholder_reason_never_becomes_a_subtitle() {
     ]}')
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Clear to start") | .rows[] | {s:.sub, w:.when}]
-      == [{s:"ordered 2 days ago", w:""}]
+      == [{s:"ordered 2 days ago · sample", w:""}]
   ' >/dev/null || fail "a placeholder reason was rendered instead of the wait age: $out"
   # a dry-dock row is the one the reason invariant exists for, so a bare dash
   # there is the worst case: still badged held, still saying nothing
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Dry dock") | .rows[]
      | {s:.sub, w:.when, b:[.badges[].text]}]
-      == [{s:"held 10 days ago", w:"", b:["held"]}]
+      == [{s:"held 10 days ago · sample", w:"", b:["held"]}]
   ' >/dev/null || fail "a held row rendered a bare dash instead of how long it has waited: $out"
   # the notices band reads a reason by the same rule as the two berths: an
   # alarm falls back to when it was recorded, or to the project alone
@@ -422,25 +422,81 @@ test_ages_are_read_against_the_payload_not_the_clock() {
 }
 
 # ---------------------------------------------------------------------------
-# The deliberate no-repo marker must not silently drop a row.
+# The deliberate no-repo marker must not silently drop a row. In that lane the
+# head says only "no project recorded", so every berth has to carry the routing
+# id itself - it is the row's only identity and what the captain answers with.
 # ---------------------------------------------------------------------------
 test_a_row_with_no_recorded_project_keeps_its_own_lane() {
-  local home out
+  local home out orphan
   home=$(make_home norepo)
   out=$(render "$home" '{
     "underway": [
       {"id":"orphan-task","repo":null,"kind":"scout","state":"working","doing":"investigating"}
     ],
+    "landed": [
+      {"id":"orphan-landed","repo":null,"what":"Delivered a report","owner":"firstmate",
+       "landed_on":"2026-08-25"}
+    ],
     "charted": [
       {"id":"named","repo":"sample","title":"Named order","reason":"",
-       "dispatchable":true,"since":"2026-08-21"}
+       "dispatchable":true,"since":"2026-08-21"},
+      {"id":"orphan-order","repo":null,"title":"Orphan order","reason":"",
+       "dispatchable":true,"since":"2026-08-23"},
+      {"id":"orphan-held","repo":null,"title":"Orphan held","reason":"waiting on upstream",
+       "dispatchable":false,"since":"2026-08-11"}
     ]}')
   printf '%s' "$out" | jq -e '
     ([.lanes[].name] | sort) == ["no project recorded","sample"]
-      and ([.lanes[] | select(.name == "no project recorded") | .berths[].rows[].sub]
-           == ["scout · orphan-task"])
   ' >/dev/null || fail "a row with no recorded project was dropped or merged: $out"
+
+  orphan=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "no project recorded")')
+  # every berth in the unassigned lane names the row it is showing
+  printf '%s' "$orphan" | jq -e '
+    [.berths[] | {l:.label, subs:[.rows[].sub]}] == [
+      {l:"On the ways",   subs:["scout · orphan-task"]},
+      {l:"Clear to start",subs:["ordered 3 days ago · orphan-order"]},
+      {l:"Dry dock",      subs:["waiting on upstream · orphan-held"]},
+      {l:"Launched",      subs:["delivered · firstmate · orphan-landed"]}
+    ]
+  ' >/dev/null || fail "a berth in the unassigned lane rendered a row with no identity: $orphan"
   pass "a row with no recorded project keeps its own lane and shows its id"
+}
+
+# ---------------------------------------------------------------------------
+# `since` and `landed_on` are read out of hand-edited backlog markdown, so they
+# can hold prose rather than a date. The board must still build and simply
+# render no age, never a bogus one and never a refusal that costs the captain
+# the whole board.
+# ---------------------------------------------------------------------------
+test_a_recorded_value_that_is_not_a_date_renders_no_age() {
+  local home out
+  home=$(make_home prose-dates)
+  out=$(render "$home" '{
+    "landed": [
+      {"id":"prose-landed","repo":"sample","what":"Landed on prose","owner":"firstmate",
+       "landed_on":"last sprint"}
+    ],
+    "charted": [
+      {"id":"prose-order","repo":"sample","title":"Ordered on prose","reason":"",
+       "dispatchable":true,"since":"the pivot"},
+      {"id":"prose-held","repo":"sample","title":"Held on prose","reason":"waiting on legal",
+       "dispatchable":false,"since":"the pivot"}
+    ]}')
+
+  printf '%s' "$out" | jq -e '.error == ""' >/dev/null \
+    || fail "a non-date value made the board render its fail-closed error: $out"
+  # no age anywhere, and nothing that echoes the unparseable value as one
+  printf '%s' "$out" | jq -e '
+    [.lanes[0].berths[] | .rows[] | .when] == ["", "", ""]
+      and ([.lanes[0].berths[] | .rows[] | .sub]
+           == ["waiting for a crew · sample",
+               "waiting on legal · sample",
+               "delivered · firstmate · sample"])
+  ' >/dev/null || fail "a value that is not a date was rendered as an age: $out"
+  # the lane cannot claim a last launch it could not date
+  printf '%s' "$out" | jq -e '.lanes[0].launch == ""' >/dev/null \
+    || fail "the lane invented a launch recency from an unparseable date: $out"
+  pass "a recorded value that is not a date renders no age instead of refusing"
 }
 
 # ---------------------------------------------------------------------------
@@ -515,4 +571,5 @@ test_a_lane_holding_only_a_captains_call_still_reads_as_recorded
 test_a_placeholder_reason_never_becomes_a_subtitle
 test_ages_are_read_against_the_payload_not_the_clock
 test_a_row_with_no_recorded_project_keeps_its_own_lane
+test_a_recorded_value_that_is_not_a_date_renders_no_age
 test_work_on_the_ways_shows_state_and_never_an_invented_age
