@@ -68,13 +68,22 @@
 # every other command reported nothing, and acknowledging the capture retired
 # the only copy. The words were lost in silence.
 #
-# So the two commands read DISJOINT rows and never overlap: `answers` takes only
-# `choice`, and `messages` takes everything that is not `choice`. Each fails in
-# the safe direction for what it carries. `answers` fails toward silence,
-# because an unfamiliar row must never mint a decision key. `messages` fails
-# toward reporting, because an unfamiliar row is prose nobody else will read,
-# and dropping it for having a tag this adapter has not seen before is exactly
-# the defect above. It reads no decision keys, so prose still forges nothing.
+# So the two commands partition the published rows: they never overlap, and
+# together they leave nothing unread. The split is what the keyed-answer intake
+# actually CONSUMED, not what a row is tagged - `answers` takes exactly the rows
+# it can turn into a keyed decision, and `messages` takes every other row. Tag
+# alone would not be enough: a `choice` row whose `Context data:` is missing,
+# unparseable, unkeyed, or over the answer bound is one `answers` refuses, and
+# splitting on the tag would leave it read by neither command, which is the
+# defect above recurring on a sibling row shape. One predicate decides both, so
+# the two can never disagree about who owns a row.
+#
+# Each still fails in the safe direction for what it carries. `answers` fails
+# toward silence, because an unfamiliar row must never mint a decision key.
+# `messages` fails toward reporting, because a row nobody else will read is prose
+# by default, and dropping it for having a tag this adapter has not seen before -
+# or a shape the decision intake would not take - is exactly the loss above. It
+# reads no decision keys, so prose still forges nothing.
 #
 # Which field holds the captain's words depends on the row shape - the observed
 # `Send & End` message carries them in `prompt` with a static label in `text`,
@@ -162,7 +171,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,150p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,159p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -532,16 +541,41 @@ sub lavish_prompt_rows {
   return lavish_table_rows($want, \@fields, \@body) if $frame eq "table";
   return lavish_list_rows($want, \@body);
 }
+sub lavish_keyed_answer {
+  my ($f) = @_;
+  return undef unless defined $f->{tag} && $f->{tag} eq "choice";
+  my $prompt = $f->{prompt};
+  return undef unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
+  my $data = eval { JSON::PP::decode_json($1) };
+  return undef unless ref($data) eq "HASH";
+  my $key = $data->{question};
+  my $answer = $data->{answer};
+  return undef if !defined($key) || ref($key) || !defined($answer) || ref($answer);
+  my $mode = "";
+  if (exists $data->{close}) {
+    return undef if !defined($data->{close}) || ref($data->{close})
+      || ($data->{close} ne "done" && $data->{close} ne "release");
+    $mode = $data->{close};
+  }
+  return undef unless $key =~ /\A[A-Za-z0-9._-]{1,128}\z/;
+  return undef unless length $answer && length($answer) <= 512;
+  my $label = defined $f->{text} ? $f->{text} : "";
+  s/[\x00-\x1f\x7f]/ /g for ($answer, $label);
+  $label = substr($label, 0, 512);
+  return { key => $key, answer => $answer, label => $label, mode => $mode };
+}
 '
 
 # Print `key<TAB>answer<TAB>label[<TAB>mode]` for every structured choice the
 # captain submitted in a captured result; the optional mode column relays the
 # card's declared close mode (`done` or `release`) to the keyed-answer intake.
-# It reads the shared row map above and takes only rows whose `tag` field is
-# `choice`. A freeform `message` row is captain prose and is deliberately never a
-# source of decision keys. A row that does not carry both a slug-shaped `question`
-# and an `answer` inside its `Context data:` block is skipped, so a deck that does
-# not key its forms by decision key simply yields nothing.
+# It reads the shared row map above and takes exactly the rows the shared
+# keyed-answer predicate accepts: tagged `choice`, carrying a slug-shaped
+# `question` and a bounded `answer` inside a parseable `Context data:` block. A
+# freeform `message` row is captain prose and is deliberately never a source of
+# decision keys, so a deck that does not key its forms by decision key yields
+# nothing here. Every row this refuses is prose to `messages`, which is why the
+# predicate is shared rather than restated.
 # The question cap is 128 so any task id fits, including the long legacy
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
@@ -556,27 +590,8 @@ cmd_answers() {
     my %seen;
     my @out;
     for my $f (@$rows) {
-      my %f = %$f;
-      next unless defined $f{tag} && $f{tag} eq "choice";
-      my $prompt = $f{prompt};
-      next unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
-      my $ctx = $1;
-      my $data = eval { decode_json($ctx) };
-      next unless ref($data) eq "HASH";
-      my $key = $data->{question};
-      my $answer = $data->{answer};
-      next if !defined($key) || ref($key) || !defined($answer) || ref($answer);
-      my $mode = "";
-      if (exists $data->{close}) {
-        next if !defined($data->{close}) || ref($data->{close})
-          || ($data->{close} ne "done" && $data->{close} ne "release");
-        $mode = $data->{close};
-      }
-      next unless $key =~ /\A[A-Za-z0-9._-]{1,128}\z/;
-      next unless length $answer && length($answer) <= 512;
-      my $label = defined $f{text} ? $f{text} : "";
-      s/[\x00-\x1f\x7f]/ /g for ($answer, $label);
-      $label = substr($label, 0, 512);
+      my $a = lavish_keyed_answer($f) or next;
+      my ($key, $answer, $label, $mode) = @$a{qw(key answer label mode)};
       # A re-answered form appears again later in the queue; the last submission wins.
       if (defined $seen{$key}) { $out[$seen{$key}] = undef }
       $seen{$key} = scalar @out;
@@ -586,12 +601,12 @@ cmd_answers() {
   ' "$file"
 }
 
-# Print `message<TAB>context` for every row of a captured result that is the
-# captain's own prose rather than a structured choice; see the complementarity
-# note in the header for why the two commands read disjoint rows and why this
-# one fails toward reporting. It reads the shared row map above, so it sees every
-# row `answers` sees in either published rendering, and the two differ only in
-# which of those rows they keep. Control characters are flattened, so one captain
+# Print `message<TAB>context` for every row of a captured result the keyed-answer
+# intake did not consume; see the complementarity note in the header for why the
+# two commands partition the rows on that and not on the tag, and why this one
+# fails toward reporting. It reads the shared row map and the shared keyed-answer
+# predicate, so it sees every row `answers` sees in either published rendering
+# and keeps precisely the ones `answers` left. Control characters are flattened, so one captain
 # message is always one record and a multi-line message can never split into
 # rows that read as separate utterances. The message itself is never truncated -
 # losing the captain's words is the defect this exists to close, and the runner
@@ -608,15 +623,16 @@ cmd_messages() {
     printf 'error: result file does not exist: %s\n' "$file" >&2
     exit 3
   fi
-  perl -e "$PROMPT_ROWS_PL" -e '
+  perl -MJSON::PP -e "$PROMPT_ROWS_PL" -e '
     my ($path) = @ARGV;
     my $rows = lavish_prompt_rows($path);
     defined $rows or exit 1;
     for my $r (@$rows) {
       my %f = %$r;
-      # Everything that is not a structured choice, including a row whose tag
-      # this adapter has never seen and a row that declares no tag at all.
-      next if defined $f{tag} && $f{tag} eq "choice";
+      # Every row the keyed-answer intake did not take, including a row whose tag
+      # this adapter has never seen, a row that declares no tag at all, and a
+      # `choice` row that carries no answer that intake could key.
+      next if lavish_keyed_answer($r);
       my ($prompt, $text) = (defined $f{prompt} ? $f{prompt} : "",
                              defined $f{text}   ? $f{text}   : "");
       s/[\x00-\x1f\x7f]/ /g for ($prompt, $text);

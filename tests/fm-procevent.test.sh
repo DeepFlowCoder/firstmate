@@ -856,6 +856,41 @@ assert_contains "$(note_bodies "$HLIST")" "the numbers here do not match what I 
   "the list-rendered message did not outlive the capture acknowledgement"
 pass "a captain message delivered in the poll's other rendering reaches firstmate just the same"
 
+# The same close, delivered as a `choice` row the keyed-answer intake cannot
+# key. Nothing about the tag makes it prose, so before the commands split on
+# what that intake actually consumed this landed in the gap between them: the
+# capture was announced, both content commands answered nothing, and the handler
+# acknowledged what looked like an empty close - the reported incident exactly.
+HUNKEYED="$TMP_ROOT/hunkeyed"; new_home "$HUNKEYED"
+UNKEYED_BIN=$(fm_fakebin "$TMP_ROOT/lavish-unkeyed-stub")
+cat > "$UNKEYED_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+# Stand-in for `lavish-axi poll <file>` on a `Send & End` whose card was queued
+# with tag `choice` but no context the keyed-answer intake can read - what a
+# hand-authored review surface produces when it does not key its own forms.
+printf 'session:\n  file: /unkeyed.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","I pick the second option, but only for the pilot","",choice,Option B\n'
+SH
+chmod +x "$UNKEYED_BIN/lavish-axi"
+UNKEYED_ART="$TMP_ROOT/unkeyed-board.html"
+printf '<h1>unkeyed</h1>\n' > "$UNKEYED_ART"
+unkeyed_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$UNKEYED_ART")
+PE_TRACKED+=("$HUNKEYED|$unkeyed_id")
+PATH="$UNKEYED_BIN:$PATH" FM_HOME="$HUNKEYED" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$UNKEYED_ART" >/dev/null
+PATH="$UNKEYED_BIN:$PATH" pe "$HUNKEYED" reconcile >/dev/null
+wait_for_notes "$HUNKEYED" 1 \
+  || fail "a choice row no intake could key reached no durable channel at all"
+wait_for_absent "$HUNKEYED/state/procevent/$unkeyed_id.source" \
+  || fail "the unkeyable close never retired its ended source"
+assert_contains "$(note_bodies "$HUNKEYED")" "I pick the second option, but only for the pilot" \
+  "what the captain chose fell into the gap between the two content commands"
+assert_contains "$(wake_payloads "$HUNKEYED")" "captain inbox note" \
+  "the unkeyable choice never became its own wake"
+pe "$HUNKEYED" handled "$unkeyed_id" 1 >/dev/null
+assert_contains "$(note_bodies "$HUNKEYED")" "I pick the second option, but only for the pilot" \
+  "acknowledging the capture retired the unkeyable choice with it"
+pass "a choice row the keyed-answer intake cannot take still reaches firstmate as prose"
+
 # A close that says nothing, and a close whose only content is a structured
 # choice, both stay out of the captain-note intake: prose is what it carries,
 # and the keyed-answer path already owns a choice.
@@ -1696,7 +1731,33 @@ assert_contains "$out" "Freeform message" \
 
 printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  "choice","Option B","Context data: {\\"question\\":\\"k\\",\\"answer\\":\\"b\\"}"\n' > "$MSGS"
 [ -z "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" ] \
-  || fail "a structured choice was reported as freeform prose"
+  || fail "a structured choice the keyed-answer intake took was also reported as prose"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" "k	b	Option B" \
+  "the keyed-answer intake stopped taking the choice it owns"
+
+# The two commands split on what the keyed-answer intake CONSUMED, not on the
+# tag, so nothing published can fall between them. A `choice` row that intake
+# refuses is prose here - otherwise it is read by neither command and the close
+# looks empty, which is the reported incident on a sibling row shape. Each case
+# below is a way `answers` refuses a row that is genuinely tagged `choice`.
+CHOICE_LONG=$(printf 'y%.0s' $(seq 1 740))
+printf 'session:\n  file: /a.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","Which way? Context data: {\\"question\\":\\"k\\",\\"answer\\":\\"%s\\"}","",choice,Option B\n' "$CHOICE_LONG" > "$MSGS"
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" ] \
+  || fail "an over-bound answer minted a decision key"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" "Which way?" \
+  "a choice row whose answer exceeds the keyed-answer bound was read by neither command"
+
+printf 'session:\n  file: /a.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nprompts[1]{uid,prompt,selector,tag,text}:\n  "","I pick the second option","",choice,Option B\n' > "$MSGS"
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" ] \
+  || fail "a choice row with no context data minted a decision key"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" "I pick the second option" \
+  "a choice row carrying no context data was read by neither command"
+
+printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  "choice","Option B","Context data: {\\"question\\":\\"not a slug!\\",\\"answer\\":\\"b\\"}"\n' > "$MSGS"
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" ] \
+  || fail "a non-slug question minted a decision key"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" "not a slug!" \
+  "a choice row whose question is not slug-shaped was read by neither command"
 
 printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\n' > "$MSGS"
 [ -z "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" ] \

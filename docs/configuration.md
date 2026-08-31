@@ -670,6 +670,7 @@ An unbound source, an adapter with no `answers` command, and a failure on either
 
 Freeform captain prose uses one more seam of the same kind, and exists because the keyed-answer seam above is deliberately narrow.
 It reads only structured choices, so prose can never forge a decision key, which left prose with no reader at all: a review surface closed with a message delivered the captain's words in the same result that ended it, no content command reported anything, and acknowledging the capture retired the only copy.
+The two commands therefore partition an adapter's rows on what the keyed-answer intake actually consumed rather than on how a row is labelled, so every published row is read by exactly one of them and nothing can fall between the two.
 After capture, the runner therefore passes the result to `bin/fm-procevent-<adapter>.sh messages <result-file>` and queues whatever that prints into the captain inbox through `bin/fm-inbox.sh note`, which writes its own durable record, appends its own `check` wake, and stays pending until its own `bin/fm-inbox.sh drain --ack <id>`.
 This seam is not gated on a captain-hold binding, because a binding says the source feeds the decision intake and says nothing about whether the captain also typed words.
 It runs once per capture and never on re-announcement, so a reconcile republishing an unhandled result cannot turn one message into a second note, and an adapter with no `messages` command routes nothing.
