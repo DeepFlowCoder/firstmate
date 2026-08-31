@@ -111,11 +111,18 @@ exit 0
 SH
   # Default hermetic no-mistakes stub: `axi status` answers FM_FAKE_AXI_STATUS
   # verbatim (empty by default, i.e. no active run - the pre-teardown run-abort
-  # step is then a no-op), and `axi abort` appends one line to
-  # FM_FAKE_NM_ABORT_LOG when set. This keeps every case hermetic - without it,
+  # step is then a no-op), the top-level `runs` listing answers FM_FAKE_NM_RUNS
+  # verbatim (empty by default, i.e. a list naming no run for this branch), and
+  # `axi abort` appends one line to
+  # FM_FAKE_NM_ABORT_LOG when set. Once an abort has been logged the listing
+  # answers FM_FAKE_NM_RUNS_AFTER_ABORT instead when that is set, which is how
+  # the real store behaves: the concluded run's row turns terminal while any
+  # other run of that branch keeps its own status. This keeps every case
+  # hermetic - without it,
   # `command -v no-mistakes` would fall through to whatever real binary
   # happens to be on the test runner's own PATH. Tests exercising the run-abort
-  # path override FM_FAKE_AXI_STATUS/FM_FAKE_NM_ABORT_LOG before run_teardown.
+  # path override FM_FAKE_AXI_STATUS, FM_FAKE_NM_RUNS, and FM_FAKE_NM_ABORT_LOG
+  # before run_teardown.
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -149,6 +156,12 @@ case "${1:-}" in
         exit 0 ;;
     esac
     ;;
+  runs)
+    if [ -n "${FM_FAKE_NM_RUNS_AFTER_ABORT:-}" ] && [ -s "${FM_FAKE_NM_ABORT_LOG:-/dev/null}" ]; then
+      printf '%s\n' "$FM_FAKE_NM_RUNS_AFTER_ABORT"
+    else
+      printf '%s\n' "${FM_FAKE_NM_RUNS:-}"
+    fi ;;
 esac
 exit 0
 SH
@@ -2008,7 +2021,9 @@ test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
 }
 
 # --- Fix 1: conclude/abort the task's own parked no-mistakes run before the
-# worker is removed, and Fix 2: reap leaked descendant processes rooted under
+# worker is removed - including the runs-list corroboration that keeps an old
+# terminal run from masking this branch's live one into a silent teardown - and
+# Fix 2: reap leaked descendant processes rooted under
 # the task's own worktree/tasktmp - both exercised through the real teardown
 # path (bin/fm-teardown.sh), never by matching its source text. ------------
 
@@ -2026,6 +2041,26 @@ run:
   pr: ""
   findings: none
 gate: review
+EOF
+}
+
+# What `axi status --run <id>` really returns once that run has been aborted:
+# the SAME TOON shape as the repo-scoped query, carrying branch and head, not a
+# reduced id/outcome pair. The post-abort corroboration reads branch and head
+# from this payload, so the double must carry them or the tests would cover a
+# path production never takes.
+concluded_axi_status_toon() {  # <branch> <head> [run-id]
+  cat <<EOF
+run:
+  id: "${3:-01RUN}"
+  branch: $1
+  status: cancelled
+  head: "$2"
+  pr: ""
+  findings: none
+steps[1]{step,status,findings,summary}:
+  review,cancelled,0,"aborted before teardown"
+outcome: cancelled
 EOF
 }
 
@@ -2206,6 +2241,392 @@ test_own_autonomous_run_is_left_alone() {
   assert_not_contains "$(cat "$case_dir/stderr")" "aborting" \
     "autonomous-run-left-alone: teardown reported aborting an autonomous run"
   pass "a task-owned autonomous running step is left alone rather than aborted"
+}
+
+# A terminal `axi status` TOON payload for <branch>/<head>: the shape the
+# repo-scoped status query hands back when it answers with a run that has
+# already finished. Measured on the real store (see bin/fm-nm-run-lib.sh's
+# runs-list primitives), an aborted run reports the SAME branch and head as the
+# live run that replaced it, so every identity check teardown has passes on it.
+cancelled_axi_status_toon() {  # <branch> <head> [run-id]
+  cat <<EOF
+run:
+  id: "${3:-01OLDRUN}"
+  branch: $1
+  status: cancelled
+  head: "$2"
+  pr: ""
+  findings: none
+outcome: cancelled
+error: "cancelled: superseded by new push"
+EOF
+}
+
+# One `no-mistakes runs` listing, newest-first, in the real command's plain
+# column shape: "<status> <branch> <short-sha> <date> [<pr-url>]".
+runs_list_rows() {  # <row>...
+  printf '  %s\n' "$@"
+}
+
+# THE masking case this whole corroboration exists for. The repo-scoped `axi
+# status` answers with an OLD TERMINAL run whose branch AND head both match this
+# worktree - so teardown's identity rule binds it, finds no gate, and concludes
+# there is nothing to abort - while the branch's genuinely live run sits parked
+# at a gate with no worker left to answer it. Before the corroboration, teardown
+# proceeded silently and orphaned exactly the run Fix 1 exists to conclude.
+test_old_terminal_run_masking_live_run_refuses() {
+  local case_dir rc head short
+  case_dir=$(make_case terminal-run-masks-live)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  short=$(git -C "$case_dir/wt" rev-parse --short=8 HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(cancelled_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/task-x1 ${short}  2026-08-29 07:45" \
+    "cancelled  fm/task-x1 ${short}  2026-08-29 01:30")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "terminal-run-masks-live: teardown proceeded past a live run it never inspected"
+  assert_grep "REFUSED: task-x1 has a live no-mistakes run" "$case_dir/stderr" \
+    "terminal-run-masks-live: teardown did not explain the live-run refusal"
+  assert_present "$case_dir/wt" \
+    "terminal-run-masks-live: teardown removed the worktree while a live run owned the branch"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "terminal-run-masks-live: teardown removed task metadata while a live run owned the branch"
+  assert_absent "$case_dir/nm-abort.log" \
+    "terminal-run-masks-live: teardown aborted a run it could not identify"
+  pass "an old terminal run cannot mask this branch's live run into a silent teardown"
+}
+
+# The ordinary finished-and-landed teardown: the branch's newest run IS the
+# terminal one the status query reported, so nothing is live and teardown must
+# still proceed exactly as before.
+test_terminal_run_with_no_live_successor_is_torn_down() {
+  local case_dir rc head short
+  case_dir=$(make_case terminal-run-current)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  short=$(git -C "$case_dir/wt" rev-parse --short=8 HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(cancelled_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "cancelled  fm/task-x1 ${short}  2026-08-29 07:45" \
+    "completed  fm/other-task aaaaaaa1  2026-08-29 01:30")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "terminal-run-current: a branch whose newest run is finished must still tear down"
+  assert_absent "$case_dir/nm-abort.log" \
+    "terminal-run-current: teardown aborted a run although none was live"
+  pass "a finished run with no live successor still tears down"
+}
+
+# A live run for a DIFFERENT branch - another crew still validating on the
+# shared gate - is not this task's to wait on and must never block its teardown.
+test_live_run_on_another_branch_never_blocks_teardown() {
+  local case_dir rc
+  case_dir=$(make_case live-run-not-ours)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+
+  rc=0
+  FM_FAKE_AXI_STATUS="" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/some-other-task bbbbbbb2  2026-08-29 07:45" \
+    "completed  fm/some-other-task bbbbbbb2  2026-08-29 01:30")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "live-run-not-ours: another branch's live run blocked this teardown"
+  assert_absent "$case_dir/nm-abort.log" \
+    "live-run-not-ours: teardown aborted a run on another branch"
+  pass "a live run on another branch never blocks this task's teardown"
+}
+
+# Every `axi abort` the refusal advises must carry --run. The run-id-less form
+# resolves repository-scoped, so on the very evidence that produced the refusal
+# it can stop another branch's run - having the operator perform the blind abort
+# teardown itself declines to perform. Read from the process's own stderr, which
+# is the refusal's user-facing contract, not from the script's source.
+assert_abort_advice_is_run_scoped() {  # <stderr-file> <msg>
+  awk '
+    {
+      line = $0
+      while ((i = index(line, "no-mistakes axi abort")) > 0) {
+        rest = substr(line, i + length("no-mistakes axi abort"))
+        if (substr(rest, 1, 7) != " --run ") bare = 1
+        line = rest
+      }
+    }
+    END { exit(bare ? 1 : 0) }
+  ' "$1" || fail "$2"
+}
+
+# The repo-scoped status query returns ONE run for the whole repository, so
+# under multi-crew load it routinely answers with ANOTHER branch's run. Teardown
+# then holds no attribution at all for its own branch - and the branch's own run
+# is live and may be parked. Same evidence, same refusal.
+test_cross_branch_status_answer_with_live_own_run_refuses() {
+  local case_dir rc short
+  case_dir=$(make_case cross-branch-answer-live-own)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  short=$(git -C "$case_dir/wt" rev-parse --short=8 HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/some-other-task deadbeef)" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/task-x1 ${short}  2026-08-29 07:45" \
+    "running    fm/some-other-task deadbeef  2026-08-29 07:30")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "cross-branch-answer-live-own: teardown proceeded with its own live run uninspected"
+  assert_grep "REFUSED: task-x1 has a live no-mistakes run" "$case_dir/stderr" \
+    "cross-branch-answer-live-own: teardown did not explain the live-run refusal"
+  assert_absent "$case_dir/nm-abort.log" \
+    "cross-branch-answer-live-own: teardown aborted another branch's run"
+  assert_present "$case_dir/wt" \
+    "cross-branch-answer-live-own: teardown removed the worktree while its own run was live"
+  assert_grep "no-mistakes axi abort --run <id>" "$case_dir/stderr" \
+    "cross-branch-answer-live-own: the refusal did not offer the run-id-scoped stop path"
+  assert_abort_advice_is_run_scoped "$case_dir/stderr" \
+    "cross-branch-answer-live-own: the refusal advised an abort that can stop another branch's run"
+  pass "a status answer about another branch does not license tearing down over this branch's live run"
+}
+
+# A live row whose sha does not bind to this worktree could be a later task that
+# reused the branch name, or a rewritten tip. Teardown cannot tell which, and on
+# the destructive path an unprovable "not mine" must not read as "safe to
+# remove": the refusal stands.
+test_unbindable_live_row_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case unbindable-live-row)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(cancelled_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/task-x1 9999999  2026-08-29 07:45" \
+    "cancelled  fm/task-x1 1111111  2026-08-29 01:30")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "unbindable-live-row: teardown proceeded past a live run it could not bind"
+  assert_present "$case_dir/wt" "unbindable-live-row: teardown removed the worktree"
+  pass "a live run whose head does not bind to this worktree still refuses rather than guessing"
+}
+
+# The corroboration must not disarm the abort it exists to protect: a run parked
+# at a gate that teardown DOES own is still aborted, and the same run showing as
+# this branch's live row in the list is that same run, not a second one. This is
+# the ordinary successful shape of the post-abort corroboration too: once the
+# task's own run is concluded its row is terminal, so nothing on the branch is
+# active and teardown proceeds exactly as before.
+test_parked_own_run_is_aborted_even_when_list_shows_it_active() {
+  local case_dir rc head short
+  case_dir=$(make_case parked-run-abort-with-list)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  short=$(git -C "$case_dir/wt" rev-parse --short=8 HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(concluded_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows "running    fm/task-x1 ${short}  2026-08-29 07:45")" \
+  FM_FAKE_NM_RUNS_AFTER_ABORT="$(runs_list_rows "cancelled  fm/task-x1 ${short}  2026-08-29 07:45")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "parked-run-abort-with-list: teardown should still succeed after the abort"
+  assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
+    "parked-run-abort-with-list: the task's own parked run was not aborted"
+  pass "the live-run corroboration never blocks the abort of a run teardown does own"
+}
+
+# The abort teardown owns concludes ONE run, and branch plus head cannot tell it
+# apart from a live successor sharing both. So after the abort is confirmed
+# terminal, the list is consulted with the same predicate: a row for this branch
+# still active names a second run that was never inspected, and removing the
+# worker would orphan it exactly as the masking case would. The successor is
+# refused over, never aborted.
+test_live_successor_after_own_run_abort_refuses() {
+  local case_dir rc head short
+  case_dir=$(make_case live-successor-after-abort)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  short=$(git -C "$case_dir/wt" rev-parse --short=8 HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(concluded_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/task-x1 ${short}  2026-08-29 07:45" \
+    "pending    fm/task-x1 ${short}  2026-08-29 01:30")" \
+  FM_FAKE_NM_RUNS_AFTER_ABORT="$(runs_list_rows \
+    "running    fm/task-x1 ${short}  2026-08-29 07:45" \
+    "cancelled  fm/task-x1 ${short}  2026-08-29 01:30")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "live-successor-after-abort: teardown proceeded with a live successor uninspected"
+  assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
+    "live-successor-after-abort: teardown stopped concluding the run it does own"
+  [ "$(awk 'END {print NR + 0}' "$case_dir/nm-abort.log")" = 1 ] \
+    || fail "live-successor-after-abort: teardown aborted a run beyond the one it owns"
+  assert_grep "REFUSED: task-x1 has a live no-mistakes run" "$case_dir/stderr" \
+    "live-successor-after-abort: teardown did not explain the live-successor refusal"
+  assert_grep "the run this teardown concluded is not this branch's current one" "$case_dir/stderr" \
+    "live-successor-after-abort: the refusal credited the status query rather than the run teardown concluded"
+  assert_present "$case_dir/wt" \
+    "live-successor-after-abort: teardown removed the worktree while a successor run was live"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "live-successor-after-abort: teardown removed task metadata while a successor run was live"
+  pass "a live successor surviving the abort of this task's own run still refuses"
+}
+
+# A listing that ANSWERED but carries no row for a branch already known to have
+# a run is a window exhausted by newer repo-wide runs, not proof the run ended -
+# the same reading bin/fm-crew-state.sh gives that absence. Here `axi status`
+# answered with a run for THIS branch, so a run is known to exist, and the
+# destructive path must not read an incomplete answer as permission.
+test_answered_list_without_row_for_known_run_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case answered-list-no-branch-row)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(cancelled_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/some-other-task aaaaaaa1  2026-08-29 07:45" \
+    "completed  fm/third-task bbbbbbb2  2026-08-29 07:40")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "answered-list-no-branch-row: a truncated listing was read as permission"
+  assert_grep "REFUSED: task-x1 could not establish whether a no-mistakes run is still live on fm/task-x1" \
+    "$case_dir/stderr" \
+    "answered-list-no-branch-row: teardown did not explain the unestablished refusal"
+  assert_grep "FM_TEARDOWN_NM_RUNS_LIMIT" "$case_dir/stderr" \
+    "answered-list-no-branch-row: the refusal did not name the wider-window retry"
+  assert_no_grep "still-active row" "$case_dir/stderr" \
+    "answered-list-no-branch-row: the refusal told the operator to use a row the listing did not carry"
+  assert_no_grep "axi abort" "$case_dir/stderr" \
+    "answered-list-no-branch-row: the refusal offered an abort for a run it never located"
+  assert_present "$case_dir/wt" \
+    "answered-list-no-branch-row: teardown removed the worktree on an unestablished answer"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "answered-list-no-branch-row: teardown removed task metadata on an unestablished answer"
+  assert_absent "$case_dir/nm-abort.log" \
+    "answered-list-no-branch-row: teardown aborted a run it could not identify"
+  pass "an answered listing with no row for a branch known to have a run refuses rather than guessing"
+}
+
+# The same absence with NO run known to exist is the ordinary quiet branch: the
+# status answer was about another crew's run and this branch simply never had
+# one, so the listing carrying no row for it is exactly what it looks like and
+# teardown must still proceed.
+test_answered_list_without_row_for_unknown_branch_tears_down() {
+  local case_dir rc
+  case_dir=$(make_case answered-list-quiet-branch)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/some-other-task deadbeef)" \
+  FM_FAKE_NM_RUNS="$(runs_list_rows \
+    "running    fm/some-other-task deadbeef  2026-08-29 07:45" \
+    "completed  fm/third-task bbbbbbb2  2026-08-29 07:40")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "answered-list-quiet-branch: a branch that never had a run must still tear down"
+  assert_absent "$case_dir/nm-abort.log" \
+    "answered-list-quiet-branch: teardown aborted another branch's run"
+  pass "a branch with no run of its own still tears down when the listing carries no row for it"
+}
+
+# The real `no-mistakes runs` stdout carries a trailer after its rows (measured
+# against v1.48.0: a blank line, then " (20 more runs, use --limit to see more)"),
+# and the row splitter accepts that line's first three tokens. Non-empty stdout
+# is therefore not evidence of anything: a window whose rows all scrolled past,
+# leaving only the trailer, must read as silence and let the teardown of a task
+# whose own run was just concluded proceed - the path where the caller declares
+# the run known, so a wrong reading here would block ship teardowns fleet-wide.
+test_trailer_only_listing_does_not_block_teardown() {
+  local case_dir rc head
+  case_dir=$(make_case trailer-only-listing)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(concluded_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(printf '\n%s\n' " (20 more runs, use --limit to see more)")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "trailer-only-listing: a listing carrying no run row must not block teardown"
+  assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
+    "trailer-only-listing: the task's own parked run was not concluded"
+  pass "a listing with only a pagination trailer reads as silence, never as a live run"
+}
+
+# The same discipline the status vocabulary already has: a listing whose shape
+# this fleet does not model - a reformatted, JSON, or otherwise unrecognized
+# answer - is no evidence in either direction, so an unrelated CLI change cannot
+# turn into a teardown block no retry and no --force can clear.
+test_unrecognized_listing_shape_does_not_block_teardown() {
+  local case_dir rc head
+  case_dir=$(make_case unrecognized-listing)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(cancelled_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="$(printf '%s\n' '{"runs": [' '  {"branch": "fm/task-x1", "state": "running"},' ']}')" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "unrecognized-listing: an unmodeled listing shape blocked teardown"
+  assert_absent "$case_dir/nm-abort.log" \
+    "unrecognized-listing: teardown aborted a run on evidence it could not read"
+  pass "a listing shape this fleet does not model reads as no evidence in either direction"
+}
+
+# The list query is bounded and fail-open (bin/fm-nm-run-lib.sh), so silence -
+# a timeout, a busy daemon, a CLI too old to list runs - is not evidence that a
+# run is live. Making no-mistakes availability a teardown prerequisite would
+# block every ship task, including the many that never had a run at all.
+test_silent_runs_list_does_not_block_teardown() {
+  local case_dir rc head
+  case_dir=$(make_case silent-runs-list)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(cancelled_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_RUNS="" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "silent-runs-list: an unanswered runs list must not be read as a live run"
+  pass "an unanswered runs list leaves teardown exactly as it was, never blocked on silence"
 }
 
 test_leaked_worktree_process_is_reaped() {
@@ -2644,6 +3065,18 @@ test_empty_status_after_abort_refuses_unconfirmed
 test_not_found_status_after_abort_confirms_completion
 test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
+test_old_terminal_run_masking_live_run_refuses
+test_terminal_run_with_no_live_successor_is_torn_down
+test_live_run_on_another_branch_never_blocks_teardown
+test_cross_branch_status_answer_with_live_own_run_refuses
+test_unbindable_live_row_refuses
+test_parked_own_run_is_aborted_even_when_list_shows_it_active
+test_live_successor_after_own_run_abort_refuses
+test_answered_list_without_row_for_known_run_refuses
+test_answered_list_without_row_for_unknown_branch_tears_down
+test_trailer_only_listing_does_not_block_teardown
+test_unrecognized_listing_shape_does_not_block_teardown
+test_silent_runs_list_does_not_block_teardown
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_tmux_process_group

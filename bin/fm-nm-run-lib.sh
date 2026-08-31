@@ -167,6 +167,48 @@ fm_nm_runs_word_for_terminal() {  # <outcome-or-status word>
   esac
 }
 
+# The newest `no-mistakes runs` row belonging to <branch> in captured list
+# output $1, echoed as "<status><TAB><sha>". The list is newest-first, so the
+# first matching row IS that branch's most recent run. Returns 1 when the list
+# names no run for the branch; for a bounded fail-open query that answer is
+# "no evidence", never "no run exists". bin/fm-crew-state.sh reads the same
+# newest row inside its own single-pass coarse scan, which must additionally
+# bind every row it walks to decide which one may answer.
+fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
+  local out=$1 branch=$2 row parsed st br sha
+  [ -n "$out" ] && [ -n "$branch" ] || return 1
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    IFS=$'\t' read -r st br sha <<< "$parsed"
+    [ "$br" = "$branch" ] || continue
+    printf '%s\t%s' "$st" "$sha"
+    return 0
+  done <<< "$out"
+  return 1
+}
+
+# 0 when captured list output $1 carries EVIDENCE - at least one line that parses
+# as a run row AND whose status word this library models, active or terminal.
+# Non-empty stdout alone is not evidence: the real listing prints a trailer after
+# its rows (measured against v1.48.0: a blank line, then
+# " (20 more runs, use --limit to see more)"), which the row splitter happily
+# accepts as "(20 / more / runs,". A banner, a reformatted listing, or a future
+# shape reads the same way. Callers must treat a listing that is not answered as
+# silence, exactly as they treat a timed-out query, so an unrelated CLI change
+# cannot convert into a fleet-wide block. The vocabulary stays the one this
+# library already owns rather than a second private copy.
+fm_nm_runs_listing_is_answered() {  # <runs-output>
+  local out=${1:-} row parsed st
+  [ -n "$out" ] || return 1
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    st=${parsed%%$'\t'*}
+    fm_nm_status_is_active "$st" && return 0
+    [ -n "$(fm_nm_runs_word_for_terminal "$st")" ] && return 0
+  done <<< "$out"
+  return 1
+}
+
 # Split one `no-mistakes runs` row into "<status><TAB><branch><TAB><sha>".
 # Rows are plain, unquoted, column-padded text -
 # "<status> <branch> <short-sha> <date> [<pr-url>]" - so splitting on the first
