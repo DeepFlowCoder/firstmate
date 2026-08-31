@@ -841,3 +841,9 @@ test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
+
+# Last statement of the suite, so a consumer can tell "every registered case
+# ran" apart from "the run stopped early with a zero status" - the jq skip
+# guard at the top is one such path. Read by the stock macOS Bash CI job,
+# which has no other way to prove this suite was not silently skipped.
+printf '# fm-test-complete %s\n' "$(basename "${BASH_SOURCE[0]}")"

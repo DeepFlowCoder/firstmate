@@ -455,26 +455,32 @@ jobs:
           # the captured output away before printing it, so a test that fails
           # only under stock Bash 3.2 reached this log with no `not ok` line and
           # no failing test named, and this job is the matrix's only 3.2 signal.
-          # The expected count is authored here on purpose: it is what proves a
-          # suite ran whole rather than exiting 0 partway, so it must be bumped
-          # with every test added to either script.
-          run_stock_bash_suite() { # <script> <expected-ok-count> <label>
-            local script=$1 expected=$2 label=$3 output count status=0
+          #
+          # "Ran whole" is proven by the completion marker each suite prints as
+          # its own last statement, NOT by a count authored here. A count in
+          # this file has to be bumped from here every time a test is added to
+          # either script, and a stale one fails this job while naming no broken
+          # test - which is exactly how the count drifted and cost a CI round
+          # trip. The marker cannot drift: only reaching the end of the suite
+          # prints it, so an early exit 0 (the jq skip guard is one such path)
+          # is still caught, and adding a test needs no edit here.
+          run_stock_bash_suite() { # <script> <label>
+            local script=$1 label=$2 output status=0
             output=$(/bin/bash "$script") || status=$?
             printf '%s\n' "$output"
             [ "$status" -eq 0 ] || {
               echo "::error::$label tests failed under stock macOS Bash 3.2 (exit $status)"
               return 1
             }
-            count=$(printf '%s\n' "$output" | grep -c '^ok - ') || count=0
-            [ "$count" -eq "$expected" ] || {
-              echo "::error::expected $expected $label tests, got $count"
+            printf '%s\n' "$output" \
+              | grep -Fqx "# fm-test-complete $(basename "$script")" || {
+              echo "::error::$label tests stopped before the end of the suite under stock macOS Bash 3.2"
               return 1
             }
           }
 
-          run_stock_bash_suite tests/fm-fleet-snapshot-view.test.sh 16 snapshot/fleet-view
-          run_stock_bash_suite tests/fm-bearings-snapshot.test.sh 43 Bearings
+          run_stock_bash_suite tests/fm-fleet-snapshot-view.test.sh snapshot/fleet-view
+          run_stock_bash_suite tests/fm-bearings-snapshot.test.sh Bearings
 
   invariants:
     name: Repo invariants

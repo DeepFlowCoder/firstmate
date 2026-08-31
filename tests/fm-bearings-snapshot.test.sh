@@ -2022,3 +2022,9 @@ test_collapsed_captain_call_deferral_and_landed
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
+
+# Last statement of the suite, so a consumer can tell "every registered case
+# ran" apart from "the run stopped early with a zero status" - the jq skip
+# guard at the top is one such path. Read by the stock macOS Bash CI job,
+# which has no other way to prove this suite was not silently skipped.
+printf '# fm-test-complete %s\n' "$(basename "${BASH_SOURCE[0]}")"
