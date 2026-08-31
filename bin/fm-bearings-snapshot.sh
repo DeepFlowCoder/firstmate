@@ -119,6 +119,10 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,repo,state,doing
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
 repo is the backlog row's own recorded repo, null when the row records none. It is what
   groups work by project rather than by errand; the bearings board uses it as its lane key.
+  Two rows are null for a different reason: a registered secondmate's own in_flight row
+  aggregates several children and has no single repo, and that home's summary records no
+  repo on its decisions_open rows at all, so those project null even when the mate's
+  backlog records one. Both still read as the no-repo marker downstream.
 gates.since and landed.landed_on are the backlog's own recorded dates, null when the
   row records none: how long queued work has waited, and when landed work landed.
   They are current-state facts with a date on them, not a history, because the fleet
