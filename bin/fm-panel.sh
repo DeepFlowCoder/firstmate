@@ -116,6 +116,9 @@
 # cannot parse as unclassified instead of counting it, discloses missing criteria
 # to both the judges and the reader, and refuses a duplicate judge - because a
 # panel that overstates its own consensus is worth less than no panel at all.
+# The same rule governs the SUBJECT: it will not judge a change it cannot prove
+# is the one it was pointed at, so a PR URL it cannot match to this clone's
+# origin is refused rather than resolved to whatever that number happens to hit.
 # A refusal also leaves nothing behind: no private ref in the operator's clone,
 # and no panel directory it never filled. Both are reaped by one EXIT handler
 # each rather than by every refusal remembering to.
@@ -191,18 +194,37 @@ pr_number() {
   printf '%s\n' "$n"
 }
 
-# github_slug <url>: owner/repo from a GitHub URL, empty when it is not one.
-github_slug() {
-  local url=$1 rest
+# repo_identity <url>: "<host>/<owner>/<repo>", lowercased, for a forge URL in
+# either scheme:// or scp-like SSH form. EMPTY when the URL carries no such
+# identity, and empty means "cannot be compared", never "matches anything": the
+# caller refuses on an empty side rather than falling through. Any /pull/<n>
+# tail is dropped so a PR URL and a clone URL of one repository agree.
+repo_identity() {
+  local url=$1 rest host path
   case "$url" in
-    *github.com[/:]*) rest=${url#*github.com} ; rest=${rest#[/:]} ;;
-    *) return 0 ;;
+    *://*)
+      rest=${url#*://}
+      rest=${rest#*@}
+      ;;
+    *@*:*)
+      rest=${url#*@}
+      host=${rest%%:*}
+      rest="$host/${rest#*:}"
+      ;;
+    *)
+      return 0
+      ;;
   esac
-  rest=${rest%%/pull/*}
-  rest=${rest%/}
-  rest=${rest%.git}
-  case "$rest" in
-    */*) printf '%s\n' "$rest" ;;
+  host=${rest%%/*}
+  path=${rest#*/}
+  [ -n "$host" ] || return 0
+  [ "$path" != "$rest" ] || return 0
+  path=${path%%/pull/*}
+  path=${path%/}
+  path=${path%.git}
+  path=${path%/}
+  case "$path" in
+    */*) lower "$host/$path" ;;
   esac
 }
 
@@ -218,7 +240,10 @@ brief_task_section() {
     inside { print }
   ' "$brief")
   body=$(printf '%s\n' "$body" | sed -e '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
-  [ -n "$body" ] || return 1
+  # A section of nothing but spaces records no criteria, and saying it does
+  # would hand the judges an empty block while suppressing the very disclosure
+  # that absence is supposed to trigger.
+  [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ] || return 1
   printf '%s\n' "$body"
 }
 
@@ -321,22 +346,25 @@ resolve_change_subject() {
   if [ "$kind" = pr ]; then
     n=$(pr_number "$target") ||
       die "--pr expects a PR URL or number (got: $target)"
-    origin=$(git -C "$project_dir" remote get-url origin 2>/dev/null) ||
+    # The remote's CONFIGURED url is the identity the operator declared for it.
+    # An insteadOf rewrite is a transport convenience, so the fetch below still
+    # follows it, but it must not stand in for what repository this remote is.
+    origin=$(git -C "$project_dir" config --get remote.origin.url) ||
       die "project '$repo' has no 'origin' remote, so a PR cannot describe its changes; judge the local branch instead with --diff <branch>"
-    # Cross-check owner/repo only when BOTH sides are GitHub, so a PR URL can
-    # never quietly resolve against a different repository's clone. Both sides
-    # are normalized to owner/repo and compared for EQUALITY: a substring test
-    # would let a PR of firstmate resolve against a clone of firstmate-docs. A
-    # non-GitHub origin has no slug to compare, and the fetch below is the check
-    # there. GitHub owner/repo names are case-insensitive, and github.com serves
-    # the same PR under either casing, so the comparison folds case too - it is
-    # the same repository or it is not, and capitalization does not decide that.
-    slug=$(github_slug "$target")
-    case "$origin" in
-      *github.com*)
-        origin_slug=$(github_slug "$origin")
-        if [ -n "$slug" ] && [ "$(lower "$slug")" != "$(lower "$origin_slug")" ]; then
-          die "PR $target names $slug but '$repo' points at $origin; refusing to judge a different repository's change"
+    # A PR URL names a forge, an owner and a repository, so it must be PROVEN to
+    # name this clone's origin before a paid panel judges whatever it resolves
+    # to. The default here is REFUSE, not allow: a different host, a different
+    # owner/repo, and an origin whose url carries no comparable identity all
+    # fail to prove it equally. Earlier versions compared narrowly and allowed
+    # whatever they could not read, and every leak came through that opening.
+    # A bare --pr <number> asserts nothing about which repository is meant - it
+    # means "PR N of this origin" by construction - so it is never caught here.
+    case "$target" in
+      */pull/*)
+        slug=$(repo_identity "$target")
+        origin_slug=$(repo_identity "$origin")
+        if [ -z "$slug" ] || [ -z "$origin_slug" ] || [ "$slug" != "$origin_slug" ]; then
+          die "PR $target names ${slug:-no comparable repository identity} but '$repo' points at $origin${origin_slug:+ ($origin_slug)}; refusing to judge a different repository's change"
         fi
         ;;
     esac
@@ -400,7 +428,7 @@ resolve_change_subject() {
 convocar() {
   local panel=$1 kind=$2 target=$3 context=$4 criteria=$5 criteria_from=$6
   local repo=$7 effort=$8 judges=$9 max_bytes=${10}
-  local project_dir panel_dir task_id brief judge subject prompt seen
+  local project_dir panel_dir task_id brief judge subject prompt seen roster
   local base head_label shortstat task_hint criteria_src resolved
 
   project_dir="$PROJECTS/$repo"
@@ -413,12 +441,23 @@ convocar() {
   # the others - the exact comparison this tool exists to make honest.
   [ ! -e "$panel_dir/judges" ] ||
     die "panel '$panel' was already convoked (roster: $panel_dir/judges); its subject is fixed, so a judge added now would be judging different bytes. Convoke a new panel id instead."
+  # The roster is parsed ONCE and everything downstream reads this value, so the
+  # dispatch loop, the duplicate check, the cost line and the recorded roster
+  # can never disagree about who the judges are.
+  roster=$(split_judges "$judges")
+  # A value that parses to nobody is not a zero-judge panel, it is an unusable
+  # one: it would report success, dispatch nothing, and then hold the panel id
+  # hostage behind the already-convoked guard.
+  [ -n "$roster" ] ||
+    die "--judges '$judges' no nombra ningún harness.
+  Un panel son N jueces de pago en harnesses distintos; sin ninguno no hay nada que convocar.
+  Pasa al menos un harness, por ejemplo --judges claude,codex."
   # --judges names a SET of distinct harnesses. Two entries of one harness are
   # not two opinions: they would share a task id, so one report would be read
   # twice and printed as a consensus of two - the fabricated agreement this tool
   # exists to prevent, at double the price.
   seen=""
-  for judge in $(split_judges "$judges"); do
+  for judge in $roster; do
     case " $seen " in
       *" $judge "*)
         die "--judges nombra '$judge' más de una vez, y un panel compara el MISMO cambio en harnesses DISTINTOS.
@@ -515,8 +554,8 @@ convocar() {
 
   build_prompt "$prompt" "$subject" "$context"
 
-  split_judges "$judges" > "$panel_dir/judges"
-  echo "panel '$panel': $(split_judges "$judges" | paste -sd, -)"
+  printf '%s\n' "$roster" > "$panel_dir/judges"
+  echo "panel '$panel': $(printf '%s\n' "$roster" | paste -sd, -)"
   echo "  sujeto: $(sed -n '1p' "$panel_dir/subject.md")"
   if [ "$kind" != question ]; then
     echo "  diff: $(wc -c < "$panel_dir/subject.diff" | tr -d '[:space:]') bytes  ($shortstat)"
@@ -526,9 +565,9 @@ convocar() {
       echo "  criterios: $criteria_src"
     fi
   fi
-  echo "  coste: $(split_judges "$judges" | wc -l | tr -d '[:space:]') veredictos de pago, uno por juez."
+  echo "  coste: $(printf '%s\n' "$roster" | wc -l | tr -d '[:space:]') veredictos de pago, uno por juez."
 
-  for judge in $(split_judges "$judges"); do
+  for judge in $roster; do
     task_id="$panel-$judge"
     brief="$DATA/$task_id/brief.md"
     "$SCRIPT_DIR/fm-brief.sh" "$task_id" "$repo" --scout >/dev/null

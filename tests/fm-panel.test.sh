@@ -231,6 +231,29 @@ test_convocar_refuses_a_repeated_harness() {
   pass "fm-panel.sh: convocar refuses a roster that names one harness twice"
 }
 
+test_convocar_refuses_a_judge_list_that_names_nobody() {
+  local root out rc dir value
+  root=$(panel_world judges-nobody)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  # A separator-only value passes the non-empty check but parses to no judges.
+  # Convoking it would report success, dispatch nobody, and then hold the panel
+  # id hostage behind the already-convoked guard.
+  for value in ',' ' ' ' , '; do
+    out=$(panel_run "$root" convocar p1 --judges "$value" --repo proj --diff fm/work); rc=$?
+    expect_code 1 "$rc" "a judge list naming nobody must be refused (value: '$value', got: $out)"
+    assert_contains "$out" '--judges' "the refusal must name the flag"
+    assert_absent "$root/spawn.log" "no judge may be dispatched for a roster naming nobody"
+    assert_absent "$root/home/data/p1/judges" "no roster may be written for a refused convocation"
+    assert_absent "$root/home/data/p1" "the panel id must be left reusable"
+  done
+  # And the id really is still usable afterwards.
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/work); rc=$?
+  expect_code 0 "$rc" "the panel id must still convoke after the refusals (got: $out)"
+  assert_line "$root/home/data/p1/judges" 'claude' "the real roster must be recorded"
+  pass "fm-panel.sh: a --judges value that names nobody is refused and frees its panel id"
+}
+
 test_convocar_rejects_missing_repo() {
   local root out rc
   root=$(panel_world args-repo)
@@ -574,12 +597,15 @@ test_pr_accepts_the_same_repository_in_another_case() {
   # this repo's own shape) while remaining a fetchable local path, so the
   # identity check runs for real against a PR URL written in lower case - the
   # form github.com itself serves. Capitalization must not decide identity.
-  bare="$root/github.com/DeepFlowCoder/firstmate.git"
-  mkdir -p "$(dirname "$bare")"
+  # The remote DECLARES the mixed-case GitHub url and an insteadOf rewrite sends
+  # the fetch to a local bare repo, which is an ordinary developer setup and the
+  # only way to exercise the identity check without reaching the network.
+  bare="$root/origin.git"
   git clone --quiet --bare "$dir" "$bare"
   git -C "$bare" update-ref refs/pull/7/head "$pr_head"
   git -C "$dir" branch -D fm/pr-work >/dev/null
-  git -C "$dir" remote add origin "file://$bare"
+  git -C "$dir" remote add origin https://github.com/DeepFlowCoder/firstmate.git
+  git -C "$dir" config "url.file://$bare/.insteadOf" https://github.com/DeepFlowCoder/firstmate.git
 
   out=$(panel_run "$root" convocar p1 --judges claude --repo proj \
     --pr https://github.com/deepflowcoder/firstmate/pull/7); rc=$?
@@ -587,6 +613,59 @@ test_pr_accepts_the_same_repository_in_another_case() {
   assert_not_contains "$out" 'different repository' "capitalization alone must not read as a foreign repository"
   assert_present "$root/home/data/p1/subject.diff" "the PR diff must be materialized"
   pass "fm-panel.sh: --pr accepts the same GitHub repository written in another case"
+}
+
+test_pr_refuses_a_url_from_another_forge() {
+  local root out rc dir bare pr_head
+  root=$(panel_world pr-foreign-forge)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/pr-work 300
+  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
+  bare="$root/origin.git"
+  git clone --quiet --bare "$dir" "$bare"
+  # The origin's own PR #7 exists, so the fetch would happily succeed and the
+  # panel would judge THIS repository's change while the operator pasted a URL
+  # naming another forge entirely. The guard has to prove identity, not assume
+  # it whenever it cannot read one side.
+  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
+  git -C "$dir" remote add origin https://github.com/Owner/Repo.git
+  git -C "$dir" config "url.file://$bare/.insteadOf" https://github.com/Owner/Repo.git
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj \
+    --pr https://gitea.example.com/SomeoneElse/Other/pull/7); rc=$?
+  expect_code 1 "$rc" "a PR URL from another forge must be refused (got: $out)"
+  assert_contains "$out" 'different repository' "must say it refuses another repository's change"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for a PR it cannot match to this origin"
+  assert_absent "$root/home/data/p1/subject.diff" "no foreign change may be materialized"
+  pass "fm-panel.sh: --pr refuses a URL that names a different forge"
+}
+
+test_pr_refuses_a_url_against_an_unidentifiable_origin() {
+  local root out rc dir bare pr_head
+  root=$(panel_world pr-opaque-origin)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/pr-work 300
+  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
+  bare="$root/origin.git"
+  git clone --quiet --bare "$dir" "$bare"
+  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
+  git -C "$dir" branch -D fm/pr-work >/dev/null
+  # A local path carries no forge identity, so a URL target cannot be PROVEN to
+  # name it. Unprovable is refused, not waved through.
+  git -C "$dir" remote add origin "file://$bare"
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj \
+    --pr https://github.com/Owner/Repo/pull/7); rc=$?
+  expect_code 1 "$rc" "a URL target against an unidentifiable origin must be refused (got: $out)"
+  assert_contains "$out" 'different repository' "must say it refuses another repository's change"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for an unprovable subject"
+
+  # The bare-number form asserts nothing about WHICH repository, so it means
+  # "PR 7 of this origin" and must still work against that same origin.
+  out=$(panel_run "$root" convocar p2 --judges claude --repo proj --pr 7); rc=$?
+  expect_code 0 "$rc" "a bare PR number must still resolve against any origin (got: $out)"
+  assert_present "$root/home/data/p2/subject.diff" "the PR diff must be materialized"
+  pass "fm-panel.sh: a PR URL needs a provable origin, a bare PR number does not"
 }
 
 test_criteria_come_from_the_task_behind_the_branch() {
@@ -738,6 +817,44 @@ test_criteria_from_a_task_with_an_empty_section_is_refused() {
   assert_contains "$out" 't9' "the refusal must name the task id"
   assert_absent "$root/spawn.log" "no judge may be dispatched for empty criteria"
   pass "fm-panel.sh: --criteria-from a task with an empty section is refused too"
+}
+
+test_criteria_from_a_whitespace_only_task_section_is_refused() {
+  local root out rc dir
+  root=$(panel_world criteria-from-whitespace)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  mkdir -p "$root/home/data/tws"
+  # A section of nothing but spaces records no criteria. Accepting it would hand
+  # every judge an empty block while suppressing the very disclosure that the
+  # absence exists to trigger.
+  printf '%s\n' 'preamble' '# Task' '   ' '' '# Setup' 'ignored' > "$root/home/data/tws/brief.md"
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/work --criteria-from tws); rc=$?
+  expect_code 1 "$rc" "a whitespace-only task section must be refused (got: $out)"
+  assert_contains "$out" 'tws' "the refusal must name the task id"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for criteria that are only whitespace"
+  pass "fm-panel.sh: --criteria-from a whitespace-only task section is refused"
+}
+
+test_inferred_whitespace_only_task_section_is_judged_and_disclosed() {
+  local root out rc dir
+  root=$(panel_world criteria-inferred-whitespace)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/tws 300
+  mkdir -p "$root/home/data/tws"
+  printf '%s\n' '# Task' '  ' > "$root/home/data/tws/brief.md"
+  # Inference that finds nothing is the ad-hoc case, not an operator assertion:
+  # it proceeds, and the absence is disclosed at both ends.
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/tws); rc=$?
+  expect_code 0 "$rc" "an inferred whitespace-only section must not refuse the panel (got: $out)"
+  assert_contains "$out" 'AVISO' "the missing criteria must be announced at convocation"
+  assert_grep 'NO HAY CRITERIOS REGISTRADOS' "$root/home/data/p1-claude/brief.md" \
+    "the judge must be told there are no recorded criteria"
+  panel_report "$root" p1 claude 'VEREDICTO: aprobar'
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 0 "$rc" "the panel must collect (got: $out)"
+  assert_contains "$out" 'SIN CRITERIOS' "the reader must be told the verdicts had no criteria behind them"
+  pass "fm-panel.sh: an inferred whitespace-only task section is judged, and disclosed at both ends"
 }
 
 test_inferred_task_that_does_not_exist_is_still_judged() {
@@ -1072,6 +1189,7 @@ test_criteria_flags_are_change_only
 test_numeric_flags_are_validated
 test_unknown_flag_is_refused
 test_convocar_refuses_a_repeated_harness
+test_convocar_refuses_a_judge_list_that_names_nobody
 test_convocar_rejects_missing_repo
 test_question_still_convokes_a_prose_panel
 test_diff_rejects_unknown_branch
@@ -1089,6 +1207,8 @@ test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote
 test_pr_refuses_a_foreign_github_repository
 test_pr_refuses_a_repository_whose_name_merely_starts_the_same
 test_pr_accepts_the_same_repository_in_another_case
+test_pr_refuses_a_url_from_another_forge
+test_pr_refuses_a_url_against_an_unidentifiable_origin
 test_criteria_come_from_the_task_behind_the_branch
 test_change_without_a_task_says_so_loudly
 test_adhoc_branch_is_judged_without_inferring_a_task
@@ -1097,6 +1217,8 @@ test_recoger_does_not_disclose_absent_criteria_when_there_were_some
 test_explicit_criteria_win_on_any_branch_name
 test_unreadable_criteria_from_is_refused_before_any_judge
 test_criteria_from_a_task_with_an_empty_section_is_refused
+test_criteria_from_a_whitespace_only_task_section_is_refused
+test_inferred_whitespace_only_task_section_is_judged_and_disclosed
 test_inferred_task_that_does_not_exist_is_still_judged
 test_explicit_criteria_win
 test_convocar_refuses_to_reconvoke_a_panel
