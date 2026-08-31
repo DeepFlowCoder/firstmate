@@ -369,6 +369,13 @@ a { color: inherit; text-decoration: none; }
   .bb-gauge { margin: 0 14px; }
   .bb-row, .bb-berth__label, .bb-drawer__summary { padding-left: 14px; padding-right: 14px; }
   .bb-morechip { margin-left: 14px; margin-right: 14px; max-width: calc(100% - 28px); }
+  /* On a phone the scarce currency is width and the cheap one is height. A row
+     that has to carry its own identity - only the lane with no project recorded
+     does - keeps the whole first line for what it is, and drops the identity
+     and the age onto a second line rather than squeezing the title out. */
+  .bb-row--identified { flex-wrap: wrap; row-gap: 2px; }
+  .bb-row--identified .bb-row__main { flex: 1 1 100%; }
+  .bb-row--identified .bb-row__id { max-width: 100%; }
 }
 </style>
 </head>
@@ -864,7 +871,7 @@ __FM_BEARINGS_BOARD_DATA__
   }
 
   function workRow(opts) {  // {title, sub, id, badgeTone, badgeText, pick, when, pr_url}
-    var row = el("div", "bb-row");
+    var row = el("div", "bb-row" + (opts.id ? " bb-row--identified" : ""));
     if (opts.pick) {
       anyPickable = true;
       var pick = document.createElement("input");
