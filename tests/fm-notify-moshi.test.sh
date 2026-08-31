@@ -202,6 +202,61 @@ test_rejected_delivery_fails_without_disclosing_the_token() {
   pass "fm-notify-moshi.sh: reports a rejected delivery with its status and without the token"
 }
 
+# docs/wedge-alarm.md sends the captain here by hand after a silent alarm, so a
+# transport failure has to say WHICH transport failure it was; curl's own line is
+# the only thing that separates DNS failure, TLS failure, and the deadline.
+test_unreachable_endpoint_reports_curls_own_reason() {
+  local dir rc
+  dir=$(make_case curl-unreachable)
+  cat > "$dir/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "curl: (6) Could not resolve host: endpoint.invalid" >&2
+exit 6
+EOF
+  chmod +x "$dir/bin/curl"
+  printf 'CANARY-TOKEN-must-not-be-logged\n' > "$dir/token"
+  run_notify "$dir" "away-mode WEDGED 900s"
+  rc=$?
+  expect_code 1 "$rc" "an unreachable endpoint must report a failed delivery"
+  assert_grep 'curl exit 6' "$dir/stderr" "the failure did not report curl's exit status"
+  assert_grep 'Could not resolve host' "$dir/stderr" "curl's own reason was discarded instead of reported"
+  assert_no_grep 'CANARY-TOKEN-must-not-be-logged' "$dir/stderr" \
+    "the token was printed in a transport failure message"
+  pass "fm-notify-moshi.sh: names curl's own transport reason without disclosing the token"
+}
+
+# The daemon logs a channel's exit status verbatim, so collapsing every signal
+# onto 143 would report a lost terminal or an operator's Ctrl-C as a watchdog
+# kill. SIGHUP is the case a test can drive: a shell started asynchronously
+# inherits SIGINT ignored, so an INT trap cannot be installed in a background
+# run at all, while HUP reaches the script exactly as it would in the field.
+test_an_interrupted_send_exits_with_the_signal_that_stopped_it() {
+  local dir pid rc waited=0
+  dir=$(make_case interrupted)
+  cat > "$dir/bin/curl" <<EOF
+#!/usr/bin/env bash
+cat >/dev/null
+: > '$dir/curl-started'
+sleep 1
+printf '200'
+EOF
+  chmod +x "$dir/bin/curl"
+  PATH="$dir/bin:$PATH" FM_MOSHI_ENDPOINT='https://endpoint.invalid/api/webhook' \
+    "$NOTIFY" "away-mode WEDGED 900s" >/dev/null 2>"$dir/stderr" &
+  pid=$!
+  while [ ! -f "$dir/curl-started" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  [ -f "$dir/curl-started" ] || fail "the request never started, so interrupting it proves nothing"
+  kill -HUP "$pid" 2>/dev/null || fail "could not signal the running notifier"
+  wait "$pid"
+  rc=$?
+  expect_code 129 "$rc" "a hung-up send must exit 129 rather than be reported as a SIGTERM kill"
+  pass "fm-notify-moshi.sh: reports SIGHUP as 129 instead of collapsing every signal onto 143"
+}
+
 test_request_is_posted_as_json_to_the_configured_endpoint() {
   local dir
   dir=$(make_case wire-shape)
@@ -237,5 +292,7 @@ test_locked_vault_is_reported_and_sends_nothing
 test_missing_token_is_reported_and_sends_nothing
 test_empty_summary_is_refused_before_sending
 test_rejected_delivery_fails_without_disclosing_the_token
+test_unreachable_endpoint_reports_curls_own_reason
+test_an_interrupted_send_exits_with_the_signal_that_stopped_it
 test_request_is_posted_as_json_to_the_configured_endpoint
 test_title_and_unified_are_configurable

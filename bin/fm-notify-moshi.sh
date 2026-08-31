@@ -40,8 +40,11 @@
 # (FM_WEDGE_ALARM_TIMEOUT_SECS) so a slow network fails as a reported non-zero
 # exit rather than as a process-group kill with no diagnostic.
 #
-# Exit: 0 delivered (2xx), 1 delivery failed, 2 usage or configuration error.
-# Those codes cover the failures this script observes and returns from. `op
+# Exit: 0 delivered (2xx), 1 delivery failed, 2 usage or configuration error,
+# and 128+signum when a signal ends the run: 129 on HUP, 130 on INT, 143 on
+# TERM, so a watchdog kill and an operator's Ctrl-C stay distinguishable in the
+# daemon's log. Those codes cover the failures this script observes and returns
+# from, and no other signal is trapped here. `op
 # read` carries no deadline of its own, so against a genuinely locked vault it
 # blocks on the unlock prompt instead of returning: the alarm's per-channel
 # watchdog then kills the process group and the daemon logs rc 124, not the
@@ -137,8 +140,15 @@ BODY=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-body.XXXXXX") || {
   echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for the response body" >&2
   exit 2
 }
-trap 'rm -f -- "$BODY"' EXIT
-trap 'rm -f -- "$BODY"; exit 143' HUP INT TERM
+CURL_ERR=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-curlerr.XXXXXX") || {
+  rm -f -- "$BODY"
+  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for curl's diagnostics" >&2
+  exit 2
+}
+trap 'rm -f -- "$BODY" "$CURL_ERR"' EXIT
+trap 'rm -f -- "$BODY" "$CURL_ERR"; exit 129' HUP
+trap 'rm -f -- "$BODY" "$CURL_ERR"; exit 130' INT
+trap 'rm -f -- "$BODY" "$CURL_ERR"; exit 143' TERM
 
 # The token reaches jq as raw stdin (-Rs), not as --arg, so it stays out of
 # jq's argv too; the summary and title are not secret and are escaped by --arg.
@@ -154,11 +164,21 @@ CODE=$(printf '%s' "$TOKEN" \
       -X POST \
       -H 'Content-Type: application/json' \
       --data-binary @- \
-      "${FM_MOSHI_ENDPOINT:-$ENDPOINT_DEFAULT}" 2>/dev/null)
+      "${FM_MOSHI_ENDPOINT:-$ENDPOINT_DEFAULT}" 2>"$CURL_ERR")
 RC=$?
 
 if [ "$RC" -ne 0 ]; then
-  echo "error: could not reach Moshi (curl exit $RC)" >&2
+  # curl's own line is what separates DNS failure, TLS failure and the deadline;
+  # -S already asks for it, and the token cannot appear in it because it travels
+  # in the request body on stdin, never on curl's command line.
+  DETAIL=$(tr '\n' ' ' < "$CURL_ERR" 2>/dev/null | cut -c1-200)
+  DETAIL="${DETAIL#"${DETAIL%%[![:space:]]*}"}"
+  DETAIL="${DETAIL%"${DETAIL##*[![:space:]]}"}"
+  if [ -n "$DETAIL" ]; then
+    printf 'error: could not reach Moshi (curl exit %s): %s\n' "$RC" "$DETAIL" >&2
+  else
+    printf 'error: could not reach Moshi (curl exit %s)\n' "$RC" >&2
+  fi
   exit 1
 fi
 
