@@ -110,6 +110,12 @@
 # or one whose value is not a verdict. Collapsing those into a single "unreadable"
 # would send the operator hunting for a missing line that is in fact duplicated
 # or misspelled.
+#
+# THE RULE BEHIND ALL OF THAT: this tool never reports agreement it cannot prove.
+# It refuses on criteria it was asked to use but cannot read, marks a verdict it
+# cannot parse as unclassified instead of counting it, discloses missing criteria
+# to both the judges and the reader, and refuses a duplicate judge - because a
+# panel that overstates its own consensus is worth less than no panel at all.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -134,6 +140,11 @@ usage() {
 }
 
 die() { echo "error: $*" >&2; exit 1; }
+
+# lower <text>: ASCII-lowercased, under LC_ALL=C so the folding is byte-identical
+# everywhere rather than locale-dependent.
+# shellcheck disable=SC2018,SC2019  # ASCII-only folding is the intent
+lower() { printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z'; }
 
 # --- subject resolution -----------------------------------------------------
 
@@ -286,6 +297,7 @@ drop_panel_refs() {
 resolve_change_subject() {
   local panel_dir=$1 project_dir=$2 repo=$3 kind=$4 target=$5 max_bytes=$6
   local base head_ref head_label task_hint n slug origin size shortstat
+  local origin_slug
 
   FM_PANEL_REFS=()
   # The path travels in a variable, never interpolated into the trap body: a
@@ -309,11 +321,14 @@ resolve_change_subject() {
     # are normalized to owner/repo and compared for EQUALITY: a substring test
     # would let a PR of firstmate resolve against a clone of firstmate-docs. A
     # non-GitHub origin has no slug to compare, and the fetch below is the check
-    # there.
+    # there. GitHub owner/repo names are case-insensitive, and github.com serves
+    # the same PR under either casing, so the comparison folds case too - it is
+    # the same repository or it is not, and capitalization does not decide that.
     slug=$(github_slug "$target")
     case "$origin" in
       *github.com*)
-        if [ -n "$slug" ] && [ "$slug" != "$(github_slug "$origin")" ]; then
+        origin_slug=$(github_slug "$origin")
+        if [ -n "$slug" ] && [ "$(lower "$slug")" != "$(lower "$origin_slug")" ]; then
           die "PR $target names $slug but '$repo' points at $origin; refusing to judge a different repository's change"
         fi
         ;;
@@ -351,7 +366,7 @@ resolve_change_subject() {
   mkdir -p "$panel_dir"
   if ! git -C "$project_dir" diff "$base...$head_ref" -- > "$panel_dir/subject.diff"; then
     rm -f "$panel_dir/subject.diff"
-    die "cannot diff $base...$head_label in '$repo'"
+    die "cannot diff ${base#refs/fm-panel/base/}...$head_label in '$repo'"
   fi
   shortstat=$(git -C "$project_dir" diff --shortstat "$base...$head_ref" -- | sed 's/^[[:space:]]*//')
 
@@ -378,7 +393,7 @@ resolve_change_subject() {
 convocar() {
   local panel=$1 kind=$2 target=$3 context=$4 criteria=$5 criteria_from=$6
   local repo=$7 effort=$8 judges=$9 max_bytes=${10}
-  local project_dir panel_dir task_id brief judge subject prompt
+  local project_dir panel_dir task_id brief judge subject prompt seen
   local base head_label shortstat task_hint criteria_src resolved
 
   project_dir="$PROJECTS/$repo"
@@ -391,7 +406,21 @@ convocar() {
   # the others - the exact comparison this tool exists to make honest.
   [ ! -e "$panel_dir/judges" ] ||
     die "panel '$panel' was already convoked (roster: $panel_dir/judges); its subject is fixed, so a judge added now would be judging different bytes. Convoke a new panel id instead."
+  # --judges names a SET of distinct harnesses. Two entries of one harness are
+  # not two opinions: they would share a task id, so one report would be read
+  # twice and printed as a consensus of two - the fabricated agreement this tool
+  # exists to prevent, at double the price.
+  seen=""
   for judge in $(split_judges "$judges"); do
+    case " $seen " in
+      *" $judge "*)
+        die "--judges nombra '$judge' más de una vez, y un panel compara el MISMO cambio en harnesses DISTINTOS.
+  Dos entradas del mismo harness no dan un segundo punto de vista: dan un solo veredicto
+  cobrado dos veces y contado como si dos jueces coincidieran.
+  Nombra cada harness una sola vez."
+        ;;
+    esac
+    seen="$seen $judge"
     [ ! -e "$DATA/$panel-$judge/brief.md" ] ||
       die "judge task already exists: $panel-$judge (refusing to overwrite)"
   done
@@ -427,6 +456,7 @@ convocar() {
     elif [ -n "$criteria_from" ]; then
       criteria=$(brief_task_section "$DATA/$criteria_from/brief.md") || {
         rm -f "$panel_dir/subject.diff"
+        rmdir "$panel_dir" 2>/dev/null || true
         die "--criteria-from '$criteria_from' no entrega criterios: $DATA/$criteria_from/brief.md no existe o no tiene una sección '# Task' con contenido.
   Dijiste que este cambio tiene una tarea detrás, así que el panel se niega antes de
   gastar un veredicto por juez en criterios que no son los que pediste.
@@ -568,9 +598,25 @@ band() {
 recoger() {
   local panel=$1 timeout=$2
   local judge task_id pending deadline verdict distinct headline missing
+  local seen_reports report
   local -a judge_list=() verdicts=()
 
-  mapfile -t judge_list < <(panel_roster "$panel")
+  # One report is one judgement, whatever the roster says. Two entries resolving
+  # to the same report.md would have that single verdict counted twice and
+  # printed as agreement between two judges, so the roster is taken as a set of
+  # distinct reports. convocar already refuses a repeated harness; this is the
+  # same guarantee at the counting end, where a collision from any other source
+  # would arrive.
+  seen_reports=""
+  while IFS= read -r judge; do
+    [ -n "$judge" ] || continue
+    report="$DATA/$panel-$judge/report.md"
+    case "$seen_reports" in
+      *"|$report|"*) continue ;;
+    esac
+    seen_reports="$seen_reports|$report|"
+    judge_list+=("$judge")
+  done < <(panel_roster "$panel")
   [ "${#judge_list[@]}" -gt 0 ] || die "no judges found for panel '$panel'"
 
   deadline=$(( $(date +%s) + timeout ))

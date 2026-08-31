@@ -216,6 +216,21 @@ test_unknown_flag_is_refused() {
   pass "fm-panel.sh: convocar refuses an unknown flag"
 }
 
+test_convocar_refuses_a_repeated_harness() {
+  local root out rc dir
+  root=$(panel_world args-duplicate-judge)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  # Two entries of one harness share a task id, so one report would be read
+  # twice and printed as two judges agreeing - paid for twice, and false.
+  out=$(panel_run "$root" convocar p1 --judges claude,claude --repo proj --diff fm/work); rc=$?
+  expect_code 1 "$rc" "a repeated harness must be refused (got: $out)"
+  assert_contains "$out" "'claude'" "the refusal must name the repeated harness"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for a roster that cannot be compared"
+  assert_absent "$root/home/data/p1/judges" "no roster may be recorded for a refused convocation"
+  pass "fm-panel.sh: convocar refuses a roster that names one harness twice"
+}
+
 test_convocar_rejects_missing_repo() {
   local root out rc
   root=$(panel_world args-repo)
@@ -438,6 +453,11 @@ test_pr_failure_after_the_fetch_leaves_no_ref_behind() {
   # never ran, which would let the test pass green without ever reaching the
   # die-after-fetch path it exists to cover.
   assert_contains "$out" 'cannot diff' "the refusal must be the one that happens AFTER the fetch (got: $out)"
+  # The private ref is an implementation detail the trap has already deleted, so
+  # the script's own refusal names the base the operator knows. (git's separate
+  # diagnostic still prints the refs it was handed; that is git talking.)
+  assert_contains "$out" 'cannot diff main' "the refusal must name the base the operator knows"
+  assert_not_contains "$out" 'cannot diff refs/fm-panel/' "the refusal must not name the private ref"
   # The clone belongs to the operator, not to the panel: a refusal must not cost
   # them a ref they now have to find and delete by hand.
   [ -z "$(git -C "$dir" for-each-ref 'refs/fm-panel/**')" ] ||
@@ -496,6 +516,31 @@ test_pr_refuses_a_repository_whose_name_merely_starts_the_same() {
   assert_contains "$out" 'different repository' "must say it refuses another repository's change (got: $out)"
   assert_absent "$root/spawn.log" "no judge may be spawned for another repository's PR"
   pass "fm-panel.sh: --pr refuses a repository whose name merely starts the same"
+}
+
+test_pr_accepts_the_same_repository_in_another_case() {
+  local root out rc dir bare pr_head
+  root=$(panel_world pr-mixed-case)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/pr-work 300
+  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
+  # The origin URL carries a MIXED-CASE github.com slug (DeepFlowCoder/firstmate,
+  # this repo's own shape) while remaining a fetchable local path, so the
+  # identity check runs for real against a PR URL written in lower case - the
+  # form github.com itself serves. Capitalization must not decide identity.
+  bare="$root/github.com/DeepFlowCoder/firstmate.git"
+  mkdir -p "$(dirname "$bare")"
+  git clone --quiet --bare "$dir" "$bare"
+  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
+  git -C "$dir" branch -D fm/pr-work >/dev/null
+  git -C "$dir" remote add origin "file://$bare"
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj \
+    --pr https://github.com/deepflowcoder/firstmate/pull/7); rc=$?
+  expect_code 0 "$rc" "the same repository in another case must not be refused (got: $out)"
+  assert_not_contains "$out" 'different repository' "capitalization alone must not read as a foreign repository"
+  assert_present "$root/home/data/p1/subject.diff" "the PR diff must be materialized"
+  pass "fm-panel.sh: --pr accepts the same GitHub repository written in another case"
 }
 
 test_criteria_come_from_the_task_behind_the_branch() {
@@ -629,6 +674,7 @@ test_unreadable_criteria_from_is_refused_before_any_judge() {
   assert_absent "$root/home/data/p1-claude/brief.md" "no judge task may be scaffolded either"
   # Every other refusal in this script leaves nothing materialized behind.
   assert_absent "$root/home/data/p1/subject.diff" "a refused convocation must not leave its diff on disk"
+  assert_absent "$root/home/data/p1" "a refused convocation must not leave its panel directory behind"
   pass "fm-panel.sh: an operator-named task that reads no criteria is refused, unpaid"
 }
 
@@ -719,6 +765,22 @@ test_recoger_requires_existing_judges() {
   expect_code 1 "$rc" "recoger with no judge tasks must fail"
   assert_contains "$out" 'no judges' "must name the missing judges (got: $out)"
   pass "fm-panel.sh: recoger fails closed when no judge tasks exist"
+}
+
+test_recoger_counts_one_report_once() {
+  local root out rc
+  root=$(panel_world recoger-duplicate-roster)
+  # A roster that resolves twice to the same report.md, however it got that way.
+  # Counting it twice would turn one provider's single verdict into a two-judge
+  # unanimity, which is the one output this tool must never produce.
+  panel_roster_file "$root" p1 claude claude
+  panel_report "$root" p1 claude 'VEREDICTO: aprobar'
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 0 "$rc" "the single real judge must collect successfully (got: $out)"
+  assert_contains "$out" '1 jueces' "one report is one judge, however many times the roster names it"
+  assert_not_contains "$out" '2 jueces' "a repeated roster entry must not inflate the panel size"
+  assert_not_contains "$out" 'claude, claude' "one report must not appear twice in the matrix"
+  pass "fm-panel.sh: recoger counts one report once, whatever the roster repeats"
 }
 
 test_recoger_reports_unanimity_as_teaching_nothing() {
@@ -963,6 +1025,7 @@ test_convocar_refuses_two_subjects
 test_criteria_flags_are_change_only
 test_numeric_flags_are_validated
 test_unknown_flag_is_refused
+test_convocar_refuses_a_repeated_harness
 test_convocar_rejects_missing_repo
 test_question_still_convokes_a_prose_panel
 test_diff_rejects_unknown_branch
@@ -977,6 +1040,7 @@ test_pr_failure_after_the_fetch_leaves_no_ref_behind
 test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote
 test_pr_refuses_a_foreign_github_repository
 test_pr_refuses_a_repository_whose_name_merely_starts_the_same
+test_pr_accepts_the_same_repository_in_another_case
 test_criteria_come_from_the_task_behind_the_branch
 test_change_without_a_task_says_so_loudly
 test_adhoc_branch_is_judged_without_inferring_a_task
@@ -990,6 +1054,7 @@ test_explicit_criteria_win
 test_convocar_refuses_to_reconvoke_a_panel
 test_convocar_refuses_to_overwrite_a_judge
 test_recoger_requires_existing_judges
+test_recoger_counts_one_report_once
 test_recoger_reports_unanimity_as_teaching_nothing
 test_recoger_leads_with_the_split_and_the_objections
 test_recoger_never_folds_an_unreadable_verdict_into_agreement
