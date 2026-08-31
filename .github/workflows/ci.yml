@@ -449,23 +449,27 @@ jobs:
           done < "$shell_inventory"
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
-          # Both guards a suite needs here: it exited clean, and every one of
-          # its tests actually ran. Capture the status instead of letting
-          # `set -e` end the step at the command substitution - that path threw
-          # the captured output away before printing it, so a test that fails
-          # only under stock Bash 3.2 reached this log with no `not ok` line and
-          # no failing test named, and this job is the matrix's only 3.2 signal.
+          # Three independent guards, each with its own message, because each
+          # catches what the others cannot:
           #
-          # "Ran whole" is proven by the completion marker each suite prints as
-          # its own last statement, NOT by a count authored here. A count in
-          # this file has to be bumped from here every time a test is added to
-          # either script, and a stale one fails this job while naming no broken
-          # test - which is exactly how the count drifted and cost a CI round
-          # trip. The marker cannot drift: only reaching the end of the suite
-          # prints it, so an early exit 0 (the jq skip guard is one such path)
-          # is still caught, and adding a test needs no edit here.
-          run_stock_bash_suite() { # <script> <label>
-            local script=$1 label=$2 output status=0
+          #   status  - the suite exited clean. Capture it instead of letting
+          #             `set -e` end the step at the command substitution: that
+          #             path threw the captured output away before printing it,
+          #             so a test failing only under stock Bash 3.2 reached this
+          #             log with no `not ok` line and no failing test named, and
+          #             this job is the matrix's only 3.2 signal.
+          #   marker  - the suite ran to its end. Each script prints
+          #             `# fm-test-complete <name>` as its own last statement, so
+          #             a premature `exit 0` (the jq skip guard is one such path)
+          #             or a run that dies partway is caught even at exit 0.
+          #   count   - no test was silently DELETED. The marker still prints for
+          #             a suite that lost a case, and the Test coverage guard job
+          #             checks file partitioning, not per-suite counts, so this is
+          #             the only check that sees a removed test. It has to be
+          #             bumped here when a case is added, which is the price of
+          #             that coverage.
+          run_stock_bash_suite() { # <script> <label> <expected-ok-count>
+            local script=$1 label=$2 expected=$3 output status=0 count
             output=$(/bin/bash "$script") || status=$?
             printf '%s\n' "$output"
             [ "$status" -eq 0 ] || {
@@ -477,10 +481,15 @@ jobs:
               echo "::error::$label tests stopped before the end of the suite under stock macOS Bash 3.2"
               return 1
             }
+            count=$(printf '%s\n' "$output" | grep -c '^ok - ' || true)
+            [ "$count" -eq "$expected" ] || {
+              echo "::error::expected $expected $label tests, got $count"
+              return 1
+            }
           }
 
-          run_stock_bash_suite tests/fm-fleet-snapshot-view.test.sh snapshot/fleet-view
-          run_stock_bash_suite tests/fm-bearings-snapshot.test.sh Bearings
+          run_stock_bash_suite tests/fm-fleet-snapshot-view.test.sh snapshot/fleet-view 16
+          run_stock_bash_suite tests/fm-bearings-snapshot.test.sh Bearings 43
 
   invariants:
     name: Repo invariants

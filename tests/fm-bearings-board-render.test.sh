@@ -172,6 +172,9 @@ test_dry_dock_and_clear_to_start_are_different_berths() {
   ' >/dev/null || fail "held work is still pickable or still unexplained: $lane"
   printf '%s' "$lane" | jq -e '.drawer.split == "in the order book · 1 clear to start, 1 held in dry dock"' \
     >/dev/null || fail "the order-book summary does not state the split: $lane"
+  # a book that does hold something dispatchable is the one allowed to offer it
+  printf '%s' "$lane" | jq -e '.drawer.hint == "open to pick"' >/dev/null \
+    || fail "a book holding startable work stopped offering the pick: $lane"
   pass "dry dock and clear-to-start are separate berths with separate affordances"
 }
 
@@ -324,6 +327,14 @@ test_omitted_queued_work_is_never_reported_as_available_capacity() {
   # the omitted rows are still disclosed as depth, just never as capacity
   [ "$(stat_n "$out" "order book")" = 4 ] \
     || fail "the order-book tally dropped omitted queued work: $out"
+  # the drawer's own summary line must agree: a book with nothing dispatchable
+  # in it offers no pick, because no row inside it accepts one
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | select(.name == "sample") | .drawer.hint] == ["open to read what holds them"]
+  ' >/dev/null || fail "a wholly held order book advertised a pick it cannot accept: $out"
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | select(.name == "sample") | .berths[].rows[] | select(.pickable)] == []
+  ' >/dev/null || fail "a held row rendered a dispatch checkbox: $out"
   pass "omitted queued work is disclosed as depth and never counted as clear to start"
 }
 

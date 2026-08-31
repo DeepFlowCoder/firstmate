@@ -180,6 +180,7 @@ const lanes = kids(yard, "bb-lane").map((lane) => {
           open: drawer.open === true,
           depth: firstText(drawer, "bb-drawer__depth"),
           split: firstText(drawer, "bb-drawer__split"),
+          hint: firstText(drawer, "bb-drawer__hint"),
         }
       : null,
     berths: berthsOf(lane),

@@ -854,7 +854,14 @@ __FM_BEARINGS_BOARD_DATA__
   }
 
   /* An empty lane is calm, never "abandoned": the fleet records current state,
-     not intent, so the board says WHICH empty this is and stops there. */
+     not intent, so the board says WHICH empty this is and stops there. Two
+     empties can render: "clear to start - N orders wait for a crew" and "quiet
+     since the last launch". A third, "no recorded activity in the current
+     baseline", is deferred with its producer: a lane exists only because a row
+     created it, so a wholly unrecorded project has no lane to read. It needs
+     lanes seeded from a known project list, which is separate queued work, and
+     it returns together with that seeding rather than as an unreachable branch
+     here. */
   function laneReading(l) {
     if (l.ways.length) return plural(l.ways.length, "hull", "hulls") + " on the ways";
     if (l.order.length) return "clear to start - " + plural(l.order.length, "order waits", "orders wait") + " for a crew";
@@ -862,8 +869,7 @@ __FM_BEARINGS_BOARD_DATA__
     /* A call is not a berth - it lives in the Captain's Call deck - but it IS
        recorded activity, so a lane holding only one must not read as empty. */
     if (l.call.length) return "waiting on your word";
-    if (l.launched.length) return "quiet since the last launch";
-    return "no recorded activity in the current baseline";
+    return "quiet since the last launch";
   }
   function laneTone(l) {
     if (l.call.length) return "call";
@@ -991,7 +997,11 @@ __FM_BEARINGS_BOARD_DATA__
       if (l.order.length) split.push(l.order.length + " clear to start");
       if (l.dock.length) split.push(l.dock.length + " held in dry dock");
       summary.appendChild(el("span", "bb-drawer__split", "in the order book · " + split.join(", ")));
-      summary.appendChild(el("span", "bb-drawer__hint", "open to pick"));
+      /* Only order-book rows carry a checkbox, so a wholly held book must not
+         advertise a pick: that is the ready-vs-held conflation this board
+         exists to remove, re-entering through the summary line. */
+      summary.appendChild(el("span", "bb-drawer__hint",
+        l.order.length ? "open to pick" : "open to read what holds them"));
       drawer.appendChild(summary);
 
       if (l.order.length) {
@@ -1039,10 +1049,6 @@ __FM_BEARINGS_BOARD_DATA__
           pr_url: t.pr_url
         }));
       });
-    }
-
-    if (!l.ways.length && !depth && !l.launched.length && !l.call.length) {
-      card.appendChild(el("div", "bb-empty", "Nothing recorded for this project in the current baseline."));
     }
 
     yard.appendChild(card);

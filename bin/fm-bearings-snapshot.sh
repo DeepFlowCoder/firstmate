@@ -396,7 +396,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        | select(.kind != "secondmate")
        | select(.backlog.current_role != "program")
        | select(.backlog.current_role != "held" or .current_state.state == "working")
-       | {id, kind, repo:(.backlog.repo // null),
+       | {id, kind, repo:((.backlog.repo // null) | trunc(120)),
         state: .current_state.state,
         doing: ((.current_state.detail // "") as $d
                 | (if $d != "" then $d else (.hints.last_event_text // "") end) | trunc(90))
@@ -410,13 +410,13 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | select(($all_decisions == 1) or (.deferred_marker != true))
          | {id,key:.id,verb:"captain-hold",
             summary:((.title + ": " + .hold_reason) | trunc(90)),owner:"(main)",
-            repo:(.repo // null)} ]
+            repo:((.repo // null) | trunc(120))} ]
      + [ (.secondmate_current.records // [])[] as $m | $m.decisions_open[]?
          | select(.source == "backlog" and .verb == "captain-hold")
          | select(($all_decisions == 1) or (.deferred_marker != true))
          | {id:($m.id + "/" + .id),key,verb,
             summary:(((.summary // .id) + ": " + (.reason // "captain decision pending")) | trunc(90)),owner:$m.id,
-            repo:(.repo // null)} ]) as $decisions_all
+            repo:((.repo // null) | trunc(120))} ]) as $decisions_all
   | ([ .backlog.records[]
          | select(.structured and .captain_actionable == true and .deferred_marker == true) ]
      + [ (.secondmate_current.records // [])[] | .decisions_open[]?
@@ -444,7 +444,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
             reason:((if (.hold_until // null) != null and .hold_until > $today
                      then ("until " + .hold_until + ": " + (.hold_reason // .blocked_reason // "-"))
                      else (.hold_reason // .blocked_reason // "-") end) | trunc(40)),owner:"(main)",
-            repo:(.repo // null),since:(.since // null)} ]
+            repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]
      + [ (.secondmate_current.records // [])[] as $m
          | select($m.provenance.selected == "structured-home")
          | $m.queued[]?
@@ -456,7 +456,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
             reason:((if (.hold_until // null) != null and .hold_until > $today
                      then ("until " + .hold_until + ": " + (.hold_reason // .blocked_reason // "-"))
                      else (.hold_reason // .blocked_reason // "-") end) | trunc(40)),owner:$m.id,
-            repo:(.repo // null),since:(.since // null)} ]) as $gates_all
+            repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]) as $gates_all
   | ([ .scout_reports[]
        | . as $r
        | select(($all_reports == 1) or (($rel_ids | index($r.id)) != null))
@@ -474,9 +474,9 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         | select(.reconcile_inventory != null)
         | {id, spawn_gen:(.spawn_gen // null), host:(.host // null), kind:(.reconcile_inventory.kind // null), ids:((.reconcile_inventory.ids // []) | map(select(type == "string")) | sort)} ],
       decisions_open: (if $all_decisions == 1 then $decisions_all else $decisions_all[:$decisions_n] end),
-      landed: ($done | map({id, what:(.title | trunc(70)), repo:(.repo // null),
+      landed: ($done | map({id, what:(.title | trunc(70)), repo:((.repo // null) | trunc(120)),
                             artifact:(.pr_url // .report_path // .local_note // "-"),owner:.home_id,
-                            landed_on:(.completion.date // null)})),
+                            landed_on:((.completion.date // null) | trunc(40))})),
       gates: (if $all_queued == 1 then $gates_all else $gates_all[:$gates_n] end),
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),
       recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end)
