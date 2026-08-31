@@ -930,6 +930,57 @@ SH
   pass "jobs=1 and jobs=2 stop complete worker trees with and without telemetry"
 }
 
+test_ci_lint_lane_carries_a_finite_job_cap() {
+  # An uncapped lane sits on GitHub's 6-hour default instead of reporting: run
+  # 33353469575 held the Lint job 61 minutes while every other job in that run
+  # finished inside 17. The cap is what turns that into a reported verdict.
+  #
+  # Parse the workflow as YAML and read the lint job's own keys, so a number in
+  # a comment, or another lane's cap, cannot stand in for this lane's contract.
+  # The verdict step must also stay a single unconditional invocation of the one
+  # lint owner: a SIGTERM to the runner kills the step's wrapping shell, so an
+  # in-step retry could never fire, while it could re-run a real 0/1/2 verdict.
+  command -v ruby >/dev/null 2>&1 \
+    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+  local json cap runs green_wall_minutes github_default_minutes
+  # Measured green wall for this lane, rounded up (15m03s-15m47s), and GitHub's
+  # default job timeout. The cap must sit strictly between them to be a
+  # tripwire rather than a guillotine on a healthy run.
+  green_wall_minutes=16
+  github_default_minutes=360
+  json=$(ruby -ryaml -rjson -e '
+doc = YAML.load_file(ARGV[0])
+job = doc.fetch("jobs").fetch("lint")
+raise "lint job has no timeout-minutes" unless job.key?("timeout-minutes")
+cap = job.fetch("timeout-minutes")
+raise "lint timeout-minutes is not an integer" unless cap.is_a?(Integer)
+runs = job.fetch("steps").map { |s| s.is_a?(Hash) ? s["run"] : nil }.compact
+puts JSON.generate("cap" => cap, "verdict_runs" => runs.grep(/fm-lint\.sh/))
+' "$ROOT/.github/workflows/ci.yml") \
+    || fail "could not parse the lint job cap from ci.yml"
+  cap=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["cap"])' <<<"$json") \
+    || fail "could not read the lint job cap from the parsed workflow"
+  [ "$cap" = 45 ] \
+    || fail "the CI lint lane cap must stay 45 minutes, got $cap"
+  [ "$cap" -lt "$github_default_minutes" ] \
+    || fail "cap $cap does not bound the $github_default_minutes-minute GitHub default"
+  [ "$cap" -gt "$green_wall_minutes" ] \
+    || fail "cap $cap would cut a healthy ${green_wall_minutes}-minute run"
+  # Exactly one step reaches the lint owner, and it invokes it once with no
+  # loop, no `||` fallback, and no second attempt.
+  runs=$(python3 -c '
+import json, sys
+runs = json.load(sys.stdin)["verdict_runs"]
+if len(runs) != 1:
+    raise SystemExit("verdict steps: %d" % len(runs))
+print(runs[0].strip())
+' <<<"$json") \
+    || fail "the lint lane must have exactly one step that reaches bin/fm-lint.sh"
+  [ "$runs" = "bin/fm-lint.sh" ] \
+    || fail "the lint verdict step must be one plain invocation, got: $runs"
+  pass "the CI lint lane caps at 45 min and keeps one unconditional verdict step"
+}
+
 test_seeded_module_boundary_parity() {
   if ! pinned_ready; then
     pass "SKIP (ShellCheck $REQUIRED not resolved): seeded source-boundary parity check"
@@ -1021,6 +1072,7 @@ test_ignores_ambient_shellcheck_opts
 test_clean_fixture_passes
 test_jobs_are_deterministic_and_complete
 test_worker_trees_stop_on_signal
+test_ci_lint_lane_carries_a_finite_job_cap
 test_seeded_module_boundary_parity
 test_changed_mode_lints_only_the_changed_file
 test_ci_forces_full_lint_even_with_empty_diff
