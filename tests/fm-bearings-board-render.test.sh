@@ -713,11 +713,12 @@ test_a_forward_dated_launch_does_not_hide_a_real_one() {
 # The lane head's reading and its launch chip must agree. A lane holding only
 # launches the board cannot date has no date to point at, so it must not say it
 # has been quiet SINCE one - that would name evidence the head does not carry.
-# What it says instead is a fact about the work rather than about the records:
-# nothing is on the ways, ordered, held or awaiting the captain, so everything
-# in the lane has already sailed - true whether or not a date was written down.
-# A row recorded done by hand with no date word is ordinary, so this reading is
-# an everyday path and not a data-quality corner.
+# What it says instead names the launch rows the board did receive. It claims
+# nothing about what is absent, on purpose: every bucket a lane could be called
+# empty of arrives as an independently capped, flat-prefix list, so an absence
+# claim here would be falsifiable by ordinary truncation while a presence claim
+# is not. A row recorded done by hand with no date word is ordinary, so this
+# reading is an everyday path and not a data-quality corner.
 # ---------------------------------------------------------------------------
 test_a_lane_whose_launches_are_all_undated_promises_no_launch() {
   local home lane
@@ -732,7 +733,7 @@ test_a_lane_whose_launches_are_all_undated_promises_no_launch() {
 
   printf '%s' "$lane" | jq -e '.launch == ""' >/dev/null \
     || fail "a lane with no datable launch still drew a last-launch chip: $lane"
-  printf '%s' "$lane" | jq -e '.reading == "quiet - everything here has launched"' \
+  printf '%s' "$lane" | jq -e '.reading == "launched work here"' \
     >/dev/null || fail "the lane pointed at a launch date its head does not carry: $lane"
   # the launches themselves are still recorded, just not dated
   printf '%s' "$lane" | jq -e '
