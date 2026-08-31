@@ -2321,6 +2321,25 @@ test_live_run_on_another_branch_never_blocks_teardown() {
   pass "a live run on another branch never blocks this task's teardown"
 }
 
+# Every `axi abort` the refusal advises must carry --run. The run-id-less form
+# resolves repository-scoped, so on the very evidence that produced the refusal
+# it can stop another branch's run - having the operator perform the blind abort
+# teardown itself declines to perform. Read from the process's own stderr, which
+# is the refusal's user-facing contract, not from the script's source.
+assert_abort_advice_is_run_scoped() {  # <stderr-file> <msg>
+  awk '
+    {
+      line = $0
+      while ((i = index(line, "no-mistakes axi abort")) > 0) {
+        rest = substr(line, i + length("no-mistakes axi abort"))
+        if (substr(rest, 1, 7) != " --run ") bare = 1
+        line = rest
+      }
+    }
+    END { exit(bare ? 1 : 0) }
+  ' "$1" || fail "$2"
+}
+
 # The repo-scoped status query returns ONE run for the whole repository, so
 # under multi-crew load it routinely answers with ANOTHER branch's run. Teardown
 # then holds no attribution at all for its own branch - and the branch's own run
@@ -2347,6 +2366,10 @@ test_cross_branch_status_answer_with_live_own_run_refuses() {
     "cross-branch-answer-live-own: teardown aborted another branch's run"
   assert_present "$case_dir/wt" \
     "cross-branch-answer-live-own: teardown removed the worktree while its own run was live"
+  assert_grep "no-mistakes axi abort --run <id>" "$case_dir/stderr" \
+    "cross-branch-answer-live-own: the refusal did not offer the run-id-scoped stop path"
+  assert_abort_advice_is_run_scoped "$case_dir/stderr" \
+    "cross-branch-answer-live-own: the refusal advised an abort that can stop another branch's run"
   pass "a status answer about another branch does not license tearing down over this branch's live run"
 }
 

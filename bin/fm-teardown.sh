@@ -125,15 +125,20 @@
 #     runs list before teardown may proceed without concluding anything, and
 #     REFUSES when that list shows this branch's most recent run still active
 #     while the status answer was terminal, unbindable, or about another branch.
-#     It refuses rather than aborting because no available surface can tell a
-#     PARKED live run from an autonomously running one: the runs list carries no
+#     It refuses rather than aborting because the runs list it reads cannot tell
+#     a PARKED live run from an autonomously running one: that listing carries no
 #     run id to inspect (verified: `runs --help` exposes only --limit) and its
 #     status words are the same for both, while `axi abort` "discards the
-#     pipeline's in-flight work" (the CLI's own help) - so guessing costs either
-#     an orphaned run or destroyed pipeline work, and refusing costs one manual
-#     check. A bound, still-active status answer for this branch IS this branch's
-#     live run, so an autonomous run under way is still left alone as above; a
-#     list that does not answer proves nothing and never blocks teardown.
+#     pipeline's in-flight work" (the CLI's own help). Run ids ARE reachable
+#     elsewhere - the AXI home view, `no-mistakes axi` with no subcommand,
+#     tabulates id, branch, status, head and pr - so the refusal hands the
+#     operator that id-scoped path. What teardown declines, deliberately, is
+#     attributing a run itself on the destructive path from the surfaces it has:
+#     guessing there costs either an orphaned run or destroyed pipeline work,
+#     while refusing costs one manual check. A bound, still-active status answer
+#     for this branch IS this branch's live run, so an autonomous run under way
+#     is still left alone as above; a list that does not answer proves nothing
+#     and never blocks teardown.
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground
@@ -1553,7 +1558,9 @@ conclude_task_no_mistakes_run() {  # <worktree>
     task_branch_has_uninspected_live_run "$wt" "$status_out" || return 0
     echo "REFUSED: $ID has a live no-mistakes run this teardown cannot identify ($TASK_LIVE_RUN_DETAIL)." >&2
     echo "Removing the worker now would orphan that run if it is parked at a gate, leaving nothing to answer it." >&2
-    echo "Let it finish, or inspect and stop it from the worktree (cd $wt && no-mistakes axi status; no-mistakes axi abort), then retry teardown." >&2
+    echo "Letting that run finish and then retrying teardown resolves this." >&2
+    echo "To stop it instead, run 'cd $wt && no-mistakes axi': its table lists id, branch, status, head and pr, so take the id of the still-active row whose branch is the one named above, confirm that exact run with 'no-mistakes axi status --run <id>', and only once it is this task's run waiting at a gate stop it with 'no-mistakes axi abort --run <id>'." >&2
+    echo "Do not abort without --run: the run-id-less form resolves repository-scoped, so under multi-crew load it can discard another branch's in-flight work." >&2
     return 1
   fi
   run_id=$TASK_RUN_ID
