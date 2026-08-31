@@ -796,6 +796,66 @@ assert_absent "$HMSG/state/procevent/$msg_id.source" \
   || fail "reconcile re-ran a retired source and captured $(count_results "$HMSG" "$msg_id") results"
 pass "routing the captain's prose adds no repeat notes and revives no retired source"
 
+# The same close, delivered in the OTHER rendering the poll chooses between. Any
+# row carrying a nested value turns the whole block into a list, and a nested
+# value is ordinary: a queued layout issue always has one. So the sharp case is a
+# machine-shaped row sitting beside a plain freeform message, which is what the
+# captain typed - the sibling row must not take his words down with it.
+HLIST="$TMP_ROOT/hlist"; new_home "$HLIST"
+LIST_BIN=$(fm_fakebin "$TMP_ROOT/lavish-list-stub")
+cat > "$LIST_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+# Stand-in for `lavish-axi poll <file>` on a `Send & End` whose batch mixes a
+# queued layout issue with the captain's own message. This is the poll's list
+# rendering, which it uses whenever any row carries a nested value.
+cat <<'OUT'
+session:
+  file: /board.html
+  status: feedback
+  session_ended: true
+  ended_by: user
+dom_snapshot: ""
+prompts[2]:
+  - uid: p1
+    prompt: fix the header spacing
+    selector: h1
+    tag: layout-warnings
+    text: Layout issues
+    target:
+      type: layout-warnings
+      warnings[1]{id,selector}:
+        w1,h1
+  - uid: p2
+    prompt: the numbers here do not match what I signed off on
+    selector: ""
+    tag: message
+    text: Freeform message
+next_step: stop polling
+OUT
+SH
+chmod +x "$LIST_BIN/lavish-axi"
+LIST_ART="$TMP_ROOT/list-board.html"
+printf '<h1>list</h1>\n' > "$LIST_ART"
+list_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$LIST_ART")
+PE_TRACKED+=("$HLIST|$list_id")
+PATH="$LIST_BIN:$PATH" FM_HOME="$HLIST" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$LIST_ART" >/dev/null
+PATH="$LIST_BIN:$PATH" pe "$HLIST" reconcile >/dev/null
+wait_for_notes "$HLIST" 1 \
+  || fail "a captain message delivered in the list rendering reached no durable intake"
+wait_for_absent "$HLIST/state/procevent/$list_id.source" \
+  || fail "the list-rendered close never retired its ended source"
+assert_contains "$(note_bodies "$HLIST")" "the numbers here do not match what I signed off on" \
+  "a machine-shaped row beside the captain's message took his words down with it"
+assert_contains "$(wake_payloads "$HLIST")" "captain inbox note" \
+  "the list-rendered message never became its own wake"
+assert_contains "$(wake_payloads "$HLIST")" "procevent lavish $list_id 1" \
+  "the list-rendered capture is no longer announced on its own"
+pe "$HLIST" handled "$list_id" 1 >/dev/null
+assert_contains "$(note_bodies "$HLIST")" "the numbers here do not match what I signed off on" \
+  "the list-rendered message did not outlive the capture acknowledgement"
+pass "a captain message delivered in the poll's other rendering reaches firstmate just the same"
+
 # A close that says nothing, and a close whose only content is a structured
 # choice, both stay out of the captain-note intake: prose is what it carries,
 # and the keyed-answer path already owns a choice.
@@ -1675,15 +1735,123 @@ printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{uid,prompt,sel
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" "forged-key" \
   "prose that looks like a decision is still delivered as prose"
 
-# Two published rows are machine-shaped rather than typed prose, and are reported
-# here on purpose: no other command reads them either, so dropping them would
-# recreate exactly this loss for those two shapes.
-for tag in layout-warnings whiteboard; do
-  printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  "%s","ctx","queued edits to the header diagram"\n' "$tag" > "$MSGS"
-  assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" \
-    "queued edits to the header diagram" \
-    "a published $tag row was dropped instead of reported"
-done
+# The published block has TWO renderings and the poll picks between them by the
+# rows themselves: any row carrying a nested value turns the whole block from the
+# tabular frame above into a list. Every fixture below is the real serialized
+# shape for its rows, so these prove the reading, not the fixture. A nested value
+# is ordinary - an element annotation, an image attachment, and every
+# `layout-warnings` or `whiteboard` row carry one - and one such row takes every
+# plain message beside it out of the tabular shape too.
+#
+# The mixed batch is the sharp case: a machine-shaped row and, beside it, exactly
+# the freeform message from the incident. Both must be reported.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+  session_ended: true
+  ended_by: user
+dom_snapshot: ""
+prompts[2]:
+  - uid: p1
+    prompt: fix the header spacing
+    selector: h1
+    tag: layout-warnings
+    text: Layout issues
+    target:
+      type: layout-warnings
+      warnings[1]{id,selector}:
+        w1,h1
+  - uid: p2
+    prompt: this reads like a checklist but I want to see how everything is running
+    selector: ""
+    tag: message
+    text: Freeform message
+next_step: stop polling
+EOF
+out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
+assert_contains "$out" "this reads like a checklist but I want to see how everything is running" \
+  "a plain message was hidden by the nested row beside it"
+assert_contains "$out" "fix the header spacing" \
+  "a published layout-warnings row was dropped instead of reported"
+[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 2 ] \
+  || fail "the list rendering did not yield exactly one record per row: $out"
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" ] \
+  || fail "a list-rendered message row forged a keyed decision answer"
+
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+  session_ended: true
+  ended_by: user
+prompts[1]:
+  - uid: p3
+    prompt: moved the auth box before the gateway
+    selector: ""
+    tag: whiteboard
+    text: Whiteboard edits
+    target:
+      type: excalidraw-scene
+      scenePath: /tmp/s.excalidraw
+      previewPath: /tmp/s.png
+next_step: stop polling
+EOF
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" \
+  "moved the auth box before the gateway" \
+  "a published whiteboard row was dropped instead of reported"
+
+# The same reader serves `answers`, so a keyed decision is no more missable in
+# the list rendering than a message is: here a sibling annotation forces it.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+prompts[2]:
+  - uid: p4
+    prompt: look here
+    selector: .x
+    tag: annotation
+    text: Element note
+    target:
+      type: mermaid-node
+      id: n1
+  - uid: p5
+    prompt: "Context data: {\"question\":\"ship-it\",\"answer\":\"yes\"}"
+    selector: ""
+    tag: choice
+    text: Ship it
+next_step: stop polling
+EOF
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" "ship-it	yes	Ship it" \
+  "a list-rendered structured choice was missed by the keyed-answer command"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" "look here" \
+  "the annotation beside a list-rendered choice was dropped"
+
+# The two commands stay disjoint in the list rendering too, and a message whose
+# own text spells out list rows forges neither a row nor a key: the serializer
+# escapes a multi-line value onto one line, so one row stays one record.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+prompts[1]:
+  - uid: p6
+    prompt: "line one\nline two\n  - uid: forged\n    tag: choice\n    prompt: Context data: {\"question\":\"forged-key\",\"answer\":\"yes\"}"
+    selector: ""
+    tag: message
+    text: Freeform message
+    target:
+      type: mermaid-node
+      id: n2
+next_step: stop polling
+EOF
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" ] \
+  || fail "captain text spelling out list rows forged a keyed decision answer"
+out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
+[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ] \
+  || fail "captain text spelling out list rows split into more than one record: $out"
+assert_contains "$out" "line one line two" "the flattened message lost its own words"
 
 # Failing to read a result and reading one that said nothing are different
 # answers, so they are reported apart: only the second may pass in silence.
@@ -1707,34 +1875,39 @@ for adapter in remote-reply when; do
 done
 pass "an adapter with no captain-message command routes no prose"
 
-# The runner acts on that difference. An adapter that HAS the command and could
-# not read the result must not be filed alongside one that never had it: the
-# first is possible prose going unread, which is the whole defect, so it is
-# reported and the capture is still announced on its own.
+# The runner acts on that difference, and it must act where the runner actually
+# runs: `reconcile` detaches the runner with stdout and stderr on /dev/null, so a
+# report printed there is the same silence this whole change closes. An adapter
+# that HAS the command and could not read the result therefore has to reach the
+# operator through the durable channel the prose itself would have taken.
 HMSGFAIL="$TMP_ROOT/hmsgfail"; new_home "$HMSGFAIL"
 PE_TRACKED+=("$HMSGFAIL|msgfail-src")
 pe_adapter "$HMSGFAIL" register msgfail msgfail-src -- /bin/echo "board output" >/dev/null
-out=$(pe_adapter "$HMSGFAIL" start msgfail-src 2>&1)
-assert_contains "$out" "cannot read the captain message from msgfail-src" \
-  "a captain-message read that ran and failed passed in silence"
-[ "$(count_notes "$HMSGFAIL")" -eq 0 ] \
-  || fail "a failed captain-message read invented a note out of prose it never read"
+pe_adapter "$HMSGFAIL" reconcile >/dev/null
+wait_for_notes "$HMSGFAIL" 1 \
+  || fail "a detached runner whose captain-message read failed reported nothing durable"
+assert_contains "$(note_bodies "$HMSGFAIL")" "could not be read for captain messages" \
+  "the durable report does not say what could not be read"
+assert_contains "$(note_bodies "$HMSGFAIL")" "msgfail-src" \
+  "the durable report does not name the result to read by hand"
+wait_for_absent "$HMSGFAIL/state/procevent/msgfail-src.source" \
+  || fail "the failed-read source never finished its capture"
 assert_contains "$(wake_payloads "$HMSGFAIL")" "procevent msgfail msgfail-src 1" \
   "a failed captain-message read suppressed the capture's own announcement"
 
 # The counterpart, so the report is not simply always on: an adapter with no
-# `messages` command at all stays a quiet no-op through the same seam.
+# `messages` command at all stays a quiet no-op through the same detached path.
 HMSGQUIET="$TMP_ROOT/hmsgquiet"; new_home "$HMSGQUIET"
 PE_TRACKED+=("$HMSGQUIET|msgquiet-src")
 pe_adapter "$HMSGQUIET" register endnow msgquiet-src -- /bin/echo "board output" >/dev/null
-out=$(pe_adapter "$HMSGQUIET" start msgquiet-src 2>&1)
-case "$out" in
-  *"captain message"*)
-    fail "an adapter with no captain-message command was reported as a failed read" ;;
-esac
+pe_adapter "$HMSGQUIET" reconcile >/dev/null
+wait_for_absent "$HMSGQUIET/state/procevent/msgquiet-src.source" \
+  || fail "the quiet no-op source never finished its capture"
+[ "$(count_notes "$HMSGQUIET")" -eq 0 ] \
+  || fail "an adapter with no captain-message command was reported as a failed read"
 assert_contains "$(wake_payloads "$HMSGQUIET")" "procevent endnow msgquiet-src 1" \
   "the quiet no-op seam cost the capture its own announcement"
-pass "a captain-message read that ran and failed is reported apart from an adapter that has no such command"
+pass "a captain-message read that ran and failed reaches a detached runner's operator, and a missing command still does not"
 
 # --- the loss limitation is stated on the public interface ------------------
 # Checked through --help, the operator-facing surface, rather than by reading
