@@ -310,8 +310,7 @@ test_pr_without_remote_points_at_diff() {
   panel_project "$root" proj >/dev/null
   out=$(panel_run "$root" convocar p1 --judges claude --repo proj --pr https://github.com/o/r/pull/7); rc=$?
   expect_code 1 "$rc" "a PR subject on a remote-less project must fail"
-  assert_contains "$out" 'no' "must say the project has no remote (got: $out)"
-  assert_contains "$out" 'origin' "must name the missing remote"
+  assert_contains "$out" "no 'origin' remote" "must say the project has no origin remote (got: $out)"
   # A local-only project must still be able to convoke a panel on a change; the
   # refusal has to say how rather than dead-end.
   assert_contains "$out" '--diff <branch>' "must point at the local way to judge the change"
@@ -344,6 +343,35 @@ test_pr_resolves_through_the_clone_origin() {
   pass "fm-panel.sh: --pr resolves through the clone's own origin and leaves no ref behind"
 }
 
+test_pr_failure_after_the_fetch_leaves_no_ref_behind() {
+  local root out rc dir bare orphan
+  root=$(panel_world pr-ref-after-failure)
+  dir=$(panel_project "$root" proj)
+  # An unrelated history has no merge base with main, so the diff fails AFTER
+  # the fetch has already written its private ref into the operator's clone.
+  git -C "$dir" checkout -q --orphan unrelated
+  git -C "$dir" rm -q -f file.txt
+  printf 'other\n' > "$dir/other.txt"
+  git -C "$dir" add other.txt
+  git -C "$dir" -c user.name=t -c user.email=t@e.invalid commit -qm unrelated
+  orphan=$(git -C "$dir" rev-parse unrelated)
+  git -C "$dir" checkout -q main
+  bare="$root/origin.git"
+  git clone --quiet --bare "$dir" "$bare"
+  git -C "$bare" update-ref refs/pull/7/head "$orphan"
+  git -C "$dir" remote add origin "file://$bare"
+  git -C "$dir" branch -D unrelated >/dev/null
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --pr 7); rc=$?
+  expect_code 1 "$rc" "a PR that cannot be diffed against the base must fail (got: $out)"
+  # The clone belongs to the operator, not to the panel: a refusal must not cost
+  # them a ref they now have to find and delete by hand.
+  [ -z "$(git -C "$dir" for-each-ref 'refs/fm-panel/**')" ] ||
+    fail "a refusal after the fetch must still leave the clone's ref space as found"
+  assert_absent "$root/spawn.log" "no judge may be spawned for a subject that did not resolve"
+  pass "fm-panel.sh: a refusal after the PR fetch leaves no private ref in the clone"
+}
+
 test_pr_refuses_a_foreign_github_repository() {
   local root out rc dir
   root=$(panel_world pr-foreign)
@@ -353,6 +381,22 @@ test_pr_refuses_a_foreign_github_repository() {
   expect_code 1 "$rc" "a PR from another GitHub repository must be refused"
   assert_contains "$out" 'different repository' "must say it refuses another repository's change (got: $out)"
   pass "fm-panel.sh: --pr refuses a PR that belongs to a different GitHub repository"
+}
+
+test_pr_refuses_a_repository_whose_name_merely_starts_the_same() {
+  local root out rc dir
+  root=$(panel_world pr-prefix)
+  dir=$(panel_project "$root" proj)
+  # owner/real is a prefix of owner/real-docs, so identity has to be compared as
+  # owner/repo and not looked for inside the origin URL: otherwise this PR
+  # resolves against the neighbouring repository and a whole paid panel judges
+  # somebody else's change.
+  git -C "$dir" remote add origin https://github.com/owner/real-docs.git
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --pr https://github.com/owner/real/pull/7); rc=$?
+  expect_code 1 "$rc" "a PR of a prefix-named repository must be refused"
+  assert_contains "$out" 'different repository' "must say it refuses another repository's change (got: $out)"
+  assert_absent "$root/spawn.log" "no judge may be spawned for another repository's PR"
+  pass "fm-panel.sh: --pr refuses a repository whose name merely starts the same"
 }
 
 test_criteria_come_from_the_task_behind_the_branch() {
@@ -384,6 +428,58 @@ test_change_without_a_task_says_so_loudly() {
   assert_grep 'NO HAY CRITERIOS REGISTRADOS' "$root/home/data/p1-claude/brief.md" \
     "the judge must be told there are no recorded criteria"
   pass "fm-panel.sh: a change with no task behind it is judged, but the gap is announced"
+}
+
+test_unreadable_criteria_from_is_refused_before_any_judge() {
+  local root out rc dir
+  root=$(panel_world criteria-from-unreadable)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/t9 300
+  out=$(panel_run "$root" convocar p1 --judges claude,codex --repo proj --diff fm/t9 \
+    --criteria-from typo-task-id); rc=$?
+  # Naming a task ASSERTS the change has one. Handing every judge "this change
+  # has no task behind it" would be a false statement bought N times over, so
+  # the panel refuses while nothing has been spent.
+  expect_code 1 "$rc" "an unreadable --criteria-from must be refused (got: $out)"
+  assert_contains "$out" '--criteria-from' "the refusal must name the flag that failed"
+  assert_contains "$out" 'typo-task-id' "the refusal must name the task id it could not read"
+  assert_contains "$out" "$root/home/data/typo-task-id/brief.md" "the refusal must name the path it read"
+  assert_not_contains "$out" 'AVISO' "an asserted task must not degrade into the no-criteria notice"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for an unreadable criteria source"
+  assert_absent "$root/home/data/p1-claude/brief.md" "no judge task may be scaffolded either"
+  pass "fm-panel.sh: an operator-named task that reads no criteria is refused, unpaid"
+}
+
+test_criteria_from_a_task_with_an_empty_section_is_refused() {
+  local root out rc dir
+  root=$(panel_world criteria-from-empty)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/t9 300
+  mkdir -p "$root/home/data/t9"
+  # The brief exists but records nothing under "# Task": the criteria the
+  # operator pointed at are just as absent as a missing file.
+  printf '%s\n' 'preamble' '# Task' '' '# Setup' 'ignored' > "$root/home/data/t9/brief.md"
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/t9 --criteria-from t9); rc=$?
+  expect_code 1 "$rc" "an empty task section must be refused, not silently treated as no task (got: $out)"
+  assert_contains "$out" 't9' "the refusal must name the task id"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for empty criteria"
+  pass "fm-panel.sh: --criteria-from a task with an empty section is refused too"
+}
+
+test_inferred_task_that_does_not_exist_is_still_judged() {
+  local root out rc dir
+  root=$(panel_world criteria-inferred-missing)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/no-such-task 300
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/no-such-task); rc=$?
+  # A task id read off a branch name is an inference, not an assertion, so it
+  # must keep the accepted behaviour: judged, with the gap announced loudly.
+  expect_code 0 "$rc" "an inferred task that does not exist must not refuse the panel (got: $out)"
+  assert_contains "$out" 'AVISO' "the missing criteria must still be announced"
+  assert_grep 'NO HAY CRITERIOS REGISTRADOS' "$root/home/data/p1-claude/brief.md" \
+    "the judge must still be told there are no recorded criteria"
+  assert_grep 'p1-claude' "$root/spawn.log" "the judge must still be dispatched"
+  pass "fm-panel.sh: a branch whose inferred task does not exist is still judged"
 }
 
 test_explicit_criteria_win() {
@@ -497,6 +593,27 @@ test_recoger_never_folds_an_unreadable_verdict_into_agreement() {
   pass "fm-panel.sh: recoger never guesses an unreadable report into consensus"
 }
 
+test_recoger_shows_an_unclassified_judge_objection() {
+  local root out rc
+  root=$(panel_world recoger-unclassified-objection)
+  panel_roster_file "$root" p1 claude codex
+  panel_report "$root" p1 claude 'VEREDICTO: aprobar'
+  # This judge botched only its verdict line; the thing it actually saw is still
+  # in the report, and that concrete finding is what the panel was paid for.
+  panel_report "$root" p1 codex NONE 'el índice único falta en la migración'
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 1 "$rc" "a vote that could not be counted is still a defective collection"
+  assert_contains "$out" 'el índice único falta en la migración' \
+    "an unclassified judge's objection must still reach the reader"
+  assert_contains "$out" 'sin-clasificar' "the judge must be labelled unclassified"
+  assert_contains "$out" 'no se cuenta' "the reader must be told the vote was not counted"
+  # Showing what it said must not promote it into the count.
+  assert_not_contains "$out" 'UNÁNIME' "a shown objection must not become a counted vote"
+  assert_not_contains "$out" 'VEREDICTO DIVIDIDO' "an uncounted judge must not manufacture a split"
+  assert_contains "$out" 'ACUERDO PARCIAL: aprobar' "only the countable verdicts may set the headline"
+  pass "fm-panel.sh: an unclassified judge's objection is shown while its vote stays uncounted"
+}
+
 test_recoger_separates_disagreement_from_not_knowing() {
   local root out rc
   root=$(panel_world recoger-partial)
@@ -583,9 +700,14 @@ test_oversized_diff_is_refused_not_truncated
 test_diff_materializes_one_shared_subject
 test_pr_without_remote_points_at_diff
 test_pr_resolves_through_the_clone_origin
+test_pr_failure_after_the_fetch_leaves_no_ref_behind
 test_pr_refuses_a_foreign_github_repository
+test_pr_refuses_a_repository_whose_name_merely_starts_the_same
 test_criteria_come_from_the_task_behind_the_branch
 test_change_without_a_task_says_so_loudly
+test_unreadable_criteria_from_is_refused_before_any_judge
+test_criteria_from_a_task_with_an_empty_section_is_refused
+test_inferred_task_that_does_not_exist_is_still_judged
 test_explicit_criteria_win
 test_convocar_refuses_to_reconvoke_a_panel
 test_convocar_refuses_to_overwrite_a_judge
@@ -593,6 +715,7 @@ test_recoger_requires_existing_judges
 test_recoger_reports_unanimity_as_teaching_nothing
 test_recoger_leads_with_the_split_and_the_objections
 test_recoger_never_folds_an_unreadable_verdict_into_agreement
+test_recoger_shows_an_unclassified_judge_objection
 test_recoger_separates_disagreement_from_not_knowing
 test_recoger_tolerates_verdict_decoration
 test_recoger_fails_when_a_verdict_is_missing

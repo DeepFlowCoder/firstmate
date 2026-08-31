@@ -65,8 +65,15 @@
 # assumes a remote exists: local-only projects use --diff, which is the primary
 # path, and --pr refuses with that pointer rather than failing obscurely. The
 # fetch writes only an additive private ref under refs/fm-panel/, never a branch,
-# HEAD, index or working tree, and the ref is removed once the diff bytes are
-# captured.
+# HEAD, index or working tree, and the ref is removed on every way out of the
+# resolution - the captured diff and every refusal after the fetch alike - so a
+# failed convocation never costs the operator a ref to clean up by hand.
+#
+# --criteria-from is an ASSERTION that the change has a task; an fm/<task> branch
+# name is only an INFERENCE. So a --criteria-from that reads no criteria refuses
+# before any judge is dispatched, rather than telling N paid judges the change
+# has no task behind it, while an inferred id that resolves to nothing falls
+# through to the announced no-criteria path like any other ad-hoc change.
 #
 # Judges must open their report with a VEREDICTO: line so verdicts can be
 # counted. An unparseable report is reported as unclassified and never guessed
@@ -137,6 +144,7 @@ github_slug() {
     *) return 0 ;;
   esac
   rest=${rest%%/pull/*}
+  rest=${rest%/}
   rest=${rest%.git}
   case "$rest" in
     */*) printf '%s\n' "$rest" ;;
@@ -211,6 +219,19 @@ split_judges() {
   printf '%s\n' "$1" | tr ',' '\n' | sed '/^[[:space:]]*$/d'
 }
 
+# drop_panel_refs <project-dir>: delete every private ref this run added under
+# refs/fm-panel/. Registered as an EXIT trap by resolve_change_subject, which
+# runs in a command substitution, so it fires on every way out of that subshell
+# - including a die() before the diff is captured - and the operator's clone is
+# always left with the ref space it had.
+drop_panel_refs() {
+  local dir=$1 ref
+  for ref in "${FM_PANEL_REFS[@]:-}"; do
+    [ -n "$ref" ] || continue
+    git -C "$dir" update-ref -d "$ref" >/dev/null 2>&1 || true
+  done
+}
+
 # --- convocar ---------------------------------------------------------------
 
 # resolve_change_subject <panel-dir> <project-dir> <repo> <kind> <target> <max-bytes>
@@ -219,7 +240,10 @@ split_judges() {
 resolve_change_subject() {
   local panel_dir=$1 project_dir=$2 repo=$3 kind=$4 target=$5 max_bytes=$6
   local base head_ref head_label task_hint n slug origin size shortstat
-  local -a cleanup_refs=()
+
+  FM_PANEL_REFS=()
+  # shellcheck disable=SC2064  # expand the clone path now; the ref list is read at trap time
+  trap "drop_panel_refs '$project_dir'" EXIT
 
   git -C "$project_dir" rev-parse --git-dir >/dev/null 2>&1 ||
     die "project clone is not a git repository: $project_dir"
@@ -232,26 +256,26 @@ resolve_change_subject() {
     origin=$(git -C "$project_dir" remote get-url origin 2>/dev/null) ||
       die "project '$repo' has no 'origin' remote, so a PR cannot describe its changes; judge the local branch instead with --diff <branch>"
     # Cross-check owner/repo only when BOTH sides are GitHub, so a PR URL can
-    # never quietly resolve against a different repository's clone. A non-GitHub
-    # origin has no slug to compare, and the fetch below is the check there.
+    # never quietly resolve against a different repository's clone. Both sides
+    # are normalized to owner/repo and compared for EQUALITY: a substring test
+    # would let a PR of firstmate resolve against a clone of firstmate-docs. A
+    # non-GitHub origin has no slug to compare, and the fetch below is the check
+    # there.
     slug=$(github_slug "$target")
     case "$origin" in
       *github.com*)
-        if [ -n "$slug" ]; then
-          case "$origin" in
-            *"$slug"*) ;;
-            *) die "PR $target names $slug but '$repo' points at $origin; refusing to judge a different repository's change" ;;
-          esac
+        if [ -n "$slug" ] && [ "$slug" != "$(github_slug "$origin")" ]; then
+          die "PR $target names $slug but '$repo' points at $origin; refusing to judge a different repository's change"
         fi
         ;;
     esac
     git -C "$project_dir" fetch --quiet origin \
       "+refs/pull/$n/head:refs/fm-panel/pull/$n/head" 2>/dev/null ||
       die "cannot fetch PR #$n from '$repo' origin; check the PR number and network access"
-    cleanup_refs+=("refs/fm-panel/pull/$n/head")
+    FM_PANEL_REFS+=("refs/fm-panel/pull/$n/head")
     if git -C "$project_dir" fetch --quiet origin \
       "+refs/heads/$base:refs/fm-panel/base/$base" 2>/dev/null; then
-      cleanup_refs+=("refs/fm-panel/base/$base")
+      FM_PANEL_REFS+=("refs/fm-panel/base/$base")
       base="refs/fm-panel/base/$base"
     fi
     head_ref="refs/fm-panel/pull/$n/head"
@@ -277,15 +301,9 @@ resolve_change_subject() {
   fi
   shortstat=$(git -C "$project_dir" diff --shortstat "$base...$head_ref" -- | sed 's/^[[:space:]]*//')
 
-  # The clone is left with its ref space exactly as found. The fetched objects
-  # stay, which is what any fetch leaves behind and is harmless.
-  local ref
-  for ref in "${cleanup_refs[@]:-}"; do
-    if [ -n "$ref" ]; then
-      git -C "$project_dir" update-ref -d "$ref" 2>/dev/null || true
-    fi
-  done
-
+  # The clone is left with its ref space exactly as found; the EXIT trap set at
+  # the top does that on this path and on every refusal above. The fetched
+  # objects stay, which is what any fetch leaves behind and is harmless.
   size=$(wc -c < "$panel_dir/subject.diff" | tr -d '[:space:]')
   if [ "$size" -eq 0 ]; then
     rm -f "$panel_dir/subject.diff"
@@ -342,15 +360,26 @@ convocar() {
     resolved=$(resolve_change_subject "$panel_dir" "$project_dir" "$repo" "$kind" "$target" "$max_bytes")
     IFS='|' read -r base head_label shortstat task_hint <<< "$resolved"
 
-    if [ -z "$criteria" ]; then
-      [ -n "$criteria_from" ] || criteria_from=$task_hint
-      if [ -n "$criteria_from" ] && criteria=$(brief_task_section "$DATA/$criteria_from/brief.md"); then
-        criteria_src="$DATA/$criteria_from/brief.md"
-      else
-        criteria=""
-      fi
-    else
+    # An operator who names a task ASSERTS that the change has one. If that id
+    # reads no criteria, the assertion is wrong and the panel refuses here,
+    # before a single judge is dispatched, rather than telling every judge the
+    # change has no task behind it. An id merely INFERRED from an fm/<task>
+    # branch is not an assertion, so it falls through to the no-criteria path
+    # like any other change without a task.
+    if [ -n "$criteria" ]; then
       criteria_src="--criteria"
+    elif [ -n "$criteria_from" ]; then
+      criteria=$(brief_task_section "$DATA/$criteria_from/brief.md") ||
+        die "--criteria-from '$criteria_from' no entrega criterios: $DATA/$criteria_from/brief.md no existe o no tiene una sección '# Task' con contenido.
+  Dijiste que este cambio tiene una tarea detrás, así que el panel se niega antes de
+  gastar un veredicto por juez en criterios que no son los que pediste.
+  Corrige el id, pasa los criterios con --criteria, o quita --criteria-from si el
+  cambio de verdad no tiene tarea."
+      criteria_src="$DATA/$criteria_from/brief.md"
+    elif [ -n "$task_hint" ] && criteria=$(brief_task_section "$DATA/$task_hint/brief.md"); then
+      criteria_src="$DATA/$task_hint/brief.md"
+    else
+      criteria=""
     fi
 
     {
@@ -584,6 +613,13 @@ recoger() {
       sin-clasificar)
         printf '   %s · %s\n' "$judge" "$verdict"
         printf '     %s\n' 'entregó reporte pero sin la línea VEREDICTO:; su voto no se cuenta'
+        # An objection is not a vote. A judge that botched only its verdict line
+        # still saw something, and hiding what it said would throw away the
+        # signal the panel was paid for. It stays out of the count above.
+        if [ -n "$objections" ]; then
+          printf '     %s\n' 'objeciones que sí dejó (no cuentan como voto):'
+          printf '%s\n' "$objections" | sed 's/^/     · /'
+        fi
         printf '     reporte: %s\n' "$DATA/$panel-$judge/report.md"
         continue
         ;;
