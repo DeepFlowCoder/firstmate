@@ -552,12 +552,21 @@ __FM_BEARINGS_BOARD_DATA__
     if (d === null || todayNumber === null) return null;
     return todayNumber - d;
   }
-  function agoText(text) {
-    var n = daysBefore(text);
+  function agoDays(n) {
     if (n === null) return null;
     if (n <= 0) return "today";
     if (n === 1) return "yesterday";
     return n + " days ago";
+  }
+  function agoText(text) { return agoDays(daysBefore(text)); }
+  function agoDay(n) {
+    return n === null || todayNumber === null ? null : agoDays(todayNumber - n);
+  }
+  /* The snapshot writes "-" when a queued row has neither a hold nor a blocked
+     reason. It is a placeholder, not a sentence, so it never becomes a subtitle. */
+  function reasonText(t) {
+    var r = t && typeof t.reason === "string" ? t.reason.trim() : "";
+    return r === "-" ? "" : r;
   }
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
 
@@ -622,9 +631,7 @@ __FM_BEARINGS_BOARD_DATA__
   var yardLastLaunch = lanes.reduce(function (best, l) {
     return l.lastLaunch !== null && (best === null || l.lastLaunch > best) ? l.lastLaunch : best;
   }, null);
-  var lastLaunchText = yardLastLaunch === null
-    ? null
-    : agoText(new Date(yardLastLaunch * DAY_MS).toISOString().slice(0, 10));
+  var lastLaunchText = agoDay(yardLastLaunch);
 
   var headline;
   if (totalWays > 0) {
@@ -632,8 +639,18 @@ __FM_BEARINGS_BOARD_DATA__
       + buildingLanes + " of " + plural(lanes.length, "project", "projects")
       + (totalQueued ? ", and " + totalQueued + " more in the order book." : ".");
   } else if (totalQueued > 0) {
-    headline = "Nothing is being built right now. "
-      + plural(totalOrder + chartedMoreQueued, "order is", "orders are") + " clear to start.";
+    /* Only dispatchable rows are capacity. `charted_more` counts omitted QUEUED
+       rows whatever their disposition, so it can never be read as clear to
+       start, and a yard whose whole book is held says so rather than
+       announcing zero orders above a sub-line that names the held ones. */
+    var stopped = "Nothing is being built right now. ";
+    if (totalOrder > 0) {
+      headline = stopped + plural(totalOrder, "order is", "orders are") + " clear to start.";
+    } else if (totalDock > 0) {
+      headline = stopped + plural(totalDock, "order is", "orders are") + " held in dry dock.";
+    } else {
+      headline = stopped + plural(totalQueued, "order waits", "orders wait") + " in the order book.";
+    }
   } else if (lanes.length) {
     headline = "The yard is clear - nothing building, nothing ordered.";
   } else {
@@ -829,6 +846,9 @@ __FM_BEARINGS_BOARD_DATA__
     if (l.ways.length) return plural(l.ways.length, "hull", "hulls") + " on the ways";
     if (l.order.length) return "clear to start - " + plural(l.order.length, "order waits", "orders wait") + " for a crew";
     if (l.dock.length) return "nothing building - " + plural(l.dock.length, "order is", "orders are") + " held";
+    /* A call is not a berth - it lives in the Captain's Call deck - but it IS
+       recorded activity, so a lane holding only one must not read as empty. */
+    if (l.call.length) return "waiting on your word";
     if (l.launched.length) return "quiet since the last launch";
     return "no recorded activity in the current baseline";
   }
@@ -901,7 +921,7 @@ __FM_BEARINGS_BOARD_DATA__
     if (l.call.length) head.appendChild(badge("solid", plural(l.call.length, "needs you", "need you")));
     if (l.lastLaunch !== null) {
       head.appendChild(el("span", "bb-lane__launch",
-        "last launch " + agoText(new Date(l.lastLaunch * DAY_MS).toISOString().slice(0, 10))));
+        "last launch " + agoDay(l.lastLaunch)));
     }
     card.appendChild(head);
 
@@ -956,11 +976,12 @@ __FM_BEARINGS_BOARD_DATA__
         var orderRows = berth(drawer, "Clear to start");
         l.order.forEach(function (t) {
           var waited = agoText(t.since);
+          var why = reasonText(t);
           orderRows.appendChild(workRow({
             pick: t.id,
             title: t.title,
-            sub: t.reason || (waited ? "ordered " + waited : "waiting for a crew"),
-            when: waited && t.reason ? waited : null
+            sub: why || (waited ? "ordered " + waited : "waiting for a crew"),
+            when: waited && why ? waited : null
           }));
         });
       }
@@ -993,7 +1014,7 @@ __FM_BEARINGS_BOARD_DATA__
       });
     }
 
-    if (!l.ways.length && !depth && !l.launched.length) {
+    if (!l.ways.length && !depth && !l.launched.length && !l.call.length) {
       card.appendChild(el("div", "bb-empty", "Nothing recorded for this project in the current baseline."));
     }
 

@@ -405,12 +405,14 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | select(.structured and .captain_actionable == true)
          | select(($all_decisions == 1) or (.deferred_marker != true))
          | {id,key:.id,verb:"captain-hold",
-            summary:((.title + ": " + .hold_reason) | trunc(90)),owner:"(main)"} ]
+            summary:((.title + ": " + .hold_reason) | trunc(90)),owner:"(main)",
+            repo:(.repo // null)} ]
      + [ (.secondmate_current.records // [])[] as $m | $m.decisions_open[]?
          | select(.source == "backlog" and .verb == "captain-hold")
          | select(($all_decisions == 1) or (.deferred_marker != true))
          | {id:($m.id + "/" + .id),key,verb,
-            summary:(((.summary // .id) + ": " + (.reason // "captain decision pending")) | trunc(90)),owner:$m.id} ]) as $decisions_all
+            summary:(((.summary // .id) + ": " + (.reason // "captain decision pending")) | trunc(90)),owner:$m.id,
+            repo:(.repo // null)} ]) as $decisions_all
   | ([ .backlog.records[]
          | select(.structured and .captain_actionable == true and .deferred_marker == true) ]
      + [ (.secondmate_current.records // [])[] | .decisions_open[]?

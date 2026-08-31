@@ -286,6 +286,12 @@ test_an_empty_lane_names_which_empty_it_is() {
       and ([.lanes[] | select(.name == "quiet") | .reading] == ["quiet since the last launch"])
       and ([.lanes[] | select(.name == "quiet") | .launch] == ["last launch 7 days ago"])
   ' >/dev/null || fail "the empty lanes do not read as distinct kinds of empty: $out"
+  # the yard report must agree with the sub-line under it: nothing is clear to
+  # start here, so it names the hold instead of announcing zero capacity
+  printf '%s' "$out" | jq -e '
+    .headline == "Nothing is being built right now. 1 order is held in dry dock."
+      and (.headlineSub | test("1 held in dry dock"))
+  ' >/dev/null || fail "a wholly held yard reported its capacity as a zero: $out"
   # nothing anywhere reads as "no record", never as abandonment
   printf '%s' "$out" | jq -e '[.lanes[].reading] | map(select(test("abandon"))) | length == 0' \
     >/dev/null || fail "the board called a lane abandoned from current state alone: $out"
@@ -293,6 +299,77 @@ test_an_empty_lane_names_which_empty_it_is() {
   printf '%s' "$out" | jq -e '[.lanes[] | select(.name == "quiet") | .gauge] == [[]]' >/dev/null \
     || fail "a lane with nothing in progress still drew a progress gauge: $out"
   pass "an empty lane names which empty it is instead of implying abandonment"
+}
+
+# ---------------------------------------------------------------------------
+# `charted_more` counts omitted QUEUED rows whatever their disposition, so it
+# can never be spent as available capacity: a yard whose whole visible book is
+# held must not report the truncated remainder as clear to start.
+# ---------------------------------------------------------------------------
+test_omitted_queued_work_is_never_reported_as_available_capacity() {
+  local home out
+  home=$(make_home held-more)
+  out=$(render "$home" '{
+    "charted": [
+      {"id":"held-visible","repo":"sample","title":"Held order","reason":"waiting on the vendor",
+       "dispatchable":false,"since":"2026-08-10"}
+    ],
+    "charted_more": 3}')
+
+  printf '%s' "$out" | jq -e '(.headline | test("clear to start") | not)' >/dev/null \
+    || fail "omitted queued rows were reported as work the fleet could start: $out"
+  printf '%s' "$out" | jq -e '
+    .headline == "Nothing is being built right now. 1 order is held in dry dock."
+  ' >/dev/null || fail "the yard report does not name what actually holds the book: $out"
+  # the omitted rows are still disclosed as depth, just never as capacity
+  [ "$(stat_n "$out" "order book")" = 4 ] \
+    || fail "the order-book tally dropped omitted queued work: $out"
+  pass "omitted queued work is disclosed as depth and never counted as clear to start"
+}
+
+# ---------------------------------------------------------------------------
+# A lane can hold nothing but a Captain's Call item: the snapshot keeps a
+# captain-held task out of the charted rows entirely, so the call is the lane's
+# only content. It must not then read as a lane with nothing recorded.
+# ---------------------------------------------------------------------------
+test_a_lane_holding_only_a_captains_call_still_reads_as_recorded() {
+  local home out lane
+  home=$(make_home call-only)
+  out=$(render "$home" '{
+    "captains_call": [
+      {"key":"cutover-call","type":"decision","repo":"seawall","title":"Pick the cutover date",
+       "about":"two windows are open","decide":"which window?",
+       "options":[{"value":"early","label":"Early window"},{"value":"late","label":"Late window"}]}
+    ]}')
+  lane=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "seawall")')
+
+  printf '%s' "$lane" | jq -e '.reading == "waiting on your word"' >/dev/null \
+    || fail "a lane whose only item awaits the captain contradicts its own badge: $lane"
+  printf '%s' "$lane" | jq -e '[.badges[].text] == ["1 needs you"]' >/dev/null \
+    || fail "the lane lost the badge saying it waits on the captain: $lane"
+  printf '%s' "$lane" | jq -e '.empty == []' >/dev/null \
+    || fail "a lane holding a live captain decision claimed nothing was recorded: $lane"
+  pass "a lane holding only a Captain's Call reads as waiting, not as unrecorded"
+}
+
+# ---------------------------------------------------------------------------
+# The snapshot writes "-" when a queued row has neither a hold nor a blocked
+# reason. It is a placeholder, not a sentence, so it must never displace the
+# one datum a dispatchable row does carry: how long it has waited.
+# ---------------------------------------------------------------------------
+test_a_placeholder_reason_never_displaces_the_wait_age() {
+  local home out
+  home=$(make_home placeholder)
+  out=$(render "$home" '{
+    "charted": [
+      {"id":"placeholder-order","repo":"sample","title":"Ready order","reason":"-",
+       "dispatchable":true,"since":"2026-08-24"}
+    ]}')
+  printf '%s' "$out" | jq -e '
+    [.lanes[0].berths[] | select(.label == "Clear to start") | .rows[] | {s:.sub, w:.when}]
+      == [{s:"ordered 2 days ago", w:""}]
+  ' >/dev/null || fail "a placeholder reason was rendered instead of the wait age: $out"
+  pass "a placeholder reason falls back to the row's wait age"
 }
 
 # ---------------------------------------------------------------------------
@@ -408,7 +485,10 @@ test_integrity_warnings_never_enter_a_lane
 test_a_yard_of_only_warnings_reports_no_work_at_all
 test_omitted_warnings_never_count_as_more_queued
 test_omitted_queued_work_is_reported_against_the_yard
+test_omitted_queued_work_is_never_reported_as_available_capacity
 test_an_empty_lane_names_which_empty_it_is
+test_a_lane_holding_only_a_captains_call_still_reads_as_recorded
+test_a_placeholder_reason_never_displaces_the_wait_age
 test_ages_are_read_against_the_payload_not_the_clock
 test_a_row_with_no_recorded_project_keeps_its_own_lane
 test_work_on_the_ways_shows_state_and_never_an_invented_age
