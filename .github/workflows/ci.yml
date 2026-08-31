@@ -362,6 +362,24 @@ jobs:
           if-no-files-found: warn
 
   # Aggregate per-lane timing into one summary artifact for critical-path review.
+  #
+  # Reporting only: this job renders no verdict about the tree. The merge logic
+  # it invokes is owned and asserted by tests/fm-test-run.test.sh
+  # (test_aggregate_json), which runs in the portable lanes above, so a real
+  # --aggregate-json regression is caught there and reddens a lane rather than
+  # this job. What is left here is artifact production.
+  #
+  # continue-on-error because this job holds the last position in the graph -
+  # it needs all eleven behavior lanes - and so it is the one most exposed to
+  # anything that refuses a runner late in a run. Run 33355095863 is the
+  # measured case: job 99377569318 was created and completed three seconds
+  # later having executed zero steps, carrying one annotation, "The job was not
+  # started because recent account payments have failed or your spending limit
+  # needs to be increased." Every other job in that run was green, and replaying
+  # this step over that run's own uploaded artifacts aggregates clean:
+  # lanes=11 total=175 failed=0. A summary artifact failing to be built is not a
+  # reason to call the tree broken; a lane is. This does NOT weaken any
+  # assertion, and it must not be extended to a job that makes one.
   tests-timing-aggregate:
     name: Behavior timing aggregate
     runs-on: ubuntu-latest
@@ -371,6 +389,7 @@ jobs:
       - tests-portable-serial
       - tests-herdr
     if: always()
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - name: Download lane timing artifacts
