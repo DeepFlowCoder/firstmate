@@ -669,6 +669,74 @@ test_a_record_dated_after_the_snapshot_renders_no_age() {
 }
 
 # ---------------------------------------------------------------------------
+# Refusing to AGE a forward-dated launch is not enough on its own: the lane
+# still has to pick which launch it saw most recently, and a date the snapshot
+# cannot yet have seen must not be eligible to win that. Otherwise one mistyped
+# year takes the crown, shows no age of its own, and hides the genuine launch
+# beside it - and because the yard report maxes over the lane figures, one bad
+# row anywhere would drop "last launch" for the whole fleet. Losing a true
+# signal is as wrong as inventing a false one.
+# ---------------------------------------------------------------------------
+test_a_forward_dated_launch_does_not_hide_a_real_one() {
+  local home out lane
+  home=$(make_home launch-recency)
+  # `generated` is 2026-08-26: the real launch is 6 days back, the typo a year on
+  out=$(render "$home" '{
+    "landed": [
+      {"id":"real-launch","repo":"seawall","what":"Landed for real","owner":"firstmate",
+       "landed_on":"2026-08-20"},
+      {"id":"typo-launch","repo":"seawall","what":"Landed on a mistyped year",
+       "owner":"firstmate","landed_on":"2027-01-05"}
+    ]}')
+  lane=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "seawall")')
+
+  # the lane reports the launch it could actually have seen, and still refuses
+  # to age the one it could not
+  printf '%s' "$lane" | jq -e '.launch == "last launch 6 days ago"' >/dev/null \
+    || fail "a mistyped launch date hid the most recent real launch: $lane"
+  printf '%s' "$lane" | jq -e '
+    [.berths[] | select(.label == "Launched") | .rows[] | {t:.title, w:.when}] == [
+      {t:"Landed for real", w:"6 days ago"},
+      {t:"Landed on a mistyped year", w:""}
+    ]
+  ' >/dev/null || fail "the real launch lost its age, or the mistyped one gained one: $lane"
+  # and the reading it prints has a date behind it
+  printf '%s' "$lane" | jq -e '.reading == "quiet since the last launch"' >/dev/null \
+    || fail "a lane with a datable launch stopped reading as quiet since it: $lane"
+  # one bad row must not silence the fleet-level recency line
+  printf '%s' "$out" | jq -e '.headlineSub | test("last launch 6 days ago")' >/dev/null \
+    || fail "one mistyped row dropped the yard report's last-launch line: $out"
+  pass "a forward-dated launch never outranks the most recent real one"
+}
+
+# ---------------------------------------------------------------------------
+# The lane head's reading and its launch chip must agree. A lane holding only
+# launches the board cannot date has no date to point at, so it must not say it
+# has been quiet SINCE one - that would name evidence the head does not carry.
+# ---------------------------------------------------------------------------
+test_a_lane_whose_launches_are_all_undated_promises_no_launch() {
+  local home lane
+  home=$(make_home undated-launches)
+  lane=$(render "$home" '{
+    "landed": [
+      {"id":"undated-launch","repo":"driftyard","what":"Landed undated",
+       "owner":"firstmate","landed_on":null},
+      {"id":"prose-launch","repo":"driftyard","what":"Landed on prose",
+       "owner":"firstmate","landed_on":"last sprint"}
+    ]}' | jq -c '.lanes[] | select(.name == "driftyard")')
+
+  printf '%s' "$lane" | jq -e '.launch == ""' >/dev/null \
+    || fail "a lane with no datable launch still drew a last-launch chip: $lane"
+  printf '%s' "$lane" | jq -e '.reading == "quiet - no launch here carries a usable date"' \
+    >/dev/null || fail "the lane pointed at a launch date its head does not carry: $lane"
+  # the launches themselves are still recorded, just not dated
+  printf '%s' "$lane" | jq -e '
+    [.berths[] | select(.label == "Launched") | .rows[] | .when] == ["", ""]
+  ' >/dev/null || fail "an undated launch was dropped or given an age: $lane"
+  pass "a lane whose launches are all undated does not promise a launch date"
+}
+
+# ---------------------------------------------------------------------------
 # Work under construction deliberately carries no age: the only date the
 # records hold is when it was FILED, so a tempo would be invented.
 # ---------------------------------------------------------------------------
@@ -744,4 +812,6 @@ test_only_the_unnamed_lane_carries_a_row_identity
 test_a_recorded_value_that_is_not_a_date_renders_no_age
 test_a_day_the_calendar_does_not_have_renders_no_age
 test_a_record_dated_after_the_snapshot_renders_no_age
+test_a_forward_dated_launch_does_not_hide_a_real_one
+test_a_lane_whose_launches_are_all_undated_promises_no_launch
 test_work_on_the_ways_shows_state_and_never_an_invented_age

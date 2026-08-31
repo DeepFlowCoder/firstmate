@@ -635,7 +635,16 @@ __FM_BEARINGS_BOARD_DATA__
   lanes.forEach(function (l) {
     l.lastLaunch = l.launched.reduce(function (best, t) {
       var d = dayNumber(t.landed_on);
-      return d !== null && (best === null || d > best) ? d : best;
+      if (d === null) return best;
+      /* This picks which launch the snapshot saw most recently, so one the
+         snapshot cannot yet have seen must not be eligible to win it: otherwise
+         a single mistyped year takes the crown, renders no age of its own, and
+         hides the real launch beside it - and through yardLastLaunch it would
+         drop the recency line for the whole fleet. With no usable `generated`
+         there is nothing to compare against, so every launch stays eligible
+         rather than none. */
+      if (todayNumber !== null && d > todayNumber) return best;
+      return best === null || d > best ? d : best;
     }, null);
     l.load = l.ways.length + l.dock.length + l.order.length;
   });
@@ -885,7 +894,12 @@ __FM_BEARINGS_BOARD_DATA__
     /* A call is not a berth - it lives in the Captain's Call deck - but it IS
        recorded activity, so a lane holding only one must not read as empty. */
     if (l.call.length) return "waiting on your word";
-    return "quiet since the last launch";
+    /* The reading and the launch chip beside it must agree: a lane can only say
+       it has been quiet SINCE a launch when it has a launch date to show. When
+       every launch it holds is undated or unusable, it says that instead of
+       pointing at a date the head does not carry. */
+    if (l.lastLaunch !== null) return "quiet since the last launch";
+    return "quiet - no launch here carries a usable date";
   }
   function laneTone(l) {
     if (l.call.length) return "call";
