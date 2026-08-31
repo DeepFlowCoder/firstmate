@@ -98,6 +98,16 @@ panel_report() {
   printf 'done: veredicto emitido\n' >> "$root/home/state/$panel-$judge.status"
 }
 
+# panel_report_raw <root> <panel> <judge>: a fixture verdict whose exact bytes
+# come from stdin, for the reports the verdict contract cannot describe (no
+# marker, or more than one), plus the done: status line recoger waits on.
+panel_report_raw() {
+  local root=$1 panel=$2 judge=$3
+  mkdir -p "$root/home/data/$panel-$judge"
+  cat > "$root/home/data/$panel-$judge/report.md"
+  printf 'done: veredicto emitido\n' >> "$root/home/state/$panel-$judge.status"
+}
+
 # panel_roster_file <root> <panel> <judge...>
 panel_roster_file() {
   local root=$1 panel=$2
@@ -224,7 +234,8 @@ test_question_still_convokes_a_prose_panel() {
   assert_grep '¿Rebase o merge?' "$brief_a" "the judge must receive the question"
   assert_grep 'el repo tiene 3 ramas vivas' "$brief_a" "the judge must receive the shared context"
   # A prose panel is classified by the same contract, so recoger has one path.
-  assert_grep 'VEREDICTO: aprobar' "$brief_a" "a prose judge must get the countable verdict contract too"
+  assert_grep 'VEREDICTO' "$brief_a" "a prose judge must get the countable verdict contract too"
+  assert_grep 'condicional' "$brief_a" "a prose judge must be told every allowed verdict"
   cmp -s "$brief_a" "$brief_b" || fail "judges must receive byte-identical instructions"
   assert_absent "$root/home/data/p1/subject.diff" "a prose panel must not materialize a diff"
   pass "fm-panel.sh: --question still convokes a fair prose panel"
@@ -292,8 +303,8 @@ test_diff_materializes_one_shared_subject() {
   # The fair-comparison property: identical instructions, only the harness differs.
   cmp -s "$brief_a" "$brief_b" || fail "judges must receive byte-identical instructions"
   assert_grep "$root/home/data/p1/subject.diff" "$brief_a" "the brief must point at the shared diff"
-  assert_grep 'VEREDICTO: aprobar' "$brief_a" "the brief must state the countable verdict contract"
-  assert_grep 'OBJECION:' "$brief_a" "the brief must ask for a concrete objection"
+  assert_grep 'VEREDICTO' "$brief_a" "the brief must state the countable verdict contract"
+  assert_grep 'OBJECION' "$brief_a" "the brief must ask for a concrete objection"
   assert_grep 'HEADER' "$brief_a" "the scaffold around the task must survive filling"
 
   assert_line "$root/home/data/p1/judges" 'claude' "the roster must record each judge"
@@ -302,6 +313,32 @@ test_diff_materializes_one_shared_subject() {
   assert_grep '--harness codex' "$root/spawn.log" "each judge must be spawned on its own harness"
   assert_contains "$out" 'veredictos de pago' "convocar must state the panel's cost up front"
   pass "fm-panel.sh: --diff materializes one shared subject for every judge"
+}
+
+test_judge_brief_carries_no_line_the_parser_would_count() {
+  local root out rc dir brief
+  root=$(panel_world brief-no-decoy)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/work); rc=$?
+  expect_code 0 "$rc" "the panel must convoke (got: $out)"
+  brief="$root/home/data/p1-claude/brief.md"
+  # The brief is the generated interface handed to a judge, and recoger reads a
+  # judge's report with these exact patterns. An instruction line that matches
+  # them is a decoy the judge can quote back and the parser would count as a
+  # vote, so the contract has to be described rather than exemplified.
+  grep -qiE '^[[:space:]]*[-*#[:space:]]*VEREDICTO[[:space:]]*:' "$brief" &&
+    fail "no brief line may match the verdict pattern recoger counts"
+  grep -qiE '^[[:space:]]*[-*#[:space:]]*OBJECI[^:]*:' "$brief" &&
+    fail "no brief line may match the objection pattern recoger renders"
+  # Describing the markers must not cost the judge the instructions.
+  assert_grep 'VEREDICTO' "$brief" "the brief must still name the verdict marker"
+  assert_grep 'OBJECION' "$brief" "the brief must still name the objection marker"
+  assert_grep 'aprobar' "$brief" "the brief must still list every allowed verdict"
+  assert_grep 'condicional' "$brief" "the brief must still list every allowed verdict"
+  assert_grep 'rechazar' "$brief" "the brief must still list every allowed verdict"
+  assert_grep 'EXACTAMENTE UNA VEZ' "$brief" "the brief must say the verdict line appears exactly once"
+  pass "fm-panel.sh: a judge brief describes the verdict markers instead of printing them"
 }
 
 test_pr_without_remote_points_at_diff() {
@@ -364,6 +401,10 @@ test_pr_failure_after_the_fetch_leaves_no_ref_behind() {
 
   out=$(panel_run "$root" convocar p1 --judges claude --repo proj --pr 7); rc=$?
   expect_code 1 "$rc" "a PR that cannot be diffed against the base must fail (got: $out)"
+  # Pin the failure this reproduces: an empty ref space also holds when the fetch
+  # never ran, which would let the test pass green without ever reaching the
+  # die-after-fetch path it exists to cover.
+  assert_contains "$out" 'cannot diff' "the refusal must be the one that happens AFTER the fetch (got: $out)"
   # The clone belongs to the operator, not to the panel: a refusal must not cost
   # them a ref they now have to find and delete by hand.
   [ -z "$(git -C "$dir" for-each-ref 'refs/fm-panel/**')" ] ||
@@ -447,6 +488,8 @@ test_unreadable_criteria_from_is_refused_before_any_judge() {
   assert_not_contains "$out" 'AVISO' "an asserted task must not degrade into the no-criteria notice"
   assert_absent "$root/spawn.log" "no judge may be dispatched for an unreadable criteria source"
   assert_absent "$root/home/data/p1-claude/brief.md" "no judge task may be scaffolded either"
+  # Every other refusal in this script leaves nothing materialized behind.
+  assert_absent "$root/home/data/p1/subject.diff" "a refused convocation must not leave its diff on disk"
   pass "fm-panel.sh: an operator-named task that reads no criteria is refused, unpaid"
 }
 
@@ -593,6 +636,54 @@ test_recoger_never_folds_an_unreadable_verdict_into_agreement() {
   pass "fm-panel.sh: recoger never guesses an unreadable report into consensus"
 }
 
+test_recoger_refuses_a_report_that_quotes_the_verdict_contract() {
+  local root out rc
+  root=$(panel_world recoger-quoted-contract)
+  panel_roster_file "$root" p1 claude codex
+  panel_report "$root" p1 claude 'VEREDICTO: aprobar'
+  # This judge echoes the format it was handed and then states the opposite.
+  # Reading the FIRST marker would count it as approving and turn a real
+  # rejection into unanimity - a verdict no judge cast.
+  panel_report_raw "$root" p1 codex <<'REPORT'
+## El formato que me pidieron
+    VEREDICTO: aprobar
+    VEREDICTO: condicional
+    VEREDICTO: rechazar
+
+VEREDICTO: rechazar
+OBJECION: la migración borra la tabla de sesiones
+REPORT
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 1 "$rc" "a report whose verdict lines cannot be told apart is a defective collection"
+  assert_contains "$out" 'sin-clasificar' "an undecidable verdict must be reported as unclassified"
+  assert_not_contains "$out" 'UNÁNIME' "a quoted example must never be counted as this judge's vote"
+  assert_contains "$out" 'ACUERDO PARCIAL: aprobar' "only the one countable verdict may set the headline"
+  # The uncounted judge still said something concrete, and that survives.
+  assert_contains "$out" 'la migración borra la tabla de sesiones' \
+    "the unclassified judge's objection must still reach the reader"
+  pass "fm-panel.sh: a report quoting the verdict contract is never counted by its first marker"
+}
+
+test_recoger_refuses_a_report_with_two_verdicts() {
+  local root out rc
+  root=$(panel_world recoger-two-verdicts)
+  panel_roster_file "$root" p1 claude
+  panel_report_raw "$root" p1 claude <<'REPORT'
+VEREDICTO: aprobar
+
+Pensándolo mejor, no:
+VEREDICTO: rechazar
+REPORT
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 1 "$rc" "two verdict lines cannot be told apart, so nothing may be counted"
+  assert_contains "$out" 'sin-clasificar' "an ambiguous report must be reported as unclassified"
+  # Neither by position nor by luck: taking the first or the last would each
+  # declare a winner among readings the report never distinguished.
+  assert_contains "$out" 'SIN VEREDICTOS LEGIBLES' "neither of the two verdicts may be counted"
+  assert_not_contains "$out" 'UNÁNIME' "picking one of two readings would fabricate a verdict"
+  pass "fm-panel.sh: a report carrying two verdict lines counts neither of them"
+}
+
 test_recoger_shows_an_unclassified_judge_objection() {
   local root out rc
   root=$(panel_world recoger-unclassified-objection)
@@ -698,6 +789,7 @@ test_diff_rejects_unknown_branch
 test_diff_rejects_empty_change
 test_oversized_diff_is_refused_not_truncated
 test_diff_materializes_one_shared_subject
+test_judge_brief_carries_no_line_the_parser_would_count
 test_pr_without_remote_points_at_diff
 test_pr_resolves_through_the_clone_origin
 test_pr_failure_after_the_fetch_leaves_no_ref_behind
@@ -715,6 +807,8 @@ test_recoger_requires_existing_judges
 test_recoger_reports_unanimity_as_teaching_nothing
 test_recoger_leads_with_the_split_and_the_objections
 test_recoger_never_folds_an_unreadable_verdict_into_agreement
+test_recoger_refuses_a_report_that_quotes_the_verdict_contract
+test_recoger_refuses_a_report_with_two_verdicts
 test_recoger_shows_an_unclassified_judge_objection
 test_recoger_separates_disagreement_from_not_knowing
 test_recoger_tolerates_verdict_decoration

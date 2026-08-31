@@ -76,8 +76,14 @@
 # through to the announced no-criteria path like any other ad-hoc change.
 #
 # Judges must open their report with a VEREDICTO: line so verdicts can be
-# counted. An unparseable report is reported as unclassified and never guessed
-# into agreement: a fabricated consensus is the one output this tool must not
+# counted, and EXACTLY ONE line of the report may carry that marker. Two such
+# lines are two readings that cannot be told apart, so both are refused rather
+# than resolved by position: taking the first would let a judge that quotes the
+# format contract before its own verdict be counted as approving. For the same
+# reason the brief describes the marker instead of printing an example of it, so
+# no instruction the judge is handed can be mistaken for the judge's answer.
+# An unparseable report is reported as unclassified and never guessed into
+# agreement: a fabricated consensus is the one output this tool must not
 # produce.
 set -euo pipefail
 
@@ -172,14 +178,19 @@ brief_task_section() {
 # report_format_contract: the machine-countable part of every judge prompt.
 # recoger can only report a split it can read, so this text is the contract that
 # makes N independent reports comparable.
+#
+# The markers are DESCRIBED, never shown as example lines. recoger counts the
+# marker lines of a report, so an example printed here would come back quoted
+# inside a judge's answer and be counted as a second vote. No line this function
+# emits may match the patterns verdict_of and objections_of read.
 report_format_contract() {
   printf '%s\n' '## Formato obligatorio del reporte'
-  printf '%s\n' 'La PRIMERA línea de tu reporte debe ser exactamente una de estas tres:'
-  printf '%s\n' '    VEREDICTO: aprobar'
-  printf '%s\n' '    VEREDICTO: condicional'
-  printf '%s\n' '    VEREDICTO: rechazar'
-  printf '%s\n' 'Si tu veredicto NO es "aprobar", añade después una línea por cada objeción concreta:'
-  printf '%s\n' '    OBJECION: <una frase; el problema concreto, no una categoría>'
+  printf '%s\n' 'La PRIMERA línea de tu reporte debe ser la palabra VEREDICTO, dos puntos, y UNA SOLA de estas tres opciones:'
+  printf '%s\n' '    aprobar'
+  printf '%s\n' '    condicional'
+  printf '%s\n' '    rechazar'
+  printf '%s\n' 'Esa línea aparece EXACTAMENTE UNA VEZ en todo el reporte. No repitas este formato ni cites ejemplos de él: dos líneas de veredicto no se pueden distinguir, así que tu voto quedaría sin contar.'
+  printf '%s\n' 'Si tu veredicto NO es aprobar, añade después una línea por cada objeción concreta. Cada una empieza por la palabra OBJECION, dos puntos, y una sola frase con el problema concreto, no una categoría.'
   printf '%s\n' 'Esa objeción es lo único que se muestra junto a tu voto, así que escríbela sola en pie.'
   printf '%s\n' 'Sin ese formato tu voto no se puede contar y el panel te reporta como sin clasificar.'
   printf '%s\n' 'Debajo del formato, escribe el razonamiento completo: el reporte ES tu veredicto.'
@@ -369,12 +380,14 @@ convocar() {
     if [ -n "$criteria" ]; then
       criteria_src="--criteria"
     elif [ -n "$criteria_from" ]; then
-      criteria=$(brief_task_section "$DATA/$criteria_from/brief.md") ||
+      criteria=$(brief_task_section "$DATA/$criteria_from/brief.md") || {
+        rm -f "$panel_dir/subject.diff"
         die "--criteria-from '$criteria_from' no entrega criterios: $DATA/$criteria_from/brief.md no existe o no tiene una sección '# Task' con contenido.
   Dijiste que este cambio tiene una tarea detrás, así que el panel se niega antes de
   gastar un veredicto por juez en criterios que no son los que pediste.
   Corrige el id, pasa los criterios con --criteria, o quita --criteria-from si el
   cambio de verdad no tiene tarea."
+      }
       criteria_src="$DATA/$criteria_from/brief.md"
     elif [ -n "$task_hint" ] && criteria=$(brief_task_section "$DATA/$task_hint/brief.md"); then
       criteria_src="$DATA/$task_hint/brief.md"
@@ -438,16 +451,21 @@ convocar() {
 # verdict_of <report>: one of VERDICTS. Never guesses: a report without the
 # contract's marker is unclassified, not agreement.
 verdict_of() {
-  local report=$1 line token
+  local report=$1 pattern line token count
+  pattern='^[[:space:]]*[-*#[:space:]]*VEREDICTO[[:space:]]*:'
   if [ ! -f "$report" ]; then
     printf '%s\n' sin-veredicto
     return 0
   fi
-  line=$(grep -m1 -iE '^[[:space:]]*[-*#[:space:]]*VEREDICTO[[:space:]]*:' "$report" 2>/dev/null || true)
-  if [ -z "$line" ]; then
+  # Exactly one marker line is countable. None means the contract was not
+  # followed; two or more are readings that cannot be told apart, and resolving
+  # them by position would pick a winner the report never declared.
+  count=$(grep -icE "$pattern" "$report" 2>/dev/null || true)
+  if [ "${count:-0}" -ne 1 ]; then
     printf '%s\n' sin-clasificar
     return 0
   fi
+  line=$(grep -m1 -iE "$pattern" "$report")
   # ASCII-only on purpose, under LC_ALL=C so the classification is byte-identical
   # everywhere: the three contract tokens are ASCII, and folding any other byte
   # (an accent, a markdown bullet, a stray emoji) to a separator is exactly what
