@@ -350,13 +350,12 @@ test_a_host_killed_identity_stat_is_not_reported_as_a_status_file_fault() {
   mkdir -p "$shim"
   cat > "$shim/stat" <<SH
 #!/usr/bin/env bash
-case " \$* " in
-  *'%d:%i'*)
-    "$real_stat" "\$@"
-    printf 'x' >> "$crashes"
-    kill -TERM \$\$
-    ;;
-esac
+for arg in "\$@"; do
+  [ "\$arg" = '%d:%i' ] || continue
+  "$real_stat" "\$@"
+  printf 'x' >> "$crashes"
+  kill -TERM \$\$
+done
 exec "$real_stat" "\$@"
 SH
   chmod +x "$shim/stat"
@@ -384,6 +383,73 @@ SH
     || fail "the open decision disappeared once the identity stat recovered: $(command cat "$out")"
 
   pass "a host-killed identity stat keeps its signal status out to the refusal"
+}
+
+# The platform is read once and reused so the stat readers stop forking uname
+# per call, which means a single crashed uname fork now decides how EVERY later
+# read is spelled. The watcher and the away-mode daemon hold this library open
+# for hours, so pinning that crash would turn one transient host fault into
+# permanent misreads reported as I/O failures of the status file - worse than
+# the per-call fork it replaced. Two shapes, both through the real drain: a
+# uname that never answers must refuse and say the platform is what could not be
+# read, and a uname that fails only the once the library resolves it at source
+# time must cost that one read and nothing after it.
+test_a_crashed_platform_read_is_not_pinned_for_the_process_lifetime() {
+  local dir state statusfile out err rc always once marker real_uname
+  dir=$(make_case platform-read-crashed)
+  state="$dir/state"
+  statusfile="$state/task9.status"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  always="$dir/shim-always"
+  once="$dir/shim-once"
+  marker="$dir/first-platform-read"
+  real_uname=$(command -v uname) || fail "no uname on PATH to build the shim from"
+
+  mkdir -p "$always" "$once"
+  cat > "$always/uname" <<SH
+#!/usr/bin/env bash
+[ "\$1" != -s ] || kill -TERM \$\$
+exec "$real_uname" "\$@"
+SH
+  # The library resolves the platform when it is sourced, and that is the first
+  # `uname -s` the drain runs, so failing exactly one call lands on it.
+  cat > "$once/uname" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = -s ] && [ ! -e "$marker" ]; then
+  : > "$marker"
+  kill -TERM \$\$
+fi
+exec "$real_uname" "\$@"
+SH
+  chmod +x "$always/uname" "$once/uname"
+
+  printf 'needs-decision [key=p]: a call the captain still owes\n' > "$statusfile"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the injected platform failure failed"
+
+  rc=0
+  PATH="$always:$PATH" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "an unresolvable platform let the drain exit green, so a guessed read reads as nothing being open"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "an unresolvable platform stopped refusing loudly: $(command cat "$err")"
+  grep -F 'could not resolve this platform' "$err" >/dev/null \
+    || fail "the refusal did not name the platform read as what failed: $(command cat "$err")"
+  grep -F 'genuine I/O failure' "$err" >/dev/null \
+    && fail "an unresolvable platform was blamed on the status file: $(command cat "$err")"
+
+  PATH="$once:$PATH" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "one crashed platform read outlived itself and failed the whole drain: $(command cat "$err")"
+  [ -e "$marker" ] \
+    || fail "the uname shim was never reached, so no platform read was exercised"
+  grep -F 'task9' "$out" | grep -F '[key=p]' >/dev/null \
+    || fail "the open decision disappeared after a single crashed platform read: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "wake drain did not recover after the injected platform failures"
+
+  pass "a crashed platform read costs one read, not the life of the process"
 }
 
 # The captain's decisions reach the captain through this drain, so "nothing
@@ -726,6 +792,7 @@ test_same_size_rewrite_is_detected_via_inode_identity
 test_read_failure_refuses_loudly_and_preserves_state_for_retry
 test_refusal_tells_a_killed_reader_apart_from_a_genuine_io_failure
 test_a_host_killed_identity_stat_is_not_reported_as_a_status_file_fault
+test_a_crashed_platform_read_is_not_pinned_for_the_process_lifetime
 test_unreadable_status_never_exits_green_and_empty_while_a_decision_is_open
 test_open_decisions_fold_read_failure_refuses_instead_of_claiming_nothing_is_open
 test_cursor_commit_failure_after_a_full_presentation_notices_and_stays_green
