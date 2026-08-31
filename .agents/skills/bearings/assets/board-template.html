@@ -551,8 +551,17 @@ __FM_BEARINGS_BOARD_DATA__
     if (typeof text !== "string") return null;
     var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
     if (!m) return null;
-    var n = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-    return isNaN(n) ? null : Math.floor(n / DAY_MS);
+    var y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]);
+    var n = Date.UTC(y, mo, d);
+    if (isNaN(n)) return null;
+    /* A day the calendar does not have rolls over rather than failing, so
+       "2026-02-30" would come back as March 2nd and date an order to a month it
+       was never filed in. Read the value back: a number that does not describe
+       the day it was written is not a date, and gets the same no-age answer
+       unparseable prose already gets. */
+    var back = new Date(n);
+    if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo || back.getUTCDate() !== d) return null;
+    return Math.floor(n / DAY_MS);
   }
   var todayNumber = dayNumber(data.generated);
   function daysBefore(text) {

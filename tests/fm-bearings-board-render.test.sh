@@ -578,6 +578,50 @@ test_a_recorded_value_that_is_not_a_date_renders_no_age() {
 }
 
 # ---------------------------------------------------------------------------
+# A hand-edited backlog can record a day the calendar does not have - February
+# 30th is an ordinary slip - and such a value is numerically well formed, so it
+# gets past the shape check that stops prose. Left alone it does not merely
+# render a wrong age, it renders a FORWARD one: dated after `generated`, the
+# order reads "ordered today" for work filed the month before, and the lane
+# claims a launch it never had. That is the invented tempo the board exists to
+# refuse, so an impossible day must render no age, exactly as prose does.
+# ---------------------------------------------------------------------------
+test_a_day_the_calendar_does_not_have_renders_no_age() {
+  local home out
+  home=$(make_home rollover-dates)
+  # `generated` is 2026-08-26, so a rolled-over date lands in the FUTURE and
+  # would read as "today" rather than as an obviously stale age
+  out=$(render "$home" '{
+    "landed": [
+      {"id":"rollover-landed","repo":"sample","what":"Landed on a missing day",
+       "owner":"firstmate","landed_on":"2026-09-31"}
+    ],
+    "charted": [
+      {"id":"rollover-order","repo":"sample","title":"Ordered on a missing day","reason":"",
+       "dispatchable":true,"since":"2026-02-30"},
+      {"id":"real-order","repo":"sample","title":"Ordered on a real day","reason":"",
+       "dispatchable":true,"since":"2026-08-24"}
+    ]}')
+
+  printf '%s' "$out" | jq -e '.error == ""' >/dev/null \
+    || fail "an impossible date made the board render its fail-closed error: $out"
+  # the impossible day carries no age; the real one beside it is untouched
+  printf '%s' "$out" | jq -e '
+    [.lanes[0].berths[] | select(.label == "Clear to start") | .rows[] | {t:.title, w:.when, s:.sub}] == [
+      {t:"Ordered on a missing day", w:"", s:"waiting for a crew"},
+      {t:"Ordered on a real day", w:"", s:"ordered 2 days ago"}
+    ]
+  ' >/dev/null || fail "an impossible day was dated, or a real day beside it was lost: $out"
+  printf '%s' "$out" | jq -e '
+    [.lanes[0].berths[] | select(.label == "Launched") | .rows[] | .when] == [""]
+  ' >/dev/null || fail "a launch on an impossible day was given an age: $out"
+  # the lane head takes the same path, so it must not claim a launch it cannot date
+  printf '%s' "$out" | jq -e '.lanes[0].launch == ""' >/dev/null \
+    || fail "the lane claimed a last launch from a day the calendar does not have: $out"
+  pass "a day the calendar does not have renders no age instead of a rolled-over one"
+}
+
+# ---------------------------------------------------------------------------
 # Work under construction deliberately carries no age: the only date the
 # records hold is when it was FILED, so a tempo would be invented.
 # ---------------------------------------------------------------------------
@@ -651,4 +695,5 @@ test_a_placeholder_reason_never_becomes_a_subtitle
 test_ages_are_read_against_the_payload_not_the_clock
 test_only_the_unnamed_lane_carries_a_row_identity
 test_a_recorded_value_that_is_not_a_date_renders_no_age
+test_a_day_the_calendar_does_not_have_renders_no_age
 test_work_on_the_ways_shows_state_and_never_an_invented_age
