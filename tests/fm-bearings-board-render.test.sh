@@ -168,8 +168,7 @@ test_dry_dock_and_clear_to_start_are_different_berths() {
       and (.berths[1].rows[0]
            | .pickable == false
              and ([.badges[] | .text] == ["held"])
-             and .sub == "blocked on the cutover"
-             and .id == "sample")
+             and .sub == "blocked on the cutover")
   ' >/dev/null || fail "held work is still pickable or still unexplained: $lane"
   printf '%s' "$lane" | jq -e '.drawer.split == "in the order book · 1 clear to start, 1 held in dry dock"' \
     >/dev/null || fail "the order-book summary does not state the split: $lane"
@@ -426,21 +425,33 @@ test_ages_are_read_against_the_payload_not_the_clock() {
 # The deliberate no-repo marker must not silently drop a row. In that lane the
 # head says only "no project recorded", so every berth has to carry the routing
 # id itself - it is the row's only identity and what the captain answers with.
+#
+# The discriminator is the lane, not the row: a NAMED lane's head already says
+# the project, so an identity column there would repeat it on every row and
+# spend width the title and the reason need at mobile size. This asserts the
+# structural half of that rule. The width half is a browser measurement - the
+# DOM shim below has no layout engine and cannot observe it.
 # ---------------------------------------------------------------------------
-test_a_row_with_no_recorded_project_keeps_its_own_lane() {
-  local home out orphan
+test_only_the_unnamed_lane_carries_a_row_identity() {
+  local home out orphan named
   home=$(make_home norepo)
   out=$(render "$home" '{
     "underway": [
-      {"id":"orphan-task","repo":null,"kind":"scout","state":"working","doing":"investigating"}
+      {"id":"orphan-task","repo":null,"kind":"scout","state":"working","doing":"investigating"},
+      {"id":"named-task","repo":"sample","kind":"ship","state":"working","doing":"building"}
     ],
     "landed": [
       {"id":"orphan-landed","repo":null,"what":"Delivered a report","owner":"firstmate",
-       "landed_on":"2026-08-25"}
+       "landed_on":"2026-08-25"},
+      {"id":"named-landed","repo":"sample","what":"Shipped the cutover","owner":"firstmate",
+       "landed_on":"2026-08-24"}
     ],
     "charted": [
-      {"id":"named","repo":"sample","title":"Named order","reason":"",
+      {"id":"named-order","repo":"sample","title":"Named order","reason":"",
        "dispatchable":true,"since":"2026-08-21"},
+      {"id":"named-held","repo":"sample","title":"Named held",
+       "reason":"waiting on the vendor to confirm the cutover window",
+       "dispatchable":false,"since":"2026-08-09"},
       {"id":"orphan-order","repo":null,"title":"Orphan order","reason":"",
        "dispatchable":true,"since":"2026-08-23"},
       {"id":"orphan-held","repo":null,"title":"Orphan held",
@@ -452,9 +463,10 @@ test_a_row_with_no_recorded_project_keeps_its_own_lane() {
   ' >/dev/null || fail "a row with no recorded project was dropped or merged: $out"
 
   orphan=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "no project recorded")')
-  # Every berth names the row it is showing, and the identity is reported apart
-  # from the sub because it renders outside the block that truncates - a
-  # sentence-length reason must not be what decides whether a row can be named.
+  named=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "sample")')
+
+  # the unnamed lane: every berth names the row it is showing, reported apart
+  # from the sub because it renders outside the block that truncates
   printf '%s' "$orphan" | jq -e '
     [.berths[] | {l:.label, ids:[.rows[].id]}] == [
       {l:"On the ways",   ids:["orphan-task"]},
@@ -463,11 +475,23 @@ test_a_row_with_no_recorded_project_keeps_its_own_lane() {
       {l:"Launched",      ids:["orphan-landed"]}
     ]
   ' >/dev/null || fail "a berth in the unassigned lane rendered a row with no identity: $orphan"
+
+  # the named lane: no identity column anywhere, on any berth
+  printf '%s' "$named" | jq -e '
+    [.berths[] | .rows[] | .id] | unique == [""]
+  ' >/dev/null || fail "a named lane repeated its own name as a per-row identity: $named"
+  # and the row still says what it needs to say
+  printf '%s' "$named" | jq -e '
+    ([.berths[] | select(.label == "Dry dock") | .rows[].sub]
+       == ["waiting on the vendor to confirm the cutover window"])
+      and ([.berths[] | select(.label == "Launched") | .rows[].sub]
+       == ["delivered · firstmate"])
+  ' >/dev/null || fail "a named lane's rows lost their own text: $named"
   printf '%s' "$orphan" | jq -e '
     [.berths[] | select(.label == "Dry dock") | .rows[].sub]
       == ["waiting on the vendor to confirm the cutover window"]
   ' >/dev/null || fail "the held row lost its reason: $orphan"
-  pass "a row with no recorded project keeps its own lane and shows its id"
+  pass "only the unnamed lane carries a per-row identity"
 }
 
 # ---------------------------------------------------------------------------
@@ -576,6 +600,6 @@ test_an_empty_lane_names_which_empty_it_is
 test_a_lane_holding_only_a_captains_call_still_reads_as_recorded
 test_a_placeholder_reason_never_becomes_a_subtitle
 test_ages_are_read_against_the_payload_not_the_clock
-test_a_row_with_no_recorded_project_keeps_its_own_lane
+test_only_the_unnamed_lane_carries_a_row_identity
 test_a_recorded_value_that_is_not_a_date_renders_no_age
 test_work_on_the_ways_shows_state_and_never_an_invented_age
