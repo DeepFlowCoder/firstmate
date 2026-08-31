@@ -10,25 +10,40 @@ permissions:
   contents: read
 
 jobs:
-  # Run 33307176505 lost this job 5m44s in: ShellCheck took SIGKILL and the
-  # runner logged "The runner has received a shutdown signal", so the step ended
-  # 143 with no diagnostics. The trigger is NOT attributable from that log and is
-  # deliberately not guessed at here - a reclaimed VM and a host out of memory
-  # both produce exactly those two lines in that order. What IS measured, from
-  # bin/fm-lint.sh --telemetry over the full 343-root set at this head: jobs=2
-  # peaks at 1.84 GiB in one worker and 3.36 GiB summed, against the 7 GiB a
-  # private-repo ubuntu-latest runner has. That figure is macOS, not this
-  # runner's Linux, so treat it as an order of magnitude and not as a budget:
-  # it says headroom is thin, not that it ran out. Green runs took 15m03s,
-  # 15m19s, and 15m27s (33302016000, 33303193664, 33305702246) and the lane is
-  # clean at this head. Before trading that wall time away for headroom - the
-  # obvious lever is FM_LINT_JOBS=1, which halves the peak and needs a cap here -
-  # get a run that actually names memory: fm-lint.sh now says on stderr when it
-  # was signalled before reaching a verdict, so the next occurrence separates
-  # "the lint failed" from "the lint never finished".
+  # Every observed 143 on this lane is a runner shutdown, not a lint verdict.
+  # Against the API per attempt, not the log view that folds attempts: job
+  # 99553610219 attempt 1 and job 99558734177 attempt 2 both failed with the
+  # runner's "shutdown signal" line, and job 99565342352 attempt 3 - a manual
+  # relaunch, i.e. a fresh attempt on a fresh runner - went green with zero
+  # shutdown lines. Two of two failures were shutdowns and the only green was a
+  # new attempt, so the remedy for the observed mode is a fresh job attempt, not
+  # an in-step retry. A shutdown signal goes to the whole process group, which
+  # kills the step's wrapping `bash -e` before any in-step retry branch can run,
+  # so that retry is deliberately not encoded here.
+  #
+  # The signal exits stay unambiguous when they do reach this job: bin/fm-lint.sh
+  # installs its own traps (bin/fm-lint.sh:325-331) so HUP/INT/TERM leave as
+  # 129/130/143 with "interrupted ... no lint verdict was reached" on stderr,
+  # while a real verdict is always 0, 1, or 2. No code path here could retry a
+  # genuine verdict into green.
+  #
+  # FM_LINT_JOBS=1 stays unpulled. A reclaimed runner sends SIGTERM; the OOM
+  # killer and systemd-oomd send SIGKILL, and a killed ShellCheck comes back as a
+  # worker status the parent replays as a real verdict rather than as 143.
+  # Pulling that lever would also double the wall (worker_wall_sum 1841s against
+  # 998s wall at jobs=2), and wall time is exactly what a reclaimed runner feeds
+  # on. Latest telemetry, same macOS method as the earlier figure: 3.03 GiB peak
+  # in one worker and 5.84 GiB summed at 345 roots, up from 1.84/3.36 GiB at
+  # 343. That is tight against the 7 GiB a private-repo ubuntu-latest runner has
+  # and deserves a Linux re-measurement, but no observed failure here has been a
+  # memory kill.
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    # Cap is a tripwire, not the expected end of the lane: green runs take
+    # 15m03s-15m34s, while run 33353469575 sat 61 minutes on the 6-hour default
+    # before reporting.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
       - name: Install pinned ShellCheck
