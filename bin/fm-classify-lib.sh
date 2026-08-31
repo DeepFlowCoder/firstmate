@@ -9,7 +9,9 @@
 #
 # Most functions are pure, side-effect-free reads of status files: each takes
 # what it needs as arguments and touches no globals beyond the optional
-# FM_CAPTAIN_RE override. Consumers layer their own dedup/marker state on top (the
+# FM_CAPTAIN_RE override and the memoized platform answer the stat readers share
+# (_fm_classify_resolve_platform owns that cache and why a failed uname read is
+# never what it keeps). Consumers layer their own dedup/marker state on top (the
 # daemon keeps its escalation-digest seen-markers; the watcher keeps its .seen-*
 # signatures).
 # Status-span classification captures one file endpoint and reports every
