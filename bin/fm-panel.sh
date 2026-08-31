@@ -75,6 +75,14 @@
 # has no task behind it, while an inferred id that resolves to nothing falls
 # through to the announced no-criteria path like any other ad-hoc change.
 #
+# Inference applies ONLY to a branch named fm/<task>, because that convention is
+# what makes the branch name a task id at all. A --diff branch outside it is
+# refused instead of guessed: reading data/<branch>/brief.md for an arbitrary
+# name would hand every paid judge an unrelated task's criteria on nothing more
+# than a name collision. --criteria or --criteria-from lifts the refusal, and a
+# PR never infers (its head carries no branch name), so --pr keeps the announced
+# no-criteria path.
+#
 # Judges must open their report with a VEREDICTO: line so verdicts can be
 # counted, and EXACTLY ONE line of the report may carry that marker. Two such
 # lines are two readings that cannot be told apart, so both are refused rather
@@ -82,9 +90,12 @@
 # format contract before its own verdict be counted as approving. For the same
 # reason the brief describes the marker instead of printing an example of it, so
 # no instruction the judge is handed can be mistaken for the judge's answer.
-# An unparseable report is reported as unclassified and never guessed into
-# agreement: a fabricated consensus is the one output this tool must not
-# produce.
+# A report that cannot be counted is never guessed into agreement - a fabricated
+# consensus is the one output this tool must not produce - and it is reported
+# under the bucket that says WHICH way it failed: no marker line, more than one,
+# or one whose value is not a verdict. Collapsing those into a single "unreadable"
+# would send the operator hunting for a missing line that is in fact duplicated
+# or misspelled.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,9 +110,10 @@ DEFAULT_EFFORT="high"
 DEFAULT_TIMEOUT="1800"
 DEFAULT_MAX_DIFF_BYTES="200000"
 
-# Verdict buckets, in the order recoger prints them. The two trailing buckets are
-# not verdicts: they are the ways a judge can fail to deliver one.
-VERDICTS=(aprobar condicional rechazar sin-clasificar sin-veredicto)
+# Verdict buckets, in the order recoger prints them. The four trailing buckets are
+# not verdicts: they are the distinct ways a judge can fail to deliver one, kept
+# apart so the operator is told which failure to go fix.
+VERDICTS=(aprobar condicional rechazar sin-marca voto-doble voto-ilegible sin-veredicto)
 
 usage() {
   awk 'NR > 1 && /^# ---$/ { exit } NR > 1 && /^#/ { sub(/^# ?/, ""); print }' "$0"
@@ -299,7 +311,12 @@ resolve_change_subject() {
       die "branch '$target' does not exist in '$repo'"
     head_ref=$target
     head_label="rama $target"
-    task_hint=${target#fm/}
+    # Only the fm/<task> convention makes a branch name a task id. Any other
+    # name is left with no hint at all rather than looked up as if it were one.
+    case "$target" in
+      fm/*) task_hint=${target#fm/} ;;
+      *) task_hint="" ;;
+    esac
   fi
 
   git -C "$project_dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
@@ -389,8 +406,19 @@ convocar() {
   cambio de verdad no tiene tarea."
       }
       criteria_src="$DATA/$criteria_from/brief.md"
-    elif [ -n "$task_hint" ] && criteria=$(brief_task_section "$DATA/$task_hint/brief.md"); then
-      criteria_src="$DATA/$task_hint/brief.md"
+    elif [ -n "$task_hint" ]; then
+      if criteria=$(brief_task_section "$DATA/$task_hint/brief.md"); then
+        criteria_src="$DATA/$task_hint/brief.md"
+      else
+        criteria=""
+      fi
+    elif [ "$kind" = diff ]; then
+      rm -f "$panel_dir/subject.diff"
+      die "la rama '$target' no sigue la convención fm/<tarea>, así que de su nombre no se puede inferir ninguna tarea ni sus criterios de aceptación.
+  Buscar data/$target/brief.md por si acaso sería adivinar: una coincidencia de nombre
+  entregaría a cada juez de pago los criterios de otra tarea.
+  Pasa los criterios con --criteria \"<texto>\", nómbralos con --criteria-from <task-id>,
+  o juzga la rama fm/<tarea> a la que pertenece el cambio."
     else
       criteria=""
     fi
@@ -448,8 +476,10 @@ convocar() {
 
 # --- recoger ----------------------------------------------------------------
 
-# verdict_of <report>: one of VERDICTS. Never guesses: a report without the
-# contract's marker is unclassified, not agreement.
+# verdict_of <report>: one of VERDICTS. Never guesses, and names the failure it
+# actually found rather than one collapsed "unreadable": no report at all, no
+# marker line, more than one marker line, or a marker line that is not a verdict
+# are four different things to go fix.
 verdict_of() {
   local report=$1 pattern line token count
   pattern='^[[:space:]]*[-*#[:space:]]*VEREDICTO[[:space:]]*:'
@@ -457,12 +487,16 @@ verdict_of() {
     printf '%s\n' sin-veredicto
     return 0
   fi
-  # Exactly one marker line is countable. None means the contract was not
-  # followed; two or more are readings that cannot be told apart, and resolving
-  # them by position would pick a winner the report never declared.
+  # Exactly one marker line is countable. None means the judge never voted; two
+  # or more are readings that cannot be told apart, and resolving them by
+  # position would pick a winner the report never declared.
   count=$(grep -icE "$pattern" "$report" 2>/dev/null || true)
-  if [ "${count:-0}" -ne 1 ]; then
-    printf '%s\n' sin-clasificar
+  if [ "${count:-0}" -eq 0 ]; then
+    printf '%s\n' sin-marca
+    return 0
+  fi
+  if [ "$count" -gt 1 ]; then
+    printf '%s\n' voto-doble
     return 0
   fi
   line=$(grep -m1 -iE "$pattern" "$report")
@@ -470,12 +504,12 @@ verdict_of() {
   # everywhere: the three contract tokens are ASCII, and folding any other byte
   # (an accent, a markdown bullet, a stray emoji) to a separator is exactly what
   # keeps "VEREDICTO: **aprobar**." and "veredicto:  aprobar" reading the same
-  # while anything genuinely off-contract still falls through to sin-clasificar.
+  # while anything genuinely off-contract still falls through to voto-ilegible.
   # shellcheck disable=SC2018,SC2019  # accent-folding is the intent, not an oversight
   token=$(printf '%s' "${line#*:}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z' ' ' | awk '{print $1}')
   case "$token" in
     aprobar | condicional | rechazar) printf '%s\n' "$token" ;;
-    *) printf '%s\n' sin-clasificar ;;
+    *) printf '%s\n' voto-ilegible ;;
   esac
 }
 
@@ -541,7 +575,7 @@ recoger() {
   missing=0
   for verdict in "${verdicts[@]}"; do
     case "$verdict" in
-      sin-veredicto | sin-clasificar) missing=$((missing + 1)) ;;
+      sin-veredicto | sin-marca | voto-doble | voto-ilegible) missing=$((missing + 1)) ;;
       *) countable+=("$verdict") ;;
     esac
   done
@@ -616,7 +650,7 @@ recoger() {
   fi
   echo
 
-  local objections
+  local objections note
   for i in "${!judge_list[@]}"; do
     judge=${judge_list[$i]}
     verdict=${verdicts[$i]}
@@ -628,9 +662,17 @@ recoger() {
         printf '     %s\n' 'no entregó reporte dentro del plazo'
         continue
         ;;
-      sin-clasificar)
+      sin-marca | voto-doble | voto-ilegible)
+        # Each of these says what to go fix; only the last is the judge writing
+        # something unreadable. Naming the wrong one sends the operator hunting
+        # for a missing line that is really duplicated, or the reverse.
+        case "$verdict" in
+          sin-marca) note='entregó reporte pero sin ninguna línea VEREDICTO:, así que no llegó a votar' ;;
+          voto-doble) note='entregó más de una línea VEREDICTO:, así que votó varias veces y ninguna lectura se puede elegir' ;;
+          *) note='su única línea VEREDICTO: no dice aprobar, condicional ni rechazar, así que no se puede leer' ;;
+        esac
         printf '   %s · %s\n' "$judge" "$verdict"
-        printf '     %s\n' 'entregó reporte pero sin la línea VEREDICTO:; su voto no se cuenta'
+        printf '     %s; su voto no se cuenta\n' "$note"
         # An objection is not a vote. A judge that botched only its verdict line
         # still saw something, and hiding what it said would throw away the
         # signal the panel was paid for. It stays out of the count above.

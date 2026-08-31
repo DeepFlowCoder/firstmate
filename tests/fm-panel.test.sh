@@ -374,6 +374,12 @@ test_pr_resolves_through_the_clone_origin() {
   assert_present "$root/home/data/p1/subject.diff" "the PR diff must be materialized"
   assert_grep 'added.txt' "$root/home/data/p1/subject.diff" "the PR diff must carry the real change"
   assert_grep 'PR #7' "$root/home/data/p1/subject.md" "the subject record must name the PR"
+  # A PR head carries no branch name, so a PR never infers a task. That is the
+  # announced no-criteria path, NOT the branch-convention refusal: --pr must
+  # still convoke.
+  assert_contains "$out" 'AVISO' "a PR with no named task must announce the gap, not refuse"
+  assert_grep 'NO HAY CRITERIOS REGISTRADOS' "$root/home/data/p1-claude/brief.md" \
+    "the judge must be told there are no recorded criteria"
   # The clone is left as found: the fetch ref is additive and removed after use.
   [ -z "$(git -C "$dir" for-each-ref 'refs/fm-panel/**')" ] ||
     fail "the private fetch ref must be removed from the project clone"
@@ -462,13 +468,59 @@ test_change_without_a_task_says_so_loudly() {
   local root out rc dir
   root=$(panel_world criteria-none)
   dir=$(panel_project "$root" proj)
-  panel_branch "$dir" scratch 300
-  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff scratch); rc=$?
+  # An fm/<task> branch whose task has no brief: inference applied and found
+  # nothing, which is the ad-hoc case decision (b) keeps judgeable.
+  panel_branch "$dir" fm/sin-tarea 300
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/sin-tarea); rc=$?
   expect_code 0 "$rc" "a change with no task must still be judgeable (got: $out)"
   assert_contains "$out" 'AVISO' "the missing criteria must be announced, not silently absent"
   assert_grep 'NO HAY CRITERIOS REGISTRADOS' "$root/home/data/p1-claude/brief.md" \
     "the judge must be told there are no recorded criteria"
   pass "fm-panel.sh: a change with no task behind it is judged, but the gap is announced"
+}
+
+test_diff_branch_outside_the_convention_refuses_to_infer() {
+  local root out rc dir
+  root=$(panel_world criteria-branch-convention)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" release 300
+  # A firstmate task happens to share this branch's name. Reading it would hand
+  # every paid judge an unrelated task's criteria on a name collision alone.
+  mkdir -p "$root/home/data/release"
+  printf '%s\n' '# Task' 'CRITERIOS DE OTRA TAREA' > "$root/home/data/release/brief.md"
+  out=$(panel_run "$root" convocar p1 --judges claude,codex --repo proj --diff release); rc=$?
+  expect_code 1 "$rc" "a branch outside the fm/<task> convention must not be used as a task id (got: $out)"
+  assert_contains "$out" 'release' "the refusal must name the branch"
+  assert_contains "$out" 'fm/<tarea>' "the refusal must name the convention it needs"
+  assert_contains "$out" '--criteria' "the refusal must point at the way to supply criteria"
+  assert_contains "$out" '--criteria-from' "the refusal must point at the way to name the task"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for criteria that could only be guessed"
+  assert_absent "$root/home/data/p1/subject.diff" "a refused convocation must not leave its diff on disk"
+  pass "fm-panel.sh: a --diff branch outside fm/<task> refuses rather than guessing a task id"
+}
+
+test_explicit_criteria_lift_the_branch_convention_refusal() {
+  local root out rc dir
+  root=$(panel_world criteria-branch-explicit)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" release 300
+  # The refusal is about INFERENCE, so supplying the criteria removes its reason.
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff release \
+    --criteria 'ACEPTACION: el corte no rompe la caja'); rc=$?
+  expect_code 0 "$rc" "explicit criteria must convoke on any branch name (got: $out)"
+  assert_grep 'ACEPTACION: el corte no rompe la caja' "$root/home/data/p1-claude/brief.md" \
+    "the explicit criteria must reach the judge"
+
+  root=$(panel_world criteria-branch-named)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" release 300
+  mkdir -p "$root/home/data/t9"
+  printf '%s\n' '# Task' 'DESDE LA TAREA NOMBRADA' > "$root/home/data/t9/brief.md"
+  out=$(panel_run "$root" convocar p2 --judges claude --repo proj --diff release --criteria-from t9); rc=$?
+  expect_code 0 "$rc" "a named task must convoke on any branch name (got: $out)"
+  assert_grep 'DESDE LA TAREA NOMBRADA' "$root/home/data/p2-claude/brief.md" \
+    "the named task's criteria must reach the judge"
+  pass "fm-panel.sh: supplying criteria lifts the branch-convention refusal"
 }
 
 test_unreadable_criteria_from_is_refused_before_any_judge() {
@@ -628,7 +680,7 @@ test_recoger_never_folds_an_unreadable_verdict_into_agreement() {
   panel_report "$root" p1 codex NONE
   out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
   expect_code 1 "$rc" "a verdict that could not be counted is a defective collection"
-  assert_contains "$out" 'sin-clasificar' "an unreadable verdict must be named as such"
+  assert_contains "$out" 'sin-marca' "a report with no verdict line must be named as such"
   assert_contains "$out" 'no se cuenta' "the reader must be told the vote was not counted"
   assert_contains "$out" 'INCOMPLETO' "an uncounted verdict must be reported as uncounted"
   assert_not_contains "$out" 'UNÁNIME' "an uncounted verdict must never be folded into agreement"
@@ -655,7 +707,7 @@ OBJECION: la migración borra la tabla de sesiones
 REPORT
   out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
   expect_code 1 "$rc" "a report whose verdict lines cannot be told apart is a defective collection"
-  assert_contains "$out" 'sin-clasificar' "an undecidable verdict must be reported as unclassified"
+  assert_contains "$out" 'voto-doble' "an undecidable verdict must be reported as more than one vote"
   assert_not_contains "$out" 'UNÁNIME' "a quoted example must never be counted as this judge's vote"
   assert_contains "$out" 'ACUERDO PARCIAL: aprobar' "only the one countable verdict may set the headline"
   # The uncounted judge still said something concrete, and that survives.
@@ -676,12 +728,53 @@ VEREDICTO: rechazar
 REPORT
   out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
   expect_code 1 "$rc" "two verdict lines cannot be told apart, so nothing may be counted"
-  assert_contains "$out" 'sin-clasificar' "an ambiguous report must be reported as unclassified"
+  assert_contains "$out" 'voto-doble' "an ambiguous report must be reported as more than one vote"
   # Neither by position nor by luck: taking the first or the last would each
   # declare a winner among readings the report never distinguished.
   assert_contains "$out" 'SIN VEREDICTOS LEGIBLES' "neither of the two verdicts may be counted"
   assert_not_contains "$out" 'UNÁNIME' "picking one of two readings would fabricate a verdict"
   pass "fm-panel.sh: a report carrying two verdict lines counts neither of them"
+}
+
+test_recoger_names_each_uncountable_cause_distinctly() {
+  local root out rc
+  root=$(panel_world recoger-causes)
+  panel_roster_file "$root" p1 mudo doble ilegible
+  # Three different things to go fix: never voted, voted more than once, wrote
+  # something that is not a verdict. One collapsed sentence would send the
+  # operator hunting for a missing line that is really duplicated or misspelled.
+  panel_report_raw "$root" p1 mudo <<'REPORT'
+Mi análisis del cambio, sin la línea que hacía falta.
+REPORT
+  panel_report_raw "$root" p1 doble <<'REPORT'
+VEREDICTO: aprobar
+VEREDICTO: rechazar
+REPORT
+  panel_report_raw "$root" p1 ilegible <<'REPORT'
+VEREDICTO: tal vez
+OBJECION: el borrado en cascada no está cubierto
+REPORT
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 1 "$rc" "a panel where nothing could be counted must exit non-zero"
+
+  assert_contains "$out" 'sin-marca' "a report with no verdict line must be named sin-marca"
+  assert_contains "$out" 'voto-doble' "a report with two verdict lines must be named voto-doble"
+  assert_contains "$out" 'voto-ilegible' "a verdict value that is not a verdict must be named voto-ilegible"
+  # Each cause states what actually happened, not a cause it never checked.
+  assert_contains "$out" 'sin ninguna línea VEREDICTO' "the silent judge must be told it never voted"
+  assert_contains "$out" 'más de una línea VEREDICTO' "the double judge must be told it voted more than once"
+  assert_contains "$out" 'no dice aprobar, condicional ni rechazar' \
+    "the unreadable judge must be told its verdict value could not be read"
+
+  # None of the three is a vote, and none may create or enable a consensus.
+  assert_contains "$out" 'SIN VEREDICTOS LEGIBLES' "no uncountable report may be counted"
+  assert_not_contains "$out" 'UNÁNIME' "uncountable reports must never produce unanimity"
+  assert_not_contains "$out" 'SIN GRIETA' "a seam cannot be ruled out on votes nobody could read"
+  assert_contains "$out" 'INCOMPLETO: 3 sin contar' "all three must be reported as uncounted"
+  # An objection is not a vote, so it survives even under an uncounted judge.
+  assert_contains "$out" 'el borrado en cascada no está cubierto' \
+    "an uncounted judge's objection must still reach the reader"
+  pass "fm-panel.sh: recoger names each way a verdict failed to count, distinctly"
 }
 
 test_recoger_shows_an_unclassified_judge_objection() {
@@ -696,7 +789,7 @@ test_recoger_shows_an_unclassified_judge_objection() {
   expect_code 1 "$rc" "a vote that could not be counted is still a defective collection"
   assert_contains "$out" 'el índice único falta en la migración' \
     "an unclassified judge's objection must still reach the reader"
-  assert_contains "$out" 'sin-clasificar' "the judge must be labelled unclassified"
+  assert_contains "$out" 'sin-marca' "the judge must be labelled with the failure it actually had"
   assert_contains "$out" 'no se cuenta' "the reader must be told the vote was not counted"
   # Showing what it said must not promote it into the count.
   assert_not_contains "$out" 'UNÁNIME' "a shown objection must not become a counted vote"
@@ -797,6 +890,8 @@ test_pr_refuses_a_foreign_github_repository
 test_pr_refuses_a_repository_whose_name_merely_starts_the_same
 test_criteria_come_from_the_task_behind_the_branch
 test_change_without_a_task_says_so_loudly
+test_diff_branch_outside_the_convention_refuses_to_infer
+test_explicit_criteria_lift_the_branch_convention_refusal
 test_unreadable_criteria_from_is_refused_before_any_judge
 test_criteria_from_a_task_with_an_empty_section_is_refused
 test_inferred_task_that_does_not_exist_is_still_judged
@@ -809,6 +904,7 @@ test_recoger_leads_with_the_split_and_the_objections
 test_recoger_never_folds_an_unreadable_verdict_into_agreement
 test_recoger_refuses_a_report_that_quotes_the_verdict_contract
 test_recoger_refuses_a_report_with_two_verdicts
+test_recoger_names_each_uncountable_cause_distinctly
 test_recoger_shows_an_unclassified_judge_objection
 test_recoger_separates_disagreement_from_not_knowing
 test_recoger_tolerates_verdict_decoration
