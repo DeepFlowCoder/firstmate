@@ -24,6 +24,15 @@
 #   --max-diff-bytes <n>       refuse a diff bigger than this (default: 200000)
 #   --timeout <seconds>        recoger only: how long to wait for every verdict
 #
+# Where acceptance criteria come from, in order: --criteria, then --criteria-from
+# <task-id>, then inferred from an fm/<task> branch name (that convention only;
+# no other branch name is read as a task id). If you NAME a source that cannot be
+# read, convocar refuses before spending a single judgement, saying which flag,
+# id and path failed. If you name none and none can be inferred, the panel is
+# convoked anyway with no criteria, and says so twice: to every judge in its
+# prompt, and to you in recoger's output, so verdicts reached without criteria
+# are never mistaken for verdicts measured against them.
+#
 # convocar scaffolds one scout brief per judge, fills it with the shared
 # subject, and spawns each on its harness. It refuses to overwrite an existing
 # judge task. recoger waits until every judge appended a done: line, then prints
@@ -76,12 +85,17 @@
 # through to the announced no-criteria path like any other ad-hoc change.
 #
 # Inference applies ONLY to a branch named fm/<task>, because that convention is
-# what makes the branch name a task id at all. A --diff branch outside it is
-# refused instead of guessed: reading data/<branch>/brief.md for an arbitrary
-# name would hand every paid judge an unrelated task's criteria on nothing more
-# than a name collision. --criteria or --criteria-from lifts the refusal, and a
-# PR never infers (its head carries no branch name), so --pr keeps the announced
-# no-criteria path.
+# what makes the branch name a task id at all. For any other branch nothing is
+# inferred: reading data/<branch>/brief.md for an arbitrary name would hand every
+# paid judge an unrelated task's criteria on nothing more than a name collision.
+#
+# That draws the line between the two states, which never share a path or a
+# message. A source we were ASKED to use but cannot read is refused, because
+# proceeding would spend the whole panel on a question nobody asked. Having
+# legitimately NOTHING to use is not an error: the ad-hoc change is the case
+# --diff exists for, so it is judged and the absence is disclosed twice - in the
+# judge prompt, and again in recoger, since an unstated absence is how a reader
+# assumes criteria existed.
 #
 # Judges must open their report with a VEREDICTO: line so verdicts can be
 # counted, and EXACTLY ONE line of the report may carry that marker. Two such
@@ -126,10 +140,19 @@ die() { echo "error: $*" >&2; exit 1; }
 # default_branch <dir>: the project's default branch, remote-tracking first so a
 # pooled clone stranded on a feature branch still resolves the real default.
 default_branch() {
-  local dir=$1 ref branch
+  local dir=$1 ref name branch
   ref=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
   if [ -n "$ref" ]; then
-    printf '%s\n' "${ref#origin/}"
+    # A bare name only resolves through refs/heads/, so a stranded clone that has
+    # the remote-tracking ref and no local branch would get a name that does not
+    # resolve - the very case this branch exists to cover. Hand back the
+    # remote-tracking ref itself there.
+    name=${ref#origin/}
+    if git -C "$dir" show-ref --verify --quiet "refs/heads/$name"; then
+      printf '%s\n' "$name"
+    else
+      printf '%s\n' "$ref"
+    fi
     return 0
   fi
   for branch in main master; do
@@ -265,8 +288,11 @@ resolve_change_subject() {
   local base head_ref head_label task_hint n slug origin size shortstat
 
   FM_PANEL_REFS=()
-  # shellcheck disable=SC2064  # expand the clone path now; the ref list is read at trap time
-  trap "drop_panel_refs '$project_dir'" EXIT
+  # The path travels in a variable, never interpolated into the trap body: a
+  # clone path containing a quote would otherwise make the body unparseable, so
+  # the handler would silently never run and the ref would survive.
+  FM_PANEL_PROJECT_DIR=$project_dir
+  trap 'drop_panel_refs "$FM_PANEL_PROJECT_DIR"' EXIT
 
   git -C "$project_dir" rev-parse --git-dir >/dev/null 2>&1 ||
     die "project clone is not a git repository: $project_dir"
@@ -373,9 +399,11 @@ convocar() {
   subject=$(mktemp)
   prompt=$(mktemp)
   # convocar runs once per invocation, so an EXIT trap reaps the scratch prompt
-  # on every path out, including a die() from the subject resolution below.
-  # shellcheck disable=SC2064  # expand the paths now; they are gone by exit time
-  trap "rm -f '$subject' '$prompt'" EXIT
+  # on every path out, including a die() from the subject resolution below. The
+  # paths travel in a variable for the same reason the ref cleanup does: an
+  # interpolated body would be unparseable for a path carrying a quote.
+  FM_PANEL_SCRATCH=("$subject" "$prompt")
+  trap 'rm -f "${FM_PANEL_SCRATCH[@]}"' EXIT
 
   criteria_src=""
   if [ "$kind" = question ]; then
@@ -388,12 +416,12 @@ convocar() {
     resolved=$(resolve_change_subject "$panel_dir" "$project_dir" "$repo" "$kind" "$target" "$max_bytes")
     IFS='|' read -r base head_label shortstat task_hint <<< "$resolved"
 
-    # An operator who names a task ASSERTS that the change has one. If that id
-    # reads no criteria, the assertion is wrong and the panel refuses here,
-    # before a single judge is dispatched, rather than telling every judge the
-    # change has no task behind it. An id merely INFERRED from an fm/<task>
-    # branch is not an assertion, so it falls through to the no-criteria path
-    # like any other change without a task.
+    # Naming a task ASSERTS the change has one, so an id that reads no criteria
+    # refuses here, before a single judge is dispatched: we cannot deliver the
+    # criteria that were asked for. Having none to deliver is a different state
+    # and never refuses - an id merely INFERRED from an fm/<task> branch, or no
+    # source at all, falls through to the no-criteria path, which is announced
+    # rather than hidden.
     if [ -n "$criteria" ]; then
       criteria_src="--criteria"
     elif [ -n "$criteria_from" ]; then
@@ -412,13 +440,6 @@ convocar() {
       else
         criteria=""
       fi
-    elif [ "$kind" = diff ]; then
-      rm -f "$panel_dir/subject.diff"
-      die "la rama '$target' no sigue la convención fm/<tarea>, así que de su nombre no se puede inferir ninguna tarea ni sus criterios de aceptación.
-  Buscar data/$target/brief.md por si acaso sería adivinar: una coincidencia de nombre
-  entregaría a cada juez de pago los criterios de otra tarea.
-  Pasa los criterios con --criteria \"<texto>\", nómbralos con --criteria-from <task-id>,
-  o juzga la rama fm/<tarea> a la que pertenece el cambio."
     else
       criteria=""
     fi
@@ -603,6 +624,16 @@ recoger() {
   printf '  %s\n' '============================================================'
   if [ -f "$DATA/$panel/subject.md" ]; then
     printf '   sujeto: %s\n' "$(sed -n "1s/^panel $panel: //p" "$DATA/$panel/subject.md")"
+    # convocar recorded which criteria these judges were given. An absence that
+    # is not stated is read as criteria that existed, so the reader is told here
+    # too, next to the headline, and not only in the prompt the judges saw.
+    case "$(sed -n 's/^criterios: //p' "$DATA/$panel/subject.md")" in
+      NINGUNO*)
+        printf '   %s\n' 'SIN CRITERIOS: este cambio no tenía criterios de aceptación registrados.'
+        printf '   %s\n' 'Cada juez opinó contra la intención declarada del cambio, no contra un criterio acordado:'
+        printf '   %s\n' 'no leas estos veredictos como "cumple lo pactado".'
+        ;;
+    esac
   fi
   echo
 

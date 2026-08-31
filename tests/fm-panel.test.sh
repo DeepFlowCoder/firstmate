@@ -138,6 +138,11 @@ test_help_documents_every_subject() {
   assert_contains "$out" '--max-diff-bytes' "help must document the size ceiling"
   # The panel is expensive on purpose; help is where that has to be visible.
   assert_contains "$out" 'automatically' "help must say nothing invokes a panel automatically"
+  # The criteria rules change what a convocation costs and what it refuses, so
+  # they must be learnable without first hitting them.
+  assert_contains "$out" 'fm/<task>' "help must say which branch names infer a task"
+  assert_contains "$out" 'refuses' "help must say a named-but-unreadable source is refused"
+  assert_contains "$out" 'no criteria' "help must say the panel proceeds when there are none"
   # The design notes below the sentinel are for maintainers, not --help readers.
   assert_not_contains "$out" 'Design notes' "help must stop at the design-note sentinel"
   pass "fm-panel.sh: --help documents all three subjects and the cost"
@@ -341,6 +346,28 @@ test_judge_brief_carries_no_line_the_parser_would_count() {
   pass "fm-panel.sh: a judge brief describes the verdict markers instead of printing them"
 }
 
+test_diff_resolves_the_base_of_a_clone_stranded_off_its_default_branch() {
+  local root out rc dir bare
+  root=$(panel_world base-stranded-clone)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  # A pooled clone sitting on a feature branch, with origin/HEAD recorded and no
+  # local default branch. The base must still resolve: --diff has no fetch to
+  # rebuild it, so a base naming a ref that does not exist hard-fails here.
+  bare="$root/origin.git"
+  git clone --quiet --bare "$dir" "$bare"
+  git -C "$dir" remote add origin "file://$bare"
+  git -C "$dir" fetch --quiet origin
+  git -C "$dir" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$dir" checkout -q fm/work
+  git -C "$dir" branch -D main >/dev/null
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/work); rc=$?
+  expect_code 0 "$rc" "a clone with only the remote-tracking default must still resolve its base (got: $out)"
+  assert_grep 'added.txt' "$root/home/data/p1/subject.diff" "the diff must be taken against the real default branch"
+  pass "fm-panel.sh: the base resolves in a clone that has only the remote-tracking default"
+}
+
 test_pr_without_remote_points_at_diff() {
   local root out rc
   root=$(panel_world pr-no-remote)
@@ -419,6 +446,31 @@ test_pr_failure_after_the_fetch_leaves_no_ref_behind() {
   pass "fm-panel.sh: a refusal after the PR fetch leaves no private ref in the clone"
 }
 
+test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote() {
+  local root out rc dir bare pr_head repo
+  root=$(panel_world pr-quoted-path)
+  # An apostrophe in the clone path is ordinary on a personal machine. If the
+  # cleanup handler is built by pasting the path into a command string, this
+  # path makes that string unparseable, so the handler silently never runs and
+  # the private ref stays in the operator's clone while the run reports success.
+  repo="ramon's-proj"
+  dir=$(panel_project "$root" "$repo")
+  panel_branch "$dir" fm/pr-work 300
+  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
+  bare="$root/origin.git"
+  git clone --quiet --bare "$dir" "$bare"
+  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
+  git -C "$dir" remote add origin "file://$bare"
+  git -C "$dir" branch -D fm/pr-work >/dev/null
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo "$repo" --pr 7); rc=$?
+  expect_code 0 "$rc" "a quoted clone path must not break the convocation (got: $out)"
+  assert_present "$root/home/data/p1/subject.diff" "the PR diff must still be materialized"
+  [ -z "$(git -C "$dir" for-each-ref 'refs/fm-panel/**')" ] ||
+    fail "the private fetch ref must be removed even when the clone path contains a quote"
+  pass "fm-panel.sh: the private ref is cleaned up even from a clone path with a quote"
+}
+
 test_pr_refuses_a_foreign_github_repository() {
   local root out rc dir
   root=$(panel_world pr-foreign)
@@ -479,7 +531,7 @@ test_change_without_a_task_says_so_loudly() {
   pass "fm-panel.sh: a change with no task behind it is judged, but the gap is announced"
 }
 
-test_diff_branch_outside_the_convention_refuses_to_infer() {
+test_adhoc_branch_is_judged_without_inferring_a_task() {
   local root out rc dir
   root=$(panel_world criteria-branch-convention)
   dir=$(panel_project "$root" proj)
@@ -489,22 +541,57 @@ test_diff_branch_outside_the_convention_refuses_to_infer() {
   mkdir -p "$root/home/data/release"
   printf '%s\n' '# Task' 'CRITERIOS DE OTRA TAREA' > "$root/home/data/release/brief.md"
   out=$(panel_run "$root" convocar p1 --judges claude,codex --repo proj --diff release); rc=$?
-  expect_code 1 "$rc" "a branch outside the fm/<task> convention must not be used as a task id (got: $out)"
-  assert_contains "$out" 'release' "the refusal must name the branch"
-  assert_contains "$out" 'fm/<tarea>' "the refusal must name the convention it needs"
-  assert_contains "$out" '--criteria' "the refusal must point at the way to supply criteria"
-  assert_contains "$out" '--criteria-from' "the refusal must point at the way to name the task"
-  assert_absent "$root/spawn.log" "no judge may be dispatched for criteria that could only be guessed"
-  assert_absent "$root/home/data/p1/subject.diff" "a refused convocation must not leave its diff on disk"
-  pass "fm-panel.sh: a --diff branch outside fm/<task> refuses rather than guessing a task id"
+  # Having nothing to use is not an error: the ad-hoc change is what --diff is
+  # for, so it is judged. Only a NAMED source that cannot be read refuses.
+  expect_code 0 "$rc" "an ad-hoc branch with no criteria source must still be judged (got: $out)"
+  assert_grep 'p1-claude' "$root/spawn.log" "the judges must be dispatched"
+  assert_no_grep 'CRITERIOS DE OTRA TAREA' "$root/home/data/p1-claude/brief.md" \
+    "a branch outside fm/<task> must never be read as a task id"
+  assert_contains "$out" 'AVISO' "convocation must announce the missing criteria"
+  assert_grep 'NO HAY CRITERIOS REGISTRADOS' "$root/home/data/p1-claude/brief.md" \
+    "every judge must be told it is judging with no recorded criteria"
+  pass "fm-panel.sh: an ad-hoc branch is judged, and its name is never read as a task id"
 }
 
-test_explicit_criteria_lift_the_branch_convention_refusal() {
+test_recoger_discloses_that_there_were_no_criteria() {
+  local root out rc dir
+  root=$(panel_world recoger-no-criteria)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" release 300
+  out=$(panel_run "$root" convocar p1 --judges claude,codex --repo proj --diff release); rc=$?
+  expect_code 0 "$rc" "the ad-hoc panel must convoke (got: $out)"
+  panel_report "$root" p1 claude 'VEREDICTO: aprobar'
+  panel_report "$root" p1 codex 'VEREDICTO: aprobar'
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 0 "$rc" "a complete panel must collect successfully (got: $out)"
+  # An absence nobody states is read as criteria that existed, so the reader of
+  # the verdicts is told too, not just the judges who wrote them.
+  assert_contains "$out" 'SIN CRITERIOS' "recoger must disclose that no criteria were supplied"
+  assert_contains "$out" 'no contra un criterio acordado' \
+    "the reader must be told what the verdicts were measured against instead"
+  pass "fm-panel.sh: recoger discloses a panel judged with no acceptance criteria"
+}
+
+test_recoger_does_not_disclose_absent_criteria_when_there_were_some() {
+  local root out rc dir
+  root=$(panel_world recoger-with-criteria)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" release 300
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff release \
+    --criteria 'ACEPTACION: el corte no rompe la caja'); rc=$?
+  expect_code 0 "$rc" "the panel must convoke with explicit criteria (got: $out)"
+  panel_report "$root" p1 claude 'VEREDICTO: aprobar'
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 0 "$rc" "a complete panel must collect successfully (got: $out)"
+  assert_not_contains "$out" 'SIN CRITERIOS' "a panel that had criteria must not claim it had none"
+  pass "fm-panel.sh: the no-criteria disclosure is absent when criteria were supplied"
+}
+
+test_explicit_criteria_win_on_any_branch_name() {
   local root out rc dir
   root=$(panel_world criteria-branch-explicit)
   dir=$(panel_project "$root" proj)
   panel_branch "$dir" release 300
-  # The refusal is about INFERENCE, so supplying the criteria removes its reason.
   out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff release \
     --criteria 'ACEPTACION: el corte no rompe la caja'); rc=$?
   expect_code 0 "$rc" "explicit criteria must convoke on any branch name (got: $out)"
@@ -520,7 +607,7 @@ test_explicit_criteria_lift_the_branch_convention_refusal() {
   expect_code 0 "$rc" "a named task must convoke on any branch name (got: $out)"
   assert_grep 'DESDE LA TAREA NOMBRADA' "$root/home/data/p2-claude/brief.md" \
     "the named task's criteria must reach the judge"
-  pass "fm-panel.sh: supplying criteria lifts the branch-convention refusal"
+  pass "fm-panel.sh: supplied criteria are used whatever the branch is called"
 }
 
 test_unreadable_criteria_from_is_refused_before_any_judge() {
@@ -883,15 +970,19 @@ test_diff_rejects_empty_change
 test_oversized_diff_is_refused_not_truncated
 test_diff_materializes_one_shared_subject
 test_judge_brief_carries_no_line_the_parser_would_count
+test_diff_resolves_the_base_of_a_clone_stranded_off_its_default_branch
 test_pr_without_remote_points_at_diff
 test_pr_resolves_through_the_clone_origin
 test_pr_failure_after_the_fetch_leaves_no_ref_behind
+test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote
 test_pr_refuses_a_foreign_github_repository
 test_pr_refuses_a_repository_whose_name_merely_starts_the_same
 test_criteria_come_from_the_task_behind_the_branch
 test_change_without_a_task_says_so_loudly
-test_diff_branch_outside_the_convention_refuses_to_infer
-test_explicit_criteria_lift_the_branch_convention_refusal
+test_adhoc_branch_is_judged_without_inferring_a_task
+test_recoger_discloses_that_there_were_no_criteria
+test_recoger_does_not_disclose_absent_criteria_when_there_were_some
+test_explicit_criteria_win_on_any_branch_name
 test_unreadable_criteria_from_is_refused_before_any_judge
 test_criteria_from_a_task_with_an_empty_section_is_refused
 test_inferred_task_that_does_not_exist_is_still_judged
