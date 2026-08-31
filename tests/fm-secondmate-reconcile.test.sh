@@ -422,7 +422,7 @@ test_a_failed_send_is_retried_on_the_next_run() {
 }
 
 test_busy_lifecycle_locks_never_hold_up_the_digest() {
-  local label home mate fakebin snap lock ready release holder notify out
+  local label home mate fakebin snap lock ready release holder notify out deadline
   for label in reconcile control meta; do
     { read -r home; read -r mate; read -r fakebin; } < <(make_main_home "busy-$label" mate)
     snap="$home/snapshot.json"
@@ -439,13 +439,29 @@ test_busy_lifecycle_locks_never_hold_up_the_digest() {
     while [ ! -f "$ready" ]; do sleep 0.01; done
     run_notify "$home" "$fakebin" "busy-$label" "$snap" > "$home/notify.out" 2>&1 &
     notify=$!
-    sleep 0.2
-    if kill -0 "$notify" 2>/dev/null; then
-      : > "$release"
-      wait "$notify" 2>/dev/null || true
-      wait "$holder" 2>/dev/null || true
-      fail "a busy $label lock blocked the reconcile path"
-    fi
+    # The evidence that a busy lock never holds up the digest is that notify
+    # finishes while the holder STILL owns the lock: nothing below writes
+    # $release until this loop has seen notify exit. So wait for that exit
+    # rather than sampling liveness once after a fixed grace. The old fixed
+    # 0.2s grace measured process startup - bash, the sourced libraries, jq
+    # over the snapshot - not lock behavior, and a loaded runner overran it
+    # (CI run 33408483306, portable serial shard 3, the meta iteration).
+    #
+    # The deadline is only a hang tripwire, never the assertion: every lock on
+    # this path is taken with fm_lock_try_acquire, so a regression that waits
+    # would use fm_lock_acquire_wait, which polls forever against a lock this
+    # test never releases. Blocked is unbounded, so no amount of slowness can
+    # be mistaken for it.
+    deadline=$((SECONDS + 60))
+    while kill -0 "$notify" 2>/dev/null; do
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        : > "$release"
+        wait "$notify" 2>/dev/null || true
+        wait "$holder" 2>/dev/null || true
+        fail "a busy $label lock blocked the reconcile path"
+      fi
+      sleep 0.05
+    done
     wait "$notify" || fail "a busy $label lock made notify fail"
     : > "$release"
     wait "$holder" || fail "the $label lock holder failed"
