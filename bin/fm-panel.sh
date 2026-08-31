@@ -116,6 +116,9 @@
 # cannot parse as unclassified instead of counting it, discloses missing criteria
 # to both the judges and the reader, and refuses a duplicate judge - because a
 # panel that overstates its own consensus is worth less than no panel at all.
+# A refusal also leaves nothing behind: no private ref in the operator's clone,
+# and no panel directory it never filled. Both are reaped by one EXIT handler
+# each rather than by every refusal remembering to.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -271,9 +274,13 @@ fill_brief() {
   mv "$brief.new" "$brief"
 }
 
-# split_judges <h1,h2,...> -> prints one harness per line
+# split_judges <h1,h2,...> -> prints one harness per line, trimmed. Trimming
+# belongs here and nowhere else: the roster file, the duplicate check, the
+# dispatch loop and the cost line all read this, and a name that reaches one of
+# them with different bytes than the others buys a judge nobody can collect.
 split_judges() {
-  printf '%s\n' "$1" | tr ',' '\n' | sed '/^[[:space:]]*$/d'
+  printf '%s\n' "$1" | tr ',' '\n' |
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d'
 }
 
 # drop_panel_refs <project-dir>: delete every private ref this run added under
@@ -431,8 +438,15 @@ convocar() {
   # on every path out, including a die() from the subject resolution below. The
   # paths travel in a variable for the same reason the ref cleanup does: an
   # interpolated body would be unparseable for a path carrying a quote.
+  # The panel directory is reaped from the same one place, on every way out.
+  # Every refusal used to have to remember to remove it, and each new one
+  # forgot; an emptiness test at exit needs no refusal to remember anything. A
+  # convocation that got anywhere leaves judges, subject.md and a subject.diff
+  # behind, so a directory still empty here is one nothing came of - and a
+  # directory that already held something is never empty, so it is never lost.
   FM_PANEL_SCRATCH=("$subject" "$prompt")
-  trap 'rm -f "${FM_PANEL_SCRATCH[@]}"' EXIT
+  FM_PANEL_DIR=$panel_dir
+  trap 'rm -f "${FM_PANEL_SCRATCH[@]}"; rmdir "$FM_PANEL_DIR" 2>/dev/null || true' EXIT
 
   criteria_src=""
   if [ "$kind" = question ]; then
@@ -456,7 +470,6 @@ convocar() {
     elif [ -n "$criteria_from" ]; then
       criteria=$(brief_task_section "$DATA/$criteria_from/brief.md") || {
         rm -f "$panel_dir/subject.diff"
-        rmdir "$panel_dir" 2>/dev/null || true
         die "--criteria-from '$criteria_from' no entrega criterios: $DATA/$criteria_from/brief.md no existe o no tiene una sección '# Task' con contenido.
   Dijiste que este cambio tiene una tarea detrás, así que el panel se niega antes de
   gastar un veredicto por juez en criterios que no son los que pediste.

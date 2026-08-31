@@ -283,6 +283,9 @@ test_diff_rejects_empty_change() {
   expect_code 1 "$rc" "an empty change must fail"
   assert_contains "$out" 'nothing for a panel to judge' "must say there is nothing to judge (got: $out)"
   assert_absent "$root/home/data/p1/subject.diff" "an empty subject must not be left on disk"
+  # A refusal inside the subject resolution leaves nothing behind either, the
+  # same as the criteria refusal further down the path.
+  assert_absent "$root/home/data/p1" "a refused convocation must not leave its panel directory behind"
   assert_absent "$root/spawn.log" "no judge may be spawned for an empty change"
   pass "fm-panel.sh: --diff refuses a change with no content"
 }
@@ -300,8 +303,48 @@ test_oversized_diff_is_refused_not_truncated() {
   # The refusal is the whole point: a shortened diff would buy confident
   # verdicts on code no judge saw.
   assert_absent "$root/home/data/p1/subject.diff" "an oversized subject must not be left half-written"
+  assert_absent "$root/home/data/p1" "a refused convocation must not leave its panel directory behind"
   assert_absent "$root/spawn.log" "no judge may be spawned for an oversized change"
   pass "fm-panel.sh: an oversized diff is refused, never truncated"
+}
+
+test_spaced_judge_list_is_collectable_end_to_end() {
+  local root out rc dir
+  root=$(panel_world judges-spaced)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  # "claude, codex" is how anyone would type it. The roster the collection reads
+  # has to carry the same bytes the dispatch used, or the second judge is paid
+  # for and then reported as never having answered.
+  out=$(panel_run "$root" convocar p1 --judges 'claude, codex' --repo proj --diff fm/work); rc=$?
+  expect_code 0 "$rc" "a spaced judge list must convoke (got: $out)"
+  assert_line "$root/home/data/p1/judges" 'claude' "the roster must record the judge exactly as dispatched"
+  assert_line "$root/home/data/p1/judges" 'codex' "the roster must record the judge exactly as dispatched"
+  assert_grep '--harness codex' "$root/spawn.log" "the second judge must be dispatched"
+  assert_present "$root/home/data/p1-codex/brief.md" "the second judge's task id must carry no stray space"
+
+  panel_report "$root" p1 claude 'VEREDICTO: aprobar'
+  panel_report "$root" p1 codex 'VEREDICTO: aprobar'
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 0 "$rc" "both delivered verdicts must collect successfully (got: $out)"
+  assert_contains "$out" '2 jueces' "both judges must be counted"
+  assert_contains "$out" 'UNÁNIME: aprobar' "a verdict that was delivered must not read as missing"
+  assert_not_contains "$out" 'INCOMPLETO' "a paid verdict must not be reported as never delivered"
+  pass "fm-panel.sh: a spaced --judges list is dispatched and collected as the same judges"
+}
+
+test_convocar_refuses_a_repeated_harness_written_with_spaces() {
+  local root out rc dir
+  root=$(panel_world judges-spaced-duplicate)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  # Trimming must not let a duplicate in through the back door: these are the
+  # same harness named twice, however it is spelled.
+  out=$(panel_run "$root" convocar p1 --judges 'claude, claude' --repo proj --diff fm/work); rc=$?
+  expect_code 1 "$rc" "a repeated harness must be refused however it is spaced (got: $out)"
+  assert_contains "$out" "'claude'" "the refusal must name the repeated harness"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for a roster that cannot be compared"
+  pass "fm-panel.sh: a repeated harness is refused whether or not it is written with spaces"
 }
 
 test_diff_materializes_one_shared_subject() {
@@ -332,6 +375,9 @@ test_diff_materializes_one_shared_subject() {
   assert_grep 'p1-claude' "$root/spawn.log" "each judge must be spawned"
   assert_grep '--harness codex' "$root/spawn.log" "each judge must be spawned on its own harness"
   assert_contains "$out" 'veredictos de pago' "convocar must state the panel's cost up front"
+  # The exit-time reaping of an empty panel directory must never touch one a
+  # real convocation filled.
+  assert_present "$root/home/data/p1/subject.md" "a successful convocation must keep its panel directory"
   pass "fm-panel.sh: --diff materializes one shared subject for every judge"
 }
 
@@ -1031,6 +1077,8 @@ test_question_still_convokes_a_prose_panel
 test_diff_rejects_unknown_branch
 test_diff_rejects_empty_change
 test_oversized_diff_is_refused_not_truncated
+test_spaced_judge_list_is_collectable_end_to_end
+test_convocar_refuses_a_repeated_harness_written_with_spaces
 test_diff_materializes_one_shared_subject
 test_judge_brief_carries_no_line_the_parser_would_count
 test_diff_resolves_the_base_of_a_clone_stranded_off_its_default_branch
