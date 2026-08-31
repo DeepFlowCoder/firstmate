@@ -42,9 +42,10 @@
 #
 # Exit: 0 delivered (2xx), 1 delivery failed, 2 usage or configuration error,
 # and 128+signum when a signal ends the run: 129 on HUP, 130 on INT, 143 on
-# TERM, so a watchdog kill and an operator's Ctrl-C stay distinguishable in the
-# daemon's log. Those codes cover the failures this script observes and returns
-# from, and no other signal is trapped here. `op
+# TERM, so a hand-run `fm-notify-moshi.sh 'test summary'` reports which signal
+# ended it instead of reporting every signal as a SIGTERM. Those codes cover the
+# failures this script observes and returns from, and no other signal is trapped
+# here. `op
 # read` carries no deadline of its own, so against a genuinely locked vault it
 # blocks on the unlock prompt instead of returning: the alarm's per-channel
 # watchdog then kills the process group and the daemon logs rc 124, not the
