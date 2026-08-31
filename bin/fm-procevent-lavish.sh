@@ -7,6 +7,7 @@
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh silent <result-file>
 #   fm-procevent-lavish.sh answers <result-file>
+#   fm-procevent-lavish.sh messages <result-file>
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html>
 #   fm-procevent-lavish.sh poll <artifact.html>
@@ -60,6 +61,72 @@
 # Only rows tagged `choice` are read. A freeform captain message is prose that may
 # contain anything, and must never be able to forge a decision key.
 #
+# `messages` is the deliberate complement of `answers`, and exists because that
+# narrowness left the captain's own prose with no reader at all. A review board
+# closed with a freeform message delivered the words in the same result that
+# ended the session; `answers` skipped the row because its tag was not `choice`,
+# every other command reported nothing, and acknowledging the capture retired
+# the only copy. The words were lost in silence.
+#
+# So the two commands partition the published rows: they never overlap, and
+# together they leave nothing unread. The split is what the keyed-answer intake
+# actually CONSUMED, not what a row is tagged - `answers` takes exactly the rows
+# it can turn into a keyed decision, and `messages` takes every other row. Tag
+# alone would not be enough: a `choice` row whose `Context data:` is missing,
+# unparseable, unkeyed, or over the answer bound is one `answers` refuses, and
+# splitting on the tag would leave it read by neither command, which is the
+# defect above recurring on a sibling row shape. One predicate decides both, so
+# the two can never disagree about who owns a row.
+#
+# Each still fails in the safe direction for what it carries. `answers` fails
+# toward silence, because an unfamiliar row must never mint a decision key.
+# `messages` fails toward reporting, because a row nobody else will read is prose
+# by default, and dropping it for having a tag this adapter has not seen before -
+# or a shape the decision intake would not take - is exactly the loss above. It
+# reads no decision keys, so prose still forges nothing.
+#
+# Which field holds the captain's words depends on the row shape - the observed
+# `Send & End` message carries them in `prompt` with a static label in `text`,
+# while a bare annotation carries them in `text` - so neither is assumed: the
+# `prompt` is the message when it has content, the `text` is the message
+# otherwise, and the unused one travels along as context. A row with no words in
+# any field is not news and is not reported.
+#
+# Both commands read their rows through ONE frame reader, because a row either
+# command cannot see is a row the other cannot see either, and that is exactly
+# the loss above. The published block is always keyed `prompts` - a feedback
+# response is one object whose only key carrying captain rows is `prompts`, and a
+# block is named after its key - but it arrives in either of the two renderings
+# the serializer chooses between. When every row is flat it is TABULAR,
+# `prompts[N]{field,...}:` with one CSV row per prompt. When ANY row carries a
+# nested value the whole block is a LIST instead, `prompts[N]:` with `- ` opening
+# each row and one `field: value` per line. A nested value is ordinary, not
+# exotic: an element annotation, an image attachment, and every
+# `layout-warnings` or `whiteboard` row all carry one, and a single such row
+# switches the whole block, taking every plain message beside it out of the
+# tabular shape too. Nested values inside a row are skipped rather than read, and
+# scalars are unquoted and unescaped identically in both renderings, so the two
+# frames yield the same fields and neither command can be blind to a shape the
+# other can see.
+#
+# The `feedback[N]` alternative the `silent` seam's content check accepts is
+# deliberately over-broad DETECTION, not a third frame - that check fails toward
+# announcing, so admitting a frame that never arrives costs nothing, while
+# reading rows out of it here would report utterances the poll never published.
+#
+# Two published rows are machine-shaped rather than typed prose - a
+# `layout-warnings` tag carrying queued layout issues, and a `whiteboard` tag
+# carrying an edit summary plus local scene files - and both are reported here on
+# purpose. No other command reads them either, so excluding them would recreate
+# exactly the loss above for those two shapes; the accepted cost is that acting
+# on one also leaves a captain note to acknowledge.
+#
+# `messages` exits 0 whenever it read the result, whatever it found there, and 3
+# when it could not read the result at all. Those are kept apart from the exit an
+# adapter gives for a command it does not implement, because an adapter without
+# the command must stay a quiet no-op while a `messages` that ran and failed is
+# possible prose going unread - which is the one thing it exists to prevent.
+#
 # It wraps ONLY the currently published interface, verified against 0.1.45:
 #   Usage: lavish-axi poll <html-file> [--agent-reply "..."]
 # and that command "long-polls indefinitely" server-side. The adapter therefore
@@ -104,7 +171,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,92p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,159p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -374,16 +441,141 @@ cmd_silent() {
   [ "$content_rc" -eq 1 ]
 }
 
+# The one reader for the published `prompts` block, shared by both content
+# commands so they can never disagree about which rows a result contains; see
+# the frame note in the header for the two renderings and why either can arrive.
+# `lavish_prompt_rows` returns one field map per row, or undef when the result
+# could not be read at all.
+#
+# The header is anchored at column ZERO in both renderings, and every payload
+# line is indented, so captain-supplied text can never forge - or hide behind - a
+# content header. The declared row count bounds what is read, the block ends at
+# the first unindented line, and a row's nested values are skipped rather than
+# descended into, so a nested block header is never mistaken for a field. The
+# serializer quotes and escapes any scalar that would otherwise be ambiguous, so
+# one row is always one set of single-line fields.
+# shellcheck disable=SC2016 # Perl owns every $ expression in this literal program.
+PROMPT_ROWS_PL='
+use strict; use warnings;
+sub lavish_unescape {
+  my ($s) = @_;
+  $s =~ s/\\(.)/$1 eq "n" ? "\n" : $1 eq "t" ? "\t" : $1 eq "r" ? "\r" : $1/ge;
+  return $s;
+}
+sub lavish_scalar {
+  my ($v) = @_;
+  return "" unless defined $v;
+  $v =~ s/\s+\z//;
+  return lavish_unescape($1) if $v =~ /\A"((?:[^"\\]|\\.)*)"\z/;
+  return $v;
+}
+sub lavish_list_field {
+  my ($row, $text) = @_;
+  return unless $text =~ /\A([A-Za-z_][A-Za-z0-9_.-]*)(?:\[\d+\](?:\{[^}]*\})?)?:[ \t]*(.*)\z/;
+  $row->{$1} = lavish_scalar($2);
+}
+sub lavish_table_rows {
+  my ($want, $fields, $body) = @_;
+  my @rows;
+  for my $line (@$body) {
+    last if @rows >= $want;
+    my $rest = $line;
+    $rest =~ s/\A\s+//;
+    my @vals;
+    while (length $rest) {
+      if ($rest =~ s/\A"((?:[^"\\]|\\.)*)"//) {
+        push @vals, lavish_unescape($1);
+      } else {
+        $rest =~ s/\A([^,]*)//;
+        push @vals, $1;
+      }
+      last unless $rest =~ s/\A,//;
+    }
+    my %f;
+    $f{$fields->[$_]} = $vals[$_] for 0 .. $#$fields;
+    push @rows, \%f;
+  }
+  return \@rows;
+}
+sub lavish_list_rows {
+  my ($want, $body) = @_;
+  my (@rows, $field_indent, $row);
+  for my $line (@$body) {
+    if ($line =~ /\A([ \t]*)-[ \t]+(\S.*)\z/) {
+      my $at = length $1;
+      $field_indent = $at + 2 unless defined $field_indent;
+      next unless $at + 2 == $field_indent;
+      $row = {};
+      push @rows, $row;
+      lavish_list_field($row, $2);
+      next;
+    }
+    next unless defined $row;
+    next unless $line =~ /\A([ \t]*)(\S.*)\z/;
+    next unless length($1) == $field_indent;
+    lavish_list_field($row, $2);
+  }
+  splice(@rows, $want) if @rows > $want;
+  return \@rows;
+}
+sub lavish_prompt_rows {
+  my ($path) = @_;
+  open my $fh, "<", $path or return undef;
+  my ($frame, $want, @fields, @body);
+  while (my $line = <$fh>) {
+    if (!defined $frame) {
+      if ($line =~ /^prompts\[(\d+)\]\{([^}]*)\}:\s*$/) {
+        ($want, @fields) = ($1, split /,/, $2);
+        $frame = "table";
+      } elsif ($line =~ /^prompts\[(\d+)\]:\s*$/) {
+        ($want, $frame) = ($1, "list");
+      }
+      next;
+    }
+    last unless $line =~ /^\s/;
+    chomp $line;
+    push @body, $line;
+  }
+  close $fh;
+  return [] unless defined $frame;
+  return lavish_table_rows($want, \@fields, \@body) if $frame eq "table";
+  return lavish_list_rows($want, \@body);
+}
+sub lavish_keyed_answer {
+  my ($f) = @_;
+  return undef unless defined $f->{tag} && $f->{tag} eq "choice";
+  my $prompt = $f->{prompt};
+  return undef unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
+  my $data = eval { JSON::PP::decode_json($1) };
+  return undef unless ref($data) eq "HASH";
+  my $key = $data->{question};
+  my $answer = $data->{answer};
+  return undef if !defined($key) || ref($key) || !defined($answer) || ref($answer);
+  my $mode = "";
+  if (exists $data->{close}) {
+    return undef if !defined($data->{close}) || ref($data->{close})
+      || ($data->{close} ne "done" && $data->{close} ne "release");
+    $mode = $data->{close};
+  }
+  return undef unless $key =~ /\A[A-Za-z0-9._-]{1,128}\z/;
+  return undef unless length $answer && length($answer) <= 512;
+  my $label = defined $f->{text} ? $f->{text} : "";
+  s/[\x00-\x1f\x7f]/ /g for ($answer, $label);
+  $label = substr($label, 0, 512);
+  return { key => $key, answer => $answer, label => $label, mode => $mode };
+}
+'
+
 # Print `key<TAB>answer<TAB>label[<TAB>mode]` for every structured choice the
 # captain submitted in a captured result; the optional mode column relays the
-# card's declared close mode (`done` or `release`) to the keyed-answer intake. The published response frames queued feedback as
-# a `prompts[N]{field,...}:` header followed by exactly N indented CSV rows whose
-# quoted fields carry JSON-style escapes, so this reads the declared field ORDER
-# rather than assuming a fixed column, and takes only rows whose `tag` field is
-# `choice`. A freeform `message` row is captain prose and is deliberately never a
-# source of decision keys. A row that does not carry both a slug-shaped `question`
-# and an `answer` inside its `Context data:` block is skipped, so a deck that does
-# not key its forms by decision key simply yields nothing.
+# card's declared close mode (`done` or `release`) to the keyed-answer intake.
+# It reads the shared row map above and takes exactly the rows the shared
+# keyed-answer predicate accepts: tagged `choice`, carrying a slug-shaped
+# `question` and a bounded `answer` inside a parseable `Context data:` block. A
+# freeform `message` row is captain prose and is deliberately never a source of
+# decision keys, so a deck that does not key its forms by decision key yields
+# nothing here. Every row this refuses is prose to `messages`, which is why the
+# predicate is shared rather than restated.
 # The question cap is 128 so any task id fits, including the long legacy
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
@@ -391,61 +583,15 @@ cmd_answers() {
   local file=${1-}
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
-  perl -MJSON::PP -e '
-    use strict; use warnings;
+  perl -MJSON::PP -e "$PROMPT_ROWS_PL" -e '
     my ($path) = @ARGV;
-    open my $fh, "<", $path or exit 1;
-    my (@fields, $want, @rows);
-    while (my $line = <$fh>) {
-      if (!@fields) {
-        next unless $line =~ /^prompts\[(\d+)\]\{([^}]*)\}:\s*$/;
-        ($want, @fields) = ($1, split /,/, $2);
-        next;
-      }
-      last unless $line =~ /^\s/;
-      last if @rows >= $want;
-      chomp $line;
-      push @rows, $line;
-    }
-    close $fh;
+    my $rows = lavish_prompt_rows($path);
+    defined $rows or exit 1;
     my %seen;
     my @out;
-    for my $row (@rows) {
-      $row =~ s/^\s+//;
-      my @vals;
-      while (length $row) {
-        if ($row =~ s/^"((?:[^"\\]|\\.)*)"//) {
-          my $v = $1;
-          $v =~ s/\\(.)/$1 eq "n" ? "\n" : $1 eq "t" ? "\t" : $1 eq "r" ? "\r" : $1/ge;
-          push @vals, $v;
-        } else {
-          $row =~ s/^([^,]*)//;
-          push @vals, $1;
-        }
-        last unless $row =~ s/^,//;
-      }
-      my %f;
-      $f{$fields[$_]} = $vals[$_] for 0 .. $#fields;
-      next unless defined $f{tag} && $f{tag} eq "choice";
-      my $prompt = $f{prompt};
-      next unless defined $prompt && $prompt =~ /Context data:\s*(\{.*\})/s;
-      my $ctx = $1;
-      my $data = eval { decode_json($ctx) };
-      next unless ref($data) eq "HASH";
-      my $key = $data->{question};
-      my $answer = $data->{answer};
-      next if !defined($key) || ref($key) || !defined($answer) || ref($answer);
-      my $mode = "";
-      if (exists $data->{close}) {
-        next if !defined($data->{close}) || ref($data->{close})
-          || ($data->{close} ne "done" && $data->{close} ne "release");
-        $mode = $data->{close};
-      }
-      next unless $key =~ /\A[A-Za-z0-9._-]{1,128}\z/;
-      next unless length $answer && length($answer) <= 512;
-      my $label = defined $f{text} ? $f{text} : "";
-      s/[\x00-\x1f\x7f]/ /g for ($answer, $label);
-      $label = substr($label, 0, 512);
+    for my $f (@$rows) {
+      my $a = lavish_keyed_answer($f) or next;
+      my ($key, $answer, $label, $mode) = @$a{qw(key answer label mode)};
       # A re-answered form appears again later in the queue; the last submission wins.
       if (defined $seen{$key}) { $out[$seen{$key}] = undef }
       $seen{$key} = scalar @out;
@@ -453,6 +599,50 @@ cmd_answers() {
     }
     print "$_\n" for grep { defined } @out;
   ' "$file"
+}
+
+# Print `message<TAB>context` for every row of a captured result the keyed-answer
+# intake did not consume; see the complementarity note in the header for why the
+# two commands partition the rows on that and not on the tag, and why this one
+# fails toward reporting. It reads the shared row map and the shared keyed-answer
+# predicate, so it sees every row `answers` sees in either published rendering
+# and keeps precisely the ones `answers` left. Control characters are flattened, so one captain
+# message is always one record and a multi-line message can never split into
+# rows that read as separate utterances. The message itself is never truncated -
+# losing the captain's words is the defect this exists to close, and the runner
+# already bounds a captured result as a whole - while the context is a label and
+# is capped like every other decoration here.
+#
+# Reading the result and failing to read it are reported apart, per the exit
+# contract in the header: 0 once the result has been read, 3 for every way this
+# can fail to read it, including an interpreter that never ran.
+cmd_messages() {
+  local file=${1-}
+  [ -n "$file" ] || usage
+  if [ ! -f "$file" ] || [ -L "$file" ]; then
+    printf 'error: result file does not exist: %s\n' "$file" >&2
+    exit 3
+  fi
+  perl -MJSON::PP -e "$PROMPT_ROWS_PL" -e '
+    my ($path) = @ARGV;
+    my $rows = lavish_prompt_rows($path);
+    defined $rows or exit 1;
+    for my $r (@$rows) {
+      my %f = %$r;
+      # Every row the keyed-answer intake did not take, including a row whose tag
+      # this adapter has never seen, a row that declares no tag at all, and a
+      # `choice` row that carries no answer that intake could key.
+      next if lavish_keyed_answer($r);
+      my ($prompt, $text) = (defined $f{prompt} ? $f{prompt} : "",
+                             defined $f{text}   ? $f{text}   : "");
+      s/[\x00-\x1f\x7f]/ /g for ($prompt, $text);
+      s/\A\s+//, s/\s+\z// for ($prompt, $text);
+      my ($message, $context) = length $prompt ? ($prompt, $text) : ($text, "");
+      next unless length $message;
+      $context = substr($context, 0, 512);
+      print "$message\t$context\n";
+    }
+  ' "$file" || exit 3
 }
 
 case "${1-}" in
@@ -464,6 +654,7 @@ case "${1-}" in
   terminal)  shift; cmd_terminal "$@" ;;
   silent)    shift; cmd_silent "$@" ;;
   answers)   shift; cmd_answers "$@" ;;
+  messages)  shift; cmd_messages "$@" ;;
   ''|-h|--help|help) usage ;;
   *) die "unknown command: $1" ;;
 esac

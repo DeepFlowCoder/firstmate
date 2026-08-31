@@ -81,6 +81,12 @@ Two rules the commands cannot enforce for you:
   bin/fm-procevent.sh handled <source-id> <sequence>
   ```
   This call is atomically deduplicated by the exact source and sequence: it prints `handled: <id> <seq>` only the first time and `already-handled: <id> <seq>` on every repeat, so a paired effect gated on that distinction is never authorized twice. Reading the event line or the result file is not handling - only this call durably retires the wake, so call it every time, including on a repeat wake for a sequence you already acted on.
+: The captain's own freeform prose is routed for you, and the acknowledgement above does NOT cover it.
+  The runner passes each captured result to its adapter's `messages` command and queues whatever that prints into the captain inbox, which carries its own wake and its own separate acknowledgement.
+  So a message the captain typed on a review surface reaches you as a `check: captain inbox note <id>` wake carrying his words, and you clear that note with `bin/fm-inbox.sh drain --ack <id>`.
+  This exists because acknowledging a capture used to retire the only copy of the captain's words: the keyed-answer command reads structured choices only, so prose had no reader at all and disappeared in silence.
+  The two commands split a result's rows on what the keyed-answer intake actually consumed, so a card the captain filled in that intake could not key still reaches you here as prose rather than falling between them.
+  Read the note and act on it; never treat prose as a decision answer, and never assume the capture's acknowledgement cleared it.
 : Ask the adapter what the result means rather than parsing it yourself - for Lavish, `bin/fm-procevent-lavish.sh classify <result-file>` returns `feedback`, `ended`, `waiting`, `missing`, or `unknown`. A `feedback` result can still be the last one a review ever produces, so never assume another wake is coming just because the state is not `ended`.
 : A routine no-op an adapter positively identifies never becomes a wake at all - it is recorded as handled and stays silent, so you never see it. For Lavish that is exactly an ended session carrying nothing: a board the captain closed without saying anything. A board close carrying a real answer, and every other result, still wakes you unchanged. Never read the absence of a wake as proof a review is still open; ask the source, not the queue.
 : A Lavish wake whose source id matches `bin/fm-procevent-lavish.sh source-id "$(bin/fm-bearings-board.sh path)"` is a bearings board result; load the `bearings` skill's board-wake handling regardless of which answer kinds the result contains.
@@ -98,6 +104,7 @@ Supported by tests:
 - proactive delivery, adapter-owned terminal retirement, and adapter-owned automatic application follow the operating contract in [`docs/configuration.md`](../../../docs/configuration.md);
 - a durably captured result with no handled acknowledgement remains eligible for bounded re-announcement across any number of drains and restarts, and repeat wakes retain the same source and sequence for deduplication;
 - the handled acknowledgement is generation-keyed to the exact source and sequence, private, path-safe, durable, and idempotent, and is the only thing that stops re-announcement;
+- a captured result's freeform captain prose is queued into the captain inbox once per capture and never on re-announcement, so it survives the capture's own acknowledgement and no reconcile turns one message into a second note;
 - one identity-matched owner per canonical source, across homes that share one underlying source store;
 - registration and ownership transitions share one per-source boundary, release is generation-bound, and uncertain process identity preserves the source for retry;
 - ownership moves only once a whole generation is gone, so a crashed runner leader whose owned process group is still running never reads as stale: that surviving group is stopped before any replacement starts, and the claim is kept for retry when it cannot be;
