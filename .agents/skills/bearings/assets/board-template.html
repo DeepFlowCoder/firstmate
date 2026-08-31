@@ -879,15 +879,16 @@ __FM_BEARINGS_BOARD_DATA__
   }
 
   /* An empty lane is calm, never "abandoned": the fleet records current state,
-     not intent, so the board says WHICH empty this is and stops there. Three
-     readings can appear for a lane with no work in its berths: "clear to start
-     - N orders wait for a crew", "quiet since the last launch", and "launched
-     work here". That last one names what the board HAS rather than what it
+     not intent, so the board says WHICH empty this is and stops there.
+     laneReading returns, in cascade order: "N hulls on the ways", "clear to
+     start - N orders wait for a crew", "nothing building - N orders are held",
+     "waiting on your word", "quiet since the last launch", and "launched work
+     here". That last one names what the board HAS rather than what it
      lacks, and must stay phrased that way: every bucket it could claim to be
      empty of is fed by an independently capped, flat-prefix list, so an absence
      claim here is falsifiable by a payload the composer truncated, while a
-     presence claim survives it. A
-     fourth, "no recorded activity in the current baseline", is deferred with
+     presence claim survives it. One further reading,
+     "no recorded activity in the current baseline", is deferred with
      its producer: a lane exists only because a row created it, so a wholly
      unrecorded project has no lane to read. It needs lanes seeded from a known
      project list, which is separate queued work, and it returns together with
