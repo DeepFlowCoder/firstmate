@@ -930,6 +930,88 @@ SH
   pass "jobs=1 and jobs=2 stop complete worker trees with and without telemetry"
 }
 
+test_ci_runs_one_shellcheck_at_a_time() {
+  # Regression: the Lint lane kept dying with "The runner has received a
+  # shutdown signal" (exit 143). Run 33471424345 pinned the cause - the Lint job
+  # 99741795200 took the signal at 10m39s while all fifteen other jobs in that
+  # same run went green, so nothing was reclaiming the runner out from under an
+  # innocent job. Lint is simply the lane that eats the machine: measured at 344
+  # roots, one worker peaks at 3.45 GiB and two of them sum to 6.40 GiB on a
+  # runner that has 7 GiB. Under CI the two shards must therefore run one at a
+  # time, while a developer machine keeps both.
+  #
+  # Concurrency is observable at the process boundary, so a recording ShellCheck
+  # on PATH answers it without reading fm-lint.sh: each stub instance registers
+  # itself, counts how many instances are live, and holds that registration long
+  # enough that a genuinely concurrent peer cannot be missed.
+  local tmp fakebin livedir seendir observed
+  tmp=$(fm_test_tmproot fm-lint-concurrency)
+  mkdir -p "$tmp"
+  fakebin=$(fm_fakebin "$tmp")
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+  exit 0
+fi
+token="$FM_TEST_LIVE_DIR/$$"
+: > "$token"
+# Hold the registration well past the moment a second worker would be forked,
+# so a concurrent peer is always still counted here.
+sleep 1
+live=$(find "$FM_TEST_LIVE_DIR" -type f | wc -l | tr -d '[:space:]')
+printf '%s\n' "$live" > "$(mktemp "$FM_TEST_SEEN_DIR/seen.XXXXXX")"
+rm -f "$token"
+exit 0
+SH
+  chmod +x "$fakebin/shellcheck"
+
+  # fm_lint_peak_shellcheck <label> <env-assignment>...: run the lint owner over
+  # two roots under the given environment and leave the largest number of live
+  # ShellCheck processes any one of them saw in FM_TEST_PEAK. Reports through a
+  # global rather than stdout so a failed run can still abort the test.
+  fm_lint_peak_shellcheck() {
+    local label=$1
+    shift
+    local seen
+    livedir="$tmp/live-$label"
+    seendir="$tmp/seen-$label"
+    rm -rf "$livedir" "$seendir"
+    mkdir -p "$livedir" "$seendir"
+    env PATH="$fakebin:$PATH" FM_TEST_LIVE_DIR="$livedir" FM_TEST_SEEN_DIR="$seendir" \
+      "$@" "$LINT" "$tmp/a.sh" "$tmp/b.sh" >/dev/null 2>&1 \
+      || fail "$label lint run failed"
+    FM_TEST_PEAK=0
+    for seen in "$seendir"/seen.*; do
+      observed=$(cat "$seen")
+      [ "$observed" -le "$FM_TEST_PEAK" ] || FM_TEST_PEAK=$observed
+    done
+    [ "$FM_TEST_PEAK" -gt 0 ] || fail "$label run never reached ShellCheck"
+  }
+
+  printf '#!/usr/bin/env bash\n' > "$tmp/a.sh"
+  printf '#!/usr/bin/env bash\n' > "$tmp/b.sh"
+
+  # Two roots land in two separate shards, so this is exactly the question of
+  # whether the two shards overlap in time.
+  fm_lint_peak_shellcheck ci CI=true GITHUB_ACTIONS='' FM_LINT_JOBS=''
+  [ "$FM_TEST_PEAK" -eq 1 ] \
+    || fail "CI ran $FM_TEST_PEAK ShellCheck processes at once; the lane has room for 1"
+  fm_lint_peak_shellcheck actions CI='' GITHUB_ACTIONS=true FM_LINT_JOBS=''
+  [ "$FM_TEST_PEAK" -eq 1 ] \
+    || fail "GITHUB_ACTIONS ran $FM_TEST_PEAK ShellCheck processes at once; the lane has room for 1"
+
+  # The memory ceiling is the runner's, not a developer's: local runs keep both
+  # workers, and an explicit override still wins in CI.
+  fm_lint_peak_shellcheck local CI='' GITHUB_ACTIONS='' FM_LINT_JOBS=''
+  [ "$FM_TEST_PEAK" -eq 2 ] \
+    || fail "a local run collapsed to $FM_TEST_PEAK concurrent ShellCheck process(es)"
+  fm_lint_peak_shellcheck override CI=true GITHUB_ACTIONS=true FM_LINT_JOBS=2
+  [ "$FM_TEST_PEAK" -eq 2 ] \
+    || fail "FM_LINT_JOBS=2 did not override the CI default, saw $FM_TEST_PEAK"
+  pass "CI lints one shard at a time while local runs keep both workers"
+}
+
 test_ci_lint_lane_carries_a_finite_job_cap() {
   # An uncapped lane sits on GitHub's 6-hour default instead of reporting: run
   # 33353469575 held the Lint job 61 minutes while every other job in that run
@@ -943,10 +1025,12 @@ test_ci_lint_lane_carries_a_finite_job_cap() {
   command -v ruby >/dev/null 2>&1 \
     || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
   local json cap runs green_wall_minutes github_default_minutes
-  # Measured green wall for this lane, rounded up (15m03s-15m47s), and GitHub's
-  # default job timeout. The cap must sit strictly between them to be a
-  # tripwire rather than a guillotine on a healthy run.
-  green_wall_minutes=16
+  # Expected green wall for this lane and GitHub's default job timeout. The cap
+  # must sit strictly between them to be a tripwire rather than a guillotine on
+  # a healthy run. Two-worker green runs measured 15m03s-15m47s; the lane now
+  # runs its two shards one at a time to stay inside the runner's memory, so
+  # budget the pessimistic doubling of that on a two-core runner.
+  green_wall_minutes=31
   github_default_minutes=360
   json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
@@ -1071,6 +1155,7 @@ test_catches_a_real_lint_defect
 test_ignores_ambient_shellcheck_opts
 test_clean_fixture_passes
 test_jobs_are_deterministic_and_complete
+test_ci_runs_one_shellcheck_at_a_time
 test_worker_trees_stop_on_signal
 test_ci_lint_lane_carries_a_finite_job_cap
 test_seeded_module_boundary_parity

@@ -413,6 +413,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/no-mistakes-gate.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/pr-merge-fitness.md",
       "audience": "maintainer-verification"
     },

@@ -19,6 +19,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The gate is judged twice at most, and the shared action is the only thing
+  # that ever returns a compliance verdict.
+  #
+  # Pass 1 binds the attestation to the exact PR head, as before. That is the
+  # whole gate whenever the pipeline's `pr` step wrote the last commit.
+  #
+  # Pass 2 exists because the pipeline's `ci` phase pushes its own
+  # "no-mistakes: apply CI fixes" commits without re-running `pr`, orphaning the
+  # attestation it just wrote and leaving this check red on a head no human
+  # authored. bin/fm-nm-attestation-delta.sh answers the one question the shared
+  # action cannot - whether the attested commit is still an ancestor and the
+  # delta is nothing but those pipeline CI-fix commits - and pass 2 re-runs the
+  # same shared action bound to that vetted ancestor. Every compliance rule is
+  # therefore still enforced by the pinned action; only WHICH commit the
+  # attestation must bind to is relaxed, and only to a commit the pipeline
+  # itself is still building on.
+  #
+  # A PR never raised through no-mistakes has no signature and no attestation,
+  # so pass 1 fails, the delta script refuses for want of an attestation, and
+  # pass 2 never runs. The negative guarantee is untouched.
   check:
     name: PR must be raised via no-mistakes
     runs-on: ubuntu-latest
@@ -27,4 +47,68 @@ jobs:
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       - name: Verify no-mistakes signature and pipeline attestation
+        id: head_bind
+        continue-on-error: true
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+
+      # Everything below runs only when the exact head bind failed, so a
+      # compliant PR still costs one step.
+      #
+      # This checks out the PR merge ref, which on a fork PR contains fork-
+      # authored code. That is the pre-existing model for a `pull_request`
+      # workflow - GitHub already runs the PR's own copy of this file - and the
+      # job holds only a read-only token and no secrets. Do not add secrets or
+      # write permissions to this job without revisiting that.
+      - name: Check out the gate helper
+        if: steps.head_bind.outcome == 'failure'
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Look for a pipeline-authored CI-fix delta
+        id: delta
+        if: steps.head_bind.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Expression values reach the step through the environment, never
+          # through the shell source below, so a crafted PR body cannot inject
+          # commands here.
+          NM_PR_BODY: ${{ github.event.pull_request.body }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_REPO_SLUG: ${{ github.repository }}
+        run: |
+          set -eu
+          attested=$(bin/fm-nm-attestation-delta.sh \
+            --repo "$GH_REPO_SLUG" --head "$PR_HEAD_SHA")
+          echo "attested_head=$attested" >> "$GITHUB_OUTPUT"
+          echo "Every commit since $attested is a no-mistakes CI-fix commit."
+
+      - name: Re-verify the attestation against the vetted ancestor
+        id: ancestor_bind
+        if: steps.delta.outcome == 'success'
+        continue-on-error: true
+        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        with:
+          pr-head-sha: ${{ steps.delta.outputs.attested_head }}
+
+      - name: Report the gate verdict
+        if: ${{ !cancelled() }}
+        env:
+          HEAD_BIND: ${{ steps.head_bind.outcome }}
+          ANCESTOR_BIND: ${{ steps.ancestor_bind.outcome }}
+          ATTESTED_HEAD: ${{ steps.delta.outputs.attested_head }}
+        run: |
+          set -eu
+          if [ "$HEAD_BIND" = success ]; then
+            echo "The pipeline attestation binds to the current PR head."
+            exit 0
+          fi
+          if [ "$ANCESTOR_BIND" = success ]; then
+            echo "The pipeline attestation binds to $ATTESTED_HEAD, and every"
+            echo "commit since it is a no-mistakes CI-fix commit."
+            exit 0
+          fi
+          echo "::error::This PR does not satisfy the no-mistakes gate. The" \
+            "steps above name the reason; see CONTRIBUTING.md for the workflow."
+          exit 1

@@ -117,6 +117,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
 | `fm-pr-fitness-lib.sh`   | Classify one forge reading into a merge-fitness verdict for the merge gate           |
+| `fm-nm-attestation-delta.sh` | Hand the `Require no-mistakes` check an attested ancestor when the only commits since it are the pipeline's own CI-fix commits |
 | `fm-pr-merge.sh`         | Refuse an unfit PR, record PR metadata, merge a task's canonical full GitHub or GitLab URL, then refuse an outcome it cannot prove landed or queued |
 | `fm-merge-outcome-lib.sh` | Publish a confirmed merge's durable, role-routed supervision outcome                 |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |

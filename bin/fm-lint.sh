@@ -27,10 +27,17 @@
 # Explicit paths always bypass this file-set selection and lint exactly the
 # given paths, matching the same config, without the workflow YAML check.
 #
-# Canonical lint defaults to two bounded workers over two stable logical shards.
-# Each shard writes separate diagnostics, and the parent replays those outputs in
-# deterministic shard and root order after every worker finishes. FM_LINT_JOBS=1
-# runs the same shards serially with byte-identical diagnostics and exit selection.
+# Canonical lint splits into two stable logical shards. Each shard writes
+# separate diagnostics, and the parent replays those outputs in deterministic
+# shard and root order after every worker finishes. The two shards run
+# concurrently by default and serially under one worker; both orders produce
+# byte-identical diagnostics and the same exit selection, so the worker count is
+# purely a resource decision.
+# It defaults to two workers locally and to ONE in CI (GITHUB_ACTIONS=true or
+# CI=true), because a hosted runner's memory is the binding constraint there: a
+# single ShellCheck process over a whole shard of this repo peaks well past a
+# third of what such a runner has, and two of them at once is the whole machine.
+# FM_LINT_JOBS overrides either default.
 # Because that replay is the only place a verdict is produced, a run cut short by
 # a signal - a cancelled job, a reclaimed CI runner - has proven nothing, and the
 # parent says so on stderr before exiting 129 (HUP), 130 (INT), or 143 (TERM).
@@ -125,7 +132,15 @@ fm_lint_run_workflows() {
   "$SELF_DIR/fm-lint-workflows.sh"
 }
 
-JOBS=${FM_LINT_JOBS:-2}
+# Two workers locally, one in CI. Both produce the same shards, the same
+# diagnostics, and the same verdict; the only difference is how much memory the
+# run holds at once, and only CI has a ceiling worth respecting. See the
+# measurement above the lint lane in .github/workflows/ci.yml.
+FM_LINT_DEFAULT_JOBS=2
+if [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]; then
+  FM_LINT_DEFAULT_JOBS=1
+fi
+JOBS=${FM_LINT_JOBS:-$FM_LINT_DEFAULT_JOBS}
 TELEMETRY=${FM_LINT_TELEMETRY:-}
 FAST=0
 ANALYSIS_MODE=full
