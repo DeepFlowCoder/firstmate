@@ -339,6 +339,11 @@ Use `bin/fm-pr-merge.sh` for every task PR merge: it refuses an unfit PR before 
 A local-only landing prints the captain's pull command already cut to lines their terminal can take from a paste, and those lines are the one output that must reach the captain exactly as printed, never reflowed, retyped, or paraphrased, because a line that wraps runs as two commands.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
+A change to a captain-reserved setting never rides inside a delivery titled for something else.
+It ships as its own delivery, or the delivery's title names the setting it moves and the summary says what it now is.
+A setting, threshold, or default is captain-reserved when the captain explicitly said not to change that specific one, or a written reservation at its own definition says it stays as it is; silence, inference, and a general preference for caution reserve nothing.
+Read the finished delivery against its own title before it lands, because a correct change under a title that does not name it is still a change the captain who reserved it will never find.
+
 ### Validate
 
 For a no-mistakes ship, trigger validation on the same worker after its implementation commit, using the harness invocation owned by `harness-adapters`.
