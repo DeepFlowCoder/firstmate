@@ -790,23 +790,57 @@ if ! kill -0 "$WATCH_PID" 2>/dev/null; then
   [ -e "$RESTART_HOME/state/.last-watcher-beat" ] \
     || fail "the recovery replacement watcher did not begin polling"
 fi
-kill -KILL "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
-wait "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
-LOCK_HOLDER_PID=
-PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$RESTART_HOME" \
-  FM_HOME_SUMMARY_IF_IDLE=1 "$WRITER" --best-effort \
-  || fail "stale-lock recovery changed the best-effort caller result"
-i=0
-while [ ! -e "$RESTART_HOME/state/home-summary.json" ] && [ "$i" -lt 200 ]; do
-  sleep 0.05
-  i=$((i + 1))
-done
-[ -e "$RESTART_HOME/state/home-summary.json" ] \
-  || fail "a dead publication lock wedged publication"
 kill "$WATCH_PID" >/dev/null 2>&1 || true
 wait "$WATCH_PID" >/dev/null 2>&1 || true
 WATCH_PID=
+kill -KILL "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
+wait "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
+LOCK_HOLDER_PID=
 pass "publication remains single-flight across watcher restart"
+
+# A publication lock whose holder died must not wedge the next refresh. This
+# home carries no watcher, so the writer's single idle acquisition is the only
+# contender for the dead lock and decides the assertion by itself. A watched
+# home cannot: while its ledger is missing, age_of reports 999999 and the poll
+# loop detaches its own FM_HOME_SUMMARY_IF_IDLE refresh every poll, which
+# reclaims the same dead lock and makes the writer decline instead.
+STALE_HOME="$TMP_ROOT/stale-lock-home"
+mkdir -p "$STALE_HOME/state" "$STALE_HOME/data" "$STALE_HOME/config" \
+  "$STALE_HOME/projects"
+printf '# Seeded Firstmate home\n' > "$STALE_HOME/AGENTS.md"
+printf 'stale-lock\n' > "$STALE_HOME/.fm-secondmate-home"
+cat > "$STALE_HOME/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+
+## Done
+EOF
+STALE_LOCK_MARKER="$TMP_ROOT/stale-lock-held"
+FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$STALE_HOME" bash -c '
+  . "$1/bin/fm-wake-lib.sh"
+  fm_lock_acquire_wait "$2/state/.home-summary-refresh.lock"
+  : > "$3"
+  sleep 30
+' _ "$ROOT" "$STALE_HOME" "$STALE_LOCK_MARKER" &
+LOCK_HOLDER_PID=$!
+i=0
+while [ ! -e "$STALE_LOCK_MARKER" ] && [ "$i" -lt 100 ]; do
+  kill -0 "$LOCK_HOLDER_PID" 2>/dev/null || break
+  sleep 0.05
+  i=$((i + 1))
+done
+[ -e "$STALE_LOCK_MARKER" ] \
+  || fail "could not hold the publication lock for stale-lock coverage"
+kill -KILL "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
+wait "$LOCK_HOLDER_PID" >/dev/null 2>&1 || true
+LOCK_HOLDER_PID=
+PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$STALE_HOME" \
+  FM_HOME_SUMMARY_IF_IDLE=1 "$WRITER" --best-effort \
+  || fail "stale-lock recovery changed the best-effort caller result"
+[ -e "$STALE_HOME/state/home-summary.json" ] \
+  || fail "a dead publication lock wedged publication: $(cat "$STALE_HOME/state/.home-summary-refresh.log" 2>/dev/null)"
+pass "a dead publication lock is reclaimed rather than wedging publication"
 
 # A publication that keeps failing is deliberately non-fatal to its caller, so
 # the only way an operator learns about it is a session start saying so. Seed
