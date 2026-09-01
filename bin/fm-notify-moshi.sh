@@ -14,7 +14,11 @@
 # so the token is piped into jq and on to curl and never appears in any argv:
 # macOS `ps` shows full command lines to every local user, so a token on a
 # command line is a token published to the machine. The token is likewise never
-# written to disk here and never printed, including on failure.
+# written to disk here, and this script never prints it, including on failure.
+# The one path that could still surface it is a non-default FM_MOSHI_ENDPOINT
+# that reflects the submitted token back in its own error body, which a rejected
+# send prints verbatim; the default endpoint answers `{"error":"Invalid token"}`
+# with no echo of the submitted value.
 #
 # Token source, first match wins:
 #   FM_MOSHI_TOKEN_OP_REF   1Password secret reference, read with `op read`
@@ -158,24 +162,18 @@ resolve_token() {
 }
 
 umask 077
-BODY=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-body.XXXXXX") || {
-  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for the response body" >&2
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/fm-moshi.XXXXXX") || {
+  echo "error: could not create a temporary directory in ${TMPDIR:-/tmp} for the response body and diagnostics" >&2
   exit 2
 }
-CURL_ERR=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-curlerr.XXXXXX") || {
-  rm -f -- "$BODY"
-  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for curl's diagnostics" >&2
-  exit 2
-}
-TOKEN_ERR=$(mktemp "${TMPDIR:-/tmp}/fm-moshi-tokenerr.XXXXXX") || {
-  rm -f -- "$BODY" "$CURL_ERR"
-  echo "error: could not create a temporary file in ${TMPDIR:-/tmp} for the token reader's diagnostics" >&2
-  exit 2
-}
-trap 'rm -f -- "$BODY" "$CURL_ERR" "$TOKEN_ERR"' EXIT
-trap 'rm -f -- "$BODY" "$CURL_ERR" "$TOKEN_ERR"; exit 129' HUP
-trap 'rm -f -- "$BODY" "$CURL_ERR" "$TOKEN_ERR"; exit 130' INT
-trap 'rm -f -- "$BODY" "$CURL_ERR" "$TOKEN_ERR"; exit 143' TERM
+BODY="$TMPD/body"
+CURL_ERR="$TMPD/curl.err"
+TOKEN_ERR="$TMPD/token.err"
+cleanup() { rm -rf -- "$TMPD"; }
+trap cleanup EXIT
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 TOKEN=$(resolve_token) || exit 2
 

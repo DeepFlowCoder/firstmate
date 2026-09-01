@@ -319,9 +319,8 @@ test_an_unusable_clock_pin_falls_back_to_the_wall_clock() {
   run_notify "$home" "$fakebin" badpin "$snap" >/dev/null || fail "the first ask failed"
   # A test harness that fumbles the clock pin gets real time, not a poisoned
   # cooldown comparison: the fresh nudge above is still inside the window.
-  set +e
-  out=$(FM_RECONCILE_NOW_OVERRIDE=not-an-epoch run_notify "$home" "$fakebin" badpin "$snap"); rc=$?
-  set -e
+  rc=0
+  out=$(FM_RECONCILE_NOW_OVERRIDE=not-an-epoch run_notify "$home" "$fakebin" badpin "$snap") || rc=$?
   [ "$rc" -eq 0 ] || fail "an unusable clock pin broke the cooldown gate: rc=$rc $out"
   assert_contains "$out" "cooldown: mate" \
     "an unusable clock pin did not fall back to the wall clock: $out"
