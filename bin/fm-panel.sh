@@ -123,7 +123,10 @@
 # The SUBJECT is disclosed rather than guarded: a --pr URL contributes only its
 # number, and convocar prints which origin that number resolved against before
 # dispatching, so a mistaken target is caught by the reader's eye instead of by
-# a string comparison that can itself leak.
+# a string comparison that can itself leak. Disclosing is not the same as
+# copying: the origin travels to the operator, to disk and to N third-party
+# harnesses, so any credential in its userinfo is stripped first. Host, owner and
+# repo are the whole identity the reader has to recognize.
 # A refusal also leaves nothing behind: no private ref in the operator's clone,
 # and no panel directory it never filled. Both are reaped by one EXIT handler
 # each rather than by every refusal remembering to.
@@ -192,6 +195,34 @@ pr_number() {
   esac
   [ -n "$n" ] || return 1
   printf '%s\n' "$n"
+}
+
+# redact_origin <url>: the remote's identity with any credentials removed.
+# A git remote URL may legitimately carry a secret in its userinfo component
+# (https://x-access-token:TOKEN@host/owner/repo), and the origin is disclosed on
+# three sinks the operator does not control afterwards: convocar's stdout, the
+# panel's subject.md on disk, and the prompt handed to every paid judge. Host,
+# owner and repo are the whole of the identity that disclosure has to establish,
+# so the userinfo is dropped before any of them sees it. The fetch is unaffected:
+# it names the remote 'origin', never this string.
+redact_origin() {
+  local url=${1//[$'\n\r']/ } scheme rest authority path
+  case "$url" in
+    *://*)
+      scheme=${url%%://*}
+      rest=${url#*://}
+      authority=${rest%%/*}
+      path=${rest#"$authority"}
+      printf '%s\n' "$scheme://${authority##*@}$path"
+      ;;
+    # scp-style host:path, which has no scheme to split on.
+    *@*:*)
+      authority=${url%%:*}
+      path=${url#"$authority"}
+      printf '%s\n' "${authority##*@}$path"
+      ;;
+    *) printf '%s\n' "$url" ;;
+  esac
 }
 
 # brief_task_section <brief>: the "# Task" section of a scaffolded brief, which
@@ -290,8 +321,17 @@ drop_panel_refs() {
 # --- convocar ---------------------------------------------------------------
 
 # resolve_change_subject <panel-dir> <project-dir> <repo> <kind> <target> <max-bytes>
-# Materializes data/<panel>/subject.diff and echoes "<base>|<head-label>|<shortstat>|<task-hint>".
+# Materializes data/<panel>/subject.diff and echoes one "<key>=<value>" line per
+# resolved field: base, head_label, shortstat, task_hint, origin.
 # Refuses rather than truncating, and refuses an empty change.
+#
+# The fields are NAMED rather than positional because most of them are derived
+# from a ref name, and git permits almost any byte in one - a branch 'fm/a|b'
+# split a delimiter-joined tuple into the wrong fields, which handed the judges
+# an unrelated task's criteria and a repository line invented out of the branch
+# name. A key per line cannot mis-split: values may contain any character except
+# the newline that git already forbids in a ref name, and a field that resolved
+# to nothing simply keeps the empty default the caller set.
 resolve_change_subject() {
   local panel_dir=$1 project_dir=$2 repo=$3 kind=$4 target=$5 max_bytes=$6
   local base head_ref head_label task_hint n origin size shortstat
@@ -318,6 +358,7 @@ resolve_change_subject() {
     # convenience the fetch below still follows, not the repository's name.
     origin=$(git -C "$project_dir" config --get remote.origin.url) ||
       die "project '$repo' has no 'origin' remote, so a PR cannot describe its changes; judge the local branch instead with --diff <branch>"
+    origin=$(redact_origin "$origin")
     # A --pr URL contributes its NUMBER and nothing else: host, owner and repo
     # in the URL are never compared against the origin, because every such
     # comparison leaked. The number means "PR N of this origin" whether it came
@@ -377,14 +418,18 @@ resolve_change_subject() {
   deliberately with --max-diff-bytes <n>."
   fi
 
-  printf '%s|%s|%s|%s|%s\n' "${base#refs/fm-panel/base/}" "$head_label" "$shortstat" "$task_hint" "$origin"
+  printf 'base=%s\n' "${base#refs/fm-panel/base/}"
+  printf 'head_label=%s\n' "$head_label"
+  printf 'shortstat=%s\n' "$shortstat"
+  printf 'task_hint=%s\n' "$task_hint"
+  printf 'origin=%s\n' "$origin"
 }
 
 convocar() {
   local panel=$1 kind=$2 target=$3 context=$4 criteria=$5 criteria_from=$6
   local repo=$7 effort=$8 judges=$9 max_bytes=${10}
   local project_dir panel_dir task_id brief judge subject prompt seen roster
-  local base head_label shortstat task_hint criteria_src resolved origin
+  local base head_label shortstat task_hint criteria_src resolved origin field
   local bad_judge
 
   project_dir="$PROJECTS/$repo"
@@ -461,7 +506,16 @@ convocar() {
     printf 'panel %s: pregunta en prosa\n\npregunta:\n%s\n' "$panel" "$target" > "$panel_dir/subject.md"
   else
     resolved=$(resolve_change_subject "$panel_dir" "$project_dir" "$repo" "$kind" "$target" "$max_bytes")
-    IFS='|' read -r base head_label shortstat task_hint origin <<< "$resolved"
+    base=""; head_label=""; shortstat=""; task_hint=""; origin=""
+    while IFS= read -r field; do
+      case "$field" in
+        base=*) base=${field#base=} ;;
+        head_label=*) head_label=${field#head_label=} ;;
+        shortstat=*) shortstat=${field#shortstat=} ;;
+        task_hint=*) task_hint=${field#task_hint=} ;;
+        origin=*) origin=${field#origin=} ;;
+      esac
+    done <<< "$resolved"
 
     # Naming a task ASSERTS the change has one, so an id that reads no criteria
     # refuses here, before a single judge is dispatched: we cannot deliver the
@@ -557,7 +611,13 @@ convocar() {
 # are four different things to go fix.
 verdict_of() {
   local report=$1 pattern line token count
-  pattern='^[[:space:]]*[-*#[:space:]]*VEREDICTO[[:space:]]*:'
+  # Decoration is tolerated on BOTH sides of the marker word, not just before it:
+  # a judge that writes the label in bold ends it with the same characters it
+  # started with, and losing that paid verdict to a pair of asterisks would push
+  # the whole collection to INCOMPLETO. Widening here stays safe against the
+  # decoy rule the judge brief rests on, because no line the brief emits begins
+  # with the marker word at all.
+  pattern='^[[:space:]]*[-*#[:space:]]*VEREDICTO[-*#[:space:]]*:'
   if [ ! -f "$report" ]; then
     printf '%s\n' sin-veredicto
     return 0

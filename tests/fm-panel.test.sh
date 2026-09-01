@@ -416,7 +416,7 @@ test_judge_brief_carries_no_line_the_parser_would_count() {
   # judge's report with these exact patterns. An instruction line that matches
   # them is a decoy the judge can quote back and the parser would count as a
   # vote, so the contract has to be described rather than exemplified.
-  grep -qiE '^[[:space:]]*[-*#[:space:]]*VEREDICTO[[:space:]]*:' "$brief" &&
+  grep -qiE '^[[:space:]]*[-*#[:space:]]*VEREDICTO[-*#[:space:]]*:' "$brief" &&
     fail "no brief line may match the verdict pattern recoger counts"
   grep -qiE '^[[:space:]]*[-*#[:space:]]*OBJECI[^:]*:' "$brief" &&
     fail "no brief line may match the objection pattern recoger renders"
@@ -588,6 +588,80 @@ test_pr_url_contributes_only_its_number_and_discloses_the_origin() {
   assert_grep "origen: file://$bare" "$root/home/data/p1/subject.md" \
     "the subject record must carry the resolved origin"
   pass "fm-panel.sh: a --pr URL gives only its number, and the resolved origin is disclosed"
+}
+
+test_pr_disclosure_carries_the_origin_identity_without_its_credentials() {
+  local root out rc dir bare pr_head url token
+  root=$(panel_world pr-origin-credentials)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/pr-work 300
+  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
+  bare="$root/origin.git"
+  git clone --quiet --bare "$dir" "$bare"
+  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
+  git -C "$dir" branch -D fm/pr-work >/dev/null
+  # A clone whose origin URL carries a token in its userinfo, which is how a CI
+  # checkout and a stored-credential clone both look. An insteadOf rewrite keeps
+  # the fetch working against the fixture remote while the CONFIGURED url - the
+  # one convocar discloses - stays the credential-bearing string.
+  token='ghp_TOKENQUENADIEDEBEVER'
+  url="https://x-access-token:$token@example.invalid/o/r.git"
+  git -C "$dir" remote add origin "$url"
+  git -C "$dir" config "url.file://$bare.insteadOf" "$url"
+
+  out=$(panel_run "$root" convocar p1 --judges claude,codex --repo proj --pr 7); rc=$?
+  expect_code 0 "$rc" "a clone with credentials in its origin URL must still convoke (got: $out)"
+  # The disclosure still has to identify the repository, or the operator cannot
+  # catch a mistaken target by eye - that is the whole contract --pr rests on.
+  assert_contains "$out" 'https://example.invalid/o/r.git' \
+    "convocar must still disclose which origin the PR number resolved against"
+  assert_grep 'Repositorio: https://example.invalid/o/r.git' "$root/home/data/p1-claude/brief.md" \
+    "the judge must still be told which repository the PR number resolved against"
+  assert_grep 'origen: https://example.invalid/o/r.git' "$root/home/data/p1/subject.md" \
+    "the subject record must still carry the resolved origin"
+  # ...and none of the three sinks may carry the secret. The judges' briefs go to
+  # third-party harnesses and subject.md stays on disk, so a token disclosed here
+  # is a token the operator cannot take back.
+  assert_not_contains "$out" "$token" "convocar's own output must not print the origin's credentials"
+  assert_no_grep "$token" "$root/home/data/p1-claude/brief.md" \
+    "no judge may be handed the origin's credentials"
+  assert_no_grep "$token" "$root/home/data/p1-codex/brief.md" \
+    "no judge may be handed the origin's credentials"
+  assert_no_grep "$token" "$root/home/data/p1/subject.md" \
+    "the panel record on disk must not persist the origin's credentials"
+  assert_no_grep 'x-access-token' "$root/home/data/p1-claude/brief.md" \
+    "the userinfo component must be dropped whole, not just its password half"
+  pass "fm-panel.sh: the disclosed origin identifies the repository without its credentials"
+}
+
+test_diff_of_a_branch_whose_name_carries_a_delimiter() {
+  local root out rc dir
+  root=$(panel_world diff-delimiter-branch)
+  dir=$(panel_project "$root" proj)
+  # git permits '|' in a ref name. A subject tuple joined on one splits here, so
+  # the task id and the origin are read out of the wrong pieces of the branch.
+  panel_branch "$dir" 'fm/a|b' 300
+  mkdir -p "$root/home/data/a|b" "$root/home/data/a"
+  printf '%s\n' '# Task' 'CRITERIOS DE LA TAREA A|B' > "$root/home/data/a|b/brief.md"
+  # The task the mis-split would have reached instead: an unrelated id that a
+  # name collision alone must never hand to a paid judge.
+  printf '%s\n' '# Task' 'CRITERIOS DE OTRA TAREA' > "$root/home/data/a/brief.md"
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff 'fm/a|b'); rc=$?
+  expect_code 0 "$rc" "a branch whose name carries a delimiter must convoke (got: $out)"
+  assert_grep 'CRITERIOS DE LA TAREA A|B' "$root/home/data/p1-claude/brief.md" \
+    "the criteria must come from the whole branch name's task"
+  assert_no_grep 'CRITERIOS DE OTRA TAREA' "$root/home/data/p1-claude/brief.md" \
+    "a truncated branch name must never be read as another task's id"
+  # A branch subject has no origin at all, so neither sink may invent one out of
+  # the tail of the branch name.
+  assert_no_grep 'Repositorio:' "$root/home/data/p1-claude/brief.md" \
+    "a branch subject must not be given a repository it never resolved against"
+  assert_no_grep 'origen:' "$root/home/data/p1/subject.md" \
+    "the subject record must not invent an origin for a branch subject"
+  assert_grep 'rama fm/a|b' "$root/home/data/p1/subject.md" \
+    "the subject record must name the branch in full"
+  pass "fm-panel.sh: a branch name containing a delimiter resolves its task and no origin"
 }
 
 test_convocar_refuses_a_judge_name_with_inner_whitespace() {
@@ -1080,6 +1154,23 @@ test_recoger_tolerates_verdict_decoration() {
   pass "fm-panel.sh: recoger counts a verdict through markdown decoration and case"
 }
 
+test_recoger_counts_a_verdict_whose_label_is_emphasised() {
+  local root out rc
+  root=$(panel_world recoger-bold-label)
+  panel_roster_file "$root" p1 claude codex
+  # Bolding the label alone closes the emphasis BEFORE the colon, which is how a
+  # judge writing markdown most naturally spells it. Losing that paid verdict
+  # would report a delivered vote as never cast and drag the panel to INCOMPLETO.
+  panel_report "$root" p1 claude '**VEREDICTO**: aprobar'
+  panel_report "$root" p1 codex '- **VEREDICTO** : Aprobar'
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 0 "$rc" "an emphasised verdict label must still classify (got: $out)"
+  assert_contains "$out" 'UNÁNIME: aprobar' "a bolded label must not cost the judge its vote"
+  assert_not_contains "$out" 'sin-marca' "a delivered verdict must not be reported as never marked"
+  assert_not_contains "$out" 'INCOMPLETO' "a countable panel must not read as incomplete"
+  pass "fm-panel.sh: recoger counts a verdict whose label itself is emphasised"
+}
+
 test_recoger_fails_when_a_verdict_is_missing() {
   local root out rc
   root=$(panel_world recoger-incomplete)
@@ -1146,6 +1237,8 @@ test_pr_resolves_through_the_clone_origin
 test_pr_failure_after_the_fetch_leaves_no_ref_behind
 test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote
 test_pr_url_contributes_only_its_number_and_discloses_the_origin
+test_pr_disclosure_carries_the_origin_identity_without_its_credentials
+test_diff_of_a_branch_whose_name_carries_a_delimiter
 test_convocar_refuses_a_judge_name_with_inner_whitespace
 test_criteria_come_from_the_task_behind_the_branch
 test_change_without_a_task_says_so_loudly
@@ -1172,6 +1265,7 @@ test_recoger_names_each_uncountable_cause_distinctly
 test_recoger_shows_an_unclassified_judge_objection
 test_recoger_separates_disagreement_from_not_knowing
 test_recoger_tolerates_verdict_decoration
+test_recoger_counts_a_verdict_whose_label_is_emphasised
 test_recoger_fails_when_a_verdict_is_missing
 test_recoger_prefers_the_recorded_roster
 test_recoger_falls_back_to_status_files
