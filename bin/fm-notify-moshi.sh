@@ -169,6 +169,7 @@ TMPD=$(mktemp -d "${TMPDIR:-/tmp}/fm-moshi.XXXXXX") || {
 BODY="$TMPD/body"
 CURL_ERR="$TMPD/curl.err"
 TOKEN_ERR="$TMPD/token.err"
+# shellcheck disable=SC2329 # Registered by the EXIT and signal traps below.
 cleanup() { rm -rf -- "$TMPD"; }
 trap cleanup EXIT
 trap 'cleanup; exit 129' HUP
