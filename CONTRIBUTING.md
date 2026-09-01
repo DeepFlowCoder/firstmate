@@ -16,6 +16,8 @@ The check settles that case by itself when the branch only moved forward and eve
 That reconciled pass certifies less than an exact one, and deliberately so - review, test, and document ran against the attested commit, not against the CI fixes layered on top of it.
 Anything else in the gap - a commit you pushed yourself, a merge, or a rebase that gives every commit a new identity - still leaves the check red until `git push no-mistakes` runs again and rewrites the attestation, and no source change clears it.
 It evaluates every PR opening and body edit independently, reruns after head synchronization or reopening, and prevents a later edit from replacing an earlier pending compliance check.
+Each evaluation reads the PR body as it stood when its own event fired, not as it stands when the job later runs, so a push whose attestation is written moments afterwards is judged against the previous body and goes red while the body on screen already names the right commit.
+That red is stale rather than a verdict on the current state, and the next event on the PR re-reads the body and settles it.
 GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
 
 ## Workflow

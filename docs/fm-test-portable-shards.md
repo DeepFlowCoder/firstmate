@@ -55,7 +55,7 @@ Membership is derived rather than enumerated, so a newly added test lands here b
 
 ## Portable serial CI shards
 
-That remainder now measures about 55 minutes of serial work (3302594 ms, from the hints recorded below), so `portable-serial-<k>of<n>` splits it across `n` separate CI runners, each under a 20-minute job cap.
+That remainder now measures about 55 minutes of serial work (3322594 ms, from the hints recorded below), so `portable-serial-<k>of<n>` splits it across `n` separate CI runners, each under a 20-minute job cap.
 Each shard is still strictly serial in itself, and separate runners mean no two of these stateful scripts ever share a machine, so the split needs no concurrency isolation proof.
 
 The split exists because the unsharded lane outgrew its cap. The figures below are pre-shard history, not a current measurement:
@@ -71,7 +71,7 @@ Assignment is longest-processing-time bin packing over per-script duration hints
 The hints merge two wholesale refreshes, because this fork and `kunchenguid/firstmate` measured the lane separately before reconciling.
 The base is the 2026-08-29 refresh from the four `fm-test-timing-portable-serial-*` artifacts of run 33236596384 on `DeepFlowCoder/firstmate`, where the lane ran 118 scripts in 2958555 ms of serial work.
 The eight scripts that refresh never saw carry the hints measured upstream in green CI run [32491999845](https://github.com/kunchenguid/firstmate/actions/runs/32491999845) on 2026-08-21, except `tests/fm-tool-update-check.test.sh`, whose 12846 ms comes from the shard 3 artifact of run [32461816719](https://github.com/kunchenguid/firstmate/actions/runs/32461816719), the first run that measured it.
-The upstream reconciliation then added thirteen scripts that neither refresh measured, so those carry the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default until the next wholesale refresh, which is due.
+Fourteen scripts in the lane carry the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default instead of a measurement until the next wholesale refresh, which is due: the thirteen the upstream reconciliation added, which neither refresh measured, plus `tests/fm-notify-moshi.test.sh`.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured scripts let one shard carry more than twice another shard's real work and reach the job cap while another runner sits idle.
 Refresh the hints whenever the serial lane gains scripts, rather than waiting for a shard to time out.
@@ -79,26 +79,30 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 Stale hints still cost a red lane once the drift is large enough to cross the job cap.
 The previous table described a 1143762 ms lane while the real lane had grown to 2958555 ms, so four shards carried 903113 / 632913 / 879800 / 542729 ms and the worst shard held 903 s of work against a 900 s cap.
 `Behavior portable serial 1` therefore reported as cancelled at that cap with all 28 of its scripts passing: the lane went red on the clock, not on a test.
-The shard count is derived from the refreshed measurement rather than chosen freely: eight shards put the balanced estimate near 413 s, and the measured worst shard of green 8-shard run [33246490613](https://github.com/DeepFlowCoder/firstmate/actions/runs/33246490613) ran 53% above its estimate of that era, so the cap is a hang tripwire with real margin rather than the expected end of the lane.
+The shard count is derived from the refreshed measurement rather than chosen freely: eight shards put the balanced estimate near 415 s, and the measured worst shard of green 8-shard run [33246490613](https://github.com/DeepFlowCoder/firstmate/actions/runs/33246490613) ran 53% above its estimate of that era, so the cap is a hang tripwire with real margin rather than the expected end of the lane.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of8` | 16 | 412831 ms (~412.8 s) |
-| `portable-serial-2of8` | 17 | 412817 ms (~412.8 s) |
-| `portable-serial-3of8` | 17 | 412833 ms (~412.8 s) |
-| `portable-serial-4of8` | 17 | 412826 ms (~412.8 s) |
-| `portable-serial-5of8` | 17 | 412817 ms (~412.8 s) |
-| `portable-serial-6of8` | 18 | 412815 ms (~412.8 s) |
-| `portable-serial-7of8` | 18 | 412830 ms (~412.8 s) |
-| `portable-serial-8of8` | 19 | 412825 ms (~412.8 s) |
-| imbalance | | 18 ms |
+| `portable-serial-1of8` | 16 | 415329 ms (~415.3 s) |
+| `portable-serial-2of8` | 15 | 415324 ms (~415.3 s) |
+| `portable-serial-3of8` | 17 | 415334 ms (~415.3 s) |
+| `portable-serial-4of8` | 18 | 415332 ms (~415.3 s) |
+| `portable-serial-5of8` | 17 | 415315 ms (~415.3 s) |
+| `portable-serial-6of8` | 17 | 415316 ms (~415.3 s) |
+| `portable-serial-7of8` | 20 | 415316 ms (~415.3 s) |
+| `portable-serial-8of8` | 20 | 415328 ms (~415.3 s) |
+| imbalance | | 19 ms |
+
+That packing runs over the whole sorted lane, so one added script re-cuts every bin rather than only its own: adding `tests/fm-notify-moshi.test.sh` moved script counts that were 16/17/17/17/17/18/18/19 to the table above.
+Read a shard's membership from `bin/fm-test-run.sh --list --lane portable-serial-<k>of8` at the head you care about rather than carrying it forward from an earlier run.
 
 The single longest script, `tests/fm-pr-check-security.test.sh` at 252478 ms, is the floor for any shard count, and every security case added to it raises that floor.
 
 A wholesale refresh is DUE and is the real fix for the cap being raised.
 On run 33296163782 shard 3 ran 15m18s against a 412 s estimate while the other seven shards each finished between 6 and 7 minutes, so the imbalance is real rather than runner noise.
 That run's shard 3 timing artifact never uploaded, so the overrunning script is not identified here rather than guessed at; the next green run supplies it.
-Look first at the two scripts in that shard carrying `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` rather than a measurement: `tests/fm-send-inbox-doorbell-live-e2e.test.sh`, a live e2e, and `tests/fm-branch-supervision.test.sh`, 552 new lines on the same 20000 ms placeholder.
+Look first at the two scripts that shard carried at that head with `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` rather than a measurement: `tests/fm-send-inbox-doorbell-live-e2e.test.sh`, a live e2e, and `tests/fm-branch-supervision.test.sh`, 552 new lines on the same 20000 ms placeholder.
+The rebalance recorded above has since moved the first of those to shard 4, so they are suspect scripts rather than a current shard-3 membership.
 An unmeasured script is where the estimate can be wrong by the ~500 s between shard 3's 412833 ms estimate and the >900 s it ran.
 
 `tests/fm-remote-secondmate-lifecycle-e2e.test.sh` does not explain that gap, though it is the heaviest script in the shard and the obvious suspect: its 211342 ms hint is already inside the 412833 ms estimate, so it cannot by itself open a gap against that estimate.
@@ -140,7 +144,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-8 | job `timeout-minutes: 20` | Raised from 15 after shard 3 hit that cap at 15m18s on run 33296163782, which GitHub reports as a cancelled job rather than a timeout. The balanced estimate is about 6.9 min, but it is known optimistic: 13 scripts the upstream reconciliation added still carry the default weight, and the run was cut before shard 3's timing artifact uploaded, so which script overran is unmeasured. 20 min restores tripwire margin without guessing at the cause. |
+| portable serial 1-8 | job `timeout-minutes: 20` | Raised from 15 after shard 3 hit that cap at 15m18s on run 33296163782, which GitHub reports as a cancelled job rather than a timeout. The balanced estimate is about 6.9 min, but it is known optimistic: 14 scripts still carry the default weight rather than a measurement, and the run was cut before shard 3's timing artifact uploaded, so which script overran is unmeasured. 20 min restores tripwire margin without guessing at the cause. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.

@@ -28,6 +28,37 @@ On timeout or daemon shutdown, the notifier process group is terminated and the 
 AppleScript receives the summary as an argv item rather than interpolated source, so summary text cannot alter the script.
 See [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
+## Phone delivery with Moshi
+
+The alarm fires with no live Firstmate turn, so anything that only reaches a running agent cannot carry it.
+`command:` is the channel that leaves the machine, and [`bin/fm-notify-moshi.sh`](../bin/fm-notify-moshi.sh) wires it to Moshi's push webhook.
+That webhook is an account-level HTTPS endpoint, so this needs no `moshi-hook` daemon, no background service, and nothing that a machine rebuild would remove.
+
+The helper builds the request with `jq` and sends it with `curl`, and neither is part of the universal toolchain in [`configuration.md`](configuration.md#toolchain), so install both on a home that does not already have them.
+
+Setup is three steps.
+
+1. In the Moshi app, enable push notifications and copy the API token from Settings -> Push Notifications.
+2. Store it in the login Keychain, with `-w` last so the token is prompted for instead of being typed into shell history: `security add-generic-password -U -s firstmate-moshi -a "$USER" -w`
+3. Add the channel to `config/wedge-alarm`: `command: /path/to/firstmate/bin/fm-notify-moshi.sh "$1"`
+
+The configured line holds no secret because the helper reads the token at alarm time.
+That is deliberate: macOS `ps` shows full command lines to every local user, so a token written into `config/wedge-alarm` would be published to the machine every time the alarm fired.
+
+The Keychain is the default source because `security` reads back an item it created without an authorization prompt, as long as the keychain holding it is unlocked.
+Setting `FM_MOSHI_TOKEN_OP_REF` to a 1Password secret reference instead trades that away: a locked vault blocks the read on a biometric prompt, so the alarm fails in exactly the situation it exists for.
+Neither source is unconditional, and the residual is recorded in [`verification/supervision.md`](verification/supervision.md): the login keychain's own lock state was never measured, and a keychain locked by "lock when sleeping" can block the read the same way.
+`bin/fm-notify-moshi.sh --help` owns the rest of the environment and the exit codes.
+
+Moshi rate-limits a free host to 10 events per 60 seconds, well above this alarm's own ceiling of one per max-defer window.
+The helper reports a refused delivery as a non-zero exit, which the daemon logs and continues past, so a Moshi outage still leaves the durable marker and every other configured channel intact.
+The daemon runs the `command:` channel with its stderr discarded, so the log records only the non-zero exit and cannot tell a rejected token, an empty Keychain, and a Moshi outage apart.
+Run `bin/fm-notify-moshi.sh 'test summary'` by hand to see the specific reason, which the helper prints to stderr.
+When a credential read returns a failure, it carries the reader's own exit status and whatever it wrote to stderr, so an item that is genuinely absent says so in the keychain's own words rather than being collapsed into a generic message.
+What that does NOT cover is a locked keychain: whether such a read returns a failure at all, or instead blocks on an unlock prompt, is not measured and is recorded that way in [`verification/supervision.md`](verification/supervision.md).
+If it blocks, a hand run waits on that dialog rather than printing anything, and through the alarm channel the per-channel watchdog kills the process group and the log records only rc 124.
+Whether the alert actually arrives on the phone is the one part no host-side check can prove; send a test alarm and confirm the phone before relying on it.
+
 ## Test safety
 
 Every notifier routes through `FM_WEDGE_ALARM_EXEC` in `wedge_alarm_emit`.

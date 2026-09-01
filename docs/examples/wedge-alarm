@@ -16,7 +16,19 @@
 # An ABSENT config/wedge-alarm behaves as `auto` (default-on on macOS): the
 # alarm exists precisely so a wedged away-mode primary is never silent.
 #
-# Example: a macOS banner plus a push to a phone via ntfy.sh, so a wedge that
-# happens overnight reaches you even away from the machine.
+# A command: line is visible to every local user in `ps`, so put no token in it.
+# Have the command read its own credential at alarm time instead, the way
+# bin/fm-notify-moshi.sh reads the Keychain.
+#
+# Example: a macOS banner plus a push to your phone through Moshi, so a wedge
+# that happens overnight reaches you even away from the machine. See
+# ../wedge-alarm.md "Phone delivery with Moshi" for the one-time token setup.
 osascript
-command: curl -fsS -H "Title: firstmate wedge alarm" -d "$1" https://ntfy.sh/replace-with-your-topic
+command: /path/to/firstmate/bin/fm-notify-moshi.sh "$1"
+
+# Any other pager works the same way: point command: at a small script of your
+# own that fetches its own credential and sends the alert. Keep the secret out
+# of this file AND off the command line of whatever the script runs, since
+# `$(...)` substituted into a curl -H argument is still visible in `ps` for the
+# life of the request. bin/fm-notify-moshi.sh pipes it instead, and is the
+# pattern to copy.

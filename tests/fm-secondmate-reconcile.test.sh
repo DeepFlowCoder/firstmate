@@ -157,9 +157,19 @@ run_remote_notify() {  # <home> <fakebin> <snapshot>
     "$RECONCILE" notify --snapshot "$snap"
 }
 
+# Write the home's cooldown record at an exact epoch second.
+stamp_cooldown() {  # <state-dir> <mate-id> <epoch>
+  printf '%s\n' "$3" > "$1/$2.reconcile-nudged"
+}
+
 # Age the home's cooldown record so the next run sees the window as elapsed.
+# The age is relative to THIS clock read, so the run that follows observes it
+# plus however long the run takes to reach its own clock. Callers that sit on
+# the one-second window boundary must use stamp_cooldown with
+# FM_RECONCILE_NOW_OVERRIDE instead; the margins here are wide enough to absorb
+# a slow runner.
 age_cooldown() {  # <state-dir> <mate-id> <seconds-ago>
-  printf '%s\n' "$(( $(date +%s) - $3 ))" > "$1/$2.reconcile-nudged"
+  stamp_cooldown "$1" "$2" "$(( $(date +%s) - $3 ))"
 }
 
 run_notify() {  # <home> <fakebin> <name> <snapshot> [extra args...]
@@ -167,6 +177,7 @@ run_notify() {  # <home> <fakebin> <name> <snapshot> [extra args...]
   shift 4
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$home/state" \
+    FM_RECONCILE_NOW_OVERRIDE="${FM_RECONCILE_NOW_OVERRIDE:-}" \
     FM_FAKE_TMUX_WINDOW="firstmate:fm-mate" \
     FM_FAKE_TMUX_LOG="$TMP_ROOT/$name-tmux.log" \
     FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/$name-fake/pane.txt" \
@@ -279,19 +290,41 @@ SH
 }
 
 test_the_window_is_four_hours() {
-  local home mate fakebin snap out
+  local home mate fakebin snap out now
   { read -r home; read -r mate; read -r fakebin; } < <(make_main_home fourhours mate)
   snap="$home/snapshot.json"
   write_snapshot "$snap" mate '{"kind":"terminal_in_flight","ids":["done-row"]}'
   run_notify "$home" "$fakebin" fourhours "$snap" >/dev/null || fail "the first ask failed"
+  # Both sides of the boundary are measured against one pinned "now" rather than
+  # against the wall clock. Stamping the nudge 14399s before this test's own
+  # clock read and then letting the run spend a second reaching the script's
+  # clock put the observed age at 14400 and sent the ask instead of suppressing
+  # it (CI run 33321479280, portable serial shard 1).
+  now=$(date +%s)
   # One second short of four hours is still inside; one second past is not.
-  age_cooldown "$home/state" mate 14399
-  out=$(run_notify "$home" "$fakebin" fourhours "$snap")
+  stamp_cooldown "$home/state" mate "$((now - 14399))"
+  out=$(FM_RECONCILE_NOW_OVERRIDE=$now run_notify "$home" "$fakebin" fourhours "$snap")
   assert_contains "$out" "cooldown: mate" "the window was shorter than four hours: $out"
-  age_cooldown "$home/state" mate 14401
-  out=$(run_notify "$home" "$fakebin" fourhours "$snap")
+  stamp_cooldown "$home/state" mate "$((now - 14401))"
+  out=$(FM_RECONCILE_NOW_OVERRIDE=$now run_notify "$home" "$fakebin" fourhours "$snap")
   assert_contains "$out" "sent: mate" "the window was longer than four hours: $out"
   pass "the cooldown window is four hours"
+}
+
+test_an_unusable_clock_pin_falls_back_to_the_wall_clock() {
+  local home mate fakebin snap out rc
+  { read -r home; read -r mate; read -r fakebin; } < <(make_main_home badpin mate)
+  snap="$home/snapshot.json"
+  write_snapshot "$snap" mate '{"kind":"terminal_in_flight","ids":["done-row"]}'
+  run_notify "$home" "$fakebin" badpin "$snap" >/dev/null || fail "the first ask failed"
+  # A test harness that fumbles the clock pin gets real time, not a poisoned
+  # cooldown comparison: the fresh nudge above is still inside the window.
+  rc=0
+  out=$(FM_RECONCILE_NOW_OVERRIDE=not-an-epoch run_notify "$home" "$fakebin" badpin "$snap") || rc=$?
+  [ "$rc" -eq 0 ] || fail "an unusable clock pin broke the cooldown gate: rc=$rc $out"
+  assert_contains "$out" "cooldown: mate" \
+    "an unusable clock pin did not fall back to the wall clock: $out"
+  pass "an unusable clock pin falls back to the wall clock"
 }
 
 test_each_home_carries_its_own_cooldown() {
@@ -405,7 +438,7 @@ test_a_failed_send_is_retried_on_the_next_run() {
 }
 
 test_busy_lifecycle_locks_never_hold_up_the_digest() {
-  local label home mate fakebin snap lock ready release holder notify out
+  local label home mate fakebin snap lock ready release holder notify out deadline
   for label in reconcile control meta; do
     { read -r home; read -r mate; read -r fakebin; } < <(make_main_home "busy-$label" mate)
     snap="$home/snapshot.json"
@@ -422,13 +455,36 @@ test_busy_lifecycle_locks_never_hold_up_the_digest() {
     while [ ! -f "$ready" ]; do sleep 0.01; done
     run_notify "$home" "$fakebin" "busy-$label" "$snap" > "$home/notify.out" 2>&1 &
     notify=$!
-    sleep 0.2
-    if kill -0 "$notify" 2>/dev/null; then
-      : > "$release"
-      wait "$notify" 2>/dev/null || true
-      wait "$holder" 2>/dev/null || true
-      fail "a busy $label lock blocked the reconcile path"
-    fi
+    # The evidence that a busy lock never holds up the digest is that notify
+    # finishes while the holder STILL owns the lock: nothing below writes
+    # $release until this loop has seen notify exit. So wait for that exit
+    # rather than sampling liveness once after a fixed grace. The old fixed
+    # 0.2s grace measured process startup - bash, the sourced libraries, jq
+    # over the snapshot - not lock behavior, and a loaded runner overran it
+    # (CI run 33408483306, portable serial shard 3, the meta iteration).
+    #
+    # The deadline is only a hang tripwire, never the assertion: every lock on
+    # this path is taken with fm_lock_try_acquire, so a regression that waits
+    # would use fm_lock_acquire_wait, which polls forever against a lock this
+    # test never releases. Blocked is unbounded, so no amount of slowness can
+    # be mistaken for it.
+    #
+    # The residual that trade accepts, recorded rather than assumed away: a
+    # regression to a BOUNDED wait shorter than the tripwire would pass here,
+    # where the old 0.2s sample would have failed it. No current code path can
+    # produce one - fm_lock_acquire_wait is the only waiting acquire and it
+    # polls forever - so what is given up is a guard against a failure mode
+    # this path cannot reach, in exchange for not measuring process startup.
+    deadline=$((SECONDS + 60))
+    while kill -0 "$notify" 2>/dev/null; do
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        : > "$release"
+        wait "$notify" 2>/dev/null || true
+        wait "$holder" 2>/dev/null || true
+        fail "a busy $label lock blocked the reconcile path"
+      fi
+      sleep 0.05
+    done
     wait "$notify" || fail "a busy $label lock made notify fail"
     : > "$release"
     wait "$holder" || fail "the $label lock holder failed"
@@ -706,6 +762,7 @@ test_an_inventory_mismatch_asks_the_mate_once_per_window
 test_a_mismatch_still_there_after_the_window_earns_one_more_nudge
 test_the_cooldown_starts_when_delivery_finishes
 test_the_window_is_four_hours
+test_an_unusable_clock_pin_falls_back_to_the_wall_clock
 test_each_home_carries_its_own_cooldown
 test_the_ask_never_arms_a_reply_expectation_or_a_re_ring
 test_a_readable_home_without_a_mismatch_is_never_asked
