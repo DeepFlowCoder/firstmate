@@ -311,6 +311,23 @@ test_the_window_is_four_hours() {
   pass "the cooldown window is four hours"
 }
 
+test_an_unusable_clock_pin_falls_back_to_the_wall_clock() {
+  local home mate fakebin snap out rc
+  { read -r home; read -r mate; read -r fakebin; } < <(make_main_home badpin mate)
+  snap="$home/snapshot.json"
+  write_snapshot "$snap" mate '{"kind":"terminal_in_flight","ids":["done-row"]}'
+  run_notify "$home" "$fakebin" badpin "$snap" >/dev/null || fail "the first ask failed"
+  # A test harness that fumbles the clock pin gets real time, not a poisoned
+  # cooldown comparison: the fresh nudge above is still inside the window.
+  set +e
+  out=$(FM_RECONCILE_NOW_OVERRIDE=not-an-epoch run_notify "$home" "$fakebin" badpin "$snap"); rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "an unusable clock pin broke the cooldown gate: rc=$rc $out"
+  assert_contains "$out" "cooldown: mate" \
+    "an unusable clock pin did not fall back to the wall clock: $out"
+  pass "an unusable clock pin falls back to the wall clock"
+}
+
 test_each_home_carries_its_own_cooldown() {
   local home mate fakebin snap out
   { read -r home; read -r mate; read -r fakebin; } < <(make_main_home perhome mate)
@@ -746,6 +763,7 @@ test_an_inventory_mismatch_asks_the_mate_once_per_window
 test_a_mismatch_still_there_after_the_window_earns_one_more_nudge
 test_the_cooldown_starts_when_delivery_finishes
 test_the_window_is_four_hours
+test_an_unusable_clock_pin_falls_back_to_the_wall_clock
 test_each_home_carries_its_own_cooldown
 test_the_ask_never_arms_a_reply_expectation_or_a_re_ring
 test_a_readable_home_without_a_mismatch_is_never_asked

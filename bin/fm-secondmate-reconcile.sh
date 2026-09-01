@@ -52,6 +52,8 @@
 #   FM_RECONCILE_NOW_OVERRIDE      pin the epoch second the cooldown gate
 #                                  compares against, so a test can sit on the
 #                                  window boundary without racing the wall clock
+#                                  (unset, empty, or non-numeric falls back to
+#                                  the wall clock)
 #
 # Exit status: 0 when no delivery or cooldown-recording failure is known,
 # including when a home was skipped for lock contention or a stale endpoint;
@@ -260,7 +262,12 @@ cmd_notify() {
     # this one: a second of real time between the two crosses the boundary and
     # flips the verdict. The delivery timestamp below is deliberately NOT pinned,
     # so "the cooldown begins when delivery finishes" still measures real time.
-    now=${FM_RECONCILE_NOW_OVERRIDE:-$(date +%s)}
+    # A pin that is empty or not an epoch second falls back to the wall clock
+    # rather than poisoning the arithmetic below.
+    case "${FM_RECONCILE_NOW_OVERRIDE:-}" in
+      ''|*[!0-9]*) now=$(date +%s) ;;
+      *) now=$FM_RECONCILE_NOW_OVERRIDE ;;
+    esac
     last=
     if [ -f "$path" ] && [ ! -L "$path" ]; then last=$(cat "$path" 2>/dev/null || true); fi
     case "$last" in ''|*[!0-9]*) last= ;; esac
