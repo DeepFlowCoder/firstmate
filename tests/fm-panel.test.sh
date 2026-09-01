@@ -560,89 +560,9 @@ test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote() {
   pass "fm-panel.sh: the private ref is cleaned up even from a clone path with a quote"
 }
 
-test_pr_refuses_a_foreign_github_repository() {
-  local root out rc dir
-  root=$(panel_world pr-foreign)
-  dir=$(panel_project "$root" proj)
-  git -C "$dir" remote add origin https://github.com/owner/real.git
-  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --pr https://github.com/other/thing/pull/7); rc=$?
-  expect_code 1 "$rc" "a PR from another GitHub repository must be refused"
-  assert_contains "$out" 'different repository' "must say it refuses another repository's change (got: $out)"
-  pass "fm-panel.sh: --pr refuses a PR that belongs to a different GitHub repository"
-}
-
-test_pr_refuses_a_repository_whose_name_merely_starts_the_same() {
-  local root out rc dir
-  root=$(panel_world pr-prefix)
-  dir=$(panel_project "$root" proj)
-  # owner/real is a prefix of owner/real-docs, so identity has to be compared as
-  # owner/repo and not looked for inside the origin URL: otherwise this PR
-  # resolves against the neighbouring repository and a whole paid panel judges
-  # somebody else's change.
-  git -C "$dir" remote add origin https://github.com/owner/real-docs.git
-  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --pr https://github.com/owner/real/pull/7); rc=$?
-  expect_code 1 "$rc" "a PR of a prefix-named repository must be refused"
-  assert_contains "$out" 'different repository' "must say it refuses another repository's change (got: $out)"
-  assert_absent "$root/spawn.log" "no judge may be spawned for another repository's PR"
-  pass "fm-panel.sh: --pr refuses a repository whose name merely starts the same"
-}
-
-test_pr_accepts_the_same_repository_in_another_case() {
+test_pr_url_contributes_only_its_number_and_discloses_the_origin() {
   local root out rc dir bare pr_head
-  root=$(panel_world pr-mixed-case)
-  dir=$(panel_project "$root" proj)
-  panel_branch "$dir" fm/pr-work 300
-  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
-  # The origin URL carries a MIXED-CASE github.com slug (DeepFlowCoder/firstmate,
-  # this repo's own shape) while remaining a fetchable local path, so the
-  # identity check runs for real against a PR URL written in lower case - the
-  # form github.com itself serves. Capitalization must not decide identity.
-  # The remote DECLARES the mixed-case GitHub url and an insteadOf rewrite sends
-  # the fetch to a local bare repo, which is an ordinary developer setup and the
-  # only way to exercise the identity check without reaching the network.
-  bare="$root/origin.git"
-  git clone --quiet --bare "$dir" "$bare"
-  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
-  git -C "$dir" branch -D fm/pr-work >/dev/null
-  git -C "$dir" remote add origin https://github.com/DeepFlowCoder/firstmate.git
-  git -C "$dir" config "url.file://$bare/.insteadOf" https://github.com/DeepFlowCoder/firstmate.git
-
-  out=$(panel_run "$root" convocar p1 --judges claude --repo proj \
-    --pr https://github.com/deepflowcoder/firstmate/pull/7); rc=$?
-  expect_code 0 "$rc" "the same repository in another case must not be refused (got: $out)"
-  assert_not_contains "$out" 'different repository' "capitalization alone must not read as a foreign repository"
-  assert_present "$root/home/data/p1/subject.diff" "the PR diff must be materialized"
-  pass "fm-panel.sh: --pr accepts the same GitHub repository written in another case"
-}
-
-test_pr_refuses_a_url_from_another_forge() {
-  local root out rc dir bare pr_head
-  root=$(panel_world pr-foreign-forge)
-  dir=$(panel_project "$root" proj)
-  panel_branch "$dir" fm/pr-work 300
-  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
-  bare="$root/origin.git"
-  git clone --quiet --bare "$dir" "$bare"
-  # The origin's own PR #7 exists, so the fetch would happily succeed and the
-  # panel would judge THIS repository's change while the operator pasted a URL
-  # naming another forge entirely. The guard has to prove identity, not assume
-  # it whenever it cannot read one side.
-  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
-  git -C "$dir" remote add origin https://github.com/Owner/Repo.git
-  git -C "$dir" config "url.file://$bare/.insteadOf" https://github.com/Owner/Repo.git
-
-  out=$(panel_run "$root" convocar p1 --judges claude --repo proj \
-    --pr https://gitea.example.com/SomeoneElse/Other/pull/7); rc=$?
-  expect_code 1 "$rc" "a PR URL from another forge must be refused (got: $out)"
-  assert_contains "$out" 'different repository' "must say it refuses another repository's change"
-  assert_absent "$root/spawn.log" "no judge may be dispatched for a PR it cannot match to this origin"
-  assert_absent "$root/home/data/p1/subject.diff" "no foreign change may be materialized"
-  pass "fm-panel.sh: --pr refuses a URL that names a different forge"
-}
-
-test_pr_refuses_a_url_against_an_unidentifiable_origin() {
-  local root out rc dir bare pr_head
-  root=$(panel_world pr-opaque-origin)
+  root=$(panel_world pr-url-number-only)
   dir=$(panel_project "$root" proj)
   panel_branch "$dir" fm/pr-work 300
   pr_head=$(git -C "$dir" rev-parse fm/pr-work)
@@ -650,22 +570,43 @@ test_pr_refuses_a_url_against_an_unidentifiable_origin() {
   git clone --quiet --bare "$dir" "$bare"
   git -C "$bare" update-ref refs/pull/7/head "$pr_head"
   git -C "$dir" branch -D fm/pr-work >/dev/null
-  # A local path carries no forge identity, so a URL target cannot be PROVEN to
-  # name it. Unprovable is refused, not waved through.
   git -C "$dir" remote add origin "file://$bare"
-
+  # The URL names a host, an owner and a repository that are NOT this clone's
+  # origin. The decided contract reads the number alone and resolves it against
+  # the origin, so this must convoke where a string-comparison guard would have
+  # refused - and it must say which origin the number resolved against before
+  # any judge is paid, so a mistaken target is caught by the reader's eye.
   out=$(panel_run "$root" convocar p1 --judges claude --repo proj \
-    --pr https://github.com/Owner/Repo/pull/7); rc=$?
-  expect_code 1 "$rc" "a URL target against an unidentifiable origin must be refused (got: $out)"
-  assert_contains "$out" 'different repository' "must say it refuses another repository's change"
-  assert_absent "$root/spawn.log" "no judge may be dispatched for an unprovable subject"
+    --pr https://github.com/other/thing/pull/7); rc=$?
+  expect_code 0 "$rc" "a PR URL contributes its number alone and must resolve against the origin (got: $out)"
+  assert_present "$root/home/data/p1/subject.diff" "the PR diff must be materialized"
+  assert_grep 'added.txt' "$root/home/data/p1/subject.diff" "the PR diff must carry the real change"
+  assert_contains "$out" "file://$bare" "convocar must disclose the origin the PR number resolved against"
+  assert_contains "$out" 'PR #7' "the disclosure must name the resolved PR"
+  assert_grep "Repositorio: file://$bare" "$root/home/data/p1-claude/brief.md" \
+    "the judge must be told which repository the PR number resolved against"
+  assert_grep "origen: file://$bare" "$root/home/data/p1/subject.md" \
+    "the subject record must carry the resolved origin"
+  pass "fm-panel.sh: a --pr URL gives only its number, and the resolved origin is disclosed"
+}
 
-  # The bare-number form asserts nothing about WHICH repository, so it means
-  # "PR 7 of this origin" and must still work against that same origin.
-  out=$(panel_run "$root" convocar p2 --judges claude --repo proj --pr 7); rc=$?
-  expect_code 0 "$rc" "a bare PR number must still resolve against any origin (got: $out)"
-  assert_present "$root/home/data/p2/subject.diff" "the PR diff must be materialized"
-  pass "fm-panel.sh: a PR URL needs a provable origin, a bare PR number does not"
+test_convocar_refuses_a_judge_name_with_inner_whitespace() {
+  local root out rc dir
+  root=$(panel_world judges-inner-space)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  # Outer spaces between commas are how people type a list and are trimmed, but
+  # a space INSIDE a name is not a harness: the dispatch loop word-splits the
+  # roster, so it would be dispatched as two judges nobody named.
+  out=$(panel_run "$root" convocar p1 --judges 'claude code' --repo proj --diff fm/work); rc=$?
+  expect_code 1 "$rc" "a judge name with inner whitespace must be refused (got: $out)"
+  assert_contains "$out" '--judges' "the refusal must name the flag"
+  assert_contains "$out" 'claude code' "the refusal must name the offending value"
+  assert_absent "$root/spawn.log" "no judge may be dispatched for a name that is not a harness"
+  assert_absent "$root/home/data/p1/judges" "no roster may be recorded for a refused convocation"
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --diff fm/work); rc=$?
+  expect_code 0 "$rc" "the panel id must still convoke after the refusal (got: $out)"
+  pass "fm-panel.sh: a judge name with inner whitespace is refused and frees its panel id"
 }
 
 test_criteria_come_from_the_task_behind_the_branch() {
@@ -1204,11 +1145,8 @@ test_pr_without_remote_points_at_diff
 test_pr_resolves_through_the_clone_origin
 test_pr_failure_after_the_fetch_leaves_no_ref_behind
 test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote
-test_pr_refuses_a_foreign_github_repository
-test_pr_refuses_a_repository_whose_name_merely_starts_the_same
-test_pr_accepts_the_same_repository_in_another_case
-test_pr_refuses_a_url_from_another_forge
-test_pr_refuses_a_url_against_an_unidentifiable_origin
+test_pr_url_contributes_only_its_number_and_discloses_the_origin
+test_convocar_refuses_a_judge_name_with_inner_whitespace
 test_criteria_come_from_the_task_behind_the_branch
 test_change_without_a_task_says_so_loudly
 test_adhoc_branch_is_judged_without_inferring_a_task

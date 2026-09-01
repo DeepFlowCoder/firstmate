@@ -13,7 +13,7 @@
 # <subject> is exactly one of:
 #   --question "<text>"    judge a prose decision
 #   --diff <branch>        judge a change: <branch> against the project's default branch
-#   --pr <url-or-number>   judge a change: that PR's head against the same base
+#   --pr <url-or-number>   judge a change: that PR number, resolved through the clone's origin
 #
 # options:
 #   --context "<text>"         shared background, handed to every judge
@@ -72,11 +72,15 @@
 # --pr resolves through the CLONE's own origin (refs/pull/<n>/head), not through
 # a forge API, and --diff needs no remote at all. Judging a change therefore never
 # assumes a remote exists: local-only projects use --diff, which is the primary
-# path, and --pr refuses with that pointer rather than failing obscurely. The
-# fetch writes only an additive private ref under refs/fm-panel/, never a branch,
-# HEAD, index or working tree, and the ref is removed on every way out of the
-# resolution - the captured diff and every refusal after the fetch alike - so a
-# failed convocation never costs the operator a ref to clean up by hand.
+# path, and --pr refuses with that pointer rather than failing obscurely. A --pr
+# URL is read for its NUMBER alone, and that number is resolved against the
+# clone's origin: what the URL claims about host or owner is never compared,
+# because the resolved origin and PR number are disclosed to the operator before
+# a single judge is paid. The fetch writes only an additive private ref under
+# refs/fm-panel/, never a branch, HEAD, index or working tree, and the ref is
+# removed on every way out of the resolution - the captured diff and every
+# refusal after the fetch alike - so a failed convocation never costs the
+# operator a ref to clean up by hand.
 #
 # --criteria-from is an ASSERTION that the change has a task; an fm/<task> branch
 # name is only an INFERENCE. So a --criteria-from that reads no criteria refuses
@@ -116,9 +120,10 @@
 # cannot parse as unclassified instead of counting it, discloses missing criteria
 # to both the judges and the reader, and refuses a duplicate judge - because a
 # panel that overstates its own consensus is worth less than no panel at all.
-# The same rule governs the SUBJECT: it will not judge a change it cannot prove
-# is the one it was pointed at, so a PR URL it cannot match to this clone's
-# origin is refused rather than resolved to whatever that number happens to hit.
+# The SUBJECT is disclosed rather than guarded: a --pr URL contributes only its
+# number, and convocar prints which origin that number resolved against before
+# dispatching, so a mistaken target is caught by the reader's eye instead of by
+# a string comparison that can itself leak.
 # A refusal also leaves nothing behind: no private ref in the operator's clone,
 # and no panel directory it never filled. Both are reaped by one EXIT handler
 # each rather than by every refusal remembering to.
@@ -146,11 +151,6 @@ usage() {
 }
 
 die() { echo "error: $*" >&2; exit 1; }
-
-# lower <text>: ASCII-lowercased, under LC_ALL=C so the folding is byte-identical
-# everywhere rather than locale-dependent.
-# shellcheck disable=SC2018,SC2019  # ASCII-only folding is the intent
-lower() { printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z'; }
 
 # --- subject resolution -----------------------------------------------------
 
@@ -192,40 +192,6 @@ pr_number() {
   esac
   [ -n "$n" ] || return 1
   printf '%s\n' "$n"
-}
-
-# repo_identity <url>: "<host>/<owner>/<repo>", lowercased, for a forge URL in
-# either scheme:// or scp-like SSH form. EMPTY when the URL carries no such
-# identity, and empty means "cannot be compared", never "matches anything": the
-# caller refuses on an empty side rather than falling through. Any /pull/<n>
-# tail is dropped so a PR URL and a clone URL of one repository agree.
-repo_identity() {
-  local url=$1 rest host path
-  case "$url" in
-    *://*)
-      rest=${url#*://}
-      rest=${rest#*@}
-      ;;
-    *@*:*)
-      rest=${url#*@}
-      host=${rest%%:*}
-      rest="$host/${rest#*:}"
-      ;;
-    *)
-      return 0
-      ;;
-  esac
-  host=${rest%%/*}
-  path=${rest#*/}
-  [ -n "$host" ] || return 0
-  [ "$path" != "$rest" ] || return 0
-  path=${path%%/pull/*}
-  path=${path%/}
-  path=${path%.git}
-  path=${path%/}
-  case "$path" in
-    */*) lower "$host/$path" ;;
-  esac
 }
 
 # brief_task_section <brief>: the "# Task" section of a scaffolded brief, which
@@ -328,10 +294,11 @@ drop_panel_refs() {
 # Refuses rather than truncating, and refuses an empty change.
 resolve_change_subject() {
   local panel_dir=$1 project_dir=$2 repo=$3 kind=$4 target=$5 max_bytes=$6
-  local base head_ref head_label task_hint n slug origin size shortstat
-  local origin_slug
+  local base head_ref head_label task_hint n origin size shortstat
 
   FM_PANEL_REFS=()
+  # Only a PR subject has an origin to disclose; a branch subject needs none.
+  origin=""
   # The path travels in a variable, never interpolated into the trap body: a
   # clone path containing a quote would otherwise make the body unparseable, so
   # the handler would silently never run and the ref would survive.
@@ -346,28 +313,16 @@ resolve_change_subject() {
   if [ "$kind" = pr ]; then
     n=$(pr_number "$target") ||
       die "--pr expects a PR URL or number (got: $target)"
-    # The remote's CONFIGURED url is the identity the operator declared for it.
-    # An insteadOf rewrite is a transport convenience, so the fetch below still
-    # follows it, but it must not stand in for what repository this remote is.
+    # The remote's CONFIGURED url is the identity the operator recognizes, so it
+    # is what the disclosure names. An insteadOf rewrite is a transport
+    # convenience the fetch below still follows, not the repository's name.
     origin=$(git -C "$project_dir" config --get remote.origin.url) ||
       die "project '$repo' has no 'origin' remote, so a PR cannot describe its changes; judge the local branch instead with --diff <branch>"
-    # A PR URL names a forge, an owner and a repository, so it must be PROVEN to
-    # name this clone's origin before a paid panel judges whatever it resolves
-    # to. The default here is REFUSE, not allow: a different host, a different
-    # owner/repo, and an origin whose url carries no comparable identity all
-    # fail to prove it equally. Earlier versions compared narrowly and allowed
-    # whatever they could not read, and every leak came through that opening.
-    # A bare --pr <number> asserts nothing about which repository is meant - it
-    # means "PR N of this origin" by construction - so it is never caught here.
-    case "$target" in
-      */pull/*)
-        slug=$(repo_identity "$target")
-        origin_slug=$(repo_identity "$origin")
-        if [ -z "$slug" ] || [ -z "$origin_slug" ] || [ "$slug" != "$origin_slug" ]; then
-          die "PR $target names ${slug:-no comparable repository identity} but '$repo' points at $origin${origin_slug:+ ($origin_slug)}; refusing to judge a different repository's change"
-        fi
-        ;;
-    esac
+    # A --pr URL contributes its NUMBER and nothing else: host, owner and repo
+    # in the URL are never compared against the origin, because every such
+    # comparison leaked. The number means "PR N of this origin" whether it came
+    # as a URL or bare, and convocar discloses that origin before dispatching,
+    # so a mistaken target is caught by the reader, not by a guard.
     git -C "$project_dir" fetch --quiet origin \
       "+refs/pull/$n/head:refs/fm-panel/pull/$n/head" 2>/dev/null ||
       die "cannot fetch PR #$n from '$repo' origin; check the PR number and network access"
@@ -422,14 +377,15 @@ resolve_change_subject() {
   deliberately with --max-diff-bytes <n>."
   fi
 
-  printf '%s|%s|%s|%s\n' "${base#refs/fm-panel/base/}" "$head_label" "$shortstat" "$task_hint"
+  printf '%s|%s|%s|%s|%s\n' "${base#refs/fm-panel/base/}" "$head_label" "$shortstat" "$task_hint" "$origin"
 }
 
 convocar() {
   local panel=$1 kind=$2 target=$3 context=$4 criteria=$5 criteria_from=$6
   local repo=$7 effort=$8 judges=$9 max_bytes=${10}
   local project_dir panel_dir task_id brief judge subject prompt seen roster
-  local base head_label shortstat task_hint criteria_src resolved
+  local base head_label shortstat task_hint criteria_src resolved origin
+  local bad_judge
 
   project_dir="$PROJECTS/$repo"
   [ -d "$project_dir" ] || die "project clone not found: $project_dir"
@@ -452,6 +408,15 @@ convocar() {
     die "--judges '$judges' no nombra ningún harness.
   Un panel son N jueces de pago en harnesses distintos; sin ninguno no hay nada que convocar.
   Pasa al menos un harness, por ejemplo --judges claude,codex."
+  # A judge name is ONE harness word. split_judges already trimmed the outer
+  # spaces people type between commas, so any whitespace still inside a line is
+  # inside the name itself - and the dispatch loop word-splits the roster, so a
+  # spaced name would be dispatched as two judges that were never named, with a
+  # task id nobody collects. Refuse it before anything is recorded.
+  bad_judge=$(printf '%s\n' "$roster" | awk '/[[:space:]]/ { print; exit }')
+  [ -z "$bad_judge" ] ||
+    die "--judges nombra '$bad_judge', que no es un harness: lleva espacios dentro.
+  Cada juez es un solo harness (claude, codex, ...); separa los nombres con comas."
   # --judges names a SET of distinct harnesses. Two entries of one harness are
   # not two opinions: they would share a task id, so one report would be read
   # twice and printed as a consensus of two - the fabricated agreement this tool
@@ -496,7 +461,7 @@ convocar() {
     printf 'panel %s: pregunta en prosa\n\npregunta:\n%s\n' "$panel" "$target" > "$panel_dir/subject.md"
   else
     resolved=$(resolve_change_subject "$panel_dir" "$project_dir" "$repo" "$kind" "$target" "$max_bytes")
-    IFS='|' read -r base head_label shortstat task_hint <<< "$resolved"
+    IFS='|' read -r base head_label shortstat task_hint origin <<< "$resolved"
 
     # Naming a task ASSERTS the change has one, so an id that reads no criteria
     # refuses here, before a single judge is dispatched: we cannot deliver the
@@ -530,6 +495,9 @@ convocar() {
       printf '## El cambio\n'
       printf 'Proyecto: %s\n' "$repo"
       printf 'Sujeto: %s\n' "$head_label"
+      # A PR subject names the origin its number was resolved against, so no
+      # judge reasons about a repository it cannot place.
+      [ -z "$origin" ] || printf 'Repositorio: %s\n' "$origin"
       printf 'Base de comparación: %s\n' "$base"
       printf 'Resumen: %s\n' "${shortstat:-sin resumen}"
       printf 'Diff completo (léelo entero antes de opinar): %s\n' "$panel_dir/subject.diff"
@@ -546,6 +514,7 @@ convocar() {
     {
       printf 'panel %s: %s de %s\n' "$panel" "$head_label" "$repo"
       printf '\nbase: %s\n' "$base"
+      [ -z "$origin" ] || printf 'origen: %s\n' "$origin"
       printf 'resumen: %s\n' "${shortstat:-sin resumen}"
       printf 'diff: %s\n' "$panel_dir/subject.diff"
       printf 'criterios: %s\n' "${criteria_src:-NINGUNO (cambio sin tarea registrada)}"
@@ -558,6 +527,9 @@ convocar() {
   echo "panel '$panel': $(printf '%s\n' "$roster" | paste -sd, -)"
   echo "  sujeto: $(sed -n '1p' "$panel_dir/subject.md")"
   if [ "$kind" != question ]; then
+    # The disclosure the whole --pr contract rests on: which origin the PR
+    # number resolved against, printed before a single judge is paid.
+    [ -z "$origin" ] || echo "  origen: $origin  ($head_label se resuelve contra este remoto)"
     echo "  diff: $(wc -c < "$panel_dir/subject.diff" | tr -d '[:space:]') bytes  ($shortstat)"
     if [ -z "$criteria" ]; then
       echo "  AVISO: sin criterios de aceptación registrados; los jueces juzgan contra la intención declarada del cambio."
