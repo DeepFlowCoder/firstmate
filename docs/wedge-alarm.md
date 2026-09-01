@@ -34,6 +34,8 @@ The alarm fires with no live Firstmate turn, so anything that only reaches a run
 `command:` is the channel that leaves the machine, and [`bin/fm-notify-moshi.sh`](../bin/fm-notify-moshi.sh) wires it to Moshi's push webhook.
 That webhook is an account-level HTTPS endpoint, so this needs no `moshi-hook` daemon, no background service, and nothing that a machine rebuild would remove.
 
+The helper builds the request with `jq` and sends it with `curl`, and neither is part of the universal toolchain in [`configuration.md`](configuration.md#toolchain), so install both on a home that does not already have them.
+
 Setup is three steps.
 
 1. In the Moshi app, enable push notifications and copy the API token from Settings -> Push Notifications.
