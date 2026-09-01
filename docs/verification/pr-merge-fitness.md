@@ -14,6 +14,7 @@ What a mock cannot prove is that the query itself still returns those fields in 
 ## Environment
 
 Recorded 2026-08-29 on Darwin 24.6.0 (arm64) with gh 2.90.0 (2026-04-16) and ShellCheck 0.11.0 (the version `bin/fm-lint.sh` pins).
+The rendered reading and the fold sections below were re-recorded 2026-09-01 on the same host with the same gh, when the reading gained the check-count record and the per-record start time.
 Queries name `--repo` explicitly: this repo's private mirror and its upstream share pull request numbering, so a bare number is ambiguous.
 
 ## The verdict fields exist and are selectable
@@ -68,29 +69,133 @@ The portable regression below pins that closure with both a conclusion and a sta
 
 ## The rendered reading matches live pull requests
 
-The `-q` expression in `bin/fm-pr-merge.sh` run against two live pull requests, one with a failed check and one with checks still running:
+The `-q` expression in `bin/fm-pr-merge.sh` run against a live pull request whose checks are legacy commit statuses, some failed and some still pending:
 
 ```sh
-gh pr view 3271 --repo kunchenguid/firstmate \
-  --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup -q "$FITNESS_QUERY"
-gh pr view 3269 --repo kunchenguid/firstmate \
+gh pr view 141762 --repo kubernetes/kubernetes \
   --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup -q "$FITNESS_QUERY"
 ```
 
 ```
-pr OPEN MERGEABLE UNSTABLE
-base main a25e38326662ef4b0e76f9b96763ff9168a76606
-check COMPLETED FAILURE Greptile Review
-
-pr OPEN MERGEABLE UNSTABLE
-base main <head>
-check COMPLETED FAILURE PR must be raised via no-mistakes
-check IN_PROGRESS NONE Lint
-check COMPLETED SUCCESS Test coverage guard
+pr OPEN MERGEABLE BLOCKED
+base master 5e1a29fc9d94e8b3ddf5cfae9b76858fd9e49ff1
+checks 21
+check FAILURE CONTEXT 1788289214 pull-kubernetes-cmd
+check FAILURE CONTEXT 1788290505 pull-kubernetes-verify
+check PENDING CONTEXT 1788288716 pull-kubernetes-e2e-gce
+check PENDING CONTEXT 1788288745 tide
+check SUCCESS CONTEXT 1788288719 EasyCLA
+...
 ```
 
-Both are refused by the gate and both merged silently before it existed.
+That pull request is refused by the gate, and it also settles which field carries a legacy commit status's start time: `gh` serialises `startedAt` for a `StatusContext` as well as for a `CheckRun`, so the expression reads `startedAt` on both branches rather than the `createdAt` the GraphQL `StatusContext` type also exposes.
+
+```sh
+gh pr view 141762 --repo kubernetes/kubernetes --json statusCheckRollup \
+  -q '.statusCheckRollup[] | select(.__typename != "CheckRun") | tojson' | head -1
+```
+
+```
+{"__typename":"StatusContext","context":"pull-kubernetes-cmd","startedAt":"2026-09-01T19:00:14Z","state":"FAILURE","targetUrl":"https://prow.k8s.io/..."}
+```
+
+There is no `createdAt` key in that serialisation at all, so an expression reading it would have rendered `0` for every legacy status and left them all unorderable.
+
 A `CheckRun` that has not finished carries an empty `conclusion` rather than a null one, which is why the expression tests for the empty string rather than relying on jq's `//` operator.
+The start time is guarded by a `type == "string"` test rather than by `//`, because a missing one does not degrade quietly:
+
+```sh
+gh api repos/DeepFlowCoder/firstmate/commits/b02c7192173a21000fdf113008c45368f4726d57 -q '(.nope|fromdateiso8601)'
+```
+
+```
+strptime("%Y-%m-%dT%H:%M:%S%z") cannot be applied to: null
+```
+
+One record without a start time would abort the whole expression and leave the gate with no reading at all, so the type test renders `0` for that record instead and leaves it unordered.
+`gh`'s own `-q` evaluator supports both `fromdateiso8601` and the `as $started` binding the expression uses, which is what the readings above demonstrate.
+
+## One check, several runs, and why no forge verdict answers it
+
+The reading lists one record per check RUN, so a check that ran twice against one head appears twice under one name.
+Measured on the head of `DeepFlowCoder/firstmate#17`, `b02c7192173a21000fdf113008c45368f4726d57`, which carried exactly that pair:
+
+```sh
+gh pr view 17 --repo DeepFlowCoder/firstmate --json statusCheckRollup \
+  -q '.statusCheckRollup[] | select(.name=="PR must be raised via no-mistakes") | "\(.startedAt) \(.conclusion) \(.detailsUrl)"'
+```
+
+```
+2026-09-01T15:45:35Z FAILURE .../actions/runs/33527692810/job/99922626268
+2026-09-01T15:46:30Z SUCCESS .../actions/runs/33527787331/job/99922955836
+```
+
+Two runs of one check, 55 seconds apart, in two different workflow runs.
+That shape is this repository's normal route to green rather than an anomaly: the `Require no-mistakes` check reads the pull request body from its own event payload, so a run that fires before the body is attested is expected to be replaced by a later one.
+`#19` carried two records of that same check name on one head the same day, both passing, so the double-record shape recurs whether or not the earlier record is red:
+
+```sh
+gh pr view 19 --repo DeepFlowCoder/firstmate --json statusCheckRollup \
+  -q '.statusCheckRollup[] | select(.name=="PR must be raised via no-mistakes") | "\(.startedAt) \(.conclusion)"'
+```
+
+```
+2026-09-01T12:25:35Z SUCCESS
+2026-09-01T15:22:55Z SUCCESS
+```
+
+Three forge-side verdicts were measured as candidates for resolving it, and none of them does.
+
+`statusCheckRollup.state` is GitHub's own aggregate over the head's checks, and it does not fold by name:
+
+```sh
+gh api graphql -f query='
+{ repository(owner:"DeepFlowCoder", name:"firstmate") {
+    object(oid:"b02c7192173a21000fdf113008c45368f4726d57") {
+      ... on Commit { statusCheckRollup { state contexts(first:100) { totalCount } } } } } }'
+```
+
+```
+{"data":{"repository":{"object":{"statusCheckRollup":{"state":"FAILURE","contexts":{"totalCount":18}}}}}}
+```
+
+It counts the superseded run and reads `FAILURE`, which is the defect this fold exists to fix rather than a fix for it.
+
+The REST check-runs endpoint's `filter=latest` returns both records, because that filter is per check suite and a re-triggered workflow run is a separate suite:
+
+```sh
+gh api "repos/DeepFlowCoder/firstmate/commits/b02c7192173a21000fdf113008c45368f4726d57/check-runs?filter=latest&per_page=100" \
+  -q '.check_runs[] | select(.name=="PR must be raised via no-mistakes") | "\(.started_at) \(.conclusion)"'
+```
+
+```
+2026-09-01T15:46:30Z success
+2026-09-01T15:45:35Z failure
+```
+
+`mergeStateStatus` was reported as `CLEAN` on that head while the failed record sat on the same commit, which is what made substituting it look attractive.
+That reading cannot be re-taken now - the pull request is merged, so GitHub answers `UNKNOWN` for both `mergeable` and `mergeStateStatus` - but what makes it unusable is measurable at any time and does not depend on it.
+`mergeStateStatus` is not a statement about checks: this repository requires no status check, so `CLEAN` is what it reports whatever the checks did.
+
+```sh
+gh api repos/DeepFlowCoder/firstmate/branches/main/protection
+gh api repos/DeepFlowCoder/firstmate/rules/branches/main -q '.[].type'
+```
+
+```
+HTTP 404: Branch not protected
+deletion
+non_fast_forward
+pull_request
+```
+
+No `required_status_checks` rule exists, so a gate that took `mergeStateStatus` as its verdict would report every red pull request in this repository as fit to merge.
+That is the opposite of the guarantee this record supports, and it would apply to `DeepFlowCoder/dotfiles` too, which the branch-protection measurement further down shows is equally unprotected.
+So the fold is computed from the records, and `bin/fm-pr-merge.sh`'s header records that decision at the reading it belongs to.
+
+The recency key is the run's own start time, rendered as epoch seconds, because the rollup is not returned in chronological order - the reading above shows the superseded `FAILURE` first and a later-completing `Lint` between the pair.
+Start time rather than completion time, so a re-run still in progress, which has no completion at all, supersedes the finished run it replaced instead of losing to it.
+Records of one name reporting the same start time are left unordered and the worst of them survives.
 
 ## Staleness is measurable without depending on a repository setting
 
@@ -220,7 +325,7 @@ The gate deliberately does not refuse on that, because a pull request legitimate
 bash tests/fm-pr-merge.test.sh
 ```
 
-The gate's own cases, out of the eighty-two the file runs:
+The gate's own cases, out of the eighty-eight the file runs:
 
 ```
 ok - fm-pr-merge refuses a PR with a failed check and changes no state
@@ -244,10 +349,40 @@ ok - fm-pr-merge warns that staleness could not be measured when the compare cal
 ok - fm-pr-merge distinguishes an unreadable behind_by from a compare call that failed
 ok - fm-pr-merge names a check containing a glob character instead of matching files
 ok - fm-pr-merge refuses a reading whose check name forged a second pull request record
+ok - fm-pr-merge merges when the current run of a twice-run check passed
+ok - fm-pr-merge still refuses when the current run of a twice-run check failed
+ok - fm-pr-merge refuses a check that ran once and failed, with nothing to supersede it
+ok - fm-pr-merge keeps the worst of two check records it cannot order
+ok - fm-pr-merge waits for a re-run in flight instead of merging on the run it replaced
+ok - fm-pr-merge refuses a reading carrying more check records than it declared
 ```
 
-Nineteen of those twenty-one fail against the pre-gate script.
+Nineteen of the first twenty-one fail against the pre-gate script.
 The two that do not, the `SKIPPED`/`NEUTRAL` case and the no-PR-CI case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
+
+The six fold cases were measured against two deliberately wrong folds, because a fold pinned in one direction only cannot be told apart from a gate that has learned to ignore reds.
+Each variant was built by editing only the fold in a copy of `bin/fm-pr-fitness-lib.sh`, leaving the record format and every other check intact, so what fails is the fold and not the parse.
+
+With no fold at all, the suite exits 1 on the case the defect was reported for:
+
+```
+not ok - superseded-red: a red left behind by an earlier run of the same check must not refuse: expected exit 0, got 1
+```
+
+With a fold that keeps the best result per name and ignores start time - the shape "ignore the reds" would take - the suite exits 1 in the other direction:
+
+```
+not ok - superseded-green: a check whose current run failed must still refuse: expected exit 1, got 0
+```
+
+`tests/fm-pr-merge.test.sh` stops at its first failure, so the two remaining ordering cases were measured against that same wrong fold through `fm_pr_fitness_classify` directly:
+
+```
+bin/fm-pr-fitness-lib.sh          unorderable-records -> failing   rerun-running -> running
+best-result-wins variant          unorderable-records -> ok        rerun-running -> ok
+```
+
+The single-red case and the declared-count case guard the two paths the fold must not disturb: a check that ran once still refuses with nothing to supersede it, and a reading carrying more check records than it declared refuses as unmeasurable rather than letting a forged record supersede a real failing one.
 
 Every case covering the empty check list, both compare-call failure modes, and the glob-bearing check name, together with the assertions that the unreadable-forge and unavailable-signal refusals carry `gh`'s own words, was run in isolation against the version of the gate that preceded it and failed there.
 The legacy-status and no-prior-pull-request cases in particular fail against the base-head signal that preceded them: the first because that signal never read the Status API, the second because it never needed a prior pull request and so had nothing to refuse on.

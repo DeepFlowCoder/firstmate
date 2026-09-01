@@ -14,6 +14,37 @@
 # whose fitness could not be read at all. A gate that cannot measure never
 # passes silently: an unreadable answer refuses.
 #
+# The reading lists one record per check RUN, so a check that ran twice against
+# this head leaves both runs on it and only the later one says what that check
+# reports now. Records are therefore folded by check name and the verdict is
+# taken over the current record of each: two records of one name are not two
+# checks. Without that fold a red left behind by a superseded run refuses a pull
+# request every later signal calls ready, and this repository reaches that shape
+# by design - its Require no-mistakes check reads the pull request body from its
+# own event payload, so a run that fired before the body was attested is
+# expected to be replaced by a later one. A gate that refuses the normal way
+# this repository turns green is a gate whose override becomes routine, and
+# --captain-override-red exists to make a red merge a deliberate captain act,
+# not a habit. bin/fm-pr-fitness-lib.sh owns the fold, its recency rule, and
+# what it does with a pair it cannot order.
+#
+# GitHub's own verdicts were measured as candidates for that fold and none of
+# them answers it, so the gate keeps computing it from the records:
+#   mergeStateStatus is a statement about branch rules, not about checks. It was
+#     reported CLEAN on the head this fold was built for while a failed check
+#     sat on the same commit, and that repository requires no status check at
+#     all, so CLEAN is what it reports whatever the checks did; substituting it
+#     would report every red pull request there as fit to merge and retire the
+#     gate on exactly the repositories this fleet merges into.
+#   statusCheckRollup.state read FAILURE on that same head, so GitHub's own
+#     check aggregate does not fold by name either and reproduces the defect.
+#   The REST check-runs endpoint returned both records under filter=latest,
+#     because that filter is per check suite and a re-triggered workflow run is
+#     a separate suite.
+# docs/verification/pr-merge-fitness.md records those three readings. What the
+# gate does adopt from GitHub is the reading itself; it recomputes only the one
+# question no endpoint answers.
+#
 # A pull request that reports no checks at all is the same principle: an empty
 # check list cannot tell a repository with no PR CI apart from one whose checks
 # have not been registered against this head commit yet, and merging in that
@@ -314,13 +345,16 @@ if [ "$PROVIDER" = github ]; then
   # One reading, rendered flat so it can be parsed without a JSON processor,
   # which bin/fm-pr-poll.sh documents this repo as not requiring. gh supplies its
   # own -q evaluator, so this adds no dependency beyond the gh already used here.
+  # shellcheck disable=SC2016  # $started is a jq binding, not a shell variable.
   FITNESS_QUERY='"pr \(.state) \(.mergeable) \(.mergeStateStatus)",
   "base \(.baseRefName) \(.headRefOid)",
+  "checks \((.statusCheckRollup // []) | length)",
   (.statusCheckRollup[]? |
+    (if (.startedAt|type) == "string" then (.startedAt|fromdateiso8601) else 0 end) as $started |
     if .__typename == "CheckRun" then
-      "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \(.name)"
+      "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \($started) \(.name)"
     else
-      "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \(.context)"
+      "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \($started) \(.context)"
     end)'
 
   # gh's own diagnostics are kept rather than discarded: "not authenticated for
@@ -482,6 +516,13 @@ if [ "$PROVIDER" = github ]; then
         ;;
     esac
     [ -z "$FM_PR_PRIOR_ERR" ] || READING_ERR=$FM_PR_PRIOR_ERR
+  fi
+
+  # A superseded record is never silent. GitHub's pull request page shows every
+  # run, so a merge that ignored a red record the reader can still see would
+  # read as the gate having been bypassed unless it says what it folded and why.
+  if [ "$FM_PR_FITNESS_SUPERSEDED_COUNT" -gt 0 ]; then
+    echo "warn: PR #$PR_NUMBER carries $FM_PR_FITNESS_SUPERSEDED_COUNT check record(s) superseded by a later run of the same check; the verdict below is taken over each check's current run, so a red result still shown on the pull request page may belong to a run that has since been replaced" >&2
   fi
 
   case "$FM_PR_FITNESS_VERDICT" in

@@ -16,8 +16,17 @@
 # one record per line:
 #   pr <state> <mergeable> <mergeStateStatus>
 #   base <baseRefName> <headRefOid>
-#   check <status> <conclusion> <name>        (a CheckRun)
-#   check <state> CONTEXT <name>              (a legacy commit status)
+#   checks <count>                                    (how many check records follow)
+#   check <status> <conclusion> <started> <name>      (a CheckRun)
+#   check <state> CONTEXT <started> <name>            (a legacy commit status)
+# <started> is epoch seconds, or 0 when the forge reported no start time at all;
+# gh serialises it as startedAt for a legacy commit status as well as for a
+# check run. A reading whose check records do not number exactly <count> is
+# refused as unmeasurable rather than classified: a check name is the one field
+# a third-party check app controls, so a name carrying a newline would otherwise
+# render as an extra record, and the fold below is the point where a forged
+# record could hide a real one.
+#
 # A PR with no checks at all renders no check lines. That shape is not read as
 # green: an empty list cannot tell a repository with no PR CI apart from one
 # whose checks have simply not been registered against this head commit yet,
@@ -25,6 +34,14 @@
 # returns the distinct verdict no-checks and leaves the second, positive signal
 # - whether the repository has any CI at all - to the caller, which is where
 # the network lives.
+#
+# GitHub renders one record per check RUN, not per check. A check that ran twice
+# against one head - a re-run, or a second workflow run raised by a later event -
+# contributes two records under one name, and only the later one describes that
+# check now. So the records are folded by name and the verdict is taken over the
+# current record of each name; two records of one name are not two checks. The
+# whole fold is documented at fm_pr_fitness_classify's loop, including why the
+# forge's own verdicts cannot answer this and what an unorderable pair does.
 #
 # Enum values are GitHub's own, read from the live GraphQL schema rather than
 # from memory (CheckConclusionState, CheckStatusState, StatusState,
@@ -42,6 +59,7 @@ FM_PR_FITNESS_RUNNING=
 FM_PR_FITNESS_FAILING_COUNT=0
 FM_PR_FITNESS_RUNNING_COUNT=0
 FM_PR_FITNESS_CHECK_COUNT=0
+FM_PR_FITNESS_SUPERSEDED_COUNT=0
 FM_PR_FITNESS_BASE=
 FM_PR_FITNESS_HEAD=
 FM_PR_FITNESS_MERGE_STATE=
@@ -132,9 +150,14 @@ fm_pr_fitness_context() {
 # the two states no override can help: GitHub itself refuses those merges, so
 # reporting anything else would send the reader to fix the wrong thing.
 fm_pr_fitness_classify() {
-  local kind f1 f2 name verdict
+  local kind f1 f2 f3 name verdict
   local state='' mergeable='' merge_state='' saw_pr=0 saw_base=0
-  local failing='' running=''
+  local declared='' failing='' running=''
+  # Parallel arrays rather than one keyed by name: stock macOS Bash is 3.2,
+  # which has no associative arrays, and .github/workflows/ci.yml holds this
+  # tree to parsing under it.
+  local records=0 i=0 j=0 keep=0
+  local -a chk_name chk_rank chk_order
 
   FM_PR_FITNESS_VERDICT=
   FM_PR_FITNESS_REASON=
@@ -143,11 +166,12 @@ fm_pr_fitness_classify() {
   FM_PR_FITNESS_FAILING_COUNT=0
   FM_PR_FITNESS_RUNNING_COUNT=0
   FM_PR_FITNESS_CHECK_COUNT=0
+  FM_PR_FITNESS_SUPERSEDED_COUNT=0
   FM_PR_FITNESS_BASE=
   FM_PR_FITNESS_HEAD=
   FM_PR_FITNESS_MERGE_STATE=
 
-  while IFS=' ' read -r kind f1 f2 name || [ -n "$kind" ]; do
+  while IFS=' ' read -r kind f1 f2 f3 name || [ -n "$kind" ]; do
     case "$kind" in
       # A legitimate reading carries exactly one pr and one base record. A
       # second of either can only come from a value that contained a newline -
@@ -160,9 +184,17 @@ fm_pr_fitness_classify() {
           FM_PR_FITNESS_REASON="the reading from GitHub carried more than one pull request record"
           return 0
         fi
+        # Every fixed-width record is refused when it carries more than its own
+        # fields, for the same reason a repeat of one is: the surplus can only
+        # come from a value that contained a newline.
+        if [ -n "$name" ]; then
+          FM_PR_FITNESS_VERDICT=unmeasurable
+          FM_PR_FITNESS_REASON="the reading from GitHub carried a pull request record with unexpected trailing content"
+          return 0
+        fi
         state=$f1
         mergeable=$f2
-        merge_state=$name
+        merge_state=$f3
         saw_pr=1
         ;;
       base)
@@ -171,30 +203,62 @@ fm_pr_fitness_classify() {
           FM_PR_FITNESS_REASON="the reading from GitHub carried more than one base record"
           return 0
         fi
+        if [ -n "$f3" ] || [ -n "$name" ]; then
+          FM_PR_FITNESS_VERDICT=unmeasurable
+          FM_PR_FITNESS_REASON="the reading from GitHub carried a base record with unexpected trailing content"
+          return 0
+        fi
         FM_PR_FITNESS_BASE=$f1
         FM_PR_FITNESS_HEAD=$f2
         saw_base=1
         ;;
+      checks)
+        if [ -n "$declared" ]; then
+          FM_PR_FITNESS_VERDICT=unmeasurable
+          FM_PR_FITNESS_REASON="the reading from GitHub carried more than one check-count record"
+          return 0
+        fi
+        case "$f1" in
+          ''|*[!0-9]*)
+            FM_PR_FITNESS_VERDICT=unmeasurable
+            FM_PR_FITNESS_REASON="the reading from GitHub did not report how many checks it carried as a number"
+            return 0
+            ;;
+        esac
+        if [ -n "$f2" ] || [ -n "$f3" ] || [ -n "$name" ]; then
+          FM_PR_FITNESS_VERDICT=unmeasurable
+          FM_PR_FITNESS_REASON="the reading from GitHub carried a check-count record with unexpected trailing content"
+          return 0
+        fi
+        declared=$f1
+        ;;
       check)
-        [ -n "$name" ] || name='(unnamed check)'
-        FM_PR_FITNESS_CHECK_COUNT=$((FM_PR_FITNESS_CHECK_COUNT + 1))
+        # The start time is the fold key below, so a record without a usable one
+        # is a reading this classifier did not render and cannot order.
+        case "$f3" in
+          ''|*[!0-9]*)
+            FM_PR_FITNESS_VERDICT=unmeasurable
+            FM_PR_FITNESS_REASON="the reading from GitHub carried a check record with no usable start time"
+            return 0
+            ;;
+        esac
         if [ "$f2" = CONTEXT ]; then
           verdict=$(fm_pr_fitness_context "$f1")
         else
           verdict=$(fm_pr_fitness_checkrun "$f1" "$f2")
         fi
+        chk_name[records]=$name
         case "$verdict" in
-          failing)
-            failing="${failing:+$failing
-}$name"
-            FM_PR_FITNESS_FAILING_COUNT=$((FM_PR_FITNESS_FAILING_COUNT + 1))
-            ;;
-          running)
-            running="${running:+$running
-}$name"
-            FM_PR_FITNESS_RUNNING_COUNT=$((FM_PR_FITNESS_RUNNING_COUNT + 1))
-            ;;
+          failing) chk_rank[records]=2 ;;
+          running) chk_rank[records]=1 ;;
+          *) chk_rank[records]=0 ;;
         esac
+        # One integer that orders a record by start time first and, at equal
+        # start times, by severity. Ranks are 0, 1, and 2, so a factor of four
+        # keeps the start time dominant; Bash arithmetic is 64-bit, which epoch
+        # seconds times four does not come near.
+        chk_order[records]=$((10#$f3 * 4 + chk_rank[records]))
+        records=$((records + 1))
         ;;
       '') ;;
       *)
@@ -203,6 +267,86 @@ fm_pr_fitness_classify() {
         return 0
         ;;
     esac
+  done
+
+  # A count that does not match what arrived means the reading is not the one
+  # this classifier renders, so nothing in it can be trusted - including the
+  # verdict fields already parsed above.
+  if [ -z "$declared" ]; then
+    FM_PR_FITNESS_VERDICT=unmeasurable
+    FM_PR_FITNESS_REASON="the reading from GitHub did not report how many checks it carried"
+    return 0
+  fi
+  if [ "$declared" -ne "$records" ]; then
+    FM_PR_FITNESS_VERDICT=unmeasurable
+    FM_PR_FITNESS_REASON="the reading from GitHub declared $declared check(s) and carried $records"
+    return 0
+  fi
+
+  # Fold the records by check name and judge only the current record of each.
+  #
+  # GitHub renders one record per check RUN. A check that ran twice against this
+  # head leaves both runs on the reading, so a red left behind by an earlier run
+  # sits beside the green that replaced it, and counting both refuses a pull
+  # request every later signal reports as ready. This repository reaches that
+  # shape by design rather than by accident: its Require no-mistakes check reads
+  # the pull request body from its own event payload, so the check that ran
+  # before the body was attested is expected to be superseded by a later one.
+  #
+  # No forge verdict answers this, which is why the fold is computed here.
+  # Measured 2026-09-01 on the head of DeepFlowCoder/firstmate#17, which carried
+  # exactly this pair: GitHub's own statusCheckRollup.state read FAILURE, so it
+  # does not fold by name either; the REST check-runs endpoint returned both
+  # records under filter=latest, because that filter is per check suite and the
+  # two runs were separate suites; and mergeStateStatus was reported CLEAN, which is a
+  # statement about branch rules rather than about checks - that repository has
+  # no required status check at all, so CLEAN is what it reports whatever the
+  # checks did. docs/verification/pr-merge-fitness.md records those readings.
+  #
+  # Recency is the check run's own start time, not the reading's order, which is
+  # not chronological. Start time rather than completion time, so a re-run still
+  # in progress supersedes the completed run it replaced instead of losing to a
+  # completion the replaced run has and it does not yet.
+  #
+  # Records of one name reporting the SAME start time carry no evidence of which
+  # is current, so the worst of them survives: an ordering that cannot be
+  # measured refuses rather than picking the convenient record. An unnamed
+  # record is never folded in either direction, because nothing identifies it
+  # with any other record.
+  while [ "$i" -lt "$records" ]; do
+    keep=1
+    if [ -n "${chk_name[$i]}" ]; then
+      j=0
+      while [ "$j" -lt "$records" ]; do
+        if [ "${chk_name[$j]}" = "${chk_name[$i]}" ] \
+          && { [ "${chk_order[$j]}" -gt "${chk_order[$i]}" ] \
+            || { [ "${chk_order[$j]}" -eq "${chk_order[$i]}" ] && [ "$j" -lt "$i" ]; }; }; then
+          keep=0
+          break
+        fi
+        j=$((j + 1))
+      done
+    fi
+    if [ "$keep" -eq 0 ]; then
+      FM_PR_FITNESS_SUPERSEDED_COUNT=$((FM_PR_FITNESS_SUPERSEDED_COUNT + 1))
+    else
+      name=${chk_name[$i]}
+      [ -n "$name" ] || name='(unnamed check)'
+      FM_PR_FITNESS_CHECK_COUNT=$((FM_PR_FITNESS_CHECK_COUNT + 1))
+      case "${chk_rank[$i]}" in
+        2)
+          failing="${failing:+$failing
+}$name"
+          FM_PR_FITNESS_FAILING_COUNT=$((FM_PR_FITNESS_FAILING_COUNT + 1))
+          ;;
+        1)
+          running="${running:+$running
+}$name"
+          FM_PR_FITNESS_RUNNING_COUNT=$((FM_PR_FITNESS_RUNNING_COUNT + 1))
+          ;;
+      esac
+    fi
+    i=$((i + 1))
   done
 
   # The two name lists let a caller inspect the per-check classification rather
