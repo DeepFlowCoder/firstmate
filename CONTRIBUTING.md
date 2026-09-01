@@ -11,7 +11,10 @@ Pushing through it runs an AI-driven review/test/lint pipeline in an isolated wo
 
 A GitHub Actions check (`Require no-mistakes`) runs on PRs targeting `main` and requires both the deterministic signature and a parseable structured attestation from no-mistakes v1.46.0 or newer.
 The attestation must bind to the current PR head commit and report the review, test, and document steps as completed, so a stale attestation, a missing `head_sha`, or a skipped required step fails.
-That binding is written at push time, so any commit that lands on the branch afterwards - including a gate fix the pipeline itself commits - leaves the attestation behind the head and the check red until `git push no-mistakes` runs again and rewrites it; only that push clears this failure, and no source change can.
+That binding is written at push time, so a commit landing on the branch afterwards leaves the attestation behind the head.
+The check settles that case by itself when the branch only moved forward and every commit added since the attestation is one of the pipeline's own `no-mistakes: apply CI fixes` commits: it re-verifies the same attestation against the commit it names, so the pipeline's own CI-fix pushes no longer strand a PR on a head nobody wrote by hand.
+That reconciled pass certifies less than an exact one, and deliberately so - review, test, and document ran against the attested commit, not against the CI fixes layered on top of it.
+Anything else in the gap - a commit you pushed yourself, a merge, or a rebase that gives every commit a new identity - still leaves the check red until `git push no-mistakes` runs again and rewrites the attestation, and no source change clears it.
 It evaluates every PR opening and body edit independently, reruns after head synchronization or reopening, and prevents a later edit from replacing an earlier pending compliance check.
 GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
 
