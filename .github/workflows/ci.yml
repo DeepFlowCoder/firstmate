@@ -449,21 +449,47 @@ jobs:
           done < "$shell_inventory"
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
-          snapshot_output=$(/bin/bash tests/fm-fleet-snapshot-view.test.sh)
-          printf '%s\n' "$snapshot_output"
-          snapshot_count=$(printf '%s\n' "$snapshot_output" | grep -c '^ok - ')
-          [ "$snapshot_count" -eq 15 ] || {
-            echo "::error::expected 15 snapshot/fleet-view tests, got $snapshot_count"
-            exit 1
+          # Three independent guards, each with its own message, because each
+          # catches what the others cannot:
+          #
+          #   status  - the suite exited clean. Capture it instead of letting
+          #             `set -e` end the step at the command substitution: that
+          #             path threw the captured output away before printing it,
+          #             so a test failing only under stock Bash 3.2 reached this
+          #             log with no `not ok` line and no failing test named, and
+          #             this job is the matrix's only 3.2 signal.
+          #   marker  - the suite ran to its end. Each script prints
+          #             `# fm-test-complete <name>` as its own last statement, so
+          #             a premature `exit 0` (the jq skip guard is one such path)
+          #             or a run that dies partway is caught even at exit 0.
+          #   count   - no test was silently DELETED. The marker still prints for
+          #             a suite that lost a case, and the Test coverage guard job
+          #             checks file partitioning, not per-suite counts, so this is
+          #             the only check that sees a removed test. It has to be
+          #             bumped here when a case is added, which is the price of
+          #             that coverage.
+          run_stock_bash_suite() { # <script> <label> <expected-ok-count>
+            local script=$1 label=$2 expected=$3 output status=0 count
+            output=$(/bin/bash "$script") || status=$?
+            printf '%s\n' "$output"
+            [ "$status" -eq 0 ] || {
+              echo "::error::$label tests failed under stock macOS Bash 3.2 (exit $status)"
+              return 1
+            }
+            printf '%s\n' "$output" \
+              | grep -Fqx "# fm-test-complete $(basename "$script")" || {
+              echo "::error::$label tests stopped before the end of the suite under stock macOS Bash 3.2"
+              return 1
+            }
+            count=$(printf '%s\n' "$output" | grep -c '^ok - ' || true)
+            [ "$count" -eq "$expected" ] || {
+              echo "::error::expected $expected $label tests, got $count"
+              return 1
+            }
           }
 
-          bearings_output=$(/bin/bash tests/fm-bearings-snapshot.test.sh)
-          printf '%s\n' "$bearings_output"
-          bearings_count=$(printf '%s\n' "$bearings_output" | grep -c '^ok - ')
-          [ "$bearings_count" -eq 42 ] || {
-            echo "::error::expected 42 Bearings tests, got $bearings_count"
-            exit 1
-          }
+          run_stock_bash_suite tests/fm-fleet-snapshot-view.test.sh snapshot/fleet-view 16
+          run_stock_bash_suite tests/fm-bearings-snapshot.test.sh Bearings 43
 
   invariants:
     name: Repo invariants

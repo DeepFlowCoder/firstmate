@@ -290,8 +290,24 @@ NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 pass "worker identity binds the canonical configured code root"
 
 CRASHED_WORKER_PID=$NEW_WORKER_PID
-kill -KILL "$CRASHED_WORKER_PID"
-wait "$CRASHED_WORKER_PID" 2>/dev/null || true
+# The crash this case needs is one that leaves nobody serving the account:
+# worker.pid names the serving child, and killing that pid alone leaves its
+# restart supervisor to respawn a replacement that republishes ownership and
+# keeps the heartbeat fresh, so the planted stale state below would be
+# reclaimed by a live worker instead of by the ensure under test. KILL the whole
+# isolated worker group at once - unclean, so no cleanup handler releases the
+# ownership lock - and settle before planting.
+CRASHED_WORKER_PGID=$(fm_remote_job_worker_process_group "$CRASHED_WORKER_PID") \
+  || fail "the crash fixture could not resolve the isolated worker process group"
+kill -KILL -- "-$CRASHED_WORKER_PGID" 2>/dev/null || true
+wait "$CRASHED_WORKER_PGID" 2>/dev/null || true
+CRASH_SETTLE=0
+while kill -0 -- "-$CRASHED_WORKER_PGID" 2>/dev/null && [ "$CRASH_SETTLE" -lt 100 ]; do
+  CRASH_SETTLE=$((CRASH_SETTLE + 1))
+  sleep 0.1
+done
+! kill -0 -- "-$CRASHED_WORKER_PGID" 2>/dev/null \
+  || fail "the crashed worker tree kept a live process that could reclaim ownership"
 assert_present "$STATE_ROOT/worker.lock" "an unclean exit did not retain the worker ownership lock"
 sleep 20 &
 OTHER_PID=$!

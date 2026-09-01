@@ -3,9 +3,25 @@
 #
 # The board is the captain-facing interactive surface of /bearings lavish: the
 # shipped template (.agents/skills/bearings/assets/board-template.html) plus one
-# injected fm-bearings-board.v1 JSON payload. This script owns the mechanics so
+# injected fm-bearings-board.v2 JSON payload. This script owns the mechanics so
 # the invoking agent's per-run work stays "compose the JSON, run build" - the
 # agent never authors board UI at invocation time.
+#
+# The board is a shipyard read, not a checklist: the template folds the payload
+# into one LANE per project, and each lane shows what is on the ways, what is
+# held in dry dock, how deep the order book is, and what has launched. Two
+# payload facts carry that fold. `repo`, which v1 already required, is the lane
+# key. New in v2 is the backlog's own recorded date where the board can read it
+# honestly - `since` on queued work and `landed_on` on landed work - so a lane
+# can say how long an order has waited and how recently it last launched.
+#
+# Those dates are current-state facts that happen to carry a date, NOT a
+# history: the fleet stores no prior snapshot, so the board states age and
+# recency only, never a trend, a velocity, a streak, or a change since
+# yesterday. Underway rows deliberately carry NO date, because the only date
+# the records hold for them is when the work was filed, not when a worker
+# picked it up; printing that as time under construction would invent a tempo.
+# An underway row's live state is its movement signal instead.
 #
 # Usage:
 #   fm-bearings-board.sh build <data.json>
@@ -28,13 +44,32 @@
 # path       Print the stable board path for this home.
 #
 # Validation is fail-closed: the payload must be valid JSON with
-# schema=fm-bearings-board.v1 and every renderer-consumed field must satisfy
-# the fm-bearings-board.v1 types and item invariants below. Every fleet row and
+# schema=fm-bearings-board.v2 and every renderer-consumed field must satisfy
+# the fm-bearings-board.v2 types and item invariants below. Every fleet row and
 # Captain's Call item explicitly carries `repo`; the composer fills it from the
 # snapshot and task records wherever known, and uses null or an empty string
 # only as the deliberate genuinely-no-repo marker. In that exceptional case
 # the template may display the routing id. Anything else refuses before the
 # existing board is touched.
+#
+# Three v2 invariants exist so the board cannot silently fall back to reading
+# like a flat checklist:
+#   - `generated` carries a YYYY-MM-DD prefix. It is the reference the template
+#     measures both ages against, so the page never depends on the reader's
+#     clock, and the snapshot produces it, so the requirement is strict.
+#     Every charted `since` and landed `landed_on` carries either a value or an
+#     explicit null for "this row records no date". A row that simply omits the
+#     field is refused, the same deliberate-marker discipline `repo` already
+#     uses, because a missing date and an unrecorded date must not look alike.
+#     The value itself is NOT required to be a date: it comes from hand-edited
+#     backlog markdown, so the board tolerates whatever the record holds and
+#     renders an age only for a value it can parse.
+#   - a queued row that is NOT dispatchable and is not a warning must carry a
+#     non-empty `reason`. A dry-dock berth is only distinguishable from an
+#     order clear to start if the board can say what holds it.
+#   - a `warning` row is never dispatchable, so fleet-integrity alarms can never
+#     be picked as if they were work. The template additionally keeps every
+#     warning out of the lanes entirely, in its own Yard Notices band.
 #
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
 # re-invocation rebuilds the same file in place, which keeps the same Lavish
@@ -51,7 +86,7 @@ FM_HOME="${FM_HOME:-$FM_ROOT}"
 
 TEMPLATE="${FM_BEARINGS_BOARD_TEMPLATE:-$SCRIPT_DIR/../.agents/skills/bearings/assets/board-template.html}"
 PLACEHOLDER='__FM_BEARINGS_BOARD_DATA__'
-BOARD_SCHEMA=fm-bearings-board.v1
+BOARD_SCHEMA=fm-bearings-board.v2
 
 usage() {
   awk '
@@ -73,6 +108,15 @@ validate_payload() {  # <data.json>
     def nonempty_string: type == "string" and length > 0;
     def slug($max): type == "string" and test("^[A-Za-z0-9._-]{1," + ($max | tostring) + "}$");
     def repo_marker: has("repo") and (.repo == null or (.repo | type == "string"));
+    def date_prefixed: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}");
+    # Same deliberate-marker discipline as repo_marker: the field is always
+    # present, and null is how the composer says "this row records no date".
+    # The VALUE is not required to be a date. These come from hand-edited
+    # backlog markdown, where "(since the pivot)" is an ordinary note, and
+    # refusing the whole build over one would leave the captain with no board
+    # at all. The template renders an age only when the value parses.
+    def date_marker($name):
+      has($name) and (.[$name] == null or (.[$name] | type == "string"));
     def optional_string($name): (has($name) | not) or (.[$name] | type == "string");
     def optional_https_url($name):
       (has($name) | not)
@@ -109,17 +153,23 @@ validate_payload() {  # <data.json>
     def landed_item:
       type == "object" and repo_marker and (.id | nonempty_string)
       and (.what | nonempty_string) and (.owner | nonempty_string)
-      and optional_https_url("pr_url");
+      and optional_https_url("pr_url")
+      and date_marker("landed_on");
     def charted_item:
       type == "object" and repo_marker and (.id | slug(128))
       and (.title | nonempty_string) and (.reason | type == "string")
       and (.dispatchable | type == "boolean")
+      and date_marker("since")
       and ((has("kind") | not) or (.kind == "queued" or .kind == "warning"))
-      and (if .kind == "warning" then .dispatchable == false else true end);
+      and (if .kind == "warning" then .dispatchable == false else true end)
+      # held work must say what holds it: "ready to start" and "held" are only
+      # distinguishable to the captain when the held side carries its reason
+      and (if (.kind != "warning" and .dispatchable == false)
+           then (.reason | nonempty_string) else true end);
     type == "object"
     and (.schema == $schema)
     and (.home | nonempty_string)
-    and (.generated | nonempty_string)
+    and (.generated | date_prefixed)
     and (.prs_live | type == "boolean")
     and (.captains_call | type == "array")
     and (.underway | type == "array")

@@ -197,6 +197,32 @@ test_fixture_snapshot_json() {
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
 }
 
+# A registered home's own summary is the only route its work takes into the
+# fleet roll-ups, so it must carry the two facts those roll-ups group and age by:
+# the project a landed item belongs to, and how long a queued item has waited.
+test_home_summary_landed_and_queued_carry_repo_and_since() {
+  local home fakebin out
+  home=$(make_home home-summary)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] waiting-task - Waiting Task (repo: beta) (kind: ship) (since 2026-07-08)
+
+## Done
+- [x] landed-task - Landed Task https://github.com/kunchenguid/firstmate/pull/11 (repo: beta) (kind: ship) (merged 2026-07-06)
+EOF
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-secondmate-home-summary.v1"
+      and (.landed[] | select(.id == "landed-task") | .repo == "beta")
+      and (.queued[] | select(.id == "waiting-task")
+           | .repo == "beta" and .since == "2026-07-08")
+  ' >/dev/null || fail "the home summary dropped a project or a wait age: $out"
+  pass "a home summary carries repo on landed work and since on queued work"
+}
+
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
 test_main_inventory_orphan_and_unstructured_disclosure() {
@@ -801,6 +827,7 @@ test_parked_scout_decision_stays_pending() {
 
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_home_summary_landed_and_queued_carry_repo_and_since
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
@@ -814,3 +841,9 @@ test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
+
+# Last statement of the suite, so a consumer can tell "every registered case
+# ran" apart from "the run stopped early with a zero status" - the jq skip
+# guard at the top is one such path. Read by the stock macOS Bash CI job,
+# which has no other way to prove this suite was not silently skipped.
+printf '# fm-test-complete %s\n' "$(basename "${BASH_SOURCE[0]}")"

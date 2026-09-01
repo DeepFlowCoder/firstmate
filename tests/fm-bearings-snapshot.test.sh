@@ -1231,6 +1231,12 @@ test_landed_includes_secondmate_home_merges() {
     (.landed | any(.[]; .id == "mate-landed" and (.artifact | test("/pull/50"))))
       and (.landed | any(.[]; .id == "done-a"))
   ' >/dev/null || fail "landed must merge secondmate-home Done with main-home Done: $json"
+  # `repo` is the board's lane key, so a secondmate's completed work must arrive
+  # under its own project rather than in the explicit unassigned lane.
+  printf '%s' "$json" | jq -e '
+    (.landed[] | select(.id == "mate-landed") | .repo == "firstmate")
+      and (.landed[] | select(.id == "done-a") | .repo == "firstmate")
+  ' >/dev/null || fail "secondmate-managed landed work lost its project: $json"
   # Still zero network on this default path.
   [ ! -s "$home/net.log" ] || fail "landed roll-up must make no gh/gh-axi call, got: $(cat "$home/net.log")"
   pass "landed includes secondmate-managed merges alongside main-home merges"
@@ -1483,6 +1489,33 @@ test_captains_call_anti_leak() {
       and ([$bearings.decisions_open[].id] | index("dead-gate") | not)
   ' >/dev/null || fail "only genuine open decisions may feed Captain's Call: $json"
   pass "action-free items (working/done/queued/landed) do not leak into Captain's Call"
+}
+
+# Captain's Call cards are composed from decisions_open, and the board files
+# every card into a project lane keyed on `repo`. Without the field on this
+# projection the composer has nothing to fill the lane key from, so an
+# unresolved decision lands in the explicit unassigned lane.
+test_open_decisions_carry_their_project() {
+  local home fakebin json
+  home=$(make_home decision-repo); write_fixture "$home"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] ship-task - Ship the thing (repo: firstmate) (kind: ship) (since 2026-07-11)
+- [ ] scout-x - Investigate the thing data/scout-x/report.md (repo: firstmate) (kind: scout) (since 2026-07-11)
+
+## Queued
+- [ ] seawall-call - Choose the seawall cutover (repo: seawall) (kind: captain) (hold: captain choice pending) (hold-kind: captain)
+
+## Done
+- [x] done-a - Landed thing https://github.com/kunchenguid/firstmate/pull/7 (repo: firstmate) (kind: ship) (merged 2026-07-10)
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.decisions_open[] | select(.id == "seawall-call") | .repo == "seawall")
+      and ([.decisions_open[] | has("repo")] | all)
+  ' >/dev/null || fail "an open decision reached the board without its lane key: $json"
+  pass "every open decision carries the project the board files it under"
 }
 
 # R1: main-home orphan in-flight and unstructured current rows must not vanish
@@ -1971,6 +2004,7 @@ test_all_landed_keeps_complete_global_order
 test_landed_bounded_and_disclosed
 test_live_blocker_is_not_charted_queue_work
 test_captains_call_anti_leak
+test_open_decisions_carry_their_project
 test_main_orphan_in_flight_is_disclosed_not_invented
 test_main_unstructured_current_is_disclosed_with_structured_sibling
 test_main_orphan_counterfactual_meta_clears_inventory_warning
@@ -1988,3 +2022,9 @@ test_collapsed_captain_call_deferral_and_landed
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
+
+# Last statement of the suite, so a consumer can tell "every registered case
+# ran" apart from "the run stopped early with a zero status" - the jq skip
+# guard at the top is one such path. Read by the stock macOS Bash CI job,
+# which has no other way to prove this suite was not silently skipped.
+printf '# fm-test-complete %s\n' "$(basename "${BASH_SOURCE[0]}")"

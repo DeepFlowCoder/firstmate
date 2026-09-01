@@ -111,12 +111,24 @@ usage: fm-bearings-snapshot.sh [--json] [--include-prs] [--fields <list>]
 Compact bearings projection over fm-fleet-snapshot.sh. TOON by default.
 Default is LOCAL-ONLY (no network); --include-prs is the only path that fetches.
 
-Default fields: schema, home, generated, prs, in_flight{id,kind,state,doing},
+Default fields: schema, home, generated, prs, in_flight{id,kind,repo,state,doing},
   secondmates{id,state,doing,provenance,freshness,age_seconds,contradiction,reason},
   secondmate_reconcile{id,spawn_gen,host,kind,ids},
-  decisions_open{id,key,verb,summary,owner}, landed{id,what,artifact,owner},
-  gates{id,title,blocked_by,reason,owner}, reports{id,path}, recorded_prs{id,url},
+  decisions_open{id,key,verb,summary,owner,repo}, landed{id,what,repo,artifact,owner,landed_on},
+  gates{id,title,blocked_by,reason,owner,repo,since}, reports{id,path}, recorded_prs{id,url},
   unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
+repo is the backlog row's own recorded repo, null when the row records none. It is what
+  groups work by project rather than by errand; the bearings board uses it as its lane key.
+  Two rows are null for a different reason: a registered secondmate's own in_flight row
+  aggregates several children and has no single repo, and that home's summary records no
+  repo on its decisions_open rows at all, so those project null even when the mate's
+  backlog records one. Both still read as the no-repo marker downstream.
+gates.since and landed.landed_on are the backlog's own recorded dates, null when the
+  row records none: how long queued work has waited, and when landed work landed.
+  They are current-state facts with a date on them, not a history, because the fleet
+  keeps no prior snapshot to difference against. in_flight rows carry no date on
+  purpose - the only date recorded for them is when the work was FILED, not when a
+  worker picked it up, so it cannot be read as time spent working.
 landed merges this home's Done with registered secondmate homes' Done, bounded by
   a per-home cap (FM_BEARINGS_LANDED_PER_HOME) and an overall cap (FM_BEARINGS_LANDED),
   with omitted[] disclosure. Default selection is balanced across deterministic home
@@ -326,7 +338,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   | (($fl | index("actions")) != null) as $f_actions
   | (($fl | index("endpoints")) != null) as $f_endpoints
   | ([ .backlog.records[] | select(.state == "done" and .structured and .hold_kind != "captain")
-       | {id, title, pr_url, report_path, local_note, completion, home:"(main)", home_id:"(main)"} ]) as $main_done
+       | {id, title, repo, pr_url, report_path, local_note, completion, home:"(main)", home_id:"(main)"} ]) as $main_done
   | ((.secondmate_landed.records) // []) as $mate_done
   | ($main_done + $mate_done) as $all_landed_rows
   | ([ $all_landed_rows | group_by(.home_id)[]
@@ -384,25 +396,27 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        | select(.kind != "secondmate")
        | select(.backlog.current_role != "program")
        | select(.backlog.current_role != "held" or .current_state.state == "working")
-       | {id, kind,
+       | {id, kind, repo:((.backlog.repo // null) | trunc(120)),
         state: .current_state.state,
         doing: ((.current_state.detail // "") as $d
                 | (if $d != "" then $d else (.hints.last_event_text // "") end) | trunc(90))
       } ]
      + [ $secondmate_views[]
          | select(.bearings_state == "active_child_work")
-         | {id,kind:"secondmate",state:.bearings_state,
+         | {id,kind:"secondmate",repo:null,state:.bearings_state,
             doing:([.active_children[] | .id + ": " + (.doing // .state)] | join("; ") | trunc(90))} ]) as $in_flight_all
   | ([ .backlog.records[]
          | select(.structured and .captain_actionable == true)
          | select(($all_decisions == 1) or (.deferred_marker != true))
          | {id,key:.id,verb:"captain-hold",
-            summary:((.title + ": " + .hold_reason) | trunc(90)),owner:"(main)"} ]
+            summary:((.title + ": " + .hold_reason) | trunc(90)),owner:"(main)",
+            repo:((.repo // null) | trunc(120))} ]
      + [ (.secondmate_current.records // [])[] as $m | $m.decisions_open[]?
          | select(.source == "backlog" and .verb == "captain-hold")
          | select(($all_decisions == 1) or (.deferred_marker != true))
          | {id:($m.id + "/" + .id),key,verb,
-            summary:(((.summary // .id) + ": " + (.reason // "captain decision pending")) | trunc(90)),owner:$m.id} ]) as $decisions_all
+            summary:(((.summary // .id) + ": " + (.reason // "captain decision pending")) | trunc(90)),owner:$m.id,
+            repo:((.repo // null) | trunc(120))} ]) as $decisions_all
   | ([ .backlog.records[]
          | select(.structured and .captain_actionable == true and .deferred_marker == true) ]
      + [ (.secondmate_current.records // [])[] | .decisions_open[]?
@@ -413,7 +427,9 @@ MODEL=$(printf '%s' "$SNAP" | jq \
           title:((.main_inventory.reason // "main inventory invalid") | trunc(60)),
           blocked_by:"-",
           reason:"main inventory",
-          owner:"(main)"}]
+          owner:"(main)",
+          repo:null,
+          since:null}]
       else [] end)
      + [ .backlog.records[]
          | . as $record
@@ -427,7 +443,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
             blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
             reason:((if (.hold_until // null) != null and .hold_until > $today
                      then ("until " + .hold_until + ": " + (.hold_reason // .blocked_reason // "-"))
-                     else (.hold_reason // .blocked_reason // "-") end) | trunc(40)),owner:"(main)"} ]
+                     else (.hold_reason // .blocked_reason // "-") end) | trunc(40)),owner:"(main)",
+            repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]
      + [ (.secondmate_current.records // [])[] as $m
          | select($m.provenance.selected == "structured-home")
          | $m.queued[]?
@@ -438,7 +455,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
             blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
             reason:((if (.hold_until // null) != null and .hold_until > $today
                      then ("until " + .hold_until + ": " + (.hold_reason // .blocked_reason // "-"))
-                     else (.hold_reason // .blocked_reason // "-") end) | trunc(40)),owner:$m.id} ]) as $gates_all
+                     else (.hold_reason // .blocked_reason // "-") end) | trunc(40)),owner:$m.id,
+            repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]) as $gates_all
   | ([ .scout_reports[]
        | . as $r
        | select(($all_reports == 1) or (($rel_ids | index($r.id)) != null))
@@ -456,8 +474,9 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         | select(.reconcile_inventory != null)
         | {id, spawn_gen:(.spawn_gen // null), host:(.host // null), kind:(.reconcile_inventory.kind // null), ids:((.reconcile_inventory.ids // []) | map(select(type == "string")) | sort)} ],
       decisions_open: (if $all_decisions == 1 then $decisions_all else $decisions_all[:$decisions_n] end),
-      landed: ($done | map({id, what:(.title | trunc(70)),
-                            artifact:(.pr_url // .report_path // .local_note // "-"),owner:.home_id})),
+      landed: ($done | map({id, what:(.title | trunc(70)), repo:((.repo // null) | trunc(120)),
+                            artifact:(.pr_url // .report_path // .local_note // "-"),owner:.home_id,
+                            landed_on:((.completion.date // null) | trunc(40))})),
       gates: (if $all_queued == 1 then $gates_all else $gates_all[:$gates_n] end),
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),
       recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end)

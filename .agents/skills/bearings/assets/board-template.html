@@ -52,6 +52,11 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
+/* Every band the renderer can switch off is a flex or grid container, and an
+   explicit display beats the user agent's [hidden] rule. Without this, an empty
+   Captain's Call still shows its pager and an alarm-free board still shows an
+   empty notices frame. */
+[hidden] { display: none !important; }
 body {
   font-family: var(--font-sans);
   color: var(--text-body);
@@ -59,6 +64,8 @@ body {
   background-image: var(--texture-paper);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  /* no level of the board may push the page sideways */
+  overflow-x: hidden;
 }
 a { color: inherit; text-decoration: none; }
 
@@ -125,7 +132,7 @@ a { color: inherit; text-decoration: none; }
   max-width: var(--container-app); margin: 0 auto; padding: 0 28px; height: 64px;
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
 }
-.bb-brand { display: inline-flex; align-items: center; gap: 12px; }
+.bb-brand { display: inline-flex; align-items: center; gap: 12px; min-width: 0; }
 .bb-brand__disc {
   display: grid; place-items: center; width: 34px; height: 34px; flex: none;
   border-radius: 999px; background: var(--rust-500); color: var(--paper-000);
@@ -138,10 +145,23 @@ a { color: inherit; text-decoration: none; }
 .bb-main {
   max-width: var(--container-app); margin: 0 auto;
   padding: 26px 28px 72px; display: flex; flex-direction: column; gap: 22px;
+  min-width: 0;
 }
 
+/* ---- yard report: the one-line answer to "how is everything running" ---- */
+.bb-report {
+  display: flex; flex-direction: column; gap: 10px; padding: 18px 20px; min-width: 0;
+  background: var(--surface-card); border: 2px solid var(--ink-900);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-hard-sm);
+}
+.bb-report__line {
+  font-size: var(--fs-h4); font-weight: 700; color: var(--text-strong);
+  line-height: 1.35; overflow-wrap: anywhere;
+}
+.bb-report__sub { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-muted); overflow-wrap: anywhere; }
+
 /* stat strip */
-.bb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.bb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
 .bb-stat {
   display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; min-width: 0;
   background: var(--surface-card-warm); border: 1px solid var(--border-soft); border-radius: var(--radius-md);
@@ -152,14 +172,18 @@ a { color: inherit; text-decoration: none; }
 .bb-stat__label { font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
 
 .bb-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.bb-section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.bb-cols { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 22px; }
+.bb-section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+/* fm-sign is nowrap by design-system contract, which is right for a short
+   eyebrow and wrong for the sentence-length sub-label beside it: at phone
+   widths that one line is what pushes the page sideways. Scoped to the board's
+   section heads so the shared component keeps its own rule. */
+.bb-section__head .fm-sign--muted { white-space: normal; min-width: 0; overflow-wrap: anywhere; }
 
 /* ---- Captain's Call: one card at a time, dealt off a visible stack ---- */
-.bb-callwrap { display: flex; flex-direction: column; gap: 12px; }
+.bb-callwrap { display: flex; flex-direction: column; gap: 12px; max-width: 640px; width: 100%; }
 /* extra top margin clears the pile edges that poke below the active card */
 .bb-stacknav { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
-.bb-stacknav__count { flex: 1 1 auto; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-muted); }
+.bb-stacknav__count { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-muted); }
 .bb-stacknav__btn {
   display: inline-grid; place-items: center; width: 34px; height: 34px; cursor: pointer;
   background: var(--surface-card); color: var(--text-strong);
@@ -173,7 +197,7 @@ a { color: inherit; text-decoration: none; }
 /* the stack: a squared-up paper pile - solid card faces at slight opposing
    rotations, like dealt cards, not translucent offset rectangles. The pile
    thins as cards are answered: two edges, then one, then none on the last. */
-.bb-call { position: relative; display: grid; }
+.bb-call { position: relative; display: grid; min-width: 0; }
 .bb-call::before, .bb-call::after {
   content: ""; position: absolute; inset: 0; z-index: 0;
   background: var(--surface-card); border: 2px solid var(--ink-900);
@@ -184,26 +208,26 @@ a { color: inherit; text-decoration: none; }
 .bb-call--penult::after { display: none; }
 .bb-call--last::before, .bb-call--last::after,
 .bb-call--empty::before, .bb-call--empty::after { display: none; }
-.bb-call > .bb-decision { grid-area: 1 / 1; z-index: 1; }
+.bb-call > .bb-decision { grid-area: 1 / 1; z-index: 1; min-width: 0; }
 .bb-call > .bb-decision[hidden] { display: none; }
 .bb-decision { display: flex; flex-direction: column; }
-.bb-decision__pad { padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
-.bb-decision__top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.bb-decision__pad { padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 12px; flex: 1; min-width: 0; }
+.bb-decision__top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .bb-decision__repo { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
-.bb-decision__title { margin: 0; font-size: var(--fs-h4); font-weight: 800; color: var(--text-strong); line-height: 1.25; }
-.bb-decision__detail { margin: 0; font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.45; }
-/* about / decide / recommended - three scannable context rows */
+.bb-decision__title { margin: 0; font-size: var(--fs-h4); font-weight: 800; color: var(--text-strong); line-height: 1.25; overflow-wrap: anywhere; }
+.bb-decision__detail { margin: 0; font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.45; overflow-wrap: anywhere; }
+/* about / decide - two scannable context rows */
 .bb-ctx { display: flex; flex-direction: column; gap: 6px; }
 .bb-ctx__row { display: grid; grid-template-columns: 78px minmax(0,1fr); gap: 8px; align-items: baseline; }
 .bb-ctx__k { font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.04em;
   text-transform: uppercase; color: var(--text-faint); white-space: nowrap; }
-.bb-ctx__v { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.4; min-width: 0; }
+.bb-ctx__v { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.4; min-width: 0; overflow-wrap: anywhere; }
 .bb-decision__link { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ocean-600); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .bb-decision__link:hover { text-decoration: underline; }
 /* One rhythm owner: the answer form is a flex column with the same 12px gap as
    the card pad, and the foot rides margin-top:auto so every Queue answer button
    sits on the same baseline with identical breathing room. */
-.bb-decision form { display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; }
+.bb-decision form { display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; min-width: 0; }
 .bb-opts { display: flex; flex-direction: column; gap: 7px; }
 .bb-opt {
   display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; cursor: pointer;
@@ -213,13 +237,13 @@ a { color: inherit; text-decoration: none; }
 .bb-opt:hover { border-color: var(--ink-300); }
 .bb-opt input { accent-color: var(--rust-500); margin-top: 3px; flex: none; }
 .bb-opt__body { min-width: 0; flex: 1 1 auto; }
-.bb-opt__label { display: block; font-size: var(--fs-sm); font-weight: 700; color: var(--text-strong); line-height: 1.3; }
-.bb-opt__hint { display: block; font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.35; margin-top: 1px; }
+.bb-opt__label { display: block; font-size: var(--fs-sm); font-weight: 700; color: var(--text-strong); line-height: 1.3; overflow-wrap: anywhere; }
+.bb-opt__hint { display: block; font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.35; margin-top: 1px; overflow-wrap: anywhere; }
 .bb-opt__rec { flex: none; align-self: center; font-size: var(--fs-2xs); font-weight: 800; text-transform: uppercase;
   letter-spacing: 0.07em; color: var(--navy-700); background: var(--gold-300);
   border: 1px solid var(--gold-600); border-radius: var(--radius-xs); padding: 3px 7px 2px; }
 .bb-opt:has(input:checked) { border-color: var(--rust-500); background: var(--rust-050); box-shadow: inset 0 0 0 1px var(--rust-500); }
-.bb-decision__foot { display: flex; align-items: center; gap: 10px; margin-top: auto; }
+.bb-decision__foot { display: flex; align-items: center; gap: 10px; margin-top: auto; flex-wrap: wrap; }
 .bb-queued {
   display: none; align-items: center; gap: 6px;
   font-size: var(--fs-2xs); font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em;
@@ -229,51 +253,130 @@ a { color: inherit; text-decoration: none; }
 .is-queued .bb-queued { display: inline-flex; }
 .bb-limit { display: none; font-size: var(--fs-xs); font-weight: 700; color: var(--status-danger); }
 .bb-limit.is-visible { display: inline; }
-.bb-freeform { width: 100%; font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--text-strong);
+.bb-freeform { width: 100%; max-width: 100%; font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--text-strong);
   background: var(--surface-card); border: 1.5px solid var(--border-default); border-radius: var(--radius-sm); padding: 8px 11px; }
 .bb-freeform:focus { outline: none; border-color: var(--rust-400); box-shadow: var(--focus-ring); }
 
-/* ---- compact rows (Underway / Landed / Charted) ---- */
-.bb-rows { display: flex; flex-direction: column; }
+/* ============================================================
+   The shipyard: one lane per project
+   ============================================================ */
+.bb-yard { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.bb-lane {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--surface-card); border: 1px solid var(--border-default);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-sm); overflow: hidden;
+}
+/* a lane with a live hull reads warmer than a lane that is only waiting */
+.bb-lane--building { border-left: 5px solid var(--sea-500); }
+.bb-lane--ready { border-left: 5px solid var(--ocean-200); }
+.bb-lane--quiet { border-left: 5px solid var(--border-soft); }
+.bb-lane--call { border-left: 5px solid var(--rust-500); }
+
+.bb-lane__head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 13px 18px 11px; min-width: 0; background: var(--surface-card-warm);
+  border-bottom: 1px solid var(--border-soft);
+}
+.bb-lane__name {
+  font-size: var(--fs-base); font-weight: 800; color: var(--text-strong); line-height: 1.2;
+  min-width: 0; overflow-wrap: anywhere;
+}
+.bb-lane__reading { flex: 1 1 220px; min-width: 0; font-size: var(--fs-sm); color: var(--text-muted); overflow-wrap: anywhere; }
+.bb-lane__launch { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
+
+/* the gauge: every lane's bar is scaled against the same busiest lane, so the
+   contrast between a yard full of hulls and a yard full of orders is the first
+   thing the eye gets */
+.bb-gauge { display: flex; align-items: center; gap: 0; height: 8px; margin: 0 18px; min-width: 0;
+  background: var(--paper-200); border-radius: var(--radius-pill); overflow: hidden; }
+.bb-gauge__seg { height: 100%; min-width: 0; }
+.bb-gauge__seg--ways { background: var(--sea-500); }
+.bb-gauge__seg--dock { background: var(--gold-500); }
+.bb-gauge__seg--order { background: var(--ocean-200); }
+
+.bb-berth { display: flex; flex-direction: column; min-width: 0; }
+.bb-berth__label {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 18px 4px; font-family: var(--font-mono); font-size: var(--fs-2xs);
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint);
+}
+
+/* the order book is depth, not a checklist: closed it is one number with a
+   shape, open it is the pickable work */
+.bb-drawer { border-top: 1px solid var(--border-soft); min-width: 0; }
+.bb-drawer__summary {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer;
+  padding: 11px 18px; font-size: var(--fs-sm); color: var(--text-body); list-style: none;
+}
+.bb-drawer__summary::-webkit-details-marker { display: none; }
+.bb-drawer__summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.bb-drawer__depth { font-family: var(--font-mono); font-size: var(--fs-h4); font-weight: 600; color: var(--text-strong); line-height: 1; }
+.bb-drawer__split { flex: 1 1 200px; min-width: 0; color: var(--text-muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.bb-drawer__hint { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
+.bb-drawer[open] .bb-drawer__hint { display: none; }
+
+/* ---- compact rows ---- */
+.bb-rows { display: flex; flex-direction: column; min-width: 0; }
 .bb-row {
-  display: flex; align-items: center; gap: 12px; padding: 11px 18px;
+  display: flex; align-items: center; gap: 12px; padding: 9px 18px;
   border-top: 1px solid var(--border-soft); min-width: 0;
 }
-.bb-row:first-child { border-top: none; }
+.bb-berth .bb-row:first-child, .bb-rows > .bb-row:first-child { border-top: none; }
 .bb-row__main { min-width: 0; flex: 1 1 auto; }
 .bb-row__title { font-size: var(--fs-sm); font-weight: 700; color: var(--text-strong); line-height: 1.3;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bb-row__sub { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.3; margin-top: 1px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bb-row__id { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
+.bb-row__id { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap;
+  flex: 0 0 auto; min-width: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; }
+.bb-row__when { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
 .bb-row__pr { font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 600; color: var(--ocean-600); white-space: nowrap; }
 .bb-row__pr:hover { text-decoration: underline; }
-.bb-row__check { width: 26px; height: 26px; border-radius: var(--radius-sm); display: grid; place-items: center; flex: none;
+.bb-row__check { width: 24px; height: 24px; border-radius: var(--radius-sm); display: grid; place-items: center; flex: none;
   background: var(--status-online-soft); color: var(--status-online); border: 1.5px solid var(--sea-200); }
-.bb-row__check svg { width: 15px; height: 15px; }
+.bb-row__check svg { width: 14px; height: 14px; }
 .bb-morechip {
   display: inline-flex; align-items: center; gap: 6px; margin: 10px 18px 12px;
   font-size: var(--fs-xs); font-weight: 800; color: var(--text-muted);
   border: 1.5px dashed var(--ink-300); border-radius: var(--radius-pill); padding: 5px 12px; width: fit-content;
+  max-width: calc(100% - 36px); overflow-wrap: anywhere;
 }
-.bb-empty { padding: 18px; font-size: var(--fs-sm); color: var(--text-muted); }
+.bb-empty { padding: 18px; font-size: var(--fs-sm); color: var(--text-muted); overflow-wrap: anywhere; }
 
-/* ---- Charted Next dispatch picker ---- */
+/* ---- yard notices: integrity alarms, never a berth in a lane ---- */
+.bb-notices { border: 2px dashed var(--rust-300); background: var(--rust-050); border-radius: var(--radius-md); min-width: 0; overflow: hidden; }
+.bb-notices .bb-row { border-top-color: var(--rust-100); }
+
+/* ---- dispatch picker ---- */
 /* margin:0 kills the UA default checkbox margin so picker rows and spacer rows
    share one text left edge */
 .bb-pick { accent-color: var(--rust-500); width: 16px; height: 16px; flex: none; cursor: pointer; margin: 0; }
 .bb-pick-spacer { width: 16px; flex: none; }
 .bb-dispatch {
-  display: flex; align-items: center; gap: 12px; padding: 12px 18px;
-  border-top: 1.5px solid var(--border-default); background: var(--paper-100);
+  position: sticky; bottom: 0; z-index: 10;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 18px; min-width: 0;
+  border: 2px solid var(--ink-900); border-radius: var(--radius-md);
+  background: var(--paper-000); box-shadow: var(--shadow-hard-sm);
 }
-.bb-dispatch__count { flex: 1 1 auto; font-size: var(--fs-xs); font-weight: 800; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: 0.07em; }
+.bb-dispatch__count { flex: 1 1 180px; min-width: 0; font-size: var(--fs-xs); font-weight: 800; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.07em; overflow-wrap: anywhere; }
 
 .bb-foot { display: flex; justify-content: flex-end; border-top: 1px solid var(--border-default); padding-top: 14px; }
 
-@media (max-width: 900px) {
-  .bb-cols { grid-template-columns: 1fr; }
+@media (max-width: 700px) {
+  .bb-nav__inner { padding: 0 16px; }
+  .bb-main { padding: 20px 16px 64px; }
+  .bb-lane__head { padding: 12px 14px 10px; }
+  .bb-gauge { margin: 0 14px; }
+  .bb-row, .bb-berth__label, .bb-drawer__summary { padding-left: 14px; padding-right: 14px; }
+  .bb-morechip { margin-left: 14px; margin-right: 14px; max-width: calc(100% - 28px); }
+  /* On a phone the scarce currency is width and the cheap one is height. A row
+     that has to carry its own identity - only the lane with no project recorded
+     does - keeps the whole first line for what it is, and drops the identity
+     and the age onto a second line rather than squeezing the title out. */
+  .bb-row--identified { flex-wrap: wrap; row-gap: 2px; }
+  .bb-row--identified .bb-row__main { flex: 1 1 100%; }
+  .bb-row--identified .bb-row__id { max-width: 100%; }
 }
 </style>
 </head>
@@ -294,9 +397,13 @@ a { color: inherit; text-decoration: none; }
 
 <main class="bb-main">
 
+  <section class="bb-report">
+    <div class="bb-report__line" id="bb-headline">-</div>
+    <div class="bb-report__sub" id="bb-headline-sub"></div>
+  </section>
+
   <div class="bb-stats" id="bb-stats"></div>
 
-  <div class="bb-cols">
   <section class="bb-section">
     <div class="bb-section__head">
       <span class="fm-sign fm-sign--eyebrow">
@@ -308,7 +415,7 @@ a { color: inherit; text-decoration: none; }
     <div class="bb-callwrap">
       <div class="bb-call" id="bb-call"></div>
       <!-- nav sits under the stack so the active card's top edge aligns with
-           the Charted Next card across the row -->
+           the lane below it -->
       <div class="bb-stacknav">
         <span class="bb-stacknav__count" id="bb-stack-count">-</span>
         <button type="button" class="bb-stacknav__btn" id="bb-stack-prev" aria-label="Previous card">
@@ -325,44 +432,31 @@ a { color: inherit; text-decoration: none; }
     <div class="bb-section__head">
       <span class="fm-sign fm-sign--eyebrow">
         <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-        Charted Next
+        The Yard
       </span>
-      <span class="fm-sign fm-sign--muted" id="bb-charted-sub"></span>
+      <span class="fm-sign fm-sign--muted" id="bb-yard-sub"></span>
     </div>
-    <div class="fm-card fm-card--warm">
-      <div class="bb-rows" id="bb-charted"></div>
-      <div class="bb-dispatch" id="bb-dispatch" hidden>
-        <span class="bb-dispatch__count" id="bb-dispatch-count">nothing picked</span>
-        <span class="bb-queued" id="bb-dispatch-queued">
-          <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-          queued
-        </span>
-        <button type="button" class="fm-btn fm-btn--sm fm-btn--gold" id="bb-dispatch-btn">Queue dispatch order</button>
-      </div>
-    </div>
+    <div class="bb-yard" id="bb-yard"></div>
   </section>
-  </div>
 
-  <div class="bb-cols">
-    <section class="bb-section">
-      <div class="bb-section__head">
-        <span class="fm-sign fm-sign--eyebrow">
-          <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10.189V14"/><path d="M12 2v3"/><path d="M19 13V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6"/><path d="M19.38 20A11.6 11.6 0 0 0 21 14l-8.188-3.639a2 2 0 0 0-1.624 0L3 14a11.6 11.6 0 0 0 2.81 7.76"/><path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/></svg>
-          Underway
-        </span>
-      </div>
-      <div class="fm-card"><div class="bb-rows" id="bb-underway"></div></div>
-    </section>
+  <section class="bb-section" id="bb-notices-section" hidden>
+    <div class="bb-section__head">
+      <span class="fm-sign fm-sign--eyebrow">
+        <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+        Yard Notices
+      </span>
+      <span class="fm-sign fm-sign--muted">the yard's own books, not work</span>
+    </div>
+    <div class="bb-notices"><div class="bb-rows" id="bb-notices"></div></div>
+  </section>
 
-    <section class="bb-section">
-      <div class="bb-section__head">
-        <span class="fm-sign fm-sign--eyebrow">
-          <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/></svg>
-          Recently Landed
-        </span>
-      </div>
-      <div class="fm-card"><div class="bb-rows" id="bb-landed"></div></div>
-    </section>
+  <div class="bb-dispatch" id="bb-dispatch" hidden>
+    <span class="bb-dispatch__count" id="bb-dispatch-count">nothing picked</span>
+    <span class="bb-queued" id="bb-dispatch-queued">
+      <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      queued
+    </span>
+    <button type="button" class="fm-btn fm-btn--sm fm-btn--gold" id="bb-dispatch-btn">Queue dispatch order</button>
   </div>
 
   <footer class="bb-foot">
@@ -372,7 +466,7 @@ a { color: inherit; text-decoration: none; }
 </main>
 
 <!-- ONE SLOT. bin/fm-bearings-board.sh build injects the fresh
-     fm-bearings-board.v1 payload in place of the placeholder below; everything
+     fm-bearings-board.v2 payload in place of the placeholder below; everything
      above and below is the shipped template and is never regenerated per run. -->
 <script id="bearings-data" type="application/json">
 __FM_BEARINGS_BOARD_DATA__
@@ -410,7 +504,7 @@ __FM_BEARINGS_BOARD_DATA__
     renderBoardError("The board data is not valid JSON");
     return;
   }
-  if (!data || data.schema !== "fm-bearings-board.v1") {
+  if (!data || data.schema !== "fm-bearings-board.v2") {
     renderBoardError("Unsupported board data schema: " + (data && data.schema ? data.schema : "(none)"));
     return;
   }
@@ -435,24 +529,186 @@ __FM_BEARINGS_BOARD_DATA__
     return n;
   }
   function badge(tone, text) { return el("span", "fm-badge fm-badge--" + tone, text); }
-  /* Warnings ride the charted feed for layout only; they are alarms, not work,
-     so every count of queued work excludes them. */
-  function isWarning(t) { return t && t.kind === "warning"; }
-  function chartedQueued(rows) { return (rows || []).filter(function (t) { return !isWarning(t); }); }
-  var chartedMoreQueued = data.charted_more || 0;
-  var chartedMoreWarnings = data.charted_warning_more || 0;
   function utf8ByteLength(text) { return new TextEncoder().encode(text).length; }
   var CHECK_SVG = '<svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 
+  /* Warnings ride the charted feed for transport only; they are alarms about
+     the fleet's own books, so they never enter a lane and never count as work. */
+  function isWarning(t) { return t && t.kind === "warning"; }
+  var chartedWork = data.charted.filter(function (t) { return !isWarning(t); });
+  var chartedWarnings = data.charted.filter(isWarning);
+  var chartedMoreQueued = data.charted_more || 0;
+  var chartedMoreWarnings = data.charted_warning_more || 0;
+
+  /* ---- honest dates -------------------------------------------------------
+     The fleet keeps no prior snapshot, so the board never states a trend, a
+     velocity or a change since yesterday. It states only the two ages the
+     records actually carry: how long queued work has waited, and how recently
+     something launched. Both are read against `generated`, the payload's own
+     date, so the page never depends on the reader's clock. */
+  var DAY_MS = 86400000;
+  function dayNumber(text) {
+    if (typeof text !== "string") return null;
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+    if (!m) return null;
+    var y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]);
+    var n = Date.UTC(y, mo, d);
+    if (isNaN(n)) return null;
+    /* A day the calendar does not have rolls over rather than failing, so
+       "2026-02-30" would come back as March 2nd and date an order to a month it
+       was never filed in. Read the value back: a number that does not describe
+       the day it was written is not a date, and gets the same no-age answer
+       unparseable prose already gets. */
+    var back = new Date(n);
+    if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo || back.getUTCDate() !== d) return null;
+    return Math.floor(n / DAY_MS);
+  }
+  var todayNumber = dayNumber(data.generated);
+  function daysBefore(text) {
+    var d = dayNumber(text);
+    if (d === null || todayNumber === null) return null;
+    return todayNumber - d;
+  }
+  function agoDays(n) {
+    if (n === null) return null;
+    /* A record the calendar places AFTER the snapshot is a typo, not a tempo:
+       one wrong digit in the year would otherwise read as filed today, and a
+       launch dated ahead would crown its lane as the yard's most recent. An age
+       that runs backwards is not an age, so it gets the same no-age answer an
+       unparseable value and an impossible day already get. */
+    if (n < 0) return null;
+    if (n === 0) return "today";
+    if (n === 1) return "yesterday";
+    return n + " days ago";
+  }
+  function agoText(text) { return agoDays(daysBefore(text)); }
+  function agoDay(n) {
+    return n === null || todayNumber === null ? null : agoDays(todayNumber - n);
+  }
+  /* The snapshot writes "-" when a queued row has neither a hold nor a blocked
+     reason. It is a placeholder, not a sentence, so it never becomes a subtitle. */
+  function reasonText(t) {
+    var r = t && typeof t.reason === "string" ? t.reason.trim() : "";
+    return r === "-" ? "" : r;
+  }
+  /* Names a row whose surroundings do not name it: the no-project lane, whose
+     head says only that, and the notices band, which sits outside every lane.
+     A notice records the project it is about; a work row that reached the
+     no-project lane by definition records none, so it falls back to the
+     routing id, which is what the captain would answer with. */
+  function rowId(t) { return t.repo || t.id; }
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+
   document.getElementById("bb-provenance").textContent = data.schema + " · " + data.generated;
+
+  /* ---- fold every row into its project lane ------------------------------
+     The captain has projects, not errands. `repo` is the lane key; a row that
+     deliberately records no repo lands in one explicit unassigned lane rather
+     than being dropped or silently merged into a real project. */
+  var UNASSIGNED = " unassigned";
+  var lanes = [];
+  var laneByKey = Object.create(null);
+  function lane(row) {
+    var repo = row && typeof row.repo === "string" ? row.repo.trim() : "";
+    var key = repo || UNASSIGNED;
+    var found = laneByKey[key];
+    if (!found) {
+      found = { key: key, name: repo || "no project recorded", named: repo !== "",
+                call: [], ways: [], dock: [], order: [], launched: [] };
+      laneByKey[key] = found;
+      lanes.push(found);
+    }
+    return found;
+  }
+  data.captains_call.forEach(function (item) { lane(item).call.push(item); });
+  data.underway.forEach(function (t) { lane(t).ways.push(t); });
+  data.landed.forEach(function (t) { lane(t).launched.push(t); });
+  chartedWork.forEach(function (t) {
+    var l = lane(t);
+    if (t.dispatchable) l.order.push(t); else l.dock.push(t);
+  });
+
+  /* A launch is any task the fleet recorded as complete, whatever the
+     deliverable: a merged PR, a delivered report, a landed local branch. The
+     row still says which - a PR link, or "delivered" - but all three count,
+     because a lane that just finished a design is not an idle lane. */
+  lanes.forEach(function (l) {
+    l.lastLaunch = l.launched.reduce(function (best, t) {
+      var d = dayNumber(t.landed_on);
+      if (d === null) return best;
+      /* This picks which launch the snapshot saw most recently, so one the
+         snapshot cannot yet have seen must not be eligible to win it: otherwise
+         a single mistyped year takes the crown, renders no age of its own, and
+         hides the real launch beside it - and through yardLastLaunch it would
+         drop the recency line for the whole fleet. With no usable `generated`
+         there is nothing to compare against, so every launch stays eligible
+         rather than none. */
+      if (todayNumber !== null && d > todayNumber) return best;
+      return best === null || d > best ? d : best;
+    }, null);
+    l.load = l.ways.length + l.dock.length + l.order.length;
+  });
+
+  /* Busiest first, and anything holding the captain's own word above that.
+     Ties break on name so a rebuilt board keeps a stable reading order. */
+  lanes.sort(function (a, b) {
+    return (b.call.length - a.call.length)
+      || (b.ways.length - a.ways.length)
+      || (b.order.length - a.order.length)
+      || (b.dock.length - a.dock.length)
+      || (b.launched.length - a.launched.length)
+      || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  });
+
+  /* ---- the yard report ---------------------------------------------------- */
+  var totalWays = data.underway.length;
+  var totalOrder = chartedWork.filter(function (t) { return t.dispatchable; }).length;
+  var totalDock = chartedWork.length - totalOrder;
+  var totalQueued = chartedWork.length + chartedMoreQueued;
+  var buildingLanes = lanes.filter(function (l) { return l.ways.length > 0; }).length;
+  var yardLastLaunch = lanes.reduce(function (best, l) {
+    return l.lastLaunch !== null && (best === null || l.lastLaunch > best) ? l.lastLaunch : best;
+  }, null);
+  var lastLaunchText = agoDay(yardLastLaunch);
+
+  var headline;
+  if (totalWays > 0) {
+    headline = plural(totalWays, "hull", "hulls") + " on the ways in "
+      + buildingLanes + " of " + plural(lanes.length, "project", "projects")
+      + (totalQueued ? ", and " + totalQueued + " more in the order book." : ".");
+  } else if (totalQueued > 0) {
+    /* Only dispatchable rows are capacity. `charted_more` counts omitted QUEUED
+       rows whatever their disposition, so it can never be read as clear to
+       start, and a yard whose whole book is held says so rather than
+       announcing zero orders above a sub-line that names the held ones. */
+    var stopped = "Nothing is being built right now. ";
+    if (totalOrder > 0) {
+      headline = stopped + plural(totalOrder, "order is", "orders are") + " clear to start.";
+    } else if (totalDock > 0) {
+      headline = stopped + plural(totalDock, "order is", "orders are") + " held in dry dock.";
+    } else {
+      headline = stopped + plural(totalQueued, "order waits", "orders wait") + " in the order book.";
+    }
+  } else if (lanes.length) {
+    headline = "The yard is clear - nothing building, nothing ordered.";
+  } else {
+    headline = "No projects are on the board.";
+  }
+  document.getElementById("bb-headline").textContent = headline;
+  var headlineSub = [];
+  if (totalDock) headlineSub.push(totalDock + " held in dry dock");
+  if (lastLaunchText) headlineSub.push("last launch " + lastLaunchText);
+  if (!headlineSub.length) headlineSub.push(plural(lanes.length, "project", "projects"));
+  document.getElementById("bb-headline-sub").textContent = headlineSub.join(" · ");
 
   /* stat strip */
   var callTotal = data.captains_call.length;
   var stats = [
     { n: callTotal, l: "need you", call: true },
-    { n: data.underway.length, l: "underway" },
-    { n: data.landed.length, l: "landed recently" },
-    { n: chartedQueued(data.charted).length + chartedMoreQueued, l: "charted next" }
+    { n: lanes.length, l: "projects" },
+    { n: totalWays, l: "on the ways" },
+    { n: totalQueued, l: "order book" },
+    { n: data.landed.length, l: "launched" }
   ];
   var strip = document.getElementById("bb-stats");
   stats.forEach(function (s) {
@@ -464,10 +720,10 @@ __FM_BEARINGS_BOARD_DATA__
   document.getElementById("bb-call-sub").textContent =
     callTotal ? callTotal + " item" + (callTotal === 1 ? "" : "s") + " wait on you, captain" : "nothing needs you, captain";
 
-  /* Captain's Call deck: every item renders as the same full card */
+  /* ---- Captain's Call deck: every item renders as the same full card ---- */
   var deck = document.getElementById("bb-call");
-  function ctxRow(k, v, rec) {
-    var row = el("div", "bb-ctx__row" + (rec ? " bb-ctx__row--rec" : ""));
+  function ctxRow(k, v) {
+    var row = el("div", "bb-ctx__row");
     row.appendChild(el("span", "bb-ctx__k", k));
     row.appendChild(el("span", "bb-ctx__v", v));
     return row;
@@ -606,50 +862,15 @@ __FM_BEARINGS_BOARD_DATA__
     stackNav.hidden = true;
   }
 
-  /* Underway */
-  var uw = document.getElementById("bb-underway");
-  if (!data.underway.length) uw.appendChild(el("div", "bb-empty", "Nothing is underway."));
-  data.underway.forEach(function (t) {
-    var row = el("div", "bb-row");
-    row.appendChild(badge(t.state === "working" ? "online" : "info", t.state));
-    var main = el("div", "bb-row__main");
-    main.appendChild(el("div", "bb-row__title", t.doing));
-    /* captain-facing rows name the repo; the internal task id shows only when
-       no repo is known */
-    main.appendChild(el("div", "bb-row__sub", t.kind + " · " + (t.repo || t.id)));
-    row.appendChild(main);
-    uw.appendChild(row);
-  });
-
-  /* Landed */
-  var ld = document.getElementById("bb-landed");
-  if (!data.landed.length) ld.appendChild(el("div", "bb-empty", "No recent completions are in the current baseline."));
-  data.landed.forEach(function (t) {
-    var row = el("div", "bb-row");
-    var chk = el("span", "bb-row__check");
-    chk.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-    row.appendChild(chk);
-    var main = el("div", "bb-row__main");
-    main.appendChild(el("div", "bb-row__title", t.what));
-    main.appendChild(el("div", "bb-row__sub", (t.repo || t.id) + " · " + t.owner));
-    row.appendChild(main);
-    if (t.pr_url) {
-      var a = el("a", "bb-row__pr", "#" + t.pr_url.split("/").pop());
-      a.href = t.pr_url; a.title = t.pr_url; a.target = "_blank"; a.rel = "noopener";
-      row.appendChild(a);
-    }
-    ld.appendChild(row);
-  });
-
-  /* Charted Next + dispatch picker */
-  var ch = document.getElementById("bb-charted");
+  /* ---- the shipyard ------------------------------------------------------ */
+  var yard = document.getElementById("bb-yard");
   var bar = document.getElementById("bb-dispatch");
   var barCount = document.getElementById("bb-dispatch-count");
   var barBtn = document.getElementById("bb-dispatch-btn");
   var anyPickable = false;
 
   function pickedIds() {
-    return Array.prototype.map.call(ch.querySelectorAll(".bb-pick:checked"), function (c) { return c.value; });
+    return Array.prototype.map.call(yard.querySelectorAll(".bb-pick:checked"), function (c) { return c.value; });
   }
   function refreshBar(limitMessage) {
     var n = pickedIds().length;
@@ -657,16 +878,49 @@ __FM_BEARINGS_BOARD_DATA__
     barBtn.disabled = !n;
   }
 
-  if (!chartedQueued(data.charted).length && !chartedMoreQueued) {
-    ch.appendChild(el("div", "bb-empty", "Nothing is queued."));
+  /* An empty lane is calm, never "abandoned": the fleet records current state,
+     not intent, so the board says WHICH empty this is and stops there.
+     laneReading returns, in cascade order: "N hulls on the ways", "clear to
+     start - N orders wait for a crew", "nothing building - N orders are held",
+     "waiting on your word", "quiet since the last launch", and "launched work
+     here". That last one names what the board HAS rather than what it
+     lacks, and must stay phrased that way: every bucket it could claim to be
+     empty of is fed by an independently capped, flat-prefix list, so an absence
+     claim here is falsifiable by a payload the composer truncated, while a
+     presence claim survives it. One further reading,
+     "no recorded activity in the current baseline", is deferred with
+     its producer: a lane exists only because a row created it, so a wholly
+     unrecorded project has no lane to read. It needs lanes seeded from a known
+     project list, which is separate queued work, and it returns together with
+     that seeding rather than as an unreachable branch here. */
+  function laneReading(l) {
+    if (l.ways.length) return plural(l.ways.length, "hull", "hulls") + " on the ways";
+    if (l.order.length) return "clear to start - " + plural(l.order.length, "order waits", "orders wait") + " for a crew";
+    if (l.dock.length) return "nothing building - " + plural(l.dock.length, "order is", "orders are") + " held";
+    /* A call is not a berth - it lives in the Captain's Call deck - but it IS
+       recorded activity, so a lane holding only one must not read as empty. */
+    if (l.call.length) return "waiting on your word";
+    /* The reading and the launch chip beside it must agree: a lane can only say
+       it has been quiet SINCE a launch when it has a launch date to show. With
+       no date to anchor it, the lane names the launch rows it does hold, which
+       is the one fact still standing at this point and needs no date to tell. */
+    if (l.lastLaunch !== null) return "quiet since the last launch";
+    return "launched work here";
   }
-  data.charted.forEach(function (t) {
-    var row = el("div", "bb-row");
-    if (t.dispatchable && !isWarning(t)) {
+  function laneTone(l) {
+    if (l.call.length) return "call";
+    if (l.ways.length) return "building";
+    if (l.order.length) return "ready";
+    return "quiet";
+  }
+
+  function workRow(opts) {  // {title, sub, id, badgeTone, badgeText, pick, when, pr_url}
+    var row = el("div", "bb-row" + (opts.id ? " bb-row--identified" : ""));
+    if (opts.pick) {
       anyPickable = true;
       var pick = document.createElement("input");
-      pick.type = "checkbox"; pick.className = "bb-pick"; pick.value = t.id;
-      pick.setAttribute("aria-label", "Pick " + t.id + " for dispatch");
+      pick.type = "checkbox"; pick.className = "bb-pick"; pick.value = opts.pick;
+      pick.setAttribute("aria-label", "Pick " + opts.pick + " for dispatch");
       pick.addEventListener("change", function () {
         if (pick.checked && utf8ByteLength(pickedIds().join(",")) > 512) {
           pick.checked = false;
@@ -676,32 +930,208 @@ __FM_BEARINGS_BOARD_DATA__
         refreshBar();
       });
       row.appendChild(pick);
-    } else {
+    } else if (opts.spacer) {
       row.appendChild(el("span", "bb-pick-spacer"));
     }
+    if (opts.check) {
+      var chk = el("span", "bb-row__check");
+      chk.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+      row.appendChild(chk);
+    }
+    if (opts.badgeText) row.appendChild(badge(opts.badgeTone, opts.badgeText));
     var main = el("div", "bb-row__main");
-    main.appendChild(el("div", "bb-row__title", t.title));
-    /* second line keeps the title uncrowded in the half-width column */
-    var chSub = t.repo || t.id;
-    main.appendChild(el("div", "bb-row__sub", t.reason ? t.reason + " · " + chSub : chSub));
+    main.appendChild(el("div", "bb-row__title", opts.title));
+    if (opts.sub) main.appendChild(el("div", "bb-row__sub", opts.sub));
     row.appendChild(main);
-    if (isWarning(t)) row.appendChild(badge("danger", "needs repair"));
-    else if (t.reason) row.appendChild(badge("warn", "waiting"));
-    ch.appendChild(row);
-  });
-  var chartedShown = chartedQueued(data.charted).length;
-  var chartedTotal = chartedShown + chartedMoreQueued;
-  document.getElementById("bb-charted-sub").textContent =
-    chartedMoreQueued ? "showing " + chartedShown + " of " + chartedTotal : "";
-  if (chartedMoreQueued) {
-    ch.appendChild(el("span", "bb-morechip", "+" + chartedMoreQueued + " more queued - ask firstmate for the full chart"));
-  }
-  if (chartedMoreWarnings) {
-    ch.appendChild(el("span", "bb-morechip", "+" + chartedMoreWarnings + " more repair warning" + (chartedMoreWarnings === 1 ? "" : "s") + " - ask firstmate for the full chart"));
+    /* Identity rides outside .bb-row__main, which truncates: a sentence-length
+       reason must never be what decides whether the row can still be named. */
+    if (opts.id) row.appendChild(el("span", "bb-row__id", opts.id));
+    if (opts.when) row.appendChild(el("span", "bb-row__when", opts.when));
+    if (opts.pr_url) {
+      var a = el("a", "bb-row__pr", "#" + opts.pr_url.split("/").pop());
+      a.href = opts.pr_url; a.title = opts.pr_url; a.target = "_blank"; a.rel = "noopener";
+      row.appendChild(a);
+    }
+    return row;
   }
 
+  function berth(parent, label) {
+    var b = el("div", "bb-berth");
+    b.appendChild(el("div", "bb-berth__label", label));
+    var rows = el("div", "bb-rows");
+    b.appendChild(rows);
+    parent.appendChild(b);
+    return rows;
+  }
+
+  var busiest = lanes.reduce(function (m, l) { return Math.max(m, l.load); }, 0);
+
+  if (!lanes.length) {
+    yard.appendChild(el("div", "bb-empty", "No projects are on the board."));
+  }
+
+  lanes.forEach(function (l) {
+    var card = el("div", "bb-lane bb-lane--" + laneTone(l));
+    /* A named lane's head already says the project, so an identity column there
+       repeats it on every row and spends width the title and reason need. Only
+       the deliberate no-project lane, where the row has no other identity,
+       pays for one. */
+    function identity(t) { return l.named ? null : rowId(t); }
+
+    var head = el("div", "bb-lane__head");
+    head.appendChild(el("span", "bb-lane__name", l.name));
+    head.appendChild(el("span", "bb-lane__reading", laneReading(l)));
+    if (l.call.length) head.appendChild(badge("solid", plural(l.call.length, "needs you", "need you")));
+    var laneLaunch = agoDay(l.lastLaunch);
+    if (laneLaunch) {
+      head.appendChild(el("span", "bb-lane__launch", "last launch " + laneLaunch));
+    }
+    card.appendChild(head);
+
+    /* the gauge is a ratio between lanes, never an invented rate; a lane with
+       nothing in progress draws no track rather than an empty one */
+    if (busiest > 0 && l.load > 0) {
+      var gauge = el("div", "bb-gauge");
+      [["ways", l.ways.length], ["dock", l.dock.length], ["order", l.order.length]].forEach(function (pair) {
+        if (!pair[1]) return;
+        var seg = el("div", "bb-gauge__seg bb-gauge__seg--" + pair[0]);
+        seg.setAttribute("style", "width:" + (pair[1] / busiest * 100) + "%");
+        seg.setAttribute("title", pair[1] + " " + pair[0]);
+        gauge.appendChild(seg);
+      });
+      card.appendChild(gauge);
+    }
+
+    if (l.ways.length) {
+      var ways = berth(card, "On the ways");
+      l.ways.forEach(function (t) {
+        /* No age here on purpose: the backlog's recorded date is when the work
+           was FILED, not when a worker picked it up, so printing it as time
+           under construction would invent a tempo. The live state is the real
+           movement signal, and it is current-state truth. */
+        ways.appendChild(workRow({
+          badgeTone: t.state === "working" ? "online" : "info",
+          badgeText: t.state,
+          title: t.doing,
+          sub: t.kind,
+          id: identity(t)
+        }));
+      });
+    }
+
+    var depth = l.order.length + l.dock.length;
+    if (depth) {
+      var drawer = document.createElement("details");
+      drawer.className = "bb-drawer";
+      /* shallow enough to read at a glance stays open; a deep book stays a
+         number until the captain asks for the rows */
+      if (depth <= 4) drawer.open = true;
+      var summary = document.createElement("summary");
+      summary.className = "bb-drawer__summary";
+      summary.appendChild(el("span", "bb-drawer__depth", String(depth)));
+      var split = [];
+      if (l.order.length) split.push(l.order.length + " clear to start");
+      if (l.dock.length) split.push(l.dock.length + " held in dry dock");
+      summary.appendChild(el("span", "bb-drawer__split", "in the order book · " + split.join(", ")));
+      /* A summary reads the same open or closed, so the hint is only true while
+         the book is still behind its depth figure. The withdrawal is the
+         stylesheet's job, never a render-time branch: `.bb-drawer[open]
+         .bb-drawer__hint` follows the drawer in BOTH directions, so it also
+         gives the hint back when the captain collapses a shallow lane that
+         opened by default - a state a render-time test of the initial value
+         cannot reach. Only l.order rows carry a checkbox, so a wholly held book
+         names what it does hold instead of advertising a pick no row accepts. */
+      summary.appendChild(el("span", "bb-drawer__hint",
+        l.order.length ? "open to pick" : "open to read what holds them"));
+      drawer.appendChild(summary);
+
+      if (l.order.length) {
+        var orderRows = berth(drawer, "Clear to start");
+        l.order.forEach(function (t) {
+          var waited = agoText(t.since);
+          var why = reasonText(t);
+          orderRows.appendChild(workRow({
+            pick: t.id,
+            title: t.title,
+            sub: why || (waited ? "ordered " + waited : "waiting for a crew"),
+            id: identity(t),
+            when: waited && why ? waited : null
+          }));
+        });
+      }
+      if (l.dock.length) {
+        var dockRows = berth(drawer, "Dry dock");
+        l.dock.forEach(function (t) {
+          var heldFor = agoText(t.since);
+          var holds = reasonText(t);
+          dockRows.appendChild(workRow({
+            spacer: true,
+            badgeTone: "warn",
+            badgeText: "held",
+            title: t.title,
+            sub: holds || (heldFor ? "held " + heldFor : "held with no reason recorded"),
+            id: identity(t),
+            when: heldFor && holds ? heldFor : null
+          }));
+        });
+      }
+      card.appendChild(drawer);
+    }
+
+    if (l.launched.length) {
+      var launched = berth(card, "Launched");
+      l.launched.forEach(function (t) {
+        launched.appendChild(workRow({
+          check: true,
+          title: t.what,
+          sub: (t.pr_url ? "merged · " : "delivered · ") + t.owner,
+          id: identity(t),
+          when: agoText(t.landed_on),
+          pr_url: t.pr_url
+        }));
+      });
+    }
+
+    yard.appendChild(card);
+  });
+
+  if (chartedMoreQueued) {
+    yard.appendChild(el("span", "bb-morechip",
+      "+" + chartedMoreQueued + " more queued - ask firstmate for the full chart"));
+  }
+  document.getElementById("bb-yard-sub").textContent = totalQueued
+    ? totalQueued + " in the order book across the yard"
+    : "nothing queued";
+
+  /* ---- yard notices: alarms, kept out of every lane ---- */
+  var notices = document.getElementById("bb-notices");
+  var anyNotice = chartedWarnings.length > 0 || chartedMoreWarnings > 0;
+  /* stated on every build rather than inherited from the markup, so a rebuilt
+     board never keeps a band the fresh payload no longer justifies */
+  document.getElementById("bb-notices-section").hidden = !anyNotice;
+  if (anyNotice) {
+    chartedWarnings.forEach(function (t) {
+      var wrong = reasonText(t);
+      var where = rowId(t);
+      var noticed = agoText(t.since);
+      notices.appendChild(workRow({
+        badgeTone: "danger",
+        badgeText: "needs repair",
+        title: t.title,
+        sub: wrong ? wrong + " · " + where
+          : noticed ? "recorded " + noticed + " · " + where
+          : where
+      }));
+    });
+    if (chartedMoreWarnings) {
+      notices.appendChild(el("span", "bb-morechip",
+        "+" + chartedMoreWarnings + " more repair warning" + (chartedMoreWarnings === 1 ? "" : "s")
+          + " - ask firstmate for the full chart"));
+    }
+  }
+
+  bar.hidden = !anyPickable;
   if (anyPickable) {
-    bar.hidden = false;
     refreshBar();
     barBtn.addEventListener("click", function () {
       var ids = pickedIds();
