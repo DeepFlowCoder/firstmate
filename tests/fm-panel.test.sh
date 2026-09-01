@@ -634,6 +634,105 @@ test_pr_disclosure_carries_the_origin_identity_without_its_credentials() {
   pass "fm-panel.sh: the disclosed origin identifies the repository without its credentials"
 }
 
+test_pr_discloses_the_origin_the_fetch_actually_contacted() {
+  local root out rc dir bare pr_head configured
+  root=$(panel_world pr-origin-rewritten)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/pr-work 300
+  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
+  bare="$root/origin.git"
+  git clone --quiet --bare "$dir" "$bare"
+  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
+  git -C "$dir" branch -D fm/pr-work >/dev/null
+  # An insteadOf rewrite sends the fetch to a completely different repository
+  # while the configured url keeps naming the one the operator wrote down. The
+  # PR identity guard is gone for good, so the disclosure is the only thing that
+  # can catch this - and it can only catch it by naming BOTH.
+  configured='https://configurado.invalid/o/r.git'
+  git -C "$dir" remote add origin "$configured"
+  git -C "$dir" config "url.file://$bare.insteadOf" "$configured"
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --pr 7); rc=$?
+  expect_code 0 "$rc" "a rewritten origin must still convoke (got: $out)"
+  assert_contains "$out" "$configured" "convocar must disclose the configured origin"
+  assert_contains "$out" "file://$bare" "convocar must disclose the origin the fetch actually contacted"
+  assert_grep "$configured" "$root/home/data/p1-claude/brief.md" \
+    "the judge must be told the configured origin"
+  assert_grep "file://$bare" "$root/home/data/p1-claude/brief.md" \
+    "the judge must be told which repository the diff really came from"
+  assert_grep "$configured" "$root/home/data/p1/subject.md" \
+    "the subject record must carry the configured origin"
+  assert_grep "file://$bare" "$root/home/data/p1/subject.md" \
+    "the subject record must carry the effective origin too"
+  # Disclosure only: a divergence changes the text, never the outcome.
+  assert_present "$root/home/data/p1/subject.diff" "a rewritten origin must not refuse the panel"
+  assert_grep 'p1-claude' "$root/spawn.log" "the judge must still be dispatched"
+  pass "fm-panel.sh: a rewritten origin discloses both the configured and the contacted repository"
+}
+
+test_pr_discloses_the_first_origin_url_the_fetch_uses() {
+  local root out rc dir bare pr_head
+  root=$(panel_world pr-origin-multi-url)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/pr-work 300
+  pr_head=$(git -C "$dir" rev-parse fm/pr-work)
+  bare="$root/origin.git"
+  git clone --quiet --bare "$dir" "$bare"
+  git -C "$bare" update-ref refs/pull/7/head "$pr_head"
+  git -C "$dir" branch -D fm/pr-work >/dev/null
+  # A remote may hold several urls. git fetches the FIRST; reading the config
+  # with --get hands back the LAST, so the disclosure would name a repository
+  # the panel never contacted - the one failure the removed guard was traded for.
+  git -C "$dir" remote add origin "file://$bare"
+  git -C "$dir" remote set-url --add origin 'https://nunca-contactado.invalid/o/r.git'
+
+  out=$(panel_run "$root" convocar p1 --judges claude --repo proj --pr 7); rc=$?
+  expect_code 0 "$rc" "a remote with several urls must still convoke (got: $out)"
+  assert_contains "$out" "file://$bare" "convocar must disclose the url the fetch uses"
+  assert_not_contains "$out" 'nunca-contactado.invalid' \
+    "convocar must not name a url the fetch never contacted"
+  assert_grep "file://$bare" "$root/home/data/p1-claude/brief.md" \
+    "the judge must be told the repository the diff really came from"
+  assert_no_grep 'nunca-contactado.invalid' "$root/home/data/p1-claude/brief.md" \
+    "no judge may be told about a repository the panel never contacted"
+  assert_no_grep 'nunca-contactado.invalid' "$root/home/data/p1/subject.md" \
+    "the subject record must not name a repository the panel never contacted"
+  pass "fm-panel.sh: a multi-url remote discloses the url the fetch actually uses"
+}
+
+test_a_judge_name_that_looks_like_a_glob_stays_one_judge() {
+  local root out rc dir spawned
+  root=$(panel_world judges-glob)
+  dir=$(panel_project "$root" proj)
+  panel_branch "$dir" fm/work 300
+  # The invoking directory decides what '*' would expand to, so fill it with
+  # names a word-split dispatch loop would turn into judges nobody asked for -
+  # and nobody would see on the cost line either.
+  mkdir -p "$root/cwd"
+  : > "$root/cwd/alpha"
+  : > "$root/cwd/beta"
+  : > "$root/cwd/gamma"
+
+  out=$(cd "$root/cwd" && panel_run "$root" convocar p1 --judges '*' --repo proj --diff fm/work); rc=$?
+  expect_code 0 "$rc" "a one-entry roster must convoke (got: $out)"
+  # The cost line, the recorded roster, the spawns and the collection must all
+  # agree on the same single judge; N times the price with N nowhere on screen
+  # is the accident this tool must never be cheap enough to have.
+  assert_contains "$out" '1 veredictos de pago' "the cost line must state the one judge that was dispatched"
+  spawned=$(grep -c -- '--harness' "$root/spawn.log")
+  [ "$spawned" -eq 1 ] || fail "exactly one judge may be dispatched, got $spawned (log: $(cat "$root/spawn.log"))"
+  assert_no_grep 'alpha' "$root/spawn.log" "a filename in the invoking directory must never become a paid judge"
+  assert_no_grep 'beta' "$root/spawn.log" "a filename in the invoking directory must never become a paid judge"
+  assert_line "$root/home/data/p1/judges" '*' "the roster must record the entry exactly as given"
+
+  panel_report "$root" 'p1' '*' 'VEREDICTO: aprobar'
+  out=$(panel_run "$root" recoger p1 --timeout 0); rc=$?
+  expect_code 0 "$rc" "the dispatched judge must be the judge recoger collects (got: $out)"
+  assert_contains "$out" '1 jueces' "recoger must find exactly the judge that was dispatched"
+  assert_contains "$out" 'UNÁNIME: aprobar' "the delivered verdict must be counted"
+  pass "fm-panel.sh: a roster entry is one judge whatever bytes it carries"
+}
+
 test_diff_of_a_branch_whose_name_carries_a_delimiter() {
   local root out rc dir
   root=$(panel_world diff-delimiter-branch)
@@ -1238,6 +1337,9 @@ test_pr_failure_after_the_fetch_leaves_no_ref_behind
 test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote
 test_pr_url_contributes_only_its_number_and_discloses_the_origin
 test_pr_disclosure_carries_the_origin_identity_without_its_credentials
+test_pr_discloses_the_origin_the_fetch_actually_contacted
+test_pr_discloses_the_first_origin_url_the_fetch_uses
+test_a_judge_name_that_looks_like_a_glob_stays_one_judge
 test_diff_of_a_branch_whose_name_carries_a_delimiter
 test_convocar_refuses_a_judge_name_with_inner_whitespace
 test_criteria_come_from_the_task_behind_the_branch

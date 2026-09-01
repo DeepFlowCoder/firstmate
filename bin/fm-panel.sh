@@ -322,7 +322,7 @@ drop_panel_refs() {
 
 # resolve_change_subject <panel-dir> <project-dir> <repo> <kind> <target> <max-bytes>
 # Materializes data/<panel>/subject.diff and echoes one "<key>=<value>" line per
-# resolved field: base, head_label, shortstat, task_hint, origin.
+# resolved field: base, head_label, shortstat, task_hint, origin, origin_fetch.
 # Refuses rather than truncating, and refuses an empty change.
 #
 # The fields are NAMED rather than positional because most of them are derived
@@ -335,10 +335,12 @@ drop_panel_refs() {
 resolve_change_subject() {
   local panel_dir=$1 project_dir=$2 repo=$3 kind=$4 target=$5 max_bytes=$6
   local base head_ref head_label task_hint n origin size shortstat
+  local origin_all origin_fetch
 
   FM_PANEL_REFS=()
   # Only a PR subject has an origin to disclose; a branch subject needs none.
   origin=""
+  origin_fetch=""
   # The path travels in a variable, never interpolated into the trap body: a
   # clone path containing a quote would otherwise make the body unparseable, so
   # the handler would silently never run and the ref would survive.
@@ -354,11 +356,23 @@ resolve_change_subject() {
     n=$(pr_number "$target") ||
       die "--pr expects a PR URL or number (got: $target)"
     # The remote's CONFIGURED url is the identity the operator recognizes, so it
-    # is what the disclosure names. An insteadOf rewrite is a transport
-    # convenience the fetch below still follows, not the repository's name.
-    origin=$(git -C "$project_dir" config --get remote.origin.url) ||
+    # is what the disclosure names - but it has to be the url the fetch below
+    # actually uses. A remote may hold SEVERAL urls, and git fetches the FIRST
+    # while `config --get` hands back the LAST, so reading it that way would name
+    # a repository the panel never contacted.
+    origin_all=$(git -C "$project_dir" config --get-all remote.origin.url) ||
       die "project '$repo' has no 'origin' remote, so a PR cannot describe its changes; judge the local branch instead with --diff <branch>"
-    origin=$(redact_origin "$origin")
+    origin=$(redact_origin "${origin_all%%$'\n'*}")
+    # An insteadOf rewrite redirects the fetch to a different host entirely while
+    # leaving the configured string untouched, so the effective url is disclosed
+    # alongside the configured one whenever the two differ. Disclosed, never
+    # compared: the PR identity guard is gone for good, and a divergence changes
+    # the text the reader and the judges see and nothing else.
+    origin_fetch=$(git -C "$project_dir" remote get-url origin 2>/dev/null || true)
+    if [ -n "$origin_fetch" ]; then
+      origin_fetch=$(redact_origin "$origin_fetch")
+      [ "$origin_fetch" != "$origin" ] || origin_fetch=""
+    fi
     # A --pr URL contributes its NUMBER and nothing else: host, owner and repo
     # in the URL are never compared against the origin, because every such
     # comparison leaked. The number means "PR N of this origin" whether it came
@@ -423,6 +437,7 @@ resolve_change_subject() {
   printf 'shortstat=%s\n' "$shortstat"
   printf 'task_hint=%s\n' "$task_hint"
   printf 'origin=%s\n' "$origin"
+  printf 'origin_fetch=%s\n' "$origin_fetch"
 }
 
 convocar() {
@@ -430,6 +445,7 @@ convocar() {
   local repo=$7 effort=$8 judges=$9 max_bytes=${10}
   local project_dir panel_dir task_id brief judge subject prompt seen roster
   local base head_label shortstat task_hint criteria_src resolved origin field
+  local origin_fetch
   local bad_judge
 
   project_dir="$PROJECTS/$repo"
@@ -455,9 +471,9 @@ convocar() {
   Pasa al menos un harness, por ejemplo --judges claude,codex."
   # A judge name is ONE harness word. split_judges already trimmed the outer
   # spaces people type between commas, so any whitespace still inside a line is
-  # inside the name itself - and the dispatch loop word-splits the roster, so a
-  # spaced name would be dispatched as two judges that were never named, with a
-  # task id nobody collects. Refuse it before anything is recorded.
+  # inside the name itself - and a spaced name would be recorded as one roster
+  # entry while naming a task id nobody collects. Refuse it before anything is
+  # recorded.
   bad_judge=$(printf '%s\n' "$roster" | awk '/[[:space:]]/ { print; exit }')
   [ -z "$bad_judge" ] ||
     die "--judges nombra '$bad_judge', que no es un harness: lleva espacios dentro.
@@ -466,8 +482,15 @@ convocar() {
   # not two opinions: they would share a task id, so one report would be read
   # twice and printed as a consensus of two - the fabricated agreement this tool
   # exists to prevent, at double the price.
+  # One roster line is one judge, whatever bytes it carries. The roster is read
+  # line by line at BOTH ends - here and in recoger - because an unquoted word
+  # split would also pathname-expand it: a judge named '*' would be counted once
+  # on the cost line, recorded once in the roster file and looked for once by
+  # recoger, while silently scaffolding and paying for one judge per file in the
+  # invoking directory.
   seen=""
-  for judge in $roster; do
+  while IFS= read -r judge; do
+    [ -n "$judge" ] || continue
     case " $seen " in
       *" $judge "*)
         die "--judges nombra '$judge' más de una vez, y un panel compara el MISMO cambio en harnesses DISTINTOS.
@@ -479,7 +502,7 @@ convocar() {
     seen="$seen $judge"
     [ ! -e "$DATA/$panel-$judge/brief.md" ] ||
       die "judge task already exists: $panel-$judge (refusing to overwrite)"
-  done
+  done <<< "$roster"
 
   subject=$(mktemp)
   prompt=$(mktemp)
@@ -506,13 +529,14 @@ convocar() {
     printf 'panel %s: pregunta en prosa\n\npregunta:\n%s\n' "$panel" "$target" > "$panel_dir/subject.md"
   else
     resolved=$(resolve_change_subject "$panel_dir" "$project_dir" "$repo" "$kind" "$target" "$max_bytes")
-    base=""; head_label=""; shortstat=""; task_hint=""; origin=""
+    base=""; head_label=""; shortstat=""; task_hint=""; origin=""; origin_fetch=""
     while IFS= read -r field; do
       case "$field" in
         base=*) base=${field#base=} ;;
         head_label=*) head_label=${field#head_label=} ;;
         shortstat=*) shortstat=${field#shortstat=} ;;
         task_hint=*) task_hint=${field#task_hint=} ;;
+        origin_fetch=*) origin_fetch=${field#origin_fetch=} ;;
         origin=*) origin=${field#origin=} ;;
       esac
     done <<< "$resolved"
@@ -550,8 +574,12 @@ convocar() {
       printf 'Proyecto: %s\n' "$repo"
       printf 'Sujeto: %s\n' "$head_label"
       # A PR subject names the origin its number was resolved against, so no
-      # judge reasons about a repository it cannot place.
+      # judge reasons about a repository it cannot place. When git's config
+      # redirects the fetch elsewhere, the judge is told where the bytes really
+      # came from too, rather than only where they were nominally asked for.
       [ -z "$origin" ] || printf 'Repositorio: %s\n' "$origin"
+      [ -z "$origin_fetch" ] ||
+        printf 'Repositorio contactado (la config de git reescribe el origen): %s\n' "$origin_fetch"
       printf 'Base de comparación: %s\n' "$base"
       printf 'Resumen: %s\n' "${shortstat:-sin resumen}"
       printf 'Diff completo (léelo entero antes de opinar): %s\n' "$panel_dir/subject.diff"
@@ -569,6 +597,7 @@ convocar() {
       printf 'panel %s: %s de %s\n' "$panel" "$head_label" "$repo"
       printf '\nbase: %s\n' "$base"
       [ -z "$origin" ] || printf 'origen: %s\n' "$origin"
+      [ -z "$origin_fetch" ] || printf 'origen efectivo: %s\n' "$origin_fetch"
       printf 'resumen: %s\n' "${shortstat:-sin resumen}"
       printf 'diff: %s\n' "$panel_dir/subject.diff"
       printf 'criterios: %s\n' "${criteria_src:-NINGUNO (cambio sin tarea registrada)}"
@@ -584,6 +613,8 @@ convocar() {
     # The disclosure the whole --pr contract rests on: which origin the PR
     # number resolved against, printed before a single judge is paid.
     [ -z "$origin" ] || echo "  origen: $origin  ($head_label se resuelve contra este remoto)"
+    [ -z "$origin_fetch" ] ||
+      echo "  origen efectivo: $origin_fetch  (la config de git reescribe el origen configurado; se contactó a este)"
     echo "  diff: $(wc -c < "$panel_dir/subject.diff" | tr -d '[:space:]') bytes  ($shortstat)"
     if [ -z "$criteria" ]; then
       echo "  AVISO: sin criterios de aceptación registrados; los jueces juzgan contra la intención declarada del cambio."
@@ -593,13 +624,14 @@ convocar() {
   fi
   echo "  coste: $(printf '%s\n' "$roster" | wc -l | tr -d '[:space:]') veredictos de pago, uno por juez."
 
-  for judge in $roster; do
+  while IFS= read -r judge; do
+    [ -n "$judge" ] || continue
     task_id="$panel-$judge"
     brief="$DATA/$task_id/brief.md"
     "$SCRIPT_DIR/fm-brief.sh" "$task_id" "$repo" --scout >/dev/null
     fill_brief "$brief" "$prompt"
     "$SCRIPT_DIR/fm-spawn.sh" "$task_id" "$project_dir" --scout --harness "$judge" --effort "$effort"
-  done
+  done <<< "$roster"
   echo "panel '$panel' convocado."
 }
 
