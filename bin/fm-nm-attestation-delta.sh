@@ -34,6 +34,11 @@
 # diverged rather than ahead, and the check stays red - which is the correct
 # verdict for a wholesale rewrite no gate ever saw.
 #
+# docs/verification/no-mistakes-gate.md records the dated live evidence behind
+# the two claims a faked `gh` cannot prove: that the forge still answers the
+# comparison with the fields parsed below, and that both real incidents resolve
+# the way this header says they do.
+#
 # Usage: fm-nm-attestation-delta.sh --repo <owner/name> --head <sha>
 #                                   [--body-file <path>]
 # The PR body comes from --body-file, or from NM_PR_BODY when no file is given.
