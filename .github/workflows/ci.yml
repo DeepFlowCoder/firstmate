@@ -10,45 +10,67 @@ permissions:
   contents: read
 
 jobs:
-  # Every observed 143 on this lane is a runner shutdown, not a lint verdict.
-  # Against the API per attempt, not the log view that folds attempts: job
-  # 99553610219 attempt 1 and job 99558734177 attempt 2 both failed with the
-  # runner's "shutdown signal" line, and job 99565342352 attempt 3 - a manual
-  # relaunch, i.e. a fresh attempt on a fresh runner - went green with zero
-  # shutdown lines. Two of two failures were shutdowns and the only green was a
-  # new attempt, so the remedy for the observed mode is a fresh job attempt, not
-  # an in-step retry. A shutdown signal goes to the whole process group, which
-  # kills the step's wrapping `bash -e` before any in-step retry branch can run,
-  # so that retry is deliberately not encoded here.
+  # This lane used to lose runs to "The runner has received a shutdown signal"
+  # (exit 143) and the earlier reading of that was that the runner was being
+  # reclaimed out from under an innocent job, so the remedy was a fresh attempt:
+  # jobs 99553610219 and 99558734177 both took the shutdown line and only the
+  # third attempt, 99565342352, went green.
   #
-  # The signal exits stay unambiguous when they do reach this job: bin/fm-lint.sh
-  # installs its own traps (bin/fm-lint.sh:325-331) so HUP/INT/TERM leave as
-  # 129/130/143 with "interrupted ... no lint verdict was reached" on stderr,
-  # while a real verdict is always 0, 1, or 2. No code path here could retry a
-  # genuine verdict into green.
+  # Run 33471424345 settles it the other way. The Lint job (99741795200) took
+  # the shutdown signal at 10m39s while all fifteen other jobs in that same run
+  # went green. A reclaimed runner does not pick one job out of sixteen; the
+  # job that dies is the job that eats the machine, and Lint is the only lane
+  # here that holds gigabytes.
   #
-  # FM_LINT_JOBS=1 stays unpulled. A reclaimed runner sends SIGTERM; the OOM
-  # killer and systemd-oomd send SIGKILL, and a killed ShellCheck comes back as a
-  # worker status the parent replays as a real verdict rather than as 143.
-  # Pulling that lever would also double the wall (worker_wall_sum 1841s against
-  # 998s wall at jobs=2), and wall time is exactly what a reclaimed runner feeds
-  # on. Latest telemetry, same macOS method as the earlier figure: 3.03 GiB peak
-  # in one worker and 5.84 GiB summed at 345 roots, up from 1.84/3.36 GiB at
-  # 343. That is tight against the 7 GiB a private-repo ubuntu-latest runner has
-  # and deserves a Linux re-measurement. Whether memory is a real risk on this
-  # lane stays an OPEN question: no failure carrying fm-lint.sh's own diagnostic
-  # has been a memory kill, but the one occurrence predating that diagnostic -
-  # run 33307176505, job 99245658478 - reported ShellCheck as "Killed", the
-  # SIGKILL signature, so it is not excluded as one. Leaving FM_LINT_JOBS=1
-  # unpulled is unchanged; only its justification stops claiming more than it
-  # measures.
+  # Measured on this repo at 344 roots (macOS, ShellCheck 0.11.0, telemetry from
+  # bin/fm-lint.sh --telemetry): with two workers, 3.45 GiB peak in one worker
+  # and 6.40 GiB summed across the two. That sum adds two maxima that need not
+  # fall at the same instant, so it is an upper bound rather than a proven
+  # concurrent footprint - but a 3.45 GiB worker plus a second one anywhere near
+  # it is the whole of the 7 GiB a private-repo ubuntu-latest runner has, before
+  # the runner agent and the OS get theirs.
+  #
+  # So this lane runs one worker: bin/fm-lint.sh defaults FM_LINT_JOBS to 1 when
+  # GITHUB_ACTIONS or CI is true, and to 2 everywhere else. Both orders lint the
+  # same two shards and produce byte-identical diagnostics and the same verdict,
+  # so the only thing that changes is what the run holds at once. Same repo,
+  # same host, one worker: 3.43 GiB peak and a 1097s wall, against 3.45 GiB and
+  # 1323s for two. Halving the concurrency did not cost wall there - it saved it,
+  # because two multi-gigabyte ShellCheck processes spend more on contention than
+  # they win on parallelism. Read worker_rss_sum with care under one worker: 6.99
+  # GiB is two sequential maxima added together, and the two never coexist.
+  #
+  # Bounding the ShellCheck process instead of the worker count was measured and
+  # rejected, not overlooked. Handing ShellCheck at most 32 roots per process
+  # rather than a whole shard of 172 left the peak at 3.45 GiB - unchanged - and
+  # cost 37% more user CPU (1267s against 922s). The peak is not one pathological
+  # root either: profiled one at a time, the worst root on this repo is 2.25 GiB
+  # (tests/fm-pending-reply.test.sh) and only four exceed 1 GiB, so even a
+  # process-per-root floor of ~2.25 GiB would still be two-thirds of the way to
+  # today's peak at several times the CPU. Concurrency is the only lever here
+  # with a measured effect.
+  #
+  # Signal exits stay unambiguous either way: bin/fm-lint.sh installs its own
+  # traps so HUP/INT/TERM leave as 129/130/143 with "interrupted ... no lint
+  # verdict was reached" on stderr, while a real verdict is always 0, 1, or 2.
+  # A reclaimed runner sends SIGTERM; the OOM killer and systemd-oomd send
+  # SIGKILL, and a killed ShellCheck comes back as a worker status the parent
+  # replays as a real verdict rather than as 143 - which is how run 33307176505,
+  # job 99245658478 reported ShellCheck as "Killed". No in-step retry is encoded
+  # here: a shutdown signal goes to the whole process group and kills the step's
+  # wrapping `bash -e` before any retry branch could run, while it could re-run
+  # a genuine 0/1/2 verdict into green.
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    # Cap is a tripwire, not the expected end of the lane: green runs take
-    # 15m03s-15m47s - the upper extreme is job 99565342352's green attempt,
-    # measured at 15m47s - while run 33353469575 sat 61 minutes on the 6-hour
-    # default before reporting.
+    # Cap is a tripwire, not the expected end of the lane. Two-worker green runs
+    # took 15m03s-15m47s (job 99565342352's green attempt is the upper extreme).
+    # One worker measured no wall penalty on a many-core host, but this runner
+    # has two cores, where the second worker does buy real parallelism, so budget
+    # for the pessimistic case of about twice the two-worker wall - near 31
+    # minutes. The cap stays 45: still above that, and still far short of the
+    # 6-hour GitHub default that let run 33353469575 sit 61 minutes before
+    # reporting.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
