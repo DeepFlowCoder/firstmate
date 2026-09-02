@@ -2889,6 +2889,53 @@ test_unorderable_records_keep_the_worst() {
   pass "fm-pr-merge keeps the worst of two check records it cannot order"
 }
 
+test_undated_record_is_never_ordered_away() {
+  local case_dir
+  # A record the forge reported no start time for cannot be ordered against its
+  # sibling at all. Reading the missing time as time zero would sort it below
+  # every dated sibling, so a dated green would order this red away: the guard
+  # would fail open on exactly the field the forge is free to omit.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    'check COMPLETED FAILURE 0 PR must be raised via no-mistakes'
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
+  )
+  case_dir=$(run_gate_case undated-record)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "undated-record: a red the forge left undated must not be ordered away by a dated green"
+  assert_grep 'did not pass' "$case_dir/stderr" \
+    "undated-record: refusal did not say a check failed"
+  assert_grep 'PR must be raised via no-mistakes' "$case_dir/stderr" \
+    "undated-record: refusal did not name the check it could not order"
+  assert_no_side_effects "$case_dir" undated-record
+  pass "fm-pr-merge never orders away a check record the forge left undated"
+}
+
+test_blank_record_refuses_as_unmeasurable() {
+  local case_dir
+  # The shape a check name ending in a newline takes: the record it names, then
+  # an empty line, then the record that followed it. The declared count still
+  # balances, because an empty line is no record, so skipping it would accept
+  # the reading and let the forged name go unseen.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    ''
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED Lint"
+  )
+  case_dir=$(run_gate_case blank-record)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "blank-record: a reading carrying an empty record must not be classified"
+  assert_grep 'empty record' "$case_dir/stderr" \
+    "blank-record: refusal did not name the empty record it could not read"
+  assert_no_side_effects "$case_dir" blank-record
+  pass "fm-pr-merge refuses a reading whose check name spilled an empty record"
+}
+
 test_rerun_in_progress_supersedes_a_finished_run() {
   local case_dir
   # Recency is the run's start time, not its completion: a re-run still running
@@ -3021,5 +3068,7 @@ test_superseded_red_record_does_not_refuse
 test_superseded_green_record_still_refuses
 test_lone_red_record_still_refuses
 test_unorderable_records_keep_the_worst
+test_undated_record_is_never_ordered_away
+test_blank_record_refuses_as_unmeasurable
 test_rerun_in_progress_supersedes_a_finished_run
 test_forged_check_record_cannot_mask_a_red

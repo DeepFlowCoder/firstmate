@@ -19,13 +19,21 @@
 #   checks <count>                                    (how many check records follow)
 #   check <status> <conclusion> <started> <name>      (a CheckRun)
 #   check <state> CONTEXT <started> <name>            (a legacy commit status)
-# <started> is epoch seconds, or 0 when the forge reported no start time at all;
-# gh serialises it as startedAt for a legacy commit status as well as for a
-# check run. A reading whose check records do not number exactly <count> is
-# refused as unmeasurable rather than classified: a check name is the one field
-# a third-party check app controls, so a name carrying a newline would otherwise
-# render as an extra record, and the fold below is the point where a forged
-# record could hide a real one.
+# <started> is epoch seconds, or 0 when the forge reported no start time at all,
+# which the fold below treats as unorderable rather than as time zero; gh
+# serialises it as startedAt for a legacy commit status as well as for a check
+# run.
+#
+# A check name is the one field a third-party check app controls, and the fold
+# below is the point where a forged record could hide a real one, so every line
+# of the reading has to be a line this classifier rendered. Two guards together
+# give that, and only that: the declared <count>, which refuses a reading whose
+# check records do not number exactly <count>, and the refusal of any line the
+# classifier renders no form of - an unrecognised record and a blank one alike,
+# a blank line being the shape a name ending in a newline takes. So a newline
+# inside a value cannot add a record unnoticed. Neither guard authenticates the
+# records themselves: what a check app puts in a field it legitimately owns is
+# outside what counting lines can reach.
 #
 # A PR with no checks at all renders no check lines. That shape is not read as
 # green: an empty list cannot tell a repository with no PR CI apart from one
@@ -157,7 +165,7 @@ fm_pr_fitness_classify() {
   # which has no associative arrays, and .github/workflows/ci.yml holds this
   # tree to parsing under it.
   local records=0 i=0 j=0 keep=0
-  local -a chk_name chk_rank chk_order
+  local -a chk_name chk_rank chk_time chk_order
 
   FM_PR_FITNESS_VERDICT=
   FM_PR_FITNESS_REASON=
@@ -256,11 +264,28 @@ fm_pr_fitness_classify() {
         # One integer that orders a record by start time first and, at equal
         # start times, by severity. Ranks are 0, 1, and 2, so a factor of four
         # keeps the start time dominant; Bash arithmetic is 64-bit, which epoch
-        # seconds times four does not come near.
+        # seconds times four does not come near. The start time is kept beside
+        # it because 0 means "not reported", which the fold has to tell apart
+        # from an orderable value rather than sort as the earliest one.
+        chk_time[records]=$((10#$f3))
         chk_order[records]=$((10#$f3 * 4 + chk_rank[records]))
         records=$((records + 1))
         ;;
-      '') ;;
+      # A blank line is not a record this classifier renders, and skipping it
+      # would let a check name ending in a newline spend its extra line on
+      # nothing: the declared count would still balance and the forged name
+      # would pass unseen. It is refused like any other line the reading should
+      # not carry. A correctly terminated reading never reaches here, because
+      # the read loop's trailing-line guard ends the loop on the final newline
+      # rather than running the body with an empty record; and a blank line at
+      # the very end of the reading never arrives at all, since the caller reads
+      # gh through a command substitution, which strips it. So the empty record
+      # this refuses is one with a further record behind it.
+      '')
+        FM_PR_FITNESS_VERDICT=unmeasurable
+        FM_PR_FITNESS_REASON="the reading from GitHub carried an empty record"
+        return 0
+        ;;
       *)
         FM_PR_FITNESS_VERDICT=unmeasurable
         FM_PR_FITNESS_REASON="the reading from GitHub contained an unrecognised record"
@@ -310,15 +335,21 @@ fm_pr_fitness_classify() {
   #
   # Records of one name reporting the SAME start time carry no evidence of which
   # is current, so the worst of them survives: an ordering that cannot be
-  # measured refuses rather than picking the convenient record. An unnamed
-  # record is never folded in either direction, because nothing identifies it
-  # with any other record.
+  # measured refuses rather than picking the convenient record. A record the
+  # forge reported no start time for at all is unorderable in the same way and
+  # for the same reason, so it neither supersedes a sibling of its name nor is
+  # superseded by one, and its own severity always reaches the verdict. Reading
+  # a missing start time as time zero instead would sort it below every dated
+  # sibling, so a re-run whose startedAt arrived null could order a red away -
+  # failing OPEN, which is the one direction a merge guard cannot fail. An
+  # unnamed record is never folded in either direction either, because nothing
+  # identifies it with any other record.
   while [ "$i" -lt "$records" ]; do
     keep=1
-    if [ -n "${chk_name[$i]}" ]; then
+    if [ -n "${chk_name[$i]}" ] && [ "${chk_time[$i]}" -ne 0 ]; then
       j=0
       while [ "$j" -lt "$records" ]; do
-        if [ "${chk_name[$j]}" = "${chk_name[$i]}" ] \
+        if [ "${chk_name[$j]}" = "${chk_name[$i]}" ] && [ "${chk_time[$j]}" -ne 0 ] \
           && { [ "${chk_order[$j]}" -gt "${chk_order[$i]}" ] \
             || { [ "${chk_order[$j]}" -eq "${chk_order[$i]}" ] && [ "$j" -lt "$i" ]; }; }; then
           keep=0
