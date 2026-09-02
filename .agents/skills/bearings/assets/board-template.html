@@ -173,9 +173,11 @@ a { color: inherit; text-decoration: none; }
 
 /* stat strip */
 /* The 130px minimum is what decides how many figures share a row, so it stays;
-   min-width: 0 only stops the strip refusing to shrink as a flex item of the
-   main column. Each figure's number and label wrap anywhere rather than run out
-   of their card, so no reading can escape sideways under its neighbour. */
+   min-width: 0 is defence in depth in this file's house style, the same
+   declaration .bb-main, .bb-report and .bb-section carry, not a fix for any
+   minimum that binds the strip today. Each figure's number and label wrap
+   anywhere rather than run out of their card, so no reading can escape
+   sideways under its neighbour. */
 .bb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; min-width: 0; }
 .bb-stat {
   display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; min-width: 0;
