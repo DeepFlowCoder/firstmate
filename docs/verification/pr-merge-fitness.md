@@ -102,7 +102,7 @@ gh pr view 141762 --repo kubernetes/kubernetes --json statusCheckRollup \
 There is no `createdAt` key in that serialisation at all, so an expression reading it would have rendered `0` for every legacy status and left them all unorderable.
 
 A `CheckRun` that has not finished carries an empty `conclusion` rather than a null one, which is why the expression tests for the empty string rather than relying on jq's `//` operator.
-The start time is guarded by a `type == "string"` test rather than by `//`, because a missing one does not degrade quietly:
+The start time is guarded rather than left to `//`, because a start time the parser rejects does not degrade quietly - it aborts the whole expression:
 
 ```sh
 gh api repos/DeepFlowCoder/firstmate/commits/b02c7192173a21000fdf113008c45368f4726d57 -q '(.nope|fromdateiso8601)'
@@ -112,7 +112,33 @@ gh api repos/DeepFlowCoder/firstmate/commits/b02c7192173a21000fdf113008c45368f47
 strptime("%Y-%m-%dT%H:%M:%S%z") cannot be applied to: null
 ```
 
-One record without a start time would abort the whole expression and leave the gate with no reading at all, so the type test renders `0` for that record instead and leaves it unordered.
+A `type == "string"` test alone does not close that, because a missing timestamp does not reach the expression as null.
+`gh` serialises an unset GraphQL `DateTime` as the STRING `0001-01-01T00:00:00Z`, which passes any type test and then fails the same parse:
+
+```sh
+gh api repos/DeepFlowCoder/firstmate/commits/b02c7192173a21000fdf113008c45368f4726d57 \
+  -q '("0001-01-01T00:00:00Z"|fromdateiso8601)'
+```
+
+```
+strptime("%Y-%m-%dT%H:%M:%S%z") cannot be applied to: string ("0001-01-01T00:00:00Z")
+```
+
+That command exits 1, and inside the reading expression it would take the entire reading with it: `gh pr view` would fail, and the gate would refuse with "could not be read from GitHub", sending the reader to check auth or the network rather than to the one record that could not be dated.
+So the guard is a `try`/`catch` over any unparseable value rather than a null test, with a non-positive result clamped to `0`, which makes the classifier's unorderable-record path reachable against real `gh` output instead of theoretical:
+
+```sh
+gh api repos/DeepFlowCoder/firstmate/commits/b02c7192173a21000fdf113008c45368f4726d57 \
+  -q '("0001-01-01T00:00:00Z" | if type == "string" then (try fromdateiso8601 catch 0) else 0 end | if . > 0 then . else 0 end),
+      ("2026-09-01T15:45:45Z" | if type == "string" then (try fromdateiso8601 catch 0) else 0 end | if . > 0 then . else 0 end)'
+```
+
+```
+0
+1788277545
+```
+
+One record the parser cannot date now renders `0` and is left unordered, and every other record in the same reading still arrives.
 `gh`'s own `-q` evaluator supports both `fromdateiso8601` and the `as $started` binding the expression uses, which is what the readings above demonstrate.
 
 ## One check, several runs, and why no forge verdict answers it
@@ -325,7 +351,7 @@ The gate deliberately does not refuse on that, because a pull request legitimate
 bash tests/fm-pr-merge.test.sh
 ```
 
-The gate's own cases, out of the eighty-eight the file runs:
+The gate's own cases, out of the ninety the file runs:
 
 ```
 ok - fm-pr-merge refuses a PR with a failed check and changes no state
@@ -353,6 +379,8 @@ ok - fm-pr-merge merges when the current run of a twice-run check passed
 ok - fm-pr-merge still refuses when the current run of a twice-run check failed
 ok - fm-pr-merge refuses a check that ran once and failed, with nothing to supersede it
 ok - fm-pr-merge keeps the worst of two check records it cannot order
+ok - fm-pr-merge never orders away a check record the forge left undated
+ok - fm-pr-merge refuses a reading whose check name spilled an empty record
 ok - fm-pr-merge waits for a re-run in flight instead of merging on the run it replaced
 ok - fm-pr-merge refuses a reading carrying more check records than it declared
 ```
@@ -360,7 +388,7 @@ ok - fm-pr-merge refuses a reading carrying more check records than it declared
 Nineteen of the first twenty-one fail against the pre-gate script.
 The two that do not, the `SKIPPED`/`NEUTRAL` case and the no-PR-CI case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
 
-The six fold cases were measured against two deliberately wrong folds, because a fold pinned in one direction only cannot be told apart from a gate that has learned to ignore reds.
+Six of the eight fold cases - `superseded-red`, `superseded-green`, `lone-red`, `unorderable-records`, `rerun-running`, and `forged-check-record` - were measured against two deliberately wrong folds, because a fold pinned in one direction only cannot be told apart from a gate that has learned to ignore reds.
 Each variant was built by editing only the fold in a copy of `bin/fm-pr-fitness-lib.sh`, leaving the record format and every other check intact, so what fails is the fold and not the parse.
 
 With no fold at all, the suite exits 1 on the case the defect was reported for:
@@ -381,6 +409,17 @@ not ok - superseded-green: a check whose current run failed must still refuse: e
 bin/fm-pr-fitness-lib.sh          unorderable-records -> failing   rerun-running -> running
 best-result-wins variant          unorderable-records -> ok        rerun-running -> ok
 ```
+
+The other two fold cases, `undated-record` and `blank-record`, are regressions for two defects a review found in the first commit, so they were not measured against a variant built to be wrong.
+They were measured against the classifier as it actually stood before their fix, sourced from commit `9e7a870` and driven through `fm_pr_fitness_classify` directly:
+
+```
+9e7a870 fm-pr-fitness-lib.sh      undated-record -> ok        blank-record -> ok
+current fm-pr-fitness-lib.sh      undated-record -> failing   blank-record -> unmeasurable
+```
+
+Both readings were accepted before the fix, which is the defect in each case: the undated red was ordered away by its dated green, and the blank line was skipped so the declared count still balanced.
+Both refuse after it.
 
 The single-red case and the declared-count case guard the two paths the fold must not disturb: a check that ran once still refuses with nothing to supersede it, and a reading carrying more check records than it declared refuses as unmeasurable rather than letting a forged record supersede a real failing one.
 

@@ -350,7 +350,8 @@ if [ "$PROVIDER" = github ]; then
   "base \(.baseRefName) \(.headRefOid)",
   "checks \((.statusCheckRollup // []) | length)",
   (.statusCheckRollup[]? |
-    (if (.startedAt|type) == "string" then (.startedAt|fromdateiso8601) else 0 end) as $started |
+    (.startedAt | if type == "string" then (try fromdateiso8601 catch 0) else 0 end
+      | if . > 0 then . else 0 end) as $started |
     if .__typename == "CheckRun" then
       "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \($started) \(.name)"
     else

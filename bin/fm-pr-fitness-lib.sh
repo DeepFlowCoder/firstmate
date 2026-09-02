@@ -19,10 +19,11 @@
 #   checks <count>                                    (how many check records follow)
 #   check <status> <conclusion> <started> <name>      (a CheckRun)
 #   check <state> CONTEXT <started> <name>            (a legacy commit status)
-# <started> is epoch seconds, or 0 when the forge reported no start time at all,
-# which the fold below treats as unorderable rather than as time zero; gh
-# serialises it as startedAt for a legacy commit status as well as for a check
-# run.
+# <started> is epoch seconds, or 0 when the forge reported no start time this
+# reading could date - an absent one, and equally the placeholder string GitHub
+# serialises an unset timestamp as - which the fold below treats as unorderable
+# rather than as time zero; gh serialises it as startedAt for a legacy commit
+# status as well as for a check run.
 #
 # A check name is the one field a third-party check app controls, and the fold
 # below is the point where a forged record could hide a real one, so every line
@@ -336,14 +337,15 @@ fm_pr_fitness_classify() {
   # Records of one name reporting the SAME start time carry no evidence of which
   # is current, so the worst of them survives: an ordering that cannot be
   # measured refuses rather than picking the convenient record. A record the
-  # forge reported no start time for at all is unorderable in the same way and
-  # for the same reason, so it neither supersedes a sibling of its name nor is
+  # renderer could not date - the forge reported no start time for it, or
+  # reported one no date parse accepts - is unorderable in the same way and for
+  # the same reason, so it neither supersedes a sibling of its name nor is
   # superseded by one, and its own severity always reaches the verdict. Reading
-  # a missing start time as time zero instead would sort it below every dated
-  # sibling, so a re-run whose startedAt arrived null could order a red away -
-  # failing OPEN, which is the one direction a merge guard cannot fail. An
-  # unnamed record is never folded in either direction either, because nothing
-  # identifies it with any other record.
+  # an undated record as time zero instead would sort it below every dated
+  # sibling, so a re-run GitHub reported no start time for could order a red
+  # away - failing OPEN, which is the one direction a merge guard cannot fail.
+  # An unnamed record is never folded in either direction either, because
+  # nothing identifies it with any other record.
   while [ "$i" -lt "$records" ]; do
     keep=1
     if [ -n "${chk_name[$i]}" ] && [ "${chk_time[$i]}" -ne 0 ]; then
