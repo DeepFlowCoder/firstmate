@@ -144,7 +144,8 @@ case " $* " in
   *statusCheckRollup*)
     printf '%s\n' 'pr OPEN MERGEABLE CLEAN' \
       'base main 0123456789abcdef0123456789abcdef01234567' \
-      'check COMPLETED SUCCESS Lint'
+      'checks 1' \
+      'check COMPLETED SUCCESS 1788277535 Lint'
     ;;
   *compare*) printf '%s\n' 0 ;;
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;

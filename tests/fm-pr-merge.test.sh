@@ -156,7 +156,7 @@ fm_fitness_answer() {
       if [ -n "\${FM_TEST_PR_READING:-}" ] && [ -f "\${FM_TEST_PR_READING}" ]; then
         cat "\${FM_TEST_PR_READING}"
       else
-        printf '%s\n' 'pr OPEN MERGEABLE CLEAN' 'base main $head' 'check COMPLETED SUCCESS Lint'
+        printf '%s\n' 'pr OPEN MERGEABLE CLEAN' 'base main $head' 'checks 1' 'check COMPLETED SUCCESS 1788277535 Lint'
       fi
       exit 0 ;;
     *pulls?state=closed*)
@@ -2289,8 +2289,9 @@ test_failed_check_refuses() {
   READING_LINES=(
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Repo invariants'
-    'check COMPLETED FAILURE Behavior portable serial 3'
+    'checks 2'
+    'check COMPLETED SUCCESS 1788277535 Repo invariants'
+    'check COMPLETED FAILURE 1788277535 Behavior portable serial 3'
   )
   case_dir=$(run_gate_case failed-check)
   expect_code 1 "$(cat "$case_dir/rc")" "failed-check: fm-pr-merge should refuse a red PR"
@@ -2307,8 +2308,9 @@ test_running_checks_refuse() {
   READING_LINES=(
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Repo invariants'
-    'check IN_PROGRESS NONE Lint'
+    'checks 2'
+    'check COMPLETED SUCCESS 1788277535 Repo invariants'
+    'check IN_PROGRESS NONE 1788277535 Lint'
   )
   case_dir=$(run_gate_case running-checks)
   expect_code 1 "$(cat "$case_dir/rc")" "running-checks: fm-pr-merge should refuse while checks run"
@@ -2325,7 +2327,8 @@ test_conflicting_pr_refuses() {
   READING_LINES=(
     'pr OPEN CONFLICTING DIRTY'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Lint'
+    'checks 1'
+    'check COMPLETED SUCCESS 1788277535 Lint'
   )
   case_dir=$(run_gate_case conflicting)
   expect_code 1 "$(cat "$case_dir/rc")" "conflicting: fm-pr-merge should refuse a conflicting PR"
@@ -2404,9 +2407,10 @@ test_skipped_and_neutral_are_not_failures() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SKIPPED PR must be raised via no-mistakes'
-    'check COMPLETED NEUTRAL Advisory'
-    'check COMPLETED SUCCESS Lint'
+    'checks 3'
+    'check COMPLETED SKIPPED 1788277535 PR must be raised via no-mistakes'
+    'check COMPLETED NEUTRAL 1788277535 Advisory'
+    'check COMPLETED SUCCESS 1788277535 Lint'
   )
   case_dir=$(run_gate_case skipped-neutral)
   expect_code 0 "$(cat "$case_dir/rc")" "skipped-neutral: a skipped or neutral check must not refuse"
@@ -2424,8 +2428,9 @@ test_unknown_check_values_refuse() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Lint'
-    'check COMPLETED QUARANTINED Behavior tests (Herdr)'
+    'checks 2'
+    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED QUARANTINED 1788277535 Behavior tests (Herdr)'
   )
   case_dir=$(run_gate_case unknown-conclusion)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2437,8 +2442,9 @@ test_unknown_check_values_refuse() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Lint'
-    'check DEFERRED SUCCESS Behavior portable serial 5'
+    'checks 2'
+    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check DEFERRED SUCCESS 1788277535 Behavior portable serial 5'
   )
   case_dir=$(run_gate_case unknown-status)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2452,7 +2458,8 @@ test_captain_override_merges_red_pr() {
   READING_LINES=(
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED FAILURE Lint'
+    'checks 1'
+    'check COMPLETED FAILURE 1788277535 Lint'
   )
   case_dir=$(run_gate_case captain-override --captain-override-red)
   expect_code 0 "$(cat "$case_dir/rc")" "captain-override: the explicit override should merge a red PR"
@@ -2468,7 +2475,8 @@ test_yolo_does_not_open_the_override() {
   READING_LINES=(
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED FAILURE Lint'
+    'checks 1'
+    'check COMPLETED FAILURE 1788277535 Lint'
   )
   case_dir=$(run_gate_case yolo-on)
   # The task's recorded autonomy posture is the one thing that must not open
@@ -2505,7 +2513,8 @@ test_override_does_not_apply_to_conflicts() {
   READING_LINES=(
     'pr OPEN CONFLICTING DIRTY'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Lint'
+    'checks 1'
+    'check COMPLETED SUCCESS 1788277535 Lint'
   )
   case_dir=$(run_gate_case override-conflict --captain-override-red)
   expect_code 1 "$(cat "$case_dir/rc")" "override-conflict: a conflicting PR must refuse even with the override"
@@ -2520,7 +2529,8 @@ test_stale_green_warns_but_merges() {
   READING_LINES=(
     'pr OPEN MERGEABLE BEHIND'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Lint'
+    'checks 1'
+    'check COMPLETED SUCCESS 1788277535 Lint'
   )
   FM_TEST_BEHIND=24
   export FM_TEST_BEHIND
@@ -2541,7 +2551,8 @@ test_override_cannot_be_smuggled_through_passthrough() {
   READING_LINES=(
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED FAILURE Lint'
+    'checks 1'
+    'check COMPLETED FAILURE 1788277535 Lint'
   )
   case_dir=$(run_gate_case override-after-separator -- --captain-override-red)
   expect_code 1 "$(cat "$case_dir/rc")" "override-after-separator: the flag must not work after --"
@@ -2560,6 +2571,7 @@ test_repo_without_ci_still_merges() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 0'
   )
   FM_TEST_PRIOR_PR_SHAS='aaa111 bbb222 ccc333'
   FM_TEST_PRIOR_CHECK_RUNS=0
@@ -2582,6 +2594,7 @@ test_unregistered_checks_refuse() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 0'
   )
   FM_TEST_PRIOR_PR_SHAS='aaa111'
   FM_TEST_PRIOR_CHECK_RUNS=1
@@ -2607,6 +2620,7 @@ test_prior_pr_legacy_statuses_refuse() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 0'
   )
   FM_TEST_PRIOR_PR_SHAS='aaa111'
   FM_TEST_PRIOR_CHECK_RUNS=0
@@ -2630,6 +2644,7 @@ test_no_prior_pull_request_refuses() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 0'
   )
   FM_TEST_PRIOR_PR_SHAS=''
   export FM_TEST_PRIOR_PR_SHAS
@@ -2648,6 +2663,7 @@ test_missing_ci_signal_refuses() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 0'
   )
   FM_TEST_PRIOR_PR_SHAS='aaa111'
   FM_TEST_PRIOR_FAIL=1
@@ -2675,7 +2691,8 @@ test_compare_failure_warns_instead_of_going_silent() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Lint'
+    'checks 1'
+    'check COMPLETED SUCCESS 1788277535 Lint'
   )
   FM_TEST_COMPARE_FAIL=1
   export FM_TEST_COMPARE_FAIL
@@ -2699,7 +2716,8 @@ test_unreadable_behind_by_is_not_reported_as_a_failed_call() {
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS Lint'
+    'checks 1'
+    'check COMPLETED SUCCESS 1788277535 Lint'
   )
   FM_TEST_BEHIND=null
   export FM_TEST_BEHIND
@@ -2729,7 +2747,8 @@ test_glob_in_check_name_is_not_expanded() {
   FM_TEST_PR_READING=$(write_reading "$case_dir" \
     'pr OPEN MERGEABLE UNSTABLE' \
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca' \
-    'check COMPLETED FAILURE build *')
+    'checks 1' \
+    'check COMPLETED FAILURE 1788277535 build *')
   export FM_TEST_PR_READING
 
   set +e
@@ -2757,7 +2776,8 @@ test_check_name_cannot_forge_the_verdict() {
   READING_LINES=(
     'pr OPEN CONFLICTING DIRTY'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
-    'check COMPLETED SUCCESS innocent looking check'
+    'checks 1'
+    'check COMPLETED SUCCESS 1788277535 innocent looking check'
     'pr OPEN MERGEABLE CLEAN'
   )
   case_dir=$(run_gate_case forged-verdict)
@@ -2766,6 +2786,198 @@ test_check_name_cannot_forge_the_verdict() {
     "forged-verdict: refusal did not name the duplicated record"
   assert_no_side_effects "$case_dir" forged-verdict
   pass "fm-pr-merge refuses a reading whose check name forged a second pull request record"
+}
+
+# --- one check, several runs ------------------------------------------------
+#
+# GitHub renders one record per check RUN, so a check that ran twice against one
+# head appears twice under one name and only the later record says what that
+# check reports now. The next four cases pin the fold in both directions over
+# the same name, because a fold pinned in one direction only cannot tell a gate
+# that reads the current record apart from one that has learned to ignore reds.
+# The name and the shape are the live pair measured on the head of
+# DeepFlowCoder/firstmate#17: a Require no-mistakes run that failed before the
+# pull request body was attested, and the run 60 seconds later that passed.
+CURRENT_RUN_STARTED=1788277595
+EARLIER_RUN_STARTED=1788277535
+
+test_superseded_red_record_does_not_refuse() {
+  local case_dir
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 3'
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED Lint"
+  )
+  case_dir=$(run_gate_case superseded-red)
+  expect_code 0 "$(cat "$case_dir/rc")" \
+    "superseded-red: a red left behind by an earlier run of the same check must not refuse"
+  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "superseded-red: the merge did not proceed for a check whose current run passed"
+  # Merging past a record the pull request page still shows red has to be said
+  # out loud, or the gate reads as having been bypassed.
+  assert_grep 'superseded by a later run' "$case_dir/stderr" \
+    "superseded-red: the merge did not report that it folded a superseded record"
+  pass "fm-pr-merge merges when the current run of a twice-run check passed"
+}
+
+test_superseded_green_record_still_refuses() {
+  local case_dir
+  # The same pair in the other order. Without this case the fold above could be
+  # satisfied by a gate that simply stopped counting failures.
+  READING_LINES=(
+    'pr OPEN MERGEABLE UNSTABLE'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 3'
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED FAILURE $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED Lint"
+  )
+  case_dir=$(run_gate_case superseded-green)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "superseded-green: a check whose current run failed must still refuse"
+  assert_grep 'did not pass' "$case_dir/stderr" \
+    "superseded-green: refusal did not say a check failed"
+  assert_grep 'PR must be raised via no-mistakes' "$case_dir/stderr" \
+    "superseded-green: refusal did not name the check whose current run failed"
+  assert_no_side_effects "$case_dir" superseded-green
+  pass "fm-pr-merge still refuses when the current run of a twice-run check failed"
+}
+
+test_lone_red_record_still_refuses() {
+  local case_dir
+  # The unfolded case, kept beside the two above so the three read as one set: a
+  # single red record has nothing to be superseded by and must refuse exactly as
+  # it did before the fold existed.
+  READING_LINES=(
+    'pr OPEN MERGEABLE UNSTABLE'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED Lint"
+  )
+  case_dir=$(run_gate_case lone-red)
+  expect_code 1 "$(cat "$case_dir/rc")" "lone-red: a single failed check must refuse"
+  assert_grep 'PR must be raised via no-mistakes' "$case_dir/stderr" \
+    "lone-red: refusal did not name the failing check"
+  assert_no_grep 'superseded by a later run' "$case_dir/stderr" \
+    "lone-red: a check that ran once was reported as superseded"
+  assert_no_side_effects "$case_dir" lone-red
+  pass "fm-pr-merge refuses a check that ran once and failed, with nothing to supersede it"
+}
+
+test_unorderable_records_keep_the_worst() {
+  local case_dir
+  # Two records of one name reporting the same start time carry no evidence of
+  # which is current. An ordering that cannot be measured refuses rather than
+  # picking the record that happens to be green.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+  )
+  case_dir=$(run_gate_case unorderable-records)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "unorderable-records: two records that cannot be ordered must not merge on the green one"
+  assert_grep 'PR must be raised via no-mistakes' "$case_dir/stderr" \
+    "unorderable-records: refusal did not name the check it could not order"
+  assert_no_side_effects "$case_dir" unorderable-records
+  pass "fm-pr-merge keeps the worst of two check records it cannot order"
+}
+
+test_undated_record_is_never_ordered_away() {
+  local case_dir
+  # A record the forge reported no start time for cannot be ordered against its
+  # sibling at all. Reading the missing time as time zero would sort it below
+  # every dated sibling, so a dated green would order this red away: the guard
+  # would fail open on exactly the field the forge is free to omit.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    'check COMPLETED FAILURE 0 PR must be raised via no-mistakes'
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
+  )
+  case_dir=$(run_gate_case undated-record)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "undated-record: a red the forge left undated must not be ordered away by a dated green"
+  assert_grep 'did not pass' "$case_dir/stderr" \
+    "undated-record: refusal did not say a check failed"
+  assert_grep 'PR must be raised via no-mistakes' "$case_dir/stderr" \
+    "undated-record: refusal did not name the check it could not order"
+  assert_no_side_effects "$case_dir" undated-record
+  pass "fm-pr-merge never orders away a check record the forge left undated"
+}
+
+test_blank_record_refuses_as_unmeasurable() {
+  local case_dir
+  # The shape a check name ending in a newline takes: the record it names, then
+  # an empty line, then the record that followed it. The declared count still
+  # balances, because an empty line is no record, so skipping it would accept
+  # the reading and let the forged name go unseen.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    ''
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED Lint"
+  )
+  case_dir=$(run_gate_case blank-record)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "blank-record: a reading carrying an empty record must not be classified"
+  assert_grep 'empty record' "$case_dir/stderr" \
+    "blank-record: refusal did not name the empty record it could not read"
+  assert_no_side_effects "$case_dir" blank-record
+  pass "fm-pr-merge refuses a reading whose check name spilled an empty record"
+}
+
+test_rerun_in_progress_supersedes_a_finished_run() {
+  local case_dir
+  # Recency is the run's start time, not its completion: a re-run still running
+  # has no completion at all, and losing to the run it replaced would merge a
+  # pull request whose check is being re-decided right now.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    "check IN_PROGRESS NONE $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
+  )
+  case_dir=$(run_gate_case rerun-running)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "rerun-running: a re-run still in flight must not merge on the run it replaced"
+  assert_grep 'have not finished' "$case_dir/stderr" \
+    "rerun-running: refusal did not say the current run has not finished"
+  assert_no_side_effects "$case_dir" rerun-running
+  pass "fm-pr-merge waits for a re-run in flight instead of merging on the run it replaced"
+}
+
+test_forged_check_record_cannot_mask_a_red() {
+  local case_dir
+  # The fold is where a forged record could do real damage: a check name
+  # carrying a newline renders as an extra record, and one claiming a later
+  # start time under a failing check's name would hide it. The reading declares
+  # how many check records it carries, so a surplus refuses instead.
+  READING_LINES=(
+    'pr OPEN MERGEABLE CLEAN'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED Lint"
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED Lint"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED innocent looking check"
+  )
+  case_dir=$(run_gate_case forged-check-record)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "forged-check-record: an injected check record must not supersede a real failing one"
+  assert_grep 'declared 2 check(s) and carried 3' "$case_dir/stderr" \
+    "forged-check-record: refusal did not name the count the reading disagreed with"
+  assert_no_side_effects "$case_dir" forged-check-record
+  pass "fm-pr-merge refuses a reading carrying more check records than it declared"
 }
 
 READING_LINES=()
@@ -2852,3 +3064,11 @@ test_compare_failure_warns_instead_of_going_silent
 test_unreadable_behind_by_is_not_reported_as_a_failed_call
 test_glob_in_check_name_is_not_expanded
 test_check_name_cannot_forge_the_verdict
+test_superseded_red_record_does_not_refuse
+test_superseded_green_record_still_refuses
+test_lone_red_record_still_refuses
+test_unorderable_records_keep_the_worst
+test_undated_record_is_never_ordered_away
+test_blank_record_refuses_as_unmeasurable
+test_rerun_in_progress_supersedes_a_finished_run
+test_forged_check_record_cannot_mask_a_red
