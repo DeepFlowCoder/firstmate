@@ -48,10 +48,21 @@
   --texture-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.045'/%3E%3C/svg%3E");
   --focus-ring: 0 0 0 3px var(--gold-300);
   --container-app: 1180px;
+  /* One owner for the sticky masthead's height, because two things must agree
+     on it: the bar itself, and the scroll padding that keeps the bar from
+     landing on whatever was just scrolled to. */
+  --nav-h: 64px;
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
+/* The masthead is sticky, so anything scrolled to the top of the viewport -
+   an anchor jump, a scrollIntoView, a browser restoring a scroll position -
+   arrives underneath it and is unreadable. Reserving the bar's own height plus
+   its border as scroll padding lands that content just below the bar instead.
+   The stat strip is what exposed this: on a phone it stacks into three rows,
+   so its labels are the ones a scroll parks under the bar. */
+html { scroll-padding-top: calc(var(--nav-h) + 1px); }
 /* Every band the renderer can switch off is a flex or grid container, and an
    explicit display beats the user agent's [hidden] rule. Without this, an empty
    Captain's Call still shows its pager and an alarm-free board still shows an
@@ -129,7 +140,7 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--border-default);
 }
 .bb-nav__inner {
-  max-width: var(--container-app); margin: 0 auto; padding: 0 28px; height: 64px;
+  max-width: var(--container-app); margin: 0 auto; padding: 0 28px; height: var(--nav-h);
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
 }
 .bb-brand { display: inline-flex; align-items: center; gap: 12px; min-width: 0; }
@@ -161,15 +172,21 @@ a { color: inherit; text-decoration: none; }
 .bb-report__sub { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-muted); overflow-wrap: anywhere; }
 
 /* stat strip */
-.bb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+/* The 130px minimum is what decides how many figures share a row, so it stays;
+   min-width: 0 is defence in depth in this file's house style, the same
+   declaration .bb-main, .bb-report and .bb-section carry, not a fix for any
+   minimum that binds the strip today. Each figure's number and label wrap
+   anywhere rather than run out of their card, so no reading can escape
+   sideways under its neighbour. */
+.bb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; min-width: 0; }
 .bb-stat {
   display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; min-width: 0;
   background: var(--surface-card-warm); border: 1px solid var(--border-soft); border-radius: var(--radius-md);
 }
 .bb-stat--call { background: var(--rust-050); border: 2px solid var(--rust-500); }
-.bb-stat__num { font-family: var(--font-mono); font-size: var(--fs-h3); font-weight: 600; line-height: 1; color: var(--text-strong); }
+.bb-stat__num { font-family: var(--font-mono); font-size: var(--fs-h3); font-weight: 600; line-height: 1; color: var(--text-strong); overflow-wrap: anywhere; }
 .bb-stat--call .bb-stat__num { color: var(--rust-600); }
-.bb-stat__label { font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
+.bb-stat__label { font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); overflow-wrap: anywhere; }
 
 .bb-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .bb-section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
