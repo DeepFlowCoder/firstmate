@@ -130,14 +130,28 @@ So the guard is a `try`/`catch` over any unparseable value rather than a null te
 ```sh
 gh api repos/DeepFlowCoder/firstmate/commits/b02c7192173a21000fdf113008c45368f4726d57 \
   -q '("0001-01-01T00:00:00Z" | if type == "string" then (try fromdateiso8601 catch 0) else 0 end | if . > 0 then . else 0 end),
+      ("1969-12-31T23:00:00Z" | if type == "string" then (try fromdateiso8601 catch 0) else 0 end | if . > 0 then . else 0 end),
       ("2026-09-01T15:45:45Z" | if type == "string" then (try fromdateiso8601 catch 0) else 0 end | if . > 0 then . else 0 end)'
 ```
 
 ```
 0
+0
 1788277545
 ```
 
+The middle input is why the clamp is not redundant with the `try`/`catch`: a pre-epoch timestamp parses without raising anything at all, to a negative number.
+
+```sh
+gh api repos/DeepFlowCoder/firstmate/commits/b02c7192173a21000fdf113008c45368f4726d57 \
+  -q '("1969-12-31T23:00:00Z"|fromdateiso8601)'
+```
+
+```
+-3600
+```
+
+Unclamped, that would render as a negative start time, which the classifier refuses as unusable rather than reading as undated, so the clamp is what sends an unparseable value and an out-of-range one down the same unorderable path.
 One record the parser cannot date now renders `0` and is left unordered, and every other record in the same reading still arrives.
 `gh`'s own `-q` evaluator supports both `fromdateiso8601` and the `as $started` binding the expression uses, which is what the readings above demonstrate.
 
@@ -219,7 +233,8 @@ No `required_status_checks` rule exists, so a gate that took `mergeStateStatus` 
 That is the opposite of the guarantee this record supports, and it would apply to `DeepFlowCoder/dotfiles` too, which the branch-protection measurement further down shows is equally unprotected.
 So the fold is computed from the records, and `bin/fm-pr-merge.sh`'s header records that decision at the reading it belongs to.
 
-The recency key is the run's own start time, rendered as epoch seconds, because the rollup is not returned in chronological order - the reading above shows the superseded `FAILURE` first and a later-completing `Lint` between the pair.
+The recency key is the run's own start time, rendered as epoch seconds, because the rollup is not returned in chronological order.
+The `kubernetes/kubernetes` reading recorded above shows that directly: its start times run 1788289214, 1788290505, 1788288716, 1788288745, 1788288719, so the third record starts earlier than the second and the reading's own order carries no chronology to read.
 Start time rather than completion time, so a re-run still in progress, which has no completion at all, supersedes the finished run it replaced instead of losing to it.
 Records of one name reporting the same start time are left unordered and the worst of them survives.
 
@@ -388,7 +403,7 @@ ok - fm-pr-merge refuses a reading carrying more check records than it declared
 Nineteen of the first twenty-one fail against the pre-gate script.
 The two that do not, the `SKIPPED`/`NEUTRAL` case and the no-PR-CI case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
 
-Six of the eight fold cases - `superseded-red`, `superseded-green`, `lone-red`, `unorderable-records`, `rerun-running`, and `forged-check-record` - were measured against two deliberately wrong folds, because a fold pinned in one direction only cannot be told apart from a gate that has learned to ignore reds.
+Four of the eight fold cases - `superseded-red`, `superseded-green`, `unorderable-records`, and `rerun-running` - were measured against two deliberately wrong folds, because a fold pinned in one direction only cannot be told apart from a gate that has learned to ignore reds.
 Each variant was built by editing only the fold in a copy of `bin/fm-pr-fitness-lib.sh`, leaving the record format and every other check intact, so what fails is the fold and not the parse.
 
 With no fold at all, the suite exits 1 on the case the defect was reported for:
@@ -403,14 +418,14 @@ With a fold that keeps the best result per name and ignores start time - the sha
 not ok - superseded-green: a check whose current run failed must still refuse: expected exit 1, got 0
 ```
 
-`tests/fm-pr-merge.test.sh` stops at its first failure, so the two remaining ordering cases were measured against that same wrong fold through `fm_pr_fitness_classify` directly:
+`tests/fm-pr-merge.test.sh` stops at its first failure, and each variant run above exits on the first fold case it reaches, so the other two of those four were measured against the same wrong fold through `fm_pr_fitness_classify` directly:
 
 ```
 bin/fm-pr-fitness-lib.sh          unorderable-records -> failing   rerun-running -> running
 best-result-wins variant          unorderable-records -> ok        rerun-running -> ok
 ```
 
-The other two fold cases, `undated-record` and `blank-record`, are regressions for two defects a review found in the first commit, so they were not measured against a variant built to be wrong.
+Two more fold cases, `undated-record` and `blank-record`, are regressions for two defects a review found in the first commit, so they were not measured against a variant built to be wrong.
 They were measured against the classifier as it actually stood before their fix, sourced from commit `9e7a870` and driven through `fm_pr_fitness_classify` directly:
 
 ```
