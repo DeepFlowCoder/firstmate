@@ -24,7 +24,8 @@
 # resend is appropriate (unresolvable target, an endpoint that cannot be
 # locked and revalidated or that retired or changed, an unwritable record, a
 # failed or lost remote transport) or a decision-close append failed after
-# delivery (the error then carries the exact manual close). The remote enqueue
+# delivery (the error then carries the remedy: the exact manual close, or the
+# intake's own instructions when it refused this caller). The remote enqueue
 # is idempotent: the remote leg deduplicates an exact re-run of the same
 # request onto the existing record (bin/fm-task-inbox-lib.sh), so after a lost
 # transport (ssh exit 255, completion unknown) fm-send retries the same leg
