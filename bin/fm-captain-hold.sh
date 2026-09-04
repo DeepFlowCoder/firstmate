@@ -81,6 +81,44 @@
 # and pipe them here. It must never map keys to tasks, build decision records,
 # choose a close mode beyond what its card declared, or close anything itself.
 #
+# WHO MAY WRITE A RESOLUTION.
+# `answer` and `answers` are the only paths that record what the captain said,
+# and both refuse to run outside this home's firstmate side. A crewmate reached
+# `answer --release` once carrying a decision the captain never gave: its harness
+# offered a question dialog, the dialog returned its own recommended default with
+# no human input at all, and nothing but a supervisor's glance at the pane stopped
+# the close. A captain call closed wrongly leaves review forever, which is exactly
+# what the hold mechanism exists to prevent, so this is a capability guard rather
+# than a prose rule the worker would have to remember.
+#
+# Three proofs of the firstmate side, any one of which admits the caller:
+#   1. This process descends from the harness that holds the home session lock
+#      (bin/fm-session-lock-lib.sh owns that identity). That is firstmate's own
+#      turn, including the close `fm-send --resolve-key` runs as its child, and a
+#      secondmate answering in its own home.
+#   2. An ancestor process is this code root's own bin/fm-procevent.sh: the
+#      detached capture runner that feeds a bound source's captured answers. It
+#      leads its own process group precisely so it outlives the turn that armed
+#      it, so proof 1 can never see it, and a crewmate never has it as an
+#      ancestor. This keeps the captain's own answers from a bound review board
+#      closing their calls exactly as before.
+#   3. FM_CAPTAIN_ANSWER_BYPASS=1, the test-harness escape hatch that tests/lib.sh
+#      exports the same way it exports FM_GATE_REFUSE_BYPASS, so firstmate's own
+#      suite drives the real intake. The dedicated cases strip it to prove the
+#      refusal is real. The threat modelled here, as in bin/fm-gate-refuse-lib.sh,
+#      is a good-faith worker taking a path its harness offered - never one that
+#      sources firstmate's test helpers to forge an exemption.
+# Everything else refuses: no lock, an unreadable lock, a lock held by another
+# session, an ancestry that cannot be read. A guard that admits the caller when it
+# cannot tell would not have stopped the incident it exists for.
+# The refusal exits 4 and names the legitimate path, because the worker that hits
+# it needs to know what to do instead of being told only that it may not.
+# When the guard could not READ the ancestry at all, rather than reading it and
+# finding no proof, it also leaves one keyed wake record before refusing. That
+# case is the only one whose likely victim is a captain answer the captain really
+# gave, arriving through a feed whose every channel is silenced, and a refusal
+# nobody can hear loses his word exactly as surely as a fabricated close does.
+#
 # `bind`, `unbind`, and `binding` record that a captured-answer SOURCE feeds
 # this intake, for any channel whose answers arrive detached from their origin
 # (a process-event source id, for example). The binding is a private record
@@ -140,6 +178,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 CAPTAIN_META_LOCK=
 CAPTAIN_META_LOCK_HELD=0
@@ -162,6 +203,83 @@ usage() {
 fail() {
   printf 'fm-captain-hold: %s\n' "$*" >&2
   exit 1
+}
+
+# The exit code every resolution refusal uses, distinct from the ordinary
+# failures above so a caller or test can recognize "the crewmate guard fired"
+# rather than a usage error or a skipped key.
+FM_CAPTAIN_ANSWER_REFUSE_EXIT=4
+
+# Set when the walk below could not READ this process's ancestry, as opposed to
+# reading it and finding no runner. Both refuse, and both must: a guard that
+# cannot tell has to say no. But only the first one means the guard never got to
+# decide, and that is the one shape whose most likely victim is a captain answer
+# the captain really gave - see the durable record in require_firstmate_side.
+CAPTAIN_ANSWER_CONTEXT_UNREADABLE=0
+
+# True when an ancestor process is this code root's own process-event runner.
+# Walks parents only: the runner is always a strict ancestor of the intake it
+# pipes into, and a bounded walk keeps an unreadable ancestry a refusal rather
+# than a hang. No ps failure can ever admit a caller; it only ends the walk, and
+# records that the answer this proof gave is "unknown" rather than "no". Reaching
+# pid 1, or exhausting the bounded walk, IS a real answer: the runner is a near
+# ancestor of the intake it pipes into, never a distant one.
+procevent_runner_ancestor() {
+  local pid=$$ parent args runner="$SCRIPT_DIR/fm-procevent.sh"
+  for _ in 1 2 3 4 5 6 7 8; do
+    parent=$(ps -o ppid= -p "$pid" 2>/dev/null) \
+      || { CAPTAIN_ANSWER_CONTEXT_UNREADABLE=1; return 1; }
+    pid=$(printf '%s' "$parent" | tr -d '[:space:]')
+    case "$pid" in
+      ''|*[!0-9]*) CAPTAIN_ANSWER_CONTEXT_UNREADABLE=1; return 1 ;;
+    esac
+    [ "$pid" -gt 1 ] || return 1
+    args=$(ps -o args= -p "$pid" 2>/dev/null) \
+      || { CAPTAIN_ANSWER_CONTEXT_UNREADABLE=1; return 1; }
+    case " $args " in
+      *" $runner "*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# One durable, keyed wake record saying the guard could not determine the
+# context. It exists because the refusal is otherwise completely inaudible on the
+# one path that carries the captain's REAL answers: bin/fm-procevent.sh's capture
+# runner detaches with stdout and stderr on /dev/null and pipes into this intake
+# silenced too, so a refusal there loses the captain's word with no trace at all -
+# the same loss, from the other side, that this whole guard exists to prevent.
+# The refusal itself is NOT softened; only made audible. The channel and the
+# keyed shape are queue_captain_note's in bin/fm-procevent.sh: best effort, and
+# keyed so a detection that keeps failing collapses to the one record the wake
+# queue's own dedupe already presents, instead of flooding it.
+record_undecidable_refusal() {
+  fm_wake_append check captain-answer-context-unreadable \
+    'check: a captain call resolution was refused because this process ancestry could not be read, so no caller could be proved to be firstmate. A real captain answer fed by the detached capture runner reaches this same refusal unheard, so re-run the close from the session holding this home lock and confirm nothing was lost.' \
+    >/dev/null 2>&1 || return 1
+}
+
+# Refuse to record a captain call's resolution from anywhere but this home's
+# firstmate side. See "WHO MAY WRITE A RESOLUTION" in the header for the three
+# proofs and why anything undecidable refuses.
+require_firstmate_side() {
+  if [ "${FM_CAPTAIN_ANSWER_BYPASS:-}" = 1 ]; then return 0; fi
+  if fm_session_lock_owned_by_self "$STATE"; then return 0; fi
+  if procevent_runner_ancestor; then return 0; fi
+  if [ "$CAPTAIN_ANSWER_CONTEXT_UNREADABLE" = 1 ]; then
+    record_undecidable_refusal || true
+  fi
+  {
+    printf 'fm-captain-hold: refusing to close a captain call from outside firstmate.\n'
+    printf 'What the captain decides is closed by the captain words, recorded by firstmate in the session that holds this home lock. Nothing here can stand in for that.\n'
+    printf '\n'
+    printf 'If you need a decision from the captain, append ONE line to your status file and stop:\n'
+    printf '  needs-decision: <the question, with the options you see>\n'
+    printf 'Firstmate takes the question to the captain and brings the answer back to you.\n'
+    printf '\n'
+    printf 'Do not answer it yourself, and never route the question through the question dialog your own harness offers: an answer captured in your pane reaches no durable record, dies with the session, and can be a default that nobody chose.\n'
+  } >&2
+  exit "$FM_CAPTAIN_ANSWER_REFUSE_EXIT"
 }
 
 validate_slug() {  # <label> <value>
@@ -477,6 +595,7 @@ close_answered() {  # <task-id> <release-0-or-1>
 
 command_answer() {
   local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode
+  require_firstmate_side
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -658,6 +777,7 @@ sanitize_field() {  # <text>
 command_answers() {
   local origin='' source='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
   local recorded_digest recorded_mode tmp err closed=0 skipped=0 reason release_flag tab=$'\t'
+  require_firstmate_side
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --source) shift; source=${1:-} ;;
