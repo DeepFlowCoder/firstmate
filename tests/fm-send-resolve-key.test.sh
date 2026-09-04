@@ -26,6 +26,10 @@
 #      message crosses the stubbed ssh transport while the close is the same
 #      local ledger append; a failed transport closes nothing.
 #   7. Flag misuse (--key, empty message, explicit backend target) refuses.
+#   8. A key that resolves to a captain-held task closes through the one
+#      keyed-answer intake instead, and that intake's crewmate refusal reaches
+#      the answerer verbatim rather than being swallowed behind the ordinary
+#      close-failure line, which would name the very command just refused.
 #
 # Stability: this suite measured green in the task worktree and in CI, which is
 # what was measured and not a claim that it cannot flake anywhere.
@@ -593,6 +597,131 @@ test_flag_misuse_refuses() {
   pass "fm-send --resolve-key: --key, empty message, explicit targets, and malformed keys refuse loudly"
 }
 
+# --- the captain-held leg of an answerer close ------------------------------
+#
+# A key that is no longer an open status line can still be answerable through
+# the durable captain-held task it was transferred to, and fm-send closes that
+# one through bin/fm-captain-hold.sh's single keyed-answer intake. The intake
+# refuses any caller that is not this home's firstmate ("WHO MAY WRITE A
+# RESOLUTION" in that script), and its refusal is the one intake message written
+# to be read by the caller: it names the status line the worker must write
+# instead. These cases drive the real intake against the real task ledger.
+TASKS_AXI_BIN=$(command -v tasks-axi || true)
+
+# seed_hold_home <name> <target-id> <hold-id>: build a home whose target task has
+# NO open status decision, so the key can only resolve through the captain-held
+# ledger, and set HOLD_HOME to it. This does real ledger work, so it deliberately
+# is not an echoing helper: a fail() here must stop the suite rather than die in
+# a command-substitution subshell and leave an empty home behind.
+HOLD_HOME=
+seed_hold_home() {
+  local name=$1 id=$2 hold=$3 home fb
+  home="$TMP_ROOT/$name-$RANDOM"
+  mkdir -p "$home/state" "$home/data" "$home/config"
+  cp "$ROOT/.tasks.toml" "$home/.tasks.toml" || fail "could not seed the task config"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  fb=$(make_stubs "$home")
+  fm_fake_exit0 "$fb" treehouse no-mistakes gh gh-axi
+  (cd "$home" && tasks-axi add "$hold" "Choose the sample option" --kind ship --repo sample) >/dev/null \
+    || fail "could not create the task to hold"
+  env PATH="$fb:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-captain-hold.sh" hold "$hold" --reason "captain option choice pending" >/dev/null \
+    || fail "could not place the task under a captain hold"
+  fm_write_meta "$home/state/$id.meta" "window=sess:fm-$id" "kind=ship"
+  printf 'working: waiting on the captain option choice\n' > "$home/state/$id.status"
+  HOLD_HOME=$home
+}
+
+assert_hold_still_open() {  # <home> <hold-id> <msg>
+  local show
+  show=$(cd "$1" && tasks-axi show "$2" --full)
+  assert_contains "$show" "state: queued" "$3: the captain call was closed anyway"
+  assert_contains "$show" "held: yes" "$3: the captain hold was lifted anyway"
+}
+
+# A crewmate that reaches this close is the incident the guard exists for, and
+# the only useful thing it can be told is where a captain question really goes.
+# The relay matters because the ordinary close-failure line says "Close it with
+# fm-captain-hold.sh answer" - precisely the command the guard just refused.
+test_hold_close_refusal_reaches_the_answerer() {
+  local home fb err rc out
+  seed_hold_home hold-refusal t1 sample-refused-call
+  home=$HOLD_HOME; fb="$home/fakebin"; err="$home/send.err"
+  # Firstmate holds this home's session lock; the answerer is a second agent
+  # process in the same home, which is exactly the incident's shape.
+  printf '424242\n' > "$home/state/.lock"
+
+  set +e
+  env -u FM_CAPTAIN_ANSWER_BYPASS PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
+    "$SEND" t1 --resolve-key sample-refused-call "go with the sample option" \
+    >/dev/null 2>"$err"
+  rc=$?
+  set -e
+  out=$(cat "$err")
+  expect_code 1 "$rc" "a refused captain-hold close should still fail the send"
+  assert_contains "$out" "refusing to close a captain call from outside firstmate" \
+    "the caller was never told what was refused: $out"
+  assert_contains "$out" "needs-decision:" \
+    "the refusal's teaching text was discarded on the fm-send path: $out"
+  assert_contains "$out" "dies with the session" \
+    "the reason a pane answer is not a durable record never reached the caller: $out"
+  assert_not_contains "$out" "Close it with fm-captain-hold.sh answer" \
+    "a refused caller was sent back to the very command the guard refused"
+  assert_hold_still_open "$home" sample-refused-call "the refused close"
+  pass "fm-send --resolve-key: a refused captain-hold close relays the guard's own teaching text"
+}
+
+# The relay must be invisible to firstmate: the legitimate close still succeeds
+# in silence, and an ordinary intake failure still carries the close-failure
+# wording every caller already knows rather than being dressed as a refusal.
+test_hold_close_normal_path_is_unchanged() {
+  local home fb err rc out show
+  seed_hold_home hold-normal t1 sample-firstmate-call
+  home=$HOLD_HOME; fb="$home/fakebin"; err="$home/send.err"
+
+  set +e
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
+    "$SEND" t1 --resolve-key sample-firstmate-call "go with the sample option" \
+    >/dev/null 2>"$err"
+  rc=$?
+  set -e
+  out=$(cat "$err")
+  expect_code 0 "$rc" "firstmate's own captain-held close should succeed"
+  show=$(cd "$home" && tasks-axi show sample-firstmate-call --full)
+  assert_contains "$show" "state: done" "the captain-held call was not closed for firstmate"
+  assert_contains "$show" "Answer: go with the sample option" \
+    "the captain's answer was not recorded on the closed call"
+  assert_not_contains "$out" "could not be closed" "a successful close still reported a failure: $out"
+  assert_not_contains "$out" "needs-decision:" "a successful close relayed a refusal: $out"
+
+  # An ordinary intake failure: the ledger this home's data directory holds
+  # cannot be written, so the close fails for a reason that is not the guard.
+  seed_hold_home hold-normal-fail t2 sample-unwritable-call
+  home=$HOLD_HOME; fb="$home/fakebin"; err="$home/send.err"
+  chmod 500 "$home/data"
+  set +e
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$home/send.log" FM_SEND_SETTLE=0 \
+    "$SEND" t2 --resolve-key sample-unwritable-call "go with the sample option" \
+    >/dev/null 2>"$err"
+  rc=$?
+  chmod 700 "$home/data"
+  set -e
+  out=$(cat "$err")
+  expect_code 1 "$rc" "an intake failure should still fail the send"
+  assert_contains "$out" "could not be closed: sample-unwritable-call" \
+    "an ordinary intake failure lost the close-failure wording callers rely on: $out"
+  assert_contains "$out" "Close it with fm-captain-hold.sh answer" \
+    "an ordinary intake failure lost its manual-close instruction: $out"
+  assert_not_contains "$out" "needs-decision:" \
+    "an ordinary intake failure was reported to firstmate as a crewmate refusal: $out"
+  assert_hold_still_open "$home" sample-unwritable-call "the failed close"
+  pass "fm-send --resolve-key: firstmate's captain-held close, and its ordinary failure, are unchanged"
+}
+
 test_answer_send_closes_open_decision
 test_answer_close_is_self_announced
 test_colon_first_key_position_is_answerable
@@ -607,3 +736,9 @@ test_remote_secondmate_answer_closes_locally
 test_remote_reply_corr_tag_does_not_block_resolve_key
 test_remote_transport_failure_does_not_close
 test_flag_misuse_refuses
+if [ -n "$TASKS_AXI_BIN" ]; then
+  test_hold_close_refusal_reaches_the_answerer
+  test_hold_close_normal_path_is_unchanged
+else
+  printf 'skip - the captain-held close cases need tasks-axi, which is not installed\n'
+fi

@@ -678,18 +678,31 @@ fm_send_close_resolved_keys() {  # <answer-text>
 # lines, exactly the way every other channel does. fm-send decides nothing here:
 # it does not build a decision record or choose a close path; the keys were
 # already resolved to task ids above, so the intake needs no legacy origin.
+#
+# The intake refuses a caller that is not this home's firstmate, and it exits
+# FM_SEND_HOLD_REFUSE_EXIT to say so. That refusal is the one intake message
+# whose whole point is to be read by the caller: it names the status line the
+# worker must write instead. So it is relayed verbatim in place of the ordinary
+# close-failure line below, which would otherwise send a refused caller back to
+# the very command it was just refused. Every other intake failure keeps its
+# existing wording, and a success stays silent.
+FM_SEND_HOLD_REFUSE_EXIT=4
 fm_send_feed_resolved_holds() {  # <answer-text>
-  local note=$1 k lines=''
+  local note=$1 k lines='' intake_err rc=0
   [ -n "$RESOLVE_HOLD_KEYS" ] || return 0
   note=$(printf '%s' "$note" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_HOLD_KEYS; do
     lines="${lines}${k}"$'\t'"${note}"$'\t'$'\n'
   done
-  if ! printf '%s' "$lines" | "$SCRIPT_DIR/fm-captain-hold.sh" answers \
-    --source "a firstmate answer sent to $RESOLVE_TASK_ID" >/dev/null 2>&1; then
-    echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it with fm-captain-hold.sh answer - do not resend the answer." >&2
+  intake_err=$(printf '%s' "$lines" | "$SCRIPT_DIR/fm-captain-hold.sh" answers \
+    --source "a firstmate answer sent to $RESOLVE_TASK_ID" 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  if [ "$rc" -eq "$FM_SEND_HOLD_REFUSE_EXIT" ]; then
+    printf '%s\n' "$intake_err" >&2
     return 1
   fi
+  echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS}. Close it with fm-captain-hold.sh answer - do not resend the answer." >&2
+  return 1
 }
 
 # Resolve the target's harness from its meta (recorded by fm-spawn), used only to
