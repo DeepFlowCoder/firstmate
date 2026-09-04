@@ -98,6 +98,183 @@ write_origin_meta() {  # <home> <id> [kind]
 # prose, no held backlog item or open status exists, and the authoritative
 # Bearings view correctly omits it. Completion must now refuse before teardown can
 # erase the source.
+# A fake harness process: the bash symlink stand-in
+# tests/fm-claude-stop-autoarm.test.sh established. Session-lock identity is read
+# off the process name, so only a real process named for a verified harness can
+# stand in for one.
+fake_harness() {  # <dir> <name>
+  local dir=$1 name=$2
+  mkdir -p "$dir"
+  [ -e "$dir/$name" ] || ln -s /bin/bash "$dir/$name"
+  printf '%s\n' "$dir/$name"
+}
+
+# Run the real fm-captain-hold.sh with the suite's escape hatch stripped, so the
+# crewmate guard itself decides. With no harness parent at all, this is the
+# undecidable context: nothing here proves which side of the fleet is calling.
+run_captain_unguarded() {  # <home> <args...>
+  local home=$1
+  shift
+  env -u FM_CAPTAIN_ANSWER_BYPASS \
+    PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-captain-hold.sh" "$@"
+}
+
+# The same, as a child of harness $2, escape hatch stripped. claim=own makes that
+# harness record itself as this home's session owner first, which is exactly the
+# shape of a firstmate turn; claim=foreign leaves an existing owner in place, so
+# the harness is another agent working in the same home - a crewmate. The
+# trailing exit keeps bash from exec-ing the command over the harness process and
+# erasing it from the ancestry the guard reads.
+run_captain_under_harness() {  # <home> <harness-path> <own|foreign> <args...>
+  local home=$1 harness=$2 claim=$3 script
+  shift 3
+  # shellcheck disable=SC2016 # single quotes are deliberate: every expression here expands inside the fake harness child, not in this shell
+  script='if [ "$FM_CLAIM" = own ]; then printf "%s\n" "$$" > "$FM_STATE_OVERRIDE/.lock"; fi
+    "$@"
+    status=$?
+    exit "$status"'
+  env -u FM_CAPTAIN_ANSWER_BYPASS \
+    PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_CLAIM="$claim" \
+    "$harness" -c "$script" harness "$ROOT/bin/fm-captain-hold.sh" "$@"
+}
+
+# Seed one captain-held task plus a decision file, and report the home.
+seed_guard_home() {  # <name> <task-id>
+  local home id=$2
+  home=$(make_home "$1")
+  tasks_in "$home" add "$id" "Choose the sample option" --kind ship --repo sample >/dev/null \
+    || fail "could not create the task to hold"
+  run_captain "$home" hold "$id" --reason "captain option choice pending" >/dev/null \
+    || fail "could not place the task under a captain hold"
+  printf 'An answer the captain never gave.\n' > "$home/invented.txt"
+  printf '%s\n' "$home"
+}
+
+assert_still_held() {  # <home> <task-id> <msg>
+  local show
+  show=$(tasks_in "$1" show "$2" --full)
+  assert_contains "$show" "state: queued" "$3: the call was closed"
+  assert_contains "$show" "held: yes" "$3: the hold was lifted"
+  assert_not_contains "$show" "Resolution recorded by fm-captain-hold" \
+    "$3: a resolution was recorded"
+}
+
+# A worker reached `answer --release` carrying a decision the captain never gave:
+# its harness offered a question dialog, the dialog returned its own recommended
+# default with nobody touching it, and only a supervisor's glance at the pane
+# stopped the close. Nothing refused. A captain call closed wrongly leaves review
+# forever, so the intake that records the captain's words must itself refuse any
+# caller that is not this home's firstmate - and must say what to do instead.
+test_crewmate_context_cannot_close_a_captain_call() {
+  local home id crew out rc
+  id=sample-crew-call
+  home=$(seed_guard_home crewmate-refusal "$id")
+  # Firstmate holds the session lock; the crewmate is a second agent process in
+  # the same home, which is precisely the incident's shape.
+  printf '424242\n' > "$home/state/.lock"
+  crew=$(fake_harness "$home/crewbin" claude)
+
+  set +e
+  out=$(run_captain_under_harness "$home" "$crew" foreign \
+    answer "$id" --decision-file "$home/invented.txt" 2>&1)
+  rc=$?
+  set -e
+  expect_code 4 "$rc" "a crewmate close was not refused with the guard's own exit code"
+  assert_contains "$out" "refusing to close a captain call from outside firstmate" \
+    "the refusal did not say what it refused: $out"
+  assert_contains "$out" "needs-decision:" \
+    "the refusal did not teach the status line that carries a captain question: $out"
+  assert_contains "$out" "question dialog" \
+    "the refusal did not close the harness dialog the worker actually used: $out"
+  assert_contains "$out" "dies with the session" \
+    "the refusal did not give the reason a pane answer is not a record: $out"
+  assert_still_held "$home" "$id" "the refused crewmate answer"
+
+  # --release is the exact call the worker was one step from running.
+  set +e
+  out=$(run_captain_under_harness "$home" "$crew" foreign \
+    answer "$id" --decision-file "$home/invented.txt" --release 2>&1)
+  rc=$?
+  set -e
+  expect_code 4 "$rc" "a crewmate --release close was not refused"
+  assert_still_held "$home" "$id" "the refused crewmate release"
+
+  # The keyed intake every channel feeds is the same door and refuses the same way.
+  set +e
+  out=$(printf '%s\tinvented\t\n' "$id" \
+    | run_captain_under_harness "$home" "$crew" foreign answers --source "a crewmate" 2>&1)
+  rc=$?
+  set -e
+  expect_code 4 "$rc" "a crewmate keyed answer was not refused"
+  assert_contains "$out" "needs-decision:" \
+    "the keyed-intake refusal did not teach the legitimate path: $out"
+  assert_still_held "$home" "$id" "the refused crewmate keyed answer"
+  pass "a crewmate context cannot close a captain call, and the refusal teaches the status line that can"
+}
+
+# The guard is worthless if it also stops firstmate: a call the captain really
+# answered must still close, through both guarded doors, with no escape hatch.
+test_lock_owning_session_still_resolves_captain_calls() {
+  local home id keyed session show
+  id=sample-owner-call
+  home=$(seed_guard_home lock-owner "$id")
+  keyed=sample-owner-keyed
+  tasks_in "$home" add "$keyed" "Choose the keyed option" --kind ship --repo sample >/dev/null \
+    || fail "could not create the keyed task"
+  run_captain "$home" hold "$keyed" --reason "captain keyed choice pending" >/dev/null \
+    || fail "could not hold the keyed task"
+  session=$(fake_harness "$home/sessionbin" claude)
+  printf 'Captain chose the sample option.\n' > "$home/decision.txt"
+
+  run_captain_under_harness "$home" "$session" own \
+    answer "$id" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "the session that owns this home's lock could not record the captain's answer"
+  show=$(tasks_in "$home" show "$id" --full)
+  assert_contains "$show" "state: done" "firstmate's answer did not close the captain call"
+  assert_contains "$show" "Captain chose the sample option." \
+    "firstmate's answer did not record the captain's words"
+
+  printf '%s\tkeyed answer from the captain\tCaptain card\n' "$keyed" \
+    | run_captain_under_harness "$home" "$session" own answers \
+        --source "a firstmate answer" >/dev/null \
+    || fail "the lock-owning session could not close a call through the keyed intake"
+  show=$(tasks_in "$home" show "$keyed" --full)
+  assert_contains "$show" "state: done" "the keyed intake did not close the call for firstmate"
+  assert_contains "$show" "Answer: keyed answer from the captain" \
+    "the keyed intake did not record the captain's answer"
+  pass "the session holding this home's lock still resolves captain calls through both doors"
+}
+
+# Fail-closed for real: a guard that lets the caller through when it cannot tell
+# would not have stopped the incident, because that worker's context was exactly
+# the one nothing had established.
+test_undeterminable_context_refuses() {
+  local home id rc out case_name
+  id=sample-unknown-call
+  home=$(seed_guard_home undeterminable "$id")
+
+  for case_name in absent malformed dead; do
+    case "$case_name" in
+      absent) rm -f "$home/state/.lock" ;;
+      malformed) printf 'not-a-pid\n' > "$home/state/.lock" ;;
+      dead) printf '424242\n' > "$home/state/.lock" ;;
+    esac
+    set +e
+    out=$(run_captain_unguarded "$home" answer "$id" --decision-file "$home/invented.txt" 2>&1)
+    rc=$?
+    set -e
+    expect_code 4 "$rc" "an undeterminable context ($case_name session lock) was allowed to close a captain call"
+    assert_contains "$out" "needs-decision:" \
+      "the $case_name refusal did not teach the legitimate path: $out"
+    assert_still_held "$home" "$id" "the refused $case_name context"
+  done
+  pass "an undeterminable caller is refused, not admitted, at every shape of missing session evidence"
+}
+
 test_uninventoried_report_decision_refuses_completion() {
   local home id json rc
   home=$(make_home omitted-decision)
@@ -705,7 +882,13 @@ SH
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$ROOT/bin/fm-procevent.sh" register fixturechan fixture-src -- cat "$result" >/dev/null \
     || fail "could not register the fixture channel source"
-  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+  # Stripped deliberately: the detached capture runner is one of the two real
+  # proofs the crewmate guard accepts (bin/fm-captain-hold.sh, "WHO MAY WRITE A
+  # RESOLUTION"), and it holds no session lock. Running this leg without the
+  # suite's escape hatch is what proves the captain's own answers from a bound
+  # board still close their calls once that guard is in force.
+  env -u FM_CAPTAIN_ANSWER_BYPASS \
+    PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$ROOT/bin/fm-procevent.sh" start fixture-src >/dev/null 2>&1
@@ -1167,6 +1350,9 @@ EOF
   pass "a captain call with no routed work, a verified transfer, an open decision, and an answered call all stay silent"
 }
 
+test_crewmate_context_cannot_close_a_captain_call
+test_lock_owning_session_still_resolves_captain_calls
+test_undeterminable_context_refuses
 test_uninventoried_report_decision_refuses_completion
 test_completion_gate_attests_and_transfers
 test_answer_records_and_closes

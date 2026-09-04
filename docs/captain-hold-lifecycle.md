@@ -43,6 +43,21 @@ Two channels feed that one intake today, and both are ordinary callers rather th
 `bin/fm-procevent.sh` is the captured-result channel: after capture, a bound source has its result passed to `bin/fm-procevent-<adapter>.sh answers <result-file>` and whatever that prints is piped into the intake, so any adapter with an `answers` command works and the runner names no adapter, parses no result, and carries no decision rule.
 `bin/fm-procevent-lavish.sh answers` is one such adapter command; it reads only rows tagged `choice`, relays a card's declared close mode, and can never let freeform captain prose forge a task id or a mode.
 
+## Who may write a resolution
+
+`answer` and `answers` are the only paths that record what the captain said, and both refuse a caller they cannot place on this home's firstmate side.
+The hazard is not an adversary: a crewmate put a captain question into the question dialog its own harness offered, that dialog returned its recommended default with no human input, and the worker was one command from closing the call with it.
+A captain call closed wrongly leaves review forever, which is the loss the whole hold mechanism exists to prevent, so the boundary is a capability guard rather than a rule the worker would have to remember.
+
+Three proofs admit a caller, any one of which is sufficient.
+Descending from the harness that holds the home session lock is firstmate's own turn, including the close `bin/fm-send.sh --resolve-key` runs as its child and a secondmate answering in its own home; `bin/fm-session-lock-lib.sh` owns that identity.
+Having `bin/fm-procevent.sh` as an ancestor is the detached capture runner, which leads its own process group and so can never satisfy the lock proof, and which no crewmate has above it.
+`FM_CAPTAIN_ANSWER_BYPASS=1` is the test-harness escape hatch that `tests/lib.sh` exports beside `FM_GATE_REFUSE_BYPASS`, for the same reason and against the same threat model.
+
+Everything else refuses with exit code 4: no lock, an unreadable lock, a lock held by another session, or an ancestry that cannot be read.
+The refusal names the legitimate path rather than only forbidding one, because the worker that hits it needs to know that a captain question travels as a `needs-decision:` line in its status log and nowhere else.
+`bin/fm-brief.sh` puts that same instruction, and the reason a pane answer is not a record, into every crewmate scaffold; the secondmate charter is deliberately excluded because a secondmate is a firstmate in its own home and does converse with the captain.
+
 ## Structured read surfaces
 
 `bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)`, `(hold-kind: ...)`, and `(hold-until: ...)` metadata alongside existing backlog fields.
@@ -84,10 +99,13 @@ The shim recognizes an exact replay of a pre-collapse routed resolution by its h
 
 ## Verification record
 
-Verification date: 2026-08-21.
+Verification date: 2026-09-03.
 
 The focused end-to-end regression suite is `tests/fm-captain-hold-lifecycle.test.sh`, using only synthetic `sample` identities and decision text.
 It proves: the reconstructed silent-divergence case is signalled - a status resolution over a still-open captain-held task reaches both `diverged` and the drain's `RECORD DIVERGENCE` section, under the collapsed and the legacy identity alike, while the backlog task, its hold, and the status log all survive the report unchanged and the printed hint names both reconciliation directions; the false-signal boundary holds - a captain call with no routed work item, a verified `captain-held` transfer, a still-open status decision, an already answered call, and an ordinary task whose keyed question was answered all stay silent; a report-only unresolved captain call refuses `--none` completion before teardown can erase the source; non-forced scout teardown always requires the durable inventory verification; the recorded-answer guard (a bare `tasks-axi done` close fails `verify` until `answer` records the captain's word, and an ordinary finished task cannot be dressed up as an answered call); answer-time closure through a bound channel with task-id keys, including the `release` close mode, mode-matched replay idempotence, and the refusal of drifted, mode-mismatched, absent, unheld, and already-closed keys; the chat channel reaching the same intake; deferral through `--until` leaving `captain_actionable` false until due; and every legacy path (composed identities through the shim, pre-collapse `decision_keys=` metadata, routed-resolution replay, and a concrete-origin binding).
+The same suite pins the resolution-writing guard, with the escape hatch stripped in every case that asserts it: a second agent process in a home firstmate already owns is refused on `answer`, on `answer --release`, and on the keyed intake, with the call still held and the refusal naming `needs-decision:` and the harness question dialog; a fake harness that records itself as the home's session owner still closes a call through both doors and records the captain's words; an absent, malformed, or dead-pid session lock refuses rather than admitting an undecidable caller; and the bound-channel case drives the real detached capture runner without the hatch, so answer-time closure from a captured board is proven to survive the guard.
+
+`tests/fm-brief.test.sh` pins the instruction itself in the ship and scout scaffolds: the status line that carries a captain question, its exclusivity, the forbidden harness dialog, and both reasons a pane answer is not a record.
 
 `tests/fm-classify-decision-key.test.sh` pins `status_key_closing_verb` itself: it separates a resolution from the durable-transfer close and from a still-open key, reports the last real transition across re-openings and both key positions, and treats a prose mention as no transition.
 

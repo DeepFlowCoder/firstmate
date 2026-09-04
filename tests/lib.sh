@@ -35,6 +35,16 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Retire the crewmate guard over the one keyed-answer intake
+# (bin/fm-captain-hold.sh, "WHO MAY WRITE A RESOLUTION") for the same reason: the
+# suite drives the real `answer` and `answers` from an ordinary test shell that
+# holds no session lock, which the guard correctly refuses. A worker taking the
+# path its harness offered never sources this helper, so the boundary against the
+# real hazard is unaffected. The dedicated cases in
+# tests/fm-captain-hold-lifecycle.test.sh strip this to verify real refusal, and
+# one of them proves a genuine lock-owning session is still admitted without it.
+export FM_CAPTAIN_ANSWER_BYPASS=1
+
 # Retire the free-disk-space guard (bin/fm-disk-space-lib.sh) for the same
 # reason. It covers exactly two surfaces, and the suites that source this library
 # drive both: a fresh crewmate or scout dispatch through the real fm-spawn (the

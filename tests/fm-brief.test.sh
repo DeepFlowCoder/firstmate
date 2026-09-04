@@ -729,6 +729,39 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# A worker once put a captain question into its own harness question dialog
+# instead of its status log, and the dialog answered itself with a recommended
+# default no human ever chose. bin/fm-captain-hold.sh refuses the resulting close;
+# every crewmate scaffold must also say which way a captain question travels, and
+# why the pane is not a record. The secondmate charter is deliberately excluded:
+# a secondmate is a firstmate in its own home and does converse with the captain.
+test_crewmate_briefs_route_captain_questions_through_the_status_log() {
+  local home brief kind
+  home="$TMP_ROOT/captain-question-home"
+  write_registry "$home"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-captain-q ship-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold exited non-zero"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" brief-captain-q-scout ship-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+  for kind in brief-captain-q brief-captain-q-scout; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    # shellcheck disable=SC2016 # The literal backticked status verb must remain unexpanded.
+    assert_grep 'append `needs-decision:' "$brief" \
+      "$kind: brief did not name the status line that carries a captain question"
+    assert_grep 'ONLY way a question reaches the captain' "$brief" \
+      "$kind: brief did not make the status log the exclusive route to the captain"
+    assert_grep 'question dialog your own harness offers' "$brief" \
+      "$kind: brief did not forbid the harness question dialog for captain questions"
+    assert_grep 'reaches no durable record, dies with the session' "$brief" \
+      "$kind: brief did not give the reason a pane answer is not a record"
+    assert_grep 'a default that nobody chose' "$brief" \
+      "$kind: brief did not warn that the dialog can answer itself"
+  done
+  pass "fm-brief.sh: crewmate briefs route captain questions through the status log, never the harness dialog"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -771,4 +804,5 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_crewmate_briefs_route_captain_questions_through_the_status_log
 test_scout_and_secondmate_scaffold
