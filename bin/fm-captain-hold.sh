@@ -113,6 +113,11 @@
 # cannot tell would not have stopped the incident it exists for.
 # The refusal exits 4 and names the legitimate path, because the worker that hits
 # it needs to know what to do instead of being told only that it may not.
+# When the guard could not READ the ancestry at all, rather than reading it and
+# finding no proof, it also leaves one keyed wake record before refusing. That
+# case is the only one whose likely victim is a captain answer the captain really
+# gave, arriving through a feed whose every channel is silenced, and a refusal
+# nobody can hear loses his word exactly as surely as a fabricated close does.
 #
 # `bind`, `unbind`, and `binding` record that a captured-answer SOURCE feeds
 # this intake, for any channel whose answers arrive detached from their origin
@@ -205,23 +210,53 @@ fail() {
 # rather than a usage error or a skipped key.
 FM_CAPTAIN_ANSWER_REFUSE_EXIT=4
 
+# Set when the walk below could not READ this process's ancestry, as opposed to
+# reading it and finding no runner. Both refuse, and both must: a guard that
+# cannot tell has to say no. But only the first one means the guard never got to
+# decide, and that is the one shape whose most likely victim is a captain answer
+# the captain really gave - see the durable record in require_firstmate_side.
+CAPTAIN_ANSWER_CONTEXT_UNREADABLE=0
+
 # True when an ancestor process is this code root's own process-event runner.
 # Walks parents only: the runner is always a strict ancestor of the intake it
 # pipes into, and a bounded walk keeps an unreadable ancestry a refusal rather
-# than a hang. Any ps failure ends the walk without a match, so this proof can
-# only ever admit a caller, never excuse one.
+# than a hang. No ps failure can ever admit a caller; it only ends the walk, and
+# records that the answer this proof gave is "unknown" rather than "no". Reaching
+# pid 1, or exhausting the bounded walk, IS a real answer: the runner is a near
+# ancestor of the intake it pipes into, never a distant one.
 procevent_runner_ancestor() {
-  local pid=$$ args runner="$SCRIPT_DIR/fm-procevent.sh"
+  local pid=$$ parent args runner="$SCRIPT_DIR/fm-procevent.sh"
   for _ in 1 2 3 4 5 6 7 8; do
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]') || return 1
-    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    parent=$(ps -o ppid= -p "$pid" 2>/dev/null) \
+      || { CAPTAIN_ANSWER_CONTEXT_UNREADABLE=1; return 1; }
+    pid=$(printf '%s' "$parent" | tr -d '[:space:]')
+    case "$pid" in
+      ''|*[!0-9]*) CAPTAIN_ANSWER_CONTEXT_UNREADABLE=1; return 1 ;;
+    esac
     [ "$pid" -gt 1 ] || return 1
-    args=$(ps -o args= -p "$pid" 2>/dev/null) || return 1
+    args=$(ps -o args= -p "$pid" 2>/dev/null) \
+      || { CAPTAIN_ANSWER_CONTEXT_UNREADABLE=1; return 1; }
     case " $args " in
       *" $runner "*) return 0 ;;
     esac
   done
   return 1
+}
+
+# One durable, keyed wake record saying the guard could not determine the
+# context. It exists because the refusal is otherwise completely inaudible on the
+# one path that carries the captain's REAL answers: bin/fm-procevent.sh's capture
+# runner detaches with stdout and stderr on /dev/null and pipes into this intake
+# silenced too, so a refusal there loses the captain's word with no trace at all -
+# the same loss, from the other side, that this whole guard exists to prevent.
+# The refusal itself is NOT softened; only made audible. The channel and the
+# keyed shape are queue_captain_note's in bin/fm-procevent.sh: best effort, and
+# keyed so a detection that keeps failing collapses to the one record the wake
+# queue's own dedupe already presents, instead of flooding it.
+record_undecidable_refusal() {
+  fm_wake_append check captain-answer-context-unreadable \
+    'check: a captain call resolution was refused because this process ancestry could not be read, so no caller could be proved to be firstmate. A real captain answer fed by the detached capture runner reaches this same refusal unheard, so re-run the close from the session holding this home lock and confirm nothing was lost.' \
+    >/dev/null 2>&1 || return 1
 }
 
 # Refuse to record a captain call's resolution from anywhere but this home's
@@ -231,6 +266,9 @@ require_firstmate_side() {
   if [ "${FM_CAPTAIN_ANSWER_BYPASS:-}" = 1 ]; then return 0; fi
   if fm_session_lock_owned_by_self "$STATE"; then return 0; fi
   if procevent_runner_ancestor; then return 0; fi
+  if [ "$CAPTAIN_ANSWER_CONTEXT_UNREADABLE" = 1 ]; then
+    record_undecidable_refusal || true
+  fi
   {
     printf 'fm-captain-hold: refusing to close a captain call from outside firstmate.\n'
     printf 'What the captain decides is closed by the captain words, recorded by firstmate in the session that holds this home lock. Nothing here can stand in for that.\n'

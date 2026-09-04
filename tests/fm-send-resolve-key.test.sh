@@ -644,6 +644,10 @@ assert_hold_still_open() {  # <home> <hold-id> <msg>
 # the only useful thing it can be told is where a captain question really goes.
 # The relay matters because the ordinary close-failure line says "Close it with
 # fm-captain-hold.sh answer" - precisely the command the guard just refused.
+# The refusal ADDS to that line rather than replacing it: the answer is already
+# in the worker's durable inbox by the time the close runs, so a caller told only
+# "refused" would read this exit as undelivered and resend, and the worker would
+# get the same instruction twice.
 test_hold_close_refusal_reaches_the_answerer() {
   local home fb err rc out
   seed_hold_home hold-refusal t1 sample-refused-call
@@ -669,8 +673,15 @@ test_hold_close_refusal_reaches_the_answerer() {
     "the reason a pane answer is not a durable record never reached the caller: $out"
   assert_not_contains "$out" "Close it with fm-captain-hold.sh answer" \
     "a refused caller was sent back to the very command the guard refused"
+  # The steer really did land before the refusal, so the refusal has to say so.
+  grep -qF "go with the sample option" "$home/state/t1.inbox/001.msg" \
+    || fail "precondition: the answer should already be in the worker's durable inbox"
+  assert_contains "$out" "the answer was delivered to sess:fm-t1" \
+    "the refused caller was never told the steer had already landed: $out"
+  assert_contains "$out" "do not resend the answer" \
+    "the refused caller was left free to resend an already-delivered answer: $out"
   assert_hold_still_open "$home" sample-refused-call "the refused close"
-  pass "fm-send --resolve-key: a refused captain-hold close relays the guard's own teaching text"
+  pass "fm-send --resolve-key: a refused close relays the teaching text and still reports the delivery"
 }
 
 # The relay must be invisible to firstmate: the legitimate close still succeeds

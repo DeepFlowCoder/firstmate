@@ -275,6 +275,65 @@ test_undeterminable_context_refuses() {
   pass "an undeterminable caller is refused, not admitted, at every shape of missing session evidence"
 }
 
+# The refusal above is right, and on one path it is also completely inaudible.
+# bin/fm-procevent.sh's capture runner is what carries the captain's REAL answers
+# from a bound review board: it detaches with stdout and stderr on /dev/null and
+# pipes into this intake silenced as well. Its admission is an ancestry read, so
+# a transient failure of that read - the process tree untouched, only `ps` unable
+# to answer - turns a genuine captain answer into a refusal nobody ever hears,
+# and his word is lost as completely as if it had been fabricated. The refusal
+# must stay; what it must not do is vanish. So an unreadable context leaves a
+# durable, keyed record on the channel firstmate actually reads, and a detection
+# that keeps failing collapses into that one record instead of flooding it.
+test_unreadable_context_refusal_reaches_the_drain() {
+  local home id rc out drain queued
+  id=sample-unreadable-call
+  home=$(seed_guard_home unreadable-context "$id")
+  # Break only the reading of the ancestry, never the ancestry itself.
+  cat > "$home/fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$home/fakebin/ps"
+
+  set +e
+  out=$(run_captain_unguarded "$home" answer "$id" --decision-file "$home/invented.txt" 2>&1)
+  rc=$?
+  set -e
+  expect_code 4 "$rc" "an unreadable context was allowed to close a captain call"
+  assert_contains "$out" "needs-decision:" \
+    "the unreadable-context refusal did not teach the legitimate path: $out"
+  assert_still_held "$home" "$id" "the refused unreadable context"
+
+  drain=$(run_drain "$home") || fail "the drain refused after an unreadable-context refusal"
+  assert_contains "$drain" "process ancestry could not be read" \
+    "a refusal nobody could hear left no trace where firstmate looks: $drain"
+  assert_contains "$drain" "re-run the close from the session holding this home lock" \
+    "the durable record did not say what to do about the possibly-lost answer: $drain"
+
+  # A detection that keeps failing must collapse, not pile up.
+  set +e
+  run_captain_unguarded "$home" answer "$id" --decision-file "$home/invented.txt" >/dev/null 2>&1
+  run_captain_unguarded "$home" answers --source "a silenced feed" \
+    < /dev/null >/dev/null 2>&1
+  set -e
+  queued=$(run_drain "$home" | grep -c 'process ancestry could not be read')
+  [ "$queued" = 1 ] \
+    || fail "repeated unreadable-context refusals flooded the channel firstmate reads: $queued records"
+
+  # A caller the guard CAN read is answered, not merely unproven, so an ordinary
+  # crewmate refusal must not leave this record at all - it would drown the one
+  # case that means something.
+  rm -f "$home/fakebin/ps" "$home/state/.wake-queue" "$home/state/.wake-queue.seq"
+  set +e
+  run_captain_unguarded "$home" answer "$id" --decision-file "$home/invented.txt" >/dev/null 2>&1
+  set -e
+  drain=$(run_drain "$home") || true
+  assert_not_contains "$drain" "process ancestry could not be read" \
+    "a refusal the guard could decide was reported as an unreadable context: $drain"
+  pass "an unreadable context still refuses, and says so on the durable channel firstmate reads"
+}
+
 test_uninventoried_report_decision_refuses_completion() {
   local home id json rc
   home=$(make_home omitted-decision)
@@ -1353,6 +1412,7 @@ EOF
 test_crewmate_context_cannot_close_a_captain_call
 test_lock_owning_session_still_resolves_captain_calls
 test_undeterminable_context_refuses
+test_unreadable_context_refusal_reaches_the_drain
 test_uninventoried_report_decision_refuses_completion
 test_completion_gate_attests_and_transfers
 test_answer_records_and_closes

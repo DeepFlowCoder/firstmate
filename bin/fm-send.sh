@@ -682,10 +682,14 @@ fm_send_close_resolved_keys() {  # <answer-text>
 # The intake refuses a caller that is not this home's firstmate, and it exits
 # FM_SEND_HOLD_REFUSE_EXIT to say so. That refusal is the one intake message
 # whose whole point is to be read by the caller: it names the status line the
-# worker must write instead. So it is relayed verbatim in place of the ordinary
-# close-failure line below, which would otherwise send a refused caller back to
-# the very command it was just refused. Every other intake failure keeps its
-# existing wording, and a success stays silent.
+# worker must write instead, so it is relayed verbatim. It is relayed IN
+# ADDITION to this exit's own news, never instead of it: the answer is already
+# durably delivered by the time the close runs, and the header contract above
+# promises that a post-delivery close failure says so, so the refused caller is
+# told both that the steer landed and must not be resent AND what to do about the
+# call it may not close. Only the ordinary line's "close it yourself" sentence is
+# dropped, because that names the very command the guard just refused. Every
+# other intake failure keeps its existing wording, and a success stays silent.
 FM_SEND_HOLD_REFUSE_EXIT=4
 fm_send_feed_resolved_holds() {  # <answer-text>
   local note=$1 k lines='' intake_err rc=0
@@ -698,6 +702,7 @@ fm_send_feed_resolved_holds() {  # <answer-text>
     --source "a firstmate answer sent to $RESOLVE_TASK_ID" 2>&1 >/dev/null) || rc=$?
   [ "$rc" -ne 0 ] || return 0
   if [ "$rc" -eq "$FM_SEND_HOLD_REFUSE_EXIT" ]; then
+    echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS} - do not resend the answer. The intake refused this caller; its own instructions follow." >&2
     printf '%s\n' "$intake_err" >&2
     return 1
   fi
