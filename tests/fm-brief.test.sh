@@ -414,6 +414,70 @@ test_faster_paths_still_complete_at_their_own_gate() {
   pass "fm-brief.sh: direct-PR and local-only still complete at their commit"
 }
 
+# brief_rules_normalized <brief>: echo the generated brief's `# Rules` section
+# with its line wrapping folded away. Markdown renders a wrapped list item as
+# one paragraph, so a rule's meaning lives in the folded text, not in where the
+# scaffold happens to break lines.
+brief_rules_normalized() {
+  awk '/^# Rules$/ { in_rules = 1; next } in_rules && /^# / { exit } in_rules' "$1" \
+    | tr '\n' ' ' | tr -s ' '
+}
+
+# Rule 4 and the no-mistakes Definition of done landed in one brief and
+# disagreed about the same moment: the DOD directs the worker to append
+# `working: implemented, waiting on firstmate to start validation` and wait,
+# while rule 4 forbade ending the turn after any `working:` line. Rule 4 owns
+# the nonterminal-`working:` contract, so it carries the carve-out - and the
+# carve-out has to stay narrow, because a general "unless you are waiting"
+# escape would let any `working:` line end a turn again, which is the exact
+# defect this brief exists to prevent.
+test_rule4_handoff_exception_is_named_not_a_general_waiting_escape() {
+  local home id rules dod mode proj escape id_mode
+  home="$TMP_ROOT/rule4-exception-home"
+  write_registry "$home"
+  id="brief-rule4-b4"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  assert_present "$home/data/$id/brief.md" "brief was not scaffolded"
+  rules="$TMP_ROOT/rule4-no-mistakes.txt"
+  brief_rules_normalized "$home/data/$id/brief.md" > "$rules"
+
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'A mid-task `working:` line (including setup complete) is nonterminal: do not end the turn after it; continue the same stage until a defined `done:` gate under Definition of done.' \
+    "$rules" "rule 4 lost its general prohibition on ending a turn after a working: line"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'The one exception is a handoff `working:` line that Definition of done itself declares as a point to report and wait for firstmate' \
+    "$rules" "rule 4 does not name the handoff gate its own Definition of done declares"
+  assert_grep "the test for it is whether Definition of done declared that gate, never whether you happen to be waiting on something" \
+    "$rules" "rule 4's exception is not decidable by checking the Definition of done alone"
+  assert_grep "the command that starts the next step is harness-specific" "$rules" \
+    "rule 4's exception does not say why the worker cannot proceed alone"
+  for escape in "unless you are waiting" "except when you are waiting" "unless you are blocked" \
+    "unless waiting on someone else"; do
+    assert_no_grep "$escape" "$rules" \
+      "rule 4's exception is phrased as a general waiting escape ($escape), not a named gate"
+  done
+
+  # The exception is inert for the two modes whose Definition of done declares no
+  # handoff gate: they carry the same rule 4, and nothing there can trigger it.
+  dod="$TMP_ROOT/rule4-other-modes-dod.txt"
+  for id_mode in "brief-rule4-direct-b4:direct-PR:direct-proj" "brief-rule4-local-b4:local-only:local-proj"; do
+    id=${id_mode%%:*}
+    proj=${id_mode##*:}
+    mode=${id_mode#*:}
+    mode=${mode%%:*}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" --mode "$mode" >/dev/null 2>&1
+    brief_rules_normalized "$home/data/$id/brief.md" > "$rules"
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+    assert_grep 'The one exception is a handoff `working:` line that Definition of done itself declares' \
+      "$rules" "rule 4 diverged per mode instead of staying one shared rule"
+    sed -n '/^# Definition of done$/,$p' "$home/data/$id/brief.md" > "$dod"
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+    assert_no_grep 'append `working:' "$dod" \
+      "$mode Definition of done declared a handoff gate, arming an exception it does not need"
+  done
+  pass "fm-brief.sh: rule 4 keeps its prohibition and names only the declared handoff gate"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -855,6 +919,7 @@ test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_no_mistakes_dod_defines_done_once
 test_faster_paths_still_complete_at_their_own_gate
+test_rule4_handoff_exception_is_named_not_a_general_waiting_escape
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
