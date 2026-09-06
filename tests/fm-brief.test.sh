@@ -256,7 +256,7 @@ test_ship_mode_is_explicit_not_registry() {
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
-  assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
+  assert_grep "Firstmate will then instruct you to run /no-mistakes, which validates the work and ships the PR." "$brief" \
     "explicit no-mistakes brief did not render the pipeline definition of done"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
@@ -352,6 +352,66 @@ test_no_mistakes_dod_wording() {
   assert_grep "firstmate's authority check" "$brief" \
     "no-mistakes DOD lost the apostrophe prose that the structural fix makes parse-safe"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
+}
+
+# The no-mistakes DOD must define done exactly ONCE. It used to define it twice:
+# "complete only when committed on your branch" with a `done: {summary}` at the
+# implementation commit, and again `done: PR {url} checks green` after CI. A
+# worker reading the section top-down met the commit gate first, obeyed it, and
+# stopped; five briefs in one day ended that way. The damage is that a `done:`
+# carrying no PR is indistinguishable from a finished task, so the handoff back
+# to firstmate was invisible. The commit is now a nonterminal `working:`
+# milestone, which keeps the task visibly unfinished until the PR is green.
+test_no_mistakes_dod_defines_done_once() {
+  local home id brief dod gates
+  home="$TMP_ROOT/dod-single-gate-home"
+  mkdir -p "$home/data"
+  id="brief-single-done-b2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "brief was not scaffolded"
+
+  dod="$TMP_ROOT/dod-single-gate.txt"
+  sed -n '/^# Definition of done$/,$p' "$brief" > "$dod"
+  gates=$(grep -c 'append `done:' "$dod")
+  [ "$gates" -eq 1 ] \
+    || fail "no-mistakes DOD must name exactly one done gate, found $gates"
+
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'append `done: PR {url} checks green`' "$dod" \
+    "the one no-mistakes done gate must be the green-PR one"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_no_grep 'append `done: {summary}`' "$dod" \
+    "no-mistakes DOD reintroduced a second done gate at the implementation commit"
+  # The milestone must name the actor the task is waiting on. The watcher wakes
+  # firstmate identically for `done:` and `working:` here (both surface as a
+  # stale pane), so the line's prose is the entire payload: it is what tells the
+  # reader who holds the next move.
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'append `working: implemented, waiting on firstmate to start validation`' "$dod" \
+    "no-mistakes DOD lost the nonterminal handoff milestone naming who the task waits on"
+  assert_grep "waiting on firstmate" "$dod" \
+    "the handoff milestone must name the actor that owes the next move, not just the state"
+  assert_no_grep "The task is complete only when committed on your branch." "$dod" \
+    "no-mistakes DOD reintroduced commit-time completion, contradicting its green-PR gate"
+  pass "fm-brief.sh: the no-mistakes DOD defines done exactly once"
+}
+
+# The commit-time completion sentence is correct for the two modes that really
+# do finish at a commit, so the fix above must not be over-applied to them.
+test_faster_paths_still_complete_at_their_own_gate() {
+  local home id
+  home="$TMP_ROOT/dod-other-modes-home"
+  write_registry "$home"
+  id="brief-direct-done-b3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
+  assert_grep "The task is complete only when committed on your branch." "$home/data/$id/brief.md" \
+    "direct-PR brief lost its commit-time completion sentence"
+  id="brief-local-done-b3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" local-proj --mode local-only >/dev/null 2>&1
+  assert_grep "The task is complete only when committed on your branch \`fm/$id\`." "$home/data/$id/brief.md" \
+    "local-only brief lost its commit-time completion sentence"
+  pass "fm-brief.sh: direct-PR and local-only still complete at their commit"
 }
 
 test_ship_project_memory_wording() {
@@ -793,6 +853,8 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_no_mistakes_dod_defines_done_once
+test_faster_paths_still_complete_at_their_own_gate
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
