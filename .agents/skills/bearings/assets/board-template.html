@@ -871,15 +871,19 @@ __FM_BEARINGS_BOARD_DATA__
      order. Truncated queued rows are queued work of unknown disposition, so
      they can be added to neither queued stage without asserting where they
      stand: the rail says they exist and says they are off it, and only when
-     there are any. The launched bound applies always, because that stage is
-     always drawn and its figure is a bounded recent-completions baseline
-     rather than complete occupancy like the three before it. The board is
-     never told how many launches were left out, so the note names the KIND of
-     bound and never a number, a window, a rate or a change. */
+     there are any. The other two apply always, because those stages are always
+     drawn and neither figure is complete occupancy the way the two queued ones
+     are: the underway feed is the snapshot's bounded in-flight projection and
+     the launched feed is its bounded recent-completions baseline. The payload
+     carries no count of what either left out - there is no `underway_more` and
+     no `landed_more` the way `charted_more` exists - so the board can never
+     know whether they truncated, which is exactly why the note names the KIND
+     of bound and never a number, a window, a rate or a change. */
   var flowBounds = [];
   if (chartedMoreQueued) {
     flowBounds.push("+" + chartedMoreQueued + " more queued, not charted here, so no stage counts them");
   }
+  flowBounds.push("on the ways counts the live work this board was given, not every worker under way");
   flowBounds.push("launched counts the recent completions this board was given, not every launch on record");
   document.getElementById("bb-flow-note").textContent = flowBounds.join(" · ");
   document.getElementById("bb-call-sub").textContent =

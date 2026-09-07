@@ -86,7 +86,8 @@ Board answers are acted on later under the normal authority rules; this skill's 
 The board renders the same four buckets as a shipyard rather than a list: the template folds every row into one lane per project and draws inside every lane the same route - dry dock, then clear to start, then on the ways, then launched - with the same four stages leading the page as one fleet-wide rail.
 That fold is the template's job, not yours; your job is to give it rows it can fold honestly, which is what the payload rules below are for.
 The route is a set of positions, never a measured flow: the fleet keeps no prior snapshot, so nothing on the board may state a rate, a trend, a streak or a change since yesterday, and nothing you compose may invite one.
-Each rail figure counts what the payload you composed actually carries: the three queued and underway stages count current occupancy, while the launched stage counts the bounded recent-completions baseline you passed as `landed` rather than every launch on record, and the rail discloses that bound under itself on every board it draws.
+Each rail figure counts what the payload you composed actually carries: the two queued stages count current occupancy, while the on-the-ways stage counts the bounded in-flight projection you passed as `underway` rather than every worker under way, and the launched stage counts the bounded recent-completions baseline you passed as `landed` rather than every launch on record.
+The rail discloses both of those bounds under itself on every board it draws, and it can only name their kind, because the payload carries no count of what either feed left out.
 The board's own detail is allowed to exceed the chat digest, but it never replaces it: the four-section chat contract below is unchanged by lavish mode.
 
 Compose the payload from the same snapshot with the same ranking judgment as the chat digest, plus these board rules:
