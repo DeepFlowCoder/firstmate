@@ -132,6 +132,12 @@ init_changed_fixture_repo() {
   # shellcheck disable=SC2016  # literal fixture text: the reference must reach
   # the file verbatim so the changed-file scan can find it, not expand here.
   printf '. "$ROOT/bin/shared-probe-lib.sh"\n' >"$repo/bin/fm-watch-probe.sh"
+  # A test asset named by exactly ONE script of a multi-script family, the same
+  # shape as the shared helper above: a changed asset must select the scripts
+  # that actually read it, never widen to their families.
+  mkdir -p "$repo/tests/assets"
+  : >"$repo/tests/assets/probe-harness.mjs"
+  printf '# tests/assets/probe-harness.mjs\n' >>"$repo/tests/fm-control-herdr-smoke.test.sh"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
@@ -293,6 +299,49 @@ test_changed_bin_reference_selects_per_script_not_per_family() {
 
   rm -rf "$tmp"
   pass "a bin reference selects the referencing scripts, and consumers still select their curated families"
+}
+
+# A test asset is read by whichever scripts name it, so a change to one selects
+# those scripts and not their whole families - the same per-script rule the
+# bin/* arm follows. The arm must also be reached at all: it sits above the
+# tests/* catch-all that fails closed with exit 2, which is what made any
+# test-asset change refuse before the arm existed. And a DELETED asset has no
+# consuming suite left to select, so its removal must not refuse either.
+test_changed_test_asset_selects_per_script_and_survives_removal() {
+  local tmp repo listed rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-asset-scope.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+
+  printf '\n' >>"$repo/tests/assets/probe-harness.mjs"
+  set +e
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD 2>"$tmp/err")
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] \
+    || fail "a changed test asset refused instead of selecting its readers (rc=$rc): $(cat "$tmp/err")"
+  assert_contains "$listed" "tests/fm-control-herdr-smoke.test.sh" \
+    "the one script that names the asset must be selected"
+  case "$listed" in
+    *tests/fm-backend-herdr-smoke.test.sh*)
+      fail "a single script's asset reference dragged in its whole family: $listed"
+      ;;
+  esac
+  git -C "$repo" add tests/assets/probe-harness.mjs
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm asset-change
+
+  # a retired asset has no reader left to select, so it may not fail closed the
+  # way an unmapped source does
+  git -C "$repo" rm -q tests/assets/probe-harness.mjs
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] \
+    || fail "removing a test asset refused as an unmapped source (rc=$rc): $(cat "$tmp/err")"
+
+  rm -rf "$tmp"
+  pass "a changed test asset selects its readers per script, and a removed one refuses nothing"
 }
 
 # Exercise begin/end markers from real fixture processes to prove the automatic
@@ -1212,6 +1261,7 @@ test_changed_file_selection_is_conservative
 test_changed_runner_surfaces_select_their_family
 test_changed_dependency_selection_and_unmapped_failure
 test_changed_bin_reference_selects_per_script_not_per_family
+test_changed_test_asset_selects_per_script_and_survives_removal
 test_changed_uses_bounded_automatic_concurrency
 test_empty_selection_emits_summary
 test_timing_markers_and_json
