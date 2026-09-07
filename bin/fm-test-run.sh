@@ -99,11 +99,13 @@
 # share a machine. This script owns <n>: a lane whose <n> disagrees with the
 # configured shard count is refused, so a CI matrix cannot silently drop a shard.
 # --changed is conservative: it over-selects related families rather than
-# under-selecting, and never expands to the complete suite unless --all. The one
-# place it is deliberately narrow is a bin/ path with no curated family: a test
-# that names it is selected as that SCRIPT, because the reference is per-script
-# evidence. Consumer bin/ scripts still resolve through the curated map, so
-# recorded family-level coupling still expands to the whole family.
+# under-selecting, and never expands to the complete suite unless --all. It is
+# deliberately narrow in two places, both for the same reason - a direct
+# reference is per-script evidence, so it selects per SCRIPT rather than
+# widening to each referencing test's whole family: a bin/ path with no curated
+# family, and a tests/assets/ file, which is selected by the suites that name
+# it. Consumer bin/ scripts still resolve through the curated map, so recorded
+# family-level coupling still expands to the whole family.
 set -eu
 
 now_ms() {

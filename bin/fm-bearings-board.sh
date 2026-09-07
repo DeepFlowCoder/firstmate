@@ -28,13 +28,13 @@
 # longest wait it was handed has been standing there - stated with that scope
 # named, because the charted feed is a bounded prefix ranked by the composer's
 # judgment rather than by age, so "the oldest order in the yard" is a claim no
-# payload supports. Underway rows deliberately carry NO
-# date, because the only date the records hold for them is when the work was
-# filed, not when a worker picked it up; printing that as time under
-# construction would invent a tempo. An underway row's live state is its
-# movement signal instead. For the same reason both queued stages date a row by
-# when its ORDER was filed and neither states how long a hold has lasted: the
-# records carry no date for when a hold began.
+# payload supports. Underway rows deliberately carry NO date, because the only
+# date the records hold for them is when the work was filed, not when a worker
+# picked it up; printing that as time under construction would invent a tempo.
+# An underway row's live state is its movement signal instead. For the same
+# reason both queued stages date a row by when its ORDER was filed and neither
+# states how long a hold has lasted: the records carry no date for when a hold
+# began.
 #
 # The presentation changed with the route; the payload contract did not. This
 # is still fm-bearings-board.v2 with the same fields and the same validation,
