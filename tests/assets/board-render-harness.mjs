@@ -4,8 +4,9 @@
 //
 // Usage: node board-render-harness.mjs <built-board.html>
 // Prints one JSON document describing the rendered yard:
-//   { headline, headlineSub, stats:[{n,label}],
-//     lanes:[{name, reading, badges, launch, gauge, drawer, berths, empty}],
+//   { headline, headlineSub, flowNote, stats:[{n,label}],
+//     lanes:[{name, reading, badges, launch, tone, flow, berths, empty}],
+//     berths:[{label, count, none, rows, shown, more:{n,hint,rows}}],
 //     notices:[{title,sub,badges}], noticeMore, yardEmpty, more, answers,
 //     stylesheet:{rules,conditional}, hintStyle:{closed,open}, error }
 import { readFileSync } from "node:fs";
@@ -145,13 +146,26 @@ const rowOf = (row) => {
   };
 };
 
-// A berth is one labelled band of a lane ("On the ways", "Dry dock", ...). The
-// order book's berths live inside the drawer, so collect them recursively.
+// A berth is one stage of the lane's route ("Dry dock", "Clear to start", ...).
+// A stage deep enough to be capped keeps its remainder inside a `.bb-more`
+// details, so `rows` reports every row the stage holds while `shown` reports
+// only the ones standing in the open and `more` reports the disclosure.
 const berthsOf = (lane) =>
-  lane.querySelectorAll(".bb-berth").map((b) => ({
-    label: firstText(b, "bb-berth__label"),
-    rows: b.querySelectorAll(".bb-row").map(rowOf),
-  }));
+  lane.querySelectorAll(".bb-berth").map((b) => {
+    const more = b.querySelectorAll(".bb-more")[0] || null;
+    const behind = more ? more.querySelectorAll(".bb-row").map(rowOf) : [];
+    const rows = b.querySelectorAll(".bb-row").map(rowOf);
+    return {
+      label: firstText(b, "bb-berth__name"),
+      count: firstText(b, "bb-berth__n"),
+      none: firstText(b, "bb-berth__none"),
+      rows,
+      shown: rows.slice(0, rows.length - behind.length),
+      more: more
+        ? { n: firstText(b, "bb-more__n"), hint: firstText(b, "bb-more__hint"), rows: behind }
+        : null,
+    };
+  });
 
 const strip = node("bb-stats");
 const stats = strip.children.map((t) => ({
@@ -162,28 +176,15 @@ const stats = strip.children.map((t) => ({
 const yard = node("bb-yard");
 const lanes = kids(yard, "bb-lane").map((lane) => {
   const head = lane.children.find((c) => has(c, "bb-lane__head")) || new Node("div");
-  const drawer = lane.children.find((c) => has(c, "bb-drawer"));
-  const gauge = lane.children.find((c) => has(c, "bb-gauge"));
   return {
     name: firstText(head, "bb-lane__name"),
     reading: firstText(head, "bb-lane__reading"),
     launch: firstText(head, "bb-lane__launch"),
     badges: badgesOf(head),
     tone: (lane.className.match(/bb-lane--([a-z]+)/) || [])[1] ?? "",
-    gauge: gauge
-      ? gauge.children.map((s) => ({
-          part: (s.className.match(/bb-gauge__seg--([a-z]+)/) || [])[1] ?? "",
-          width: s.attributes.style ?? "",
-        }))
-      : [],
-    drawer: drawer
-      ? {
-          open: drawer.open === true,
-          depth: firstText(drawer, "bb-drawer__depth"),
-          split: firstText(drawer, "bb-drawer__split"),
-          hint: firstText(drawer, "bb-drawer__hint"),
-        }
-      : null,
+    // whether the lane drew the route at all, so "a lane with no rows draws no
+    // stages" is observable and not merely an empty berth list
+    flow: lane.children.some((c) => has(c, "bb-flow")),
     berths: berthsOf(lane),
     empty: kids(lane, "bb-empty").map((c) => c.textContent),
   };
@@ -194,11 +195,11 @@ const noticeRows = notices.querySelectorAll(".bb-row").map(rowOf);
 
 // ---------------------------------------------------------------------------
 // Some board behaviour is declared in the stylesheet rather than in the script:
-// the order-book hint is rendered always and withdrawn by `.bb-drawer[open]`,
-// which follows the drawer in both directions and so cannot be observed as
+// a deep stage's hint is rendered always and withdrawn by `.bb-more[open]`,
+// which follows the disclosure in both directions and so cannot be observed as
 // rendered DOM. The built board is the generated artifact a browser consumes,
 // so its own <style> is parsed into rules and the cascade is resolved for a REAL
-// rendered element in each drawer state. This is a semantic model of the
+// rendered element in each disclosure state. This is a semantic model of the
 // stylesheet - selectors matched against the live node tree, winners picked by
 // importance, specificity and source order - not a search for rule text, so it
 // survives reformatting, reordering and equivalent selector spellings.
@@ -357,10 +358,10 @@ const resolve = (n, prop) => {
   return best ? best.value : null;
 };
 
-const hintNode = yard.querySelectorAll(".bb-drawer__hint")[0] || null;
+const hintNode = yard.querySelectorAll(".bb-more__hint")[0] || null;
 const hintDrawer = (() => {
   let p = hintNode ? hintNode.parentNode : null;
-  while (p && !has(p, "bb-drawer")) p = p.parentNode;
+  while (p && !has(p, "bb-more")) p = p.parentNode;
   return p;
 })();
 const probeHint = (open) => {
@@ -419,6 +420,7 @@ process.stdout.write(
   JSON.stringify({
     headline: node("bb-headline").textContent,
     headlineSub: node("bb-headline-sub").textContent,
+    flowNote: node("bb-flow-note").textContent,
     yardSub: node("bb-yard-sub").textContent,
     callSub: node("bb-call-sub").textContent,
     stats,

@@ -8,20 +8,36 @@
 # agent never authors board UI at invocation time.
 #
 # The board is a shipyard read, not a checklist: the template folds the payload
-# into one LANE per project, and each lane shows what is on the ways, what is
-# held in dry dock, how deep the order book is, and what has launched. Two
-# payload facts carry that fold. `repo`, which v1 already required, is the lane
-# key. New in v2 is the backlog's own recorded date where the board can read it
-# honestly - `since` on queued work and `landed_on` on landed work - so a lane
-# can say how long an order has waited and how recently it last launched.
+# into one LANE per project, and draws inside every lane the same ROUTE - dry
+# dock, clear to start, on the ways, launched - so a project's work is read by
+# the position it stands in rather than as four grouped lists. The same four
+# stages, in the same order and the same colours, lead the page as one
+# fleet-wide rail. Two payload facts carry that fold. `repo`, which v1 already
+# required, is the lane key. New in v2 is the backlog's own recorded date where
+# the board can read it honestly - `since` on queued work and `landed_on` on
+# landed work - so a lane can say how long an order has waited and how recently
+# it last launched.
 #
-# Those dates are current-state facts that happen to carry a date, NOT a
-# history: the fleet stores no prior snapshot, so the board states age and
-# recency only, never a trend, a velocity, a streak, or a change since
-# yesterday. Underway rows deliberately carry NO date, because the only date
-# the records hold for them is when the work was filed, not when a worker
-# picked it up; printing that as time under construction would invent a tempo.
-# An underway row's live state is its movement signal instead.
+# The route is a set of POSITIONS, never a measured flow. Those dates are
+# current-state facts that happen to carry a date, NOT a history: the fleet
+# stores no prior snapshot, so the board states age and recency only, never a
+# trend, a velocity, a streak, or a change since yesterday. Nothing on it is
+# sized against anything else either, because a bar drawn across ordered stages
+# would be read as progress toward launch that no record supports. What it may
+# say, and does, is where the work is standing right now and how long the
+# longest wait has been standing there. Underway rows deliberately carry NO
+# date, because the only date the records hold for them is when the work was
+# filed, not when a worker picked it up; printing that as time under
+# construction would invent a tempo. An underway row's live state is its
+# movement signal instead. For the same reason both queued stages date a row by
+# when its ORDER was filed and neither states how long a hold has lasted: the
+# records carry no date for when a hold began.
+#
+# The presentation changed with the route; the payload contract did not. This
+# is still fm-bearings-board.v2 with the same fields and the same validation,
+# so a payload composed for the previous presentation renders unchanged here,
+# and a board already built stays exactly as it was built until the next
+# `build` replaces it.
 #
 # Usage:
 #   fm-bearings-board.sh build <data.json>
@@ -65,11 +81,17 @@
 #     backlog markdown, so the board tolerates whatever the record holds and
 #     renders an age only for a value it can parse.
 #   - a queued row that is NOT dispatchable and is not a warning must carry a
-#     non-empty `reason`. A dry-dock berth is only distinguishable from an
-#     order clear to start if the board can say what holds it.
+#     non-empty `reason`. Dry dock is only distinguishable from the stage of
+#     orders clear to start if the board can say what holds it.
 #   - a `warning` row is never dispatchable, so fleet-integrity alarms can never
 #     be picked as if they were work. The template additionally keeps every
-#     warning out of the lanes entirely, in its own Yard Notices band.
+#     warning out of the lanes entirely, out of every stage of the route, and
+#     out of every count of work, in its own Yard Notices band.
+#
+# `charted_more` counts queued rows the composer omitted, and their disposition
+# is unknown, so the template adds them to NEITHER queued stage: the rail counts
+# only the rows it can actually place and discloses the remainder as standing
+# off the route, while the yard still reports the true order-book depth.
 #
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
 # re-invocation rebuilds the same file in place, which keeps the same Lavish
