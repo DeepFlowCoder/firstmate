@@ -411,9 +411,9 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=no-mistakes
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
-Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+The task is complete only when the no-mistakes pipeline has raised a PR and its CI is green.
+When it is implemented and committed, append \`working: implemented, waiting on firstmate to start validation\` to the status file and wait.
+Firstmate will then instruct you to run /no-mistakes, which validates the work and ships the PR.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
@@ -466,6 +466,13 @@ $RULE1
    firstmate reads your pane for that.
    A mid-task \`working:\` line (including setup complete) is nonterminal: do not end the
    turn after it; continue the same stage until a defined \`done:\` gate under Definition of done.
+   The one exception is a handoff \`working:\` line that Definition of done itself declares as a
+   point to report and wait for firstmate; there, ending the turn after the line is the
+   instruction, and the test for it is whether Definition of done declared that gate, never
+   whether you happen to be waiting on something.
+   That exception exists because the command that starts the next step is harness-specific, so
+   this brief cannot name it and you cannot proceed alone; firstmate, which chose the harness,
+   sends it.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
