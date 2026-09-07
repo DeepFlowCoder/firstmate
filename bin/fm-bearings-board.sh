@@ -25,7 +25,10 @@
 # sized against anything else either, because a bar drawn across ordered stages
 # would be read as progress toward launch that no record supports. What it may
 # say, and does, is where the work is standing right now and how long the
-# longest wait has been standing there. Underway rows deliberately carry NO
+# longest wait it was handed has been standing there - stated with that scope
+# named, because the charted feed is a bounded prefix ranked by the composer's
+# judgment rather than by age, so "the oldest order in the yard" is a claim no
+# payload supports. Underway rows deliberately carry NO
 # date, because the only date the records hold for them is when the work was
 # filed, not when a worker picked it up; printing that as time under
 # construction would invent a tempo. An underway row's live state is its

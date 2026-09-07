@@ -164,10 +164,11 @@ test_every_lane_draws_the_same_route_in_the_same_order() {
       and ([.lanes[] | select(.name == "still") | [.berths[] | .count]] == [["0","0","0","1"]])
   ' >/dev/null || fail "a lane placed its work in the wrong stage: $out"
 
-  # an empty stage is a real reading, worded against the board rather than the
-  # world, because the queued feed the board is handed is a capped flat prefix
+  # an empty stage is a real reading, scoped to the artifact and naming no feed,
+  # because every feed the board is handed is bounded and no stage draws from
+  # all of them
   printf '%s' "$out" | jq -e '
-    [.lanes[] | .berths[] | select(.count == "0") | .none] | unique == ["nothing charted here"]
+    [.lanes[] | .berths[] | select(.count == "0") | .none] | unique == ["none on this board"]
   ' >/dev/null || fail "an empty stage claimed something the payload cannot support: $out"
 
   # the lane whose only item is the captain's own call draws no route at all
@@ -508,6 +509,45 @@ test_the_launched_stage_always_discloses_that_it_is_bounded() {
 }
 
 # ---------------------------------------------------------------------------
+# The yard report's time bracket reduces over the charted feed, which is a
+# bounded prefix the composer ranked by its own judgment rather than by age. So
+# "the oldest order in the yard" is a claim no payload supports, and the line
+# names the scope it actually has. It does so on every board, not only where
+# `charted_more` says rows were cut: that field is optional, so its absence
+# means the composer did not say, never that nothing was omitted.
+# ---------------------------------------------------------------------------
+test_the_oldest_wait_never_claims_more_than_the_board_was_handed() {
+  local body cut whole
+  body='{
+    "charted": [
+      {"id":"old","repo":"sample","title":"Long wait","reason":"",
+       "dispatchable":true,"since":"2026-07-01"},
+      {"id":"new","repo":"sample","title":"Short wait","reason":"",
+       "dispatchable":true,"since":"2026-08-24"}
+    ]'
+  cut=$(render "$(make_home oldest-scope-cut)" "$body, \"charted_more\": 30}")
+  whole=$(render "$(make_home oldest-scope-whole)" "$body}")
+
+  # a truncated board: the bracket is the oldest it was HANDED, never the yard's
+  printf '%s' "$cut" | jq -e '
+    (.headlineSub | test("oldest order charted here waiting 56 days"))
+      and (.yardSub | test("32 in the order book"))
+  ' >/dev/null || fail "the time bracket claimed a yard-wide oldest over a cut feed: $cut"
+
+  # and the scope is named just the same where nothing was cut, so the
+  # qualification cannot regress to something an optional field switches on
+  printf '%s' "$whole" | jq -e '
+    .headlineSub | test("oldest order charted here waiting 56 days")
+  ' >/dev/null || fail "the time bracket dropped its scope on an untruncated board: $whole"
+
+  # neither board may state the unscoped superlative anywhere
+  if printf '%s\n%s' "$cut" "$whole" | grep -q "oldest order waiting"; then
+    fail "the board stated an unscoped oldest-order superlative: $cut"
+  fi
+  pass "the oldest-wait bracket names the board it was computed over, always"
+}
+
+# ---------------------------------------------------------------------------
 # An empty lane is calm, never "abandoned": the fleet records current state,
 # not intent, so the board names WHICH empty each lane is.
 # ---------------------------------------------------------------------------
@@ -546,7 +586,7 @@ test_an_empty_lane_names_which_empty_it_is() {
   ' >/dev/null || fail "a quiet lane stopped drawing the route it is quiet on: $out"
   printf '%s' "$out" | jq -e '
     [.lanes[] | select(.name == "quiet") | .berths[] | select(.count == "0") | .none]
-      == ["nothing charted here","nothing charted here","nothing charted here"]
+      == ["none on this board","none on this board","none on this board"]
   ' >/dev/null || fail "an empty stage claimed more than the board can hold: $out"
   pass "an empty lane names which empty it is instead of implying abandonment"
 }
@@ -1061,6 +1101,7 @@ test_a_yard_of_only_warnings_reports_no_work_at_all
 test_omitted_warnings_never_count_as_more_queued
 test_omitted_queued_work_is_reported_against_the_yard
 test_the_launched_stage_always_discloses_that_it_is_bounded
+test_the_oldest_wait_never_claims_more_than_the_board_was_handed
 test_omitted_queued_work_is_never_reported_as_available_capacity
 test_opening_a_deep_stage_withdraws_its_hint
 test_an_empty_lane_names_which_empty_it_is

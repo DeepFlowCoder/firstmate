@@ -795,9 +795,18 @@ __FM_BEARINGS_BOARD_DATA__
   }, null);
   var lastLaunchText = agoDay(yardLastLaunch);
   /* The two ends of the yard's own clock, and the closest the board may come to
-     a tempo: how long the order that has waited longest has waited, and how
-     recently something came off the far end. Both are ages read off recorded
-     dates - neither is a rate, and neither compares this board to any other. */
+     a tempo: how long the longest-waiting order it was handed has waited, and
+     how recently something came off the far end. Both are ages read off
+     recorded dates - neither is a rate, and neither compares this board to any
+     other. The two superlatives do not stand on equal ground, and the wording
+     below says so. "Last launch" is a MOST-RECENT reduction over a
+     recent-completions baseline, which by construction keeps the most recent,
+     so it holds. "Oldest" reduces over the charted feed, which is a bounded
+     prefix the composer ranked by its own judgment and not by age, so the
+     board cannot know that nothing older exists and never claims it. That
+     scope is stated unconditionally rather than only when `charted_more` says
+     rows were cut: the field is optional, so its absence means the composer
+     did not say, never that nothing was omitted. */
   var oldestWait = chartedWork.reduce(function (best, t) {
     var n = daysBefore(t.since);
     if (n === null || n < 0) return best;
@@ -831,7 +840,7 @@ __FM_BEARINGS_BOARD_DATA__
   var headlineSub = [];
   if (totalDock) headlineSub.push(totalDock + " held in dry dock");
   if (oldestWait !== null && oldestWait >= 1) {
-    headlineSub.push("oldest order waiting " + plural(oldestWait, "day", "days"));
+    headlineSub.push("oldest order charted here waiting " + plural(oldestWait, "day", "days"));
   }
   if (lastLaunchText) headlineSub.push("last launch " + lastLaunchText);
   if (!headlineSub.length) headlineSub.push(plural(lanes.length, "project", "projects"));
@@ -1123,10 +1132,14 @@ __FM_BEARINGS_BOARD_DATA__
      with the hint that belongs to it, because only the call site knows whether
      the rows it hands over are ordered such that the survivors are the right
      ones. A stage passed no cap renders every row it holds.
-     The empty marker is worded against the BOARD, never against the world: the
-     payload's queued feed is a capped flat prefix, so "nothing charted here" is
-     always true where "nothing here" could be falsified by a row the composer
-     truncated away. */
+     The empty marker names no source, because every feed the board is handed
+     is bounded and no stage may claim an absence in the world: the queued feed
+     is a capped flat prefix disclosed by `charted_more`, the landed feed is
+     the recent-completions baseline, and the underway feed is the snapshot's
+     bounded in-flight projection. So the marker is scoped to the artifact and
+     borrows no feed's vocabulary - "nothing here" could be falsified by a row
+     that was never handed over, and naming one feed would be inapplicable to
+     the three stages not drawn from it. */
   var STAGE_SHOW = 4;
   function stage(parent, key, label, rows, build, cap) {
     var cell = el("div", "bb-berth bb-berth--" + key + (rows.length ? "" : " bb-berth--empty"));
@@ -1135,7 +1148,7 @@ __FM_BEARINGS_BOARD_DATA__
     head.appendChild(el("span", "bb-berth__n", String(rows.length)));
     cell.appendChild(head);
     if (!rows.length) {
-      cell.appendChild(el("div", "bb-berth__none", "nothing charted here"));
+      cell.appendChild(el("div", "bb-berth__none", "none on this board"));
       parent.appendChild(cell);
       return;
     }
