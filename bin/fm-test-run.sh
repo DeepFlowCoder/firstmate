@@ -1288,9 +1288,10 @@ families_for_changed_path() {
       fi
       ;;
     tests/assets/*)
-      # A test asset belongs to whichever suites name it, resolved per script by
-      # the same reference scan shared helpers use. A removed asset has no
-      # consuming suite left to select, the same rule the fixture case applies.
+      # A test asset belongs to whichever suites name it, resolved to those
+      # individual scripts by the same per-script rule the bin/* arm follows
+      # rather than widened to whole families. A removed asset has no consuming
+      # suite left to select, the same rule the fixture case applies.
       if [ -e "$path" ]; then
         scripts_for_test_reference "$(basename "$path")" \
           || printf '%s\n' "__unmapped__:$path"

@@ -93,6 +93,16 @@
 # only the rows it can actually place and discloses the remainder as standing
 # off the route, while the yard still reports the true order-book depth.
 #
+# The rail's note under the stages carries every bound its figures stand under,
+# in route order and joined by the same separator the board's other joined
+# lines use. The `charted_more` disclosure above is the conditional half. The
+# other half is unconditional, because the launched stage is always drawn and
+# its figure is the payload's bounded recent-completions baseline rather than
+# complete current occupancy like the three stages before it. Nothing in the
+# payload says how many launches were left out of that baseline, so the note
+# names the KIND of bound and never a number, a window length, a rate or a
+# change - the same refusal the route itself is built on.
+#
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
 # re-invocation rebuilds the same file in place, which keeps the same Lavish
 # session URL and the same canonical process-event source id. Injection escapes

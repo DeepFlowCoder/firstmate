@@ -858,12 +858,21 @@ __FM_BEARINGS_BOARD_DATA__
     t.appendChild(el("span", "bb-stat__label", s.l));
     strip.appendChild(t);
   });
-  /* Truncated queued rows are queued work of unknown disposition, so they can
-     be added to neither queued stage without asserting where they stand. The
-     rail says they exist and says they are off it. */
-  document.getElementById("bb-flow-note").textContent = chartedMoreQueued
-    ? "+" + chartedMoreQueued + " more queued, not charted here, so no stage counts them"
-    : "";
+  /* The note carries every bound the rail's own figures stand under, in route
+     order. Truncated queued rows are queued work of unknown disposition, so
+     they can be added to neither queued stage without asserting where they
+     stand: the rail says they exist and says they are off it, and only when
+     there are any. The launched bound applies always, because that stage is
+     always drawn and its figure is a bounded recent-completions baseline
+     rather than complete occupancy like the three before it. The board is
+     never told how many launches were left out, so the note names the KIND of
+     bound and never a number, a window, a rate or a change. */
+  var flowBounds = [];
+  if (chartedMoreQueued) {
+    flowBounds.push("+" + chartedMoreQueued + " more queued, not charted here, so no stage counts them");
+  }
+  flowBounds.push("launched counts the recent completions this board was given, not every launch on record");
+  document.getElementById("bb-flow-note").textContent = flowBounds.join(" · ");
   document.getElementById("bb-call-sub").textContent =
     callTotal ? plural(callTotal, "item waits", "items wait") + " on you, captain" : "nothing needs you, captain";
 
@@ -1186,7 +1195,7 @@ __FM_BEARINGS_BOARD_DATA__
           badgeTone: "warn",
           badgeText: "held",
           title: t.title,
-          sub: holds || (ordered ? "" : "held with no reason recorded"),
+          sub: holds || "held with no reason recorded",
           id: identity(t),
           when: ordered,
           aged: isAged(t.since)

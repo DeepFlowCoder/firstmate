@@ -400,7 +400,7 @@ test_omitted_warnings_never_count_as_more_queued() {
   printf '%s' "$out" | jq -e '
     (.noticeMore == ["+1 more repair warning - ask firstmate for the full chart"])
       and (.more == [])
-      and (.flowNote == "")
+      and (.flowNote == "launched counts the recent completions this board was given, not every launch on record")
   ' >/dev/null || fail "an omitted warning was labeled as more queued: $out"
   pass "omitted warnings remain separate from omitted queued work"
 }
@@ -425,9 +425,44 @@ test_omitted_queued_work_is_reported_against_the_yard() {
     (.more == ["+4 more queued - ask firstmate for the full chart"])
       and (.noticeMore == [])
       and (.yardSub | test("5 in the order book"))
-      and (.flowNote == "+4 more queued, not charted here, so no stage counts them")
+      and (.flowNote == "+4 more queued, not charted here, so no stage counts them · launched counts the recent completions this board was given, not every launch on record")
   ' >/dev/null || fail "omitted queued work was not disclosed against the yard: $out"
   pass "omitted queued work is disclosed as yard depth, never folded into a stage"
+}
+
+# ---------------------------------------------------------------------------
+# The launched stage is the one rail figure that is not complete occupancy: it
+# counts the bounded recent-completions baseline the payload carried, and the
+# board is never told how many launches were left out of it. So the rail states
+# that bound on every board it draws, not only on a board that also truncated
+# its queue - otherwise the disclosure would be present exactly when a second,
+# unrelated condition happened to hold.
+# ---------------------------------------------------------------------------
+test_the_launched_stage_always_discloses_that_it_is_bounded() {
+  local home out
+  home=$(make_home launched-bound)
+  out=$(render "$home" '{
+    "charted": [
+      {"id":"shown","repo":"sample","title":"Shown order","reason":"",
+       "dispatchable":true,"since":"2026-08-18"}
+    ],
+    "landed": [
+      {"id":"done","repo":"sample","what":"Shipped the cutover","owner":"firstmate",
+       "landed_on":"2026-08-25"}
+    ]}')
+  # nothing was truncated, so the queued half of the note must be absent and the
+  # launched half must still be there, alone
+  printf '%s' "$out" | jq -e '
+    (.more == []) and (.noticeMore == [])
+      and (.flowNote == "launched counts the recent completions this board was given, not every launch on record")
+  ' >/dev/null || fail "the launched stage was drawn without disclosing that its count is bounded: $out"
+  # the disclosure names the kind of bound only: no number, window, rate or change
+  printf '%s' "$out" | jq -e '
+    (.flowNote | test("[0-9]") | not)
+  ' >/dev/null || fail "the launched bound asserted a figure the payload never carried: $out"
+  [ "$(stat_n "$out" "launched")" = 1 ] \
+    || fail "the launched stage lost its own count while disclosing its bound: $out"
+  pass "the launched stage discloses its bound on every board, not only a truncated one"
 }
 
 # ---------------------------------------------------------------------------
@@ -599,8 +634,8 @@ test_a_placeholder_reason_never_becomes_a_subtitle() {
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Dry dock") | .rows[]
      | {s:.sub, w:.when, b:[.badges[].text]}]
-      == [{s:"", w:"ordered 10 days ago", b:["held"]}]
-  ' >/dev/null || fail "a held row rendered a bare dash instead of how long it has waited: $out"
+      == [{s:"held with no reason recorded", w:"ordered 10 days ago", b:["held"]}]
+  ' >/dev/null || fail "a held row whose reason is the placeholder did not declare that its reason is missing: $out"
   printf '%s' "$out" | jq -e '
     [.lanes[].berths[].rows[] | select((.sub | startswith("-")) or (.when | startswith("-")))] == []
   ' >/dev/null || fail "a placeholder reason survived into a lane: $out"
@@ -982,6 +1017,7 @@ test_integrity_warnings_never_enter_a_lane
 test_a_yard_of_only_warnings_reports_no_work_at_all
 test_omitted_warnings_never_count_as_more_queued
 test_omitted_queued_work_is_reported_against_the_yard
+test_the_launched_stage_always_discloses_that_it_is_bounded
 test_omitted_queued_work_is_never_reported_as_available_capacity
 test_opening_a_deep_stage_withdraws_its_hint
 test_an_empty_lane_names_which_empty_it_is
