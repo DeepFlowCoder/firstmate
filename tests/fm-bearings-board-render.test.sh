@@ -255,6 +255,48 @@ test_a_deep_stage_keeps_its_longest_waits_in_view() {
 }
 
 # ---------------------------------------------------------------------------
+# The cap is only honest where the stage's own ordering decides which rows
+# survive it. On the ways holds no date to order by, so it is the one stage the
+# route never caps: every live hull stays in view rather than four arbitrary
+# ones. The assertion is the ASYMMETRY on a single board - the unsorted stage
+# renders all of its rows and offers no overflow at all, while a sorted stage
+# past the same depth still holds its remainder back.
+# ---------------------------------------------------------------------------
+test_the_unsorted_stage_is_the_one_the_route_never_caps() {
+  local home out lane ways order
+  home=$(make_home ways-uncapped)
+  out=$(render "$home" "$(jq -n \
+    --argjson q "$(rows sample 6 true '' 2026-08-10)" '{
+      underway: [
+        {id:"w1", repo:"sample", kind:"ship", state:"working", doing:"Hull one"},
+        {id:"w2", repo:"sample", kind:"ship", state:"working", doing:"Hull two"},
+        {id:"w3", repo:"sample", kind:"scout", state:"validating", doing:"Hull three"},
+        {id:"w4", repo:"sample", kind:"ship", state:"working", doing:"Hull four"},
+        {id:"w5", repo:"sample", kind:"ship", state:"working", doing:"Hull five"},
+        {id:"w6", repo:"sample", kind:"scout", state:"working", doing:"Hull six"}
+      ],
+      charted: $q}')")
+  lane=$(printf '%s' "$out" | jq -c '.lanes[0]')
+  ways=$(stage_of "$lane" "On the ways")
+  order=$(stage_of "$lane" "Clear to start")
+
+  # every live hull is in view, in the order the composer ranked them, and the
+  # stage offers nothing to open because it withheld nothing
+  printf '%s' "$ways" | jq -e '
+    .count == "6"
+      and ([.shown[].title] == ["Hull one","Hull two","Hull three","Hull four","Hull five","Hull six"])
+      and (.more == null)
+  ' >/dev/null || fail "the unsorted underway stage hid live hulls behind a cap: $ways"
+
+  # the same board, the same depth, a stage that IS ordered: still capped, so
+  # what changed is the ordering rule and not the cap machinery itself
+  printf '%s' "$order" | jq -e '
+    .count == "6" and (.shown | length) == 4 and .more.n == "+2"
+  ' >/dev/null || fail "a sorted stage past the cap stopped holding its remainder back: $order"
+  pass "the stage with no order to cap by renders every live hull, while a sorted stage still caps"
+}
+
+# ---------------------------------------------------------------------------
 # The captain's actual complaint: a stopped fleet with a long queue must not
 # read as a list of his own debts.
 # ---------------------------------------------------------------------------
@@ -1010,6 +1052,7 @@ test_two_projects_with_the_same_queue_read_differently
 test_every_lane_draws_the_same_route_in_the_same_order
 test_the_board_never_states_a_rate_or_a_change
 test_a_deep_stage_keeps_its_longest_waits_in_view
+test_the_unsorted_stage_is_the_one_the_route_never_caps
 test_a_stopped_fleet_reads_as_capacity_not_as_a_checklist
 test_the_board_still_emits_every_answer_key
 test_dry_dock_and_clear_to_start_are_different_stages

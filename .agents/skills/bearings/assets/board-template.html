@@ -1119,12 +1119,16 @@ __FM_BEARINGS_BOARD_DATA__
      shows only its first rows and keeps the rest behind a count, so a long queue
      is never dealt out as a checklist - the same instinct the collapsed order
      book carried, now applied per stage rather than to the whole book.
+     Whether a stage caps at all is the CALL SITE's to state, passed as `cap`
+     with the hint that belongs to it, because only the call site knows whether
+     the rows it hands over are ordered such that the survivors are the right
+     ones. A stage passed no cap renders every row it holds.
      The empty marker is worded against the BOARD, never against the world: the
      payload's queued feed is a capped flat prefix, so "nothing charted here" is
      always true where "nothing here" could be falsified by a row the composer
      truncated away. */
   var STAGE_SHOW = 4;
-  function stage(parent, key, label, rows, build, hint) {
+  function stage(parent, key, label, rows, build, cap) {
     var cell = el("div", "bb-berth bb-berth--" + key + (rows.length ? "" : " bb-berth--empty"));
     var head = el("div", "bb-berth__label");
     head.appendChild(el("span", "bb-berth__name", label));
@@ -1135,10 +1139,11 @@ __FM_BEARINGS_BOARD_DATA__
       parent.appendChild(cell);
       return;
     }
+    var limit = cap ? cap.show : rows.length;
     var shown = el("div", "bb-rows");
-    rows.slice(0, STAGE_SHOW).forEach(function (t) { shown.appendChild(build(t)); });
+    rows.slice(0, limit).forEach(function (t) { shown.appendChild(build(t)); });
     cell.appendChild(shown);
-    var rest = rows.slice(STAGE_SHOW);
+    var rest = rows.slice(limit);
     if (rest.length) {
       var more = document.createElement("details");
       more.className = "bb-more";
@@ -1149,7 +1154,7 @@ __FM_BEARINGS_BOARD_DATA__
       /* The hint is only true while the rows are still behind the count, and the
          stylesheet withdraws it in BOTH directions, so it also comes back when
          the captain collapses a stage he opened. */
-      summary.appendChild(el("span", "bb-more__hint", hint));
+      summary.appendChild(el("span", "bb-more__hint", cap.hint));
       more.appendChild(summary);
       var hidden = el("div", "bb-rows");
       rest.forEach(function (t) { hidden.appendChild(build(t)); });
@@ -1200,7 +1205,7 @@ __FM_BEARINGS_BOARD_DATA__
           when: ordered,
           aged: isAged(t.since)
         });
-      }, "open to read what holds them");
+      }, { show: STAGE_SHOW, hint: "open to read what holds them" });
 
       stage(flow, "order", "Clear to start", oldestOrderFirst(l.order), function (t) {
         var ordered = orderedText(t.since);
@@ -1213,14 +1218,22 @@ __FM_BEARINGS_BOARD_DATA__
           when: ordered,
           aged: isAged(t.since)
         });
-      }, "open to pick");
+      }, { show: STAGE_SHOW, hint: "open to pick" });
 
       stage(flow, "ways", "On the ways", l.ways, function (t) {
         /* No age here on purpose: the backlog's recorded date is when the work
            was FILED, not when a worker picked it up, so printing it as time
            under construction would invent a tempo. The live state is the real
            movement signal, and it is current-state truth. That is also why this
-           stage is the one the route never sorts: it holds no date to sort by. */
+           stage is the one the route never sorts: it holds no date to sort by.
+           And that same absence is why it is the one stage the route never
+           caps. A cap is only honest because the stage's own ordering decides
+           which rows survive it - oldest waits stay in the queued stages, the
+           most recent launches stay in Launched - and with no date to order by
+           there is nothing here to make that decision. Imposing a stable but
+           meaningless order would only make the omission repeatable rather
+           than arbitrary, which is not a fix, and live work is the most
+           actionable thing on the page to hide any of. */
         return workRow({
           badgeTone: t.state === "working" ? "online" : "info",
           badgeText: t.state,
@@ -1228,7 +1241,7 @@ __FM_BEARINGS_BOARD_DATA__
           sub: t.kind,
           id: identity(t)
         });
-      }, "open to read them");
+      }, null);
 
       stage(flow, "launched", "Launched", newestLaunchFirst(l.launched), function (t) {
         return workRow({
@@ -1239,7 +1252,7 @@ __FM_BEARINGS_BOARD_DATA__
           when: launchedText(t.landed_on),
           pr_url: t.pr_url
         });
-      }, "open to read them");
+      }, { show: STAGE_SHOW, hint: "open to read them" });
 
       card.appendChild(flow);
     }
