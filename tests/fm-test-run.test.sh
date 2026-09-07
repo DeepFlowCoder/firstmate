@@ -330,18 +330,33 @@ test_changed_test_asset_selects_per_script_and_survives_removal() {
   git -C "$repo" add tests/assets/probe-harness.mjs
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm asset-change
 
-  # a retired asset has no reader left to select, so it may not fail closed the
-  # way an unmapped source does
+  # Retire the asset the way a real retirement goes: the file AND the last
+  # reader's reference both go, so no surviving script names the basename any
+  # more. That is the only state that separates the arm's existence guard from
+  # its absence - resolution is skipped, where running it would find no reader
+  # and refuse the path as unmapped. Removing an asset some script still names
+  # would pass either way, which is why this step retires the reference too.
   git -C "$repo" rm -q tests/assets/probe-harness.mjs
+  printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/fm-control-herdr-smoke.test.sh"
   set +e
-  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD 2>"$tmp/err")
   rc=$?
   set -e
   [ "$rc" -eq 0 ] \
-    || fail "removing a test asset refused as an unmapped source (rc=$rc): $(cat "$tmp/err")"
+    || fail "retiring a test asset refused as an unmapped source (rc=$rc): $(cat "$tmp/err")"
+  # the retired asset contributes no selection of its own; what is listed comes
+  # from the edited script itself, so the arm resolved nothing rather than
+  # resolving to a reader that no longer exists
+  assert_contains "$listed" "tests/fm-control-herdr-smoke.test.sh" \
+    "the edited script must still select itself after its asset is retired"
+  case "$listed" in
+    *tests/fm-backend-herdr-smoke.test.sh*)
+      fail "a retired asset selected a script that never named it: $listed"
+      ;;
+  esac
 
   rm -rf "$tmp"
-  pass "a changed test asset selects its readers per script, and a removed one refuses nothing"
+  pass "a changed test asset selects its readers per script, and a retired one refuses nothing"
 }
 
 # Exercise begin/end markers from real fixture processes to prove the automatic
