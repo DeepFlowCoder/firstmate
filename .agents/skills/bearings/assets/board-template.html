@@ -171,22 +171,43 @@ a { color: inherit; text-decoration: none; }
 }
 .bb-report__sub { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-muted); overflow-wrap: anywhere; }
 
-/* stat strip */
-/* The 130px minimum is what decides how many figures share a row, so it stays;
-   min-width: 0 is defence in depth in this file's house style, the same
-   declaration .bb-main, .bb-report and .bb-section carry, not a fix for any
-   minimum that binds the strip today. Each figure's number and label wrap
-   anywhere rather than run out of their card, so no reading can escape
-   sideways under its neighbour. */
-.bb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; min-width: 0; }
+/* ---- the route rail: the four positions work occupies, in order ----
+   These are COUNTS at one instant. The fleet keeps no prior snapshot, so
+   nothing on this rail may claim a rate, a trend or a change since yesterday;
+   what it does say is the SHAPE of the pipeline - where the work is thick and
+   where it is thin - which is current-state truth and needs no history.
+   The captain's own gate sits before the rail and carries no chevron: a
+   decision waiting on him is not a position on the route, and drawing it as
+   one would let a decision be read as work in progress.
+   Each figure's number and label wrap anywhere rather than run out of their
+   tile, so no reading can escape sideways under its neighbour. */
+.bb-flowrail { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bb-stats { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; min-width: 0; }
 .bb-stat {
-  display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; min-width: 0; flex: 1 1 0;
   background: var(--surface-card-warm); border: 1px solid var(--border-soft); border-radius: var(--radius-md);
 }
-.bb-stat--call { background: var(--rust-050); border: 2px solid var(--rust-500); }
+.bb-stat--call { flex: 0 1 auto; min-width: 118px; margin-right: 10px; background: var(--rust-050); border: 2px solid var(--rust-500); }
+.bb-stat--stage { position: relative; border-top: 3px solid var(--stage-tone, var(--border-soft)); }
+/* the chevron rides the gap BEFORE each stage that has another stage upstream
+   of it, so it can never be drawn between the captain's gate and the route */
+.bb-stat--stage + .bb-stat--stage::before {
+  content: ""; position: absolute; left: -14px; top: 50%; margin-top: -5px;
+  border-left: 6px solid var(--ink-300);
+  border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+}
+/* one colour per stage, used identically on the rail and inside every lane, so
+   the stage a row stands in is readable without reading its column header */
+.bb-stat--dock     { --stage-tone: var(--gold-500); }
+.bb-stat--order    { --stage-tone: var(--ocean-500); }
+.bb-stat--ways     { --stage-tone: var(--sea-500); }
+.bb-stat--launched { --stage-tone: var(--navy-300); }
 .bb-stat__num { font-family: var(--font-mono); font-size: var(--fs-h3); font-weight: 600; line-height: 1; color: var(--text-strong); overflow-wrap: anywhere; }
 .bb-stat--call .bb-stat__num { color: var(--rust-600); }
 .bb-stat__label { font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); overflow-wrap: anywhere; }
+.bb-flowrail__foot { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.bb-flowrail__foot .fm-sign--muted { white-space: normal; min-width: 0; overflow-wrap: anywhere; }
+.bb-flowrail__note { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); min-width: 0; overflow-wrap: anywhere; }
 
 .bb-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .bb-section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -275,7 +296,7 @@ a { color: inherit; text-decoration: none; }
 .bb-freeform:focus { outline: none; border-color: var(--rust-400); box-shadow: var(--focus-ring); }
 
 /* ============================================================
-   The shipyard: one lane per project
+   The shipyard: one lane per project, every lane the same route
    ============================================================ */
 .bb-yard { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .bb-lane {
@@ -301,57 +322,85 @@ a { color: inherit; text-decoration: none; }
 .bb-lane__reading { flex: 1 1 220px; min-width: 0; font-size: var(--fs-sm); color: var(--text-muted); overflow-wrap: anywhere; }
 .bb-lane__launch { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
 
-/* the gauge: every lane's bar is scaled against the same busiest lane, so the
-   contrast between a yard full of hulls and a yard full of orders is the first
-   thing the eye gets */
-.bb-gauge { display: flex; align-items: center; gap: 0; height: 8px; margin: 0 18px; min-width: 0;
-  background: var(--paper-200); border-radius: var(--radius-pill); overflow: hidden; }
-.bb-gauge__seg { height: 100%; min-width: 0; }
-.bb-gauge__seg--ways { background: var(--sea-500); }
-.bb-gauge__seg--dock { background: var(--gold-500); }
-.bb-gauge__seg--order { background: var(--ocean-200); }
-
+/* ---- the route, drawn inside every lane ----
+   Same four stages, same order, same colours as the rail above, so one
+   project's yard can be read against another's without re-reading a header.
+   The columns are EQUAL width on purpose: they are stage labels, not a gauge.
+   A bar whose segments sized themselves against each other would sit directly
+   above ordered stages and read as progress toward launch, and the fleet holds
+   no measurement that could support such a reading. */
+.bb-flow {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px; padding: 12px 14px 14px; min-width: 0;
+  border-top: 1px solid var(--border-soft);
+}
 .bb-berth { display: flex; flex-direction: column; min-width: 0; }
+.bb-berth--dock     { --stage-tone: var(--gold-500); }
+.bb-berth--order    { --stage-tone: var(--ocean-500); }
+.bb-berth--ways     { --stage-tone: var(--sea-500); }
+.bb-berth--launched { --stage-tone: var(--navy-300); }
 .bb-berth__label {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 10px 18px 4px; font-family: var(--font-mono); font-size: var(--fs-2xs);
-  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 0 2px 5px; font-family: var(--font-mono); font-size: var(--fs-2xs);
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted);
+  border-bottom: 3px solid var(--stage-tone);
 }
+.bb-berth__name { min-width: 0; overflow-wrap: anywhere; }
+.bb-berth__n { flex: none; font-weight: 700; color: var(--text-strong); }
+/* An empty stage is a real reading on a wide screen - the route shows its own
+   gap - and dead height on a phone, where the lane's sentence already says
+   which empty the lane is. */
+.bb-berth--empty { opacity: 0.6; }
+.bb-berth__none { padding: 8px 2px 0; font-size: var(--fs-xs); color: var(--text-faint); overflow-wrap: anywhere; }
+.bb-berth > .bb-rows { padding-top: 8px; }
 
-/* the order book is depth, not a checklist: closed it is one number with a
-   shape, open it is the pickable work */
-.bb-drawer { border-top: 1px solid var(--border-soft); min-width: 0; }
-.bb-drawer__summary {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer;
-  padding: 11px 18px; font-size: var(--fs-sm); color: var(--text-body); list-style: none;
-}
-.bb-drawer__summary::-webkit-details-marker { display: none; }
-.bb-drawer__summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.bb-drawer__depth { font-family: var(--font-mono); font-size: var(--fs-h4); font-weight: 600; color: var(--text-strong); line-height: 1; }
-.bb-drawer__split { flex: 1 1 200px; min-width: 0; color: var(--text-muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
-.bb-drawer__hint { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
-.bb-drawer[open] .bb-drawer__hint { display: none; }
-
-/* ---- compact rows ---- */
-.bb-rows { display: flex; flex-direction: column; min-width: 0; }
+/* ---- cards ---- */
+.bb-rows { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .bb-row {
-  display: flex; align-items: center; gap: 12px; padding: 9px 18px;
-  border-top: 1px solid var(--border-soft); min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; row-gap: 4px;
+  padding: 8px 10px; min-width: 0;
+  background: var(--surface-card-warm);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
 }
-.bb-berth .bb-row:first-child, .bb-rows > .bb-row:first-child { border-top: none; }
-.bb-row__main { min-width: 0; flex: 1 1 auto; }
+.bb-row__main { min-width: 0; flex: 1 1 120px; }
+/* A column is narrower than a full-width row, so a title that truncated to one
+   line would lose more than it kept. It wraps and clamps instead. */
 .bb-row__title { font-size: var(--fs-sm); font-weight: 700; color: var(--text-strong); line-height: 1.3;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bb-row__sub { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.3; margin-top: 1px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3;
+  overflow: hidden; overflow-wrap: anywhere; }
+.bb-row__sub { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.35; margin-top: 2px;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere; }
+/* Identity, age and PR share one line beneath the card body, so a sentence-length
+   reason can never be what decides whether the row can still be named or dated. */
+.bb-row__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; row-gap: 4px; flex: 1 1 100%; min-width: 0; }
 .bb-row__id { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap;
-  flex: 0 0 auto; min-width: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; }
-.bb-row__when { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
-.bb-row__pr { font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 600; color: var(--ocean-600); white-space: nowrap; }
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The age chip spells out what it measures, so its meaning never depends on
+   reading its colour; the colour only adds weight past a stated threshold. */
+.bb-row__when { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-muted); white-space: nowrap;
+  flex: none; padding: 2px 7px 1px; border-radius: var(--radius-pill); background: var(--paper-200); }
+.bb-row--aged .bb-row__when { background: var(--gold-100); color: var(--gold-600); box-shadow: inset 0 0 0 1px var(--gold-300); }
+.bb-row__pr { font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 600; color: var(--ocean-600); white-space: nowrap; flex: none; }
 .bb-row__pr:hover { text-decoration: underline; }
-.bb-row__check { width: 24px; height: 24px; border-radius: var(--radius-sm); display: grid; place-items: center; flex: none;
-  background: var(--status-online-soft); color: var(--status-online); border: 1.5px solid var(--sea-200); }
-.bb-row__check svg { width: 14px; height: 14px; }
+.bb-row__check { width: 22px; height: 22px; border-radius: var(--radius-sm); display: grid; place-items: center; flex: none;
+  background: var(--navy-100); color: var(--navy-500); border: 1.5px solid var(--navy-100); }
+.bb-row__check svg { width: 13px; height: 13px; }
+
+/* ---- a stage deep enough to become a wall stays a number until asked ---- */
+.bb-more { margin-top: 8px; min-width: 0; }
+.bb-more__summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; list-style: none;
+  padding: 5px 11px; min-width: 0; font-size: var(--fs-xs); color: var(--text-muted);
+  border: 1.5px dashed var(--ink-300); border-radius: var(--radius-pill);
+}
+.bb-more__summary::-webkit-details-marker { display: none; }
+.bb-more__summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.bb-more__n { font-family: var(--font-mono); font-weight: 800; color: var(--text-strong); }
+.bb-more__label { min-width: 0; overflow-wrap: anywhere; }
+.bb-more__hint { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
+.bb-more[open] .bb-more__hint { display: none; }
+.bb-more .bb-rows { padding-top: 8px; }
 .bb-morechip {
   display: inline-flex; align-items: center; gap: 6px; margin: 10px 18px 12px;
   font-size: var(--fs-xs); font-weight: 800; color: var(--text-muted);
@@ -360,15 +409,15 @@ a { color: inherit; text-decoration: none; }
 }
 .bb-empty { padding: 18px; font-size: var(--fs-sm); color: var(--text-muted); overflow-wrap: anywhere; }
 
-/* ---- yard notices: integrity alarms, never a berth in a lane ---- */
+/* ---- yard notices: integrity alarms, never a stage in a lane ---- */
 .bb-notices { border: 2px dashed var(--rust-300); background: var(--rust-050); border-radius: var(--radius-md); min-width: 0; overflow: hidden; }
-.bb-notices .bb-row { border-top-color: var(--rust-100); }
+.bb-notices .bb-rows { padding: 12px; }
+.bb-notices .bb-row { background: var(--white); border-color: var(--rust-100); }
 
 /* ---- dispatch picker ---- */
-/* margin:0 kills the UA default checkbox margin so picker rows and spacer rows
-   share one text left edge */
-.bb-pick { accent-color: var(--rust-500); width: 16px; height: 16px; flex: none; cursor: pointer; margin: 0; }
-.bb-pick-spacer { width: 16px; flex: none; }
+/* margin:0 kills the UA default checkbox margin so the box sits on the card's
+   own text left edge */
+.bb-pick { accent-color: var(--rust-500); width: 16px; height: 16px; flex: none; cursor: pointer; margin: 1px 0 0; }
 .bb-dispatch {
   position: sticky; bottom: 0; z-index: 10;
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 18px; min-width: 0;
@@ -380,20 +429,31 @@ a { color: inherit; text-decoration: none; }
 
 .bb-foot { display: flex; justify-content: flex-end; border-top: 1px solid var(--border-default); padding-top: 14px; }
 
+/* The route survives every width by changing only how many stages share a row,
+   never their order: four abreast on a laptop, two abreast on a tablet, and one
+   under the next on a phone, where reading downward is the same journey. */
+@media (max-width: 1000px) {
+  .bb-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+}
+
 @media (max-width: 700px) {
   .bb-nav__inner { padding: 0 16px; }
   .bb-main { padding: 20px 16px 64px; }
   .bb-lane__head { padding: 12px 14px 10px; }
-  .bb-gauge { margin: 0 14px; }
-  .bb-row, .bb-berth__label, .bb-drawer__summary { padding-left: 14px; padding-right: 14px; }
   .bb-morechip { margin-left: 14px; margin-right: 14px; max-width: calc(100% - 28px); }
-  /* On a phone the scarce currency is width and the cheap one is height. A row
-     that has to carry its own identity - only the lane with no project recorded
-     does - keeps the whole first line for what it is, and drops the identity
-     and the age onto a second line rather than squeezing the title out. */
-  .bb-row--identified { flex-wrap: wrap; row-gap: 2px; }
-  .bb-row--identified .bb-row__main { flex: 1 1 100%; }
-  .bb-row--identified .bb-row__id { max-width: 100%; }
+  /* On a phone the scarce currency is width and the cheap one is height, so the
+     captain's own gate takes a full row of its own and the four stages share
+     the row under it rather than all five fighting for the same line. */
+  .bb-stats { gap: 8px; }
+  .bb-stat { padding: 11px 12px; }
+  .bb-stat--call { flex: 1 1 100%; margin-right: 0; }
+  .bb-stat__num { font-size: var(--fs-h4); }
+  .bb-stat--stage + .bb-stat--stage::before { left: -10px; border-left-width: 5px; }
+}
+
+@media (max-width: 640px) {
+  .bb-flow { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .bb-berth--empty { display: none; }
 }
 </style>
 </head>
@@ -419,7 +479,13 @@ a { color: inherit; text-decoration: none; }
     <div class="bb-report__sub" id="bb-headline-sub"></div>
   </section>
 
-  <div class="bb-stats" id="bb-stats"></div>
+  <div class="bb-flowrail">
+    <div class="bb-stats" id="bb-stats"></div>
+    <div class="bb-flowrail__foot">
+      <span class="fm-sign fm-sign--muted">the route work takes through the yard</span>
+      <span class="bb-flowrail__note" id="bb-flow-note"></span>
+    </div>
+  </div>
 
   <section class="bb-section">
     <div class="bb-section__head">
@@ -602,6 +668,48 @@ __FM_BEARINGS_BOARD_DATA__
   function agoDay(n) {
     return n === null || todayNumber === null ? null : agoDays(todayNumber - n);
   }
+  /* The only date a queued row records is when the ORDER was filed, so both
+     queued stages say exactly that. Neither says how long the row has been
+     HELD: the records carry no date for when a hold started, and a hold age
+     would be a duration the fleet never measured. */
+  function orderedText(text) {
+    var ago = agoText(text);
+    return ago === null ? null : "ordered " + ago;
+  }
+  function launchedText(text) {
+    var ago = agoText(text);
+    return ago === null ? null : "launched " + ago;
+  }
+  /* A presentation threshold, never a measurement: the chip always spells the
+     age out, so nothing here depends on reading a colour, and a fortnight is
+     simply where an order that is still only an order earns a second look. */
+  var AGED_DAYS = 14;
+  function isAged(text) {
+    var n = daysBefore(text);
+    return n !== null && n >= AGED_DAYS;
+  }
+  /* A date the snapshot cannot yet have seen is not a position in time the
+     board may sort by, so it is treated as undated here exactly as it is when
+     an age is rendered. */
+  function usableDay(text) {
+    var d = dayNumber(text);
+    if (d === null) return null;
+    if (todayNumber !== null && d > todayNumber) return null;
+    return d;
+  }
+  /* Oldest first in the queued stages, newest first among launches. The order
+     matters beyond taste: a deep stage keeps only its first rows in view, so
+     sorting decides WHICH rows survive that cap, and the longest wait is the
+     one reading the captain can get nowhere else. Undated rows keep their
+     payload order and sort last, because "no date" is not "new". */
+  function byDay(rows, day, newestFirst) {
+    var dated = [], undated = [];
+    rows.forEach(function (t) { (day(t) === null ? undated : dated).push(t); });
+    dated.sort(function (a, b) { return newestFirst ? day(b) - day(a) : day(a) - day(b); });
+    return dated.concat(undated);
+  }
+  function oldestOrderFirst(rows) { return byDay(rows, function (t) { return usableDay(t.since); }, false); }
+  function newestLaunchFirst(rows) { return byDay(rows, function (t) { return usableDay(t.landed_on); }, true); }
   /* The snapshot writes "-" when a queued row has neither a hold nor a blocked
      reason. It is a placeholder, not a sentence, so it never becomes a subtitle. */
   function reasonText(t) {
@@ -650,20 +758,19 @@ __FM_BEARINGS_BOARD_DATA__
      row still says which - a PR link, or "delivered" - but all three count,
      because a lane that just finished a design is not an idle lane. */
   lanes.forEach(function (l) {
+    /* This picks which launch the snapshot saw most recently, so one the
+       snapshot cannot yet have seen must not be eligible to win it: otherwise a
+       single mistyped year takes the crown, renders no age of its own, and hides
+       the real launch beside it - and through yardLastLaunch it would drop the
+       recency line for the whole fleet. `usableDay` is that same rule, shared
+       with the sort so a launch can never be ranked by a date it is refused an
+       age for. With no usable `generated` there is nothing to compare against,
+       so every launch stays eligible rather than none. */
     l.lastLaunch = l.launched.reduce(function (best, t) {
-      var d = dayNumber(t.landed_on);
+      var d = usableDay(t.landed_on);
       if (d === null) return best;
-      /* This picks which launch the snapshot saw most recently, so one the
-         snapshot cannot yet have seen must not be eligible to win it: otherwise
-         a single mistyped year takes the crown, renders no age of its own, and
-         hides the real launch beside it - and through yardLastLaunch it would
-         drop the recency line for the whole fleet. With no usable `generated`
-         there is nothing to compare against, so every launch stays eligible
-         rather than none. */
-      if (todayNumber !== null && d > todayNumber) return best;
       return best === null || d > best ? d : best;
     }, null);
-    l.load = l.ways.length + l.dock.length + l.order.length;
   });
 
   /* Busiest first, and anything holding the captain's own word above that.
@@ -687,6 +794,24 @@ __FM_BEARINGS_BOARD_DATA__
     return l.lastLaunch !== null && (best === null || l.lastLaunch > best) ? l.lastLaunch : best;
   }, null);
   var lastLaunchText = agoDay(yardLastLaunch);
+  /* The two ends of the yard's own clock, and the closest the board may come to
+     a tempo: how long the longest-waiting order it was handed has waited, and
+     how recently something came off the far end. Both are ages read off
+     recorded dates - neither is a rate, and neither compares this board to any
+     other. The two superlatives do not stand on equal ground, and the wording
+     below says so. "Last launch" is a MOST-RECENT reduction over a
+     recent-completions baseline, which by construction keeps the most recent,
+     so it holds. "Oldest" reduces over the charted feed, which is a bounded
+     prefix the composer ranked by its own judgment and not by age, so the
+     board cannot know that nothing older exists and never claims it. That
+     scope is stated unconditionally rather than only when `charted_more` says
+     rows were cut: the field is optional, so its absence means the composer
+     did not say, never that nothing was omitted. */
+  var oldestWait = chartedWork.reduce(function (best, t) {
+    var n = daysBefore(t.since);
+    if (n === null || n < 0) return best;
+    return best === null || n > best ? n : best;
+  }, null);
 
   var headline;
   if (totalWays > 0) {
@@ -714,28 +839,55 @@ __FM_BEARINGS_BOARD_DATA__
   document.getElementById("bb-headline").textContent = headline;
   var headlineSub = [];
   if (totalDock) headlineSub.push(totalDock + " held in dry dock");
+  if (oldestWait !== null && oldestWait >= 1) {
+    headlineSub.push("oldest order charted here waiting " + plural(oldestWait, "day", "days"));
+  }
   if (lastLaunchText) headlineSub.push("last launch " + lastLaunchText);
   if (!headlineSub.length) headlineSub.push(plural(lanes.length, "project", "projects"));
   document.getElementById("bb-headline-sub").textContent = headlineSub.join(" · ");
 
-  /* stat strip */
+  /* ---- the route rail ----------------------------------------------------
+     Four stages in the order work passes through them, so the pipeline's shape
+     is read before any single row. Every figure is a count of what THIS board
+     holds at this instant; none of them is compared to anything, because there
+     is nothing to compare against. The captain's own gate leads the rail and
+     is deliberately not one of its stages. */
   var callTotal = data.captains_call.length;
   var stats = [
     { n: callTotal, l: "need you", call: true },
-    { n: lanes.length, l: "projects" },
-    { n: totalWays, l: "on the ways" },
-    { n: totalQueued, l: "order book" },
-    { n: data.landed.length, l: "launched" }
+    { n: totalDock, l: "dry dock", stage: "dock" },
+    { n: totalOrder, l: "clear to start", stage: "order" },
+    { n: totalWays, l: "on the ways", stage: "ways" },
+    { n: data.landed.length, l: "launched", stage: "launched" }
   ];
   var strip = document.getElementById("bb-stats");
   stats.forEach(function (s) {
-    var t = el("div", "bb-stat" + (s.call ? " bb-stat--call" : ""));
+    var t = el("div", "bb-stat" + (s.call ? " bb-stat--call" : " bb-stat--stage bb-stat--" + s.stage));
     t.appendChild(el("span", "bb-stat__num", String(s.n)));
     t.appendChild(el("span", "bb-stat__label", s.l));
     strip.appendChild(t);
   });
+  /* The note carries every bound the rail's own figures stand under, in route
+     order. Truncated queued rows are queued work of unknown disposition, so
+     they can be added to neither queued stage without asserting where they
+     stand: the rail says they exist and says they are off it, and only when
+     there are any. The other two apply always, because those stages are always
+     drawn and neither figure is complete occupancy the way the two queued ones
+     are: the underway feed is the snapshot's bounded in-flight projection and
+     the launched feed is its bounded recent-completions baseline. The payload
+     carries no count of what either left out - there is no `underway_more` and
+     no `landed_more` the way `charted_more` exists - so the board can never
+     know whether they truncated, which is exactly why the note names the KIND
+     of bound and never a number, a window, a rate or a change. */
+  var flowBounds = [];
+  if (chartedMoreQueued) {
+    flowBounds.push("+" + chartedMoreQueued + " more queued, not charted here, so no stage counts them");
+  }
+  flowBounds.push("on the ways counts the live work this board was given, not every worker under way");
+  flowBounds.push("launched counts the recent completions this board was given, not every launch on record");
+  document.getElementById("bb-flow-note").textContent = flowBounds.join(" · ");
   document.getElementById("bb-call-sub").textContent =
-    callTotal ? callTotal + " item" + (callTotal === 1 ? "" : "s") + " wait on you, captain" : "nothing needs you, captain";
+    callTotal ? plural(callTotal, "item waits", "items wait") + " on you, captain" : "nothing needs you, captain";
 
   /* ---- Captain's Call deck: every item renders as the same full card ---- */
   var deck = document.getElementById("bb-call");
@@ -931,8 +1083,8 @@ __FM_BEARINGS_BOARD_DATA__
     return "quiet";
   }
 
-  function workRow(opts) {  // {title, sub, id, badgeTone, badgeText, pick, when, pr_url}
-    var row = el("div", "bb-row" + (opts.id ? " bb-row--identified" : ""));
+  function workRow(opts) {  // {title, sub, id, badgeTone, badgeText, pick, when, aged, pr_url, check}
+    var row = el("div", "bb-row" + (opts.aged ? " bb-row--aged" : ""));
     if (opts.pick) {
       anyPickable = true;
       var pick = document.createElement("input");
@@ -947,8 +1099,6 @@ __FM_BEARINGS_BOARD_DATA__
         refreshBar();
       });
       row.appendChild(pick);
-    } else if (opts.spacer) {
-      row.appendChild(el("span", "bb-pick-spacer"));
     }
     if (opts.check) {
       var chk = el("span", "bb-row__check");
@@ -960,28 +1110,76 @@ __FM_BEARINGS_BOARD_DATA__
     main.appendChild(el("div", "bb-row__title", opts.title));
     if (opts.sub) main.appendChild(el("div", "bb-row__sub", opts.sub));
     row.appendChild(main);
-    /* Identity rides outside .bb-row__main, which truncates: a sentence-length
-       reason must never be what decides whether the row can still be named. */
-    if (opts.id) row.appendChild(el("span", "bb-row__id", opts.id));
-    if (opts.when) row.appendChild(el("span", "bb-row__when", opts.when));
-    if (opts.pr_url) {
-      var a = el("a", "bb-row__pr", "#" + opts.pr_url.split("/").pop());
-      a.href = opts.pr_url; a.title = opts.pr_url; a.target = "_blank"; a.rel = "noopener";
-      row.appendChild(a);
+    /* Identity, age and PR ride their own line outside .bb-row__main, which
+       clamps: a sentence-length reason must never be what decides whether the
+       row can still be named or dated. */
+    if (opts.id || opts.when || opts.pr_url) {
+      var meta = el("div", "bb-row__meta");
+      if (opts.id) meta.appendChild(el("span", "bb-row__id", opts.id));
+      if (opts.when) meta.appendChild(el("span", "bb-row__when", opts.when));
+      if (opts.pr_url) {
+        var a = el("a", "bb-row__pr", "#" + opts.pr_url.split("/").pop());
+        a.href = opts.pr_url; a.title = opts.pr_url; a.target = "_blank"; a.rel = "noopener";
+        meta.appendChild(a);
+      }
+      row.appendChild(meta);
     }
     return row;
   }
 
-  function berth(parent, label) {
-    var b = el("div", "bb-berth");
-    b.appendChild(el("div", "bb-berth__label", label));
-    var rows = el("div", "bb-rows");
-    b.appendChild(rows);
-    parent.appendChild(b);
-    return rows;
+  /* One stage of the route, built identically in every lane: its name, how many
+     rows stand in it here, and those rows. A stage deep enough to become a wall
+     shows only its first rows and keeps the rest behind a count, so a long queue
+     is never dealt out as a checklist - the same instinct the collapsed order
+     book carried, now applied per stage rather than to the whole book.
+     Whether a stage caps at all is the CALL SITE's to state, passed as `cap`
+     with the hint that belongs to it, because only the call site knows whether
+     the rows it hands over are ordered such that the survivors are the right
+     ones. A stage passed no cap renders every row it holds.
+     The empty marker names no source, because every feed the board is handed
+     is bounded and no stage may claim an absence in the world: the queued feed
+     is a capped flat prefix disclosed by `charted_more`, the landed feed is
+     the recent-completions baseline, and the underway feed is the snapshot's
+     bounded in-flight projection. So the marker is scoped to the artifact and
+     borrows no feed's vocabulary - "nothing here" could be falsified by a row
+     that was never handed over, and naming one feed would be inapplicable to
+     the three stages not drawn from it. */
+  var STAGE_SHOW = 4;
+  function stage(parent, key, label, rows, build, cap) {
+    var cell = el("div", "bb-berth bb-berth--" + key + (rows.length ? "" : " bb-berth--empty"));
+    var head = el("div", "bb-berth__label");
+    head.appendChild(el("span", "bb-berth__name", label));
+    head.appendChild(el("span", "bb-berth__n", String(rows.length)));
+    cell.appendChild(head);
+    if (!rows.length) {
+      cell.appendChild(el("div", "bb-berth__none", "none on this board"));
+      parent.appendChild(cell);
+      return;
+    }
+    var limit = cap ? cap.show : rows.length;
+    var shown = el("div", "bb-rows");
+    rows.slice(0, limit).forEach(function (t) { shown.appendChild(build(t)); });
+    cell.appendChild(shown);
+    var rest = rows.slice(limit);
+    if (rest.length) {
+      var more = document.createElement("details");
+      more.className = "bb-more";
+      var summary = document.createElement("summary");
+      summary.className = "bb-more__summary";
+      summary.appendChild(el("span", "bb-more__n", "+" + rest.length));
+      summary.appendChild(el("span", "bb-more__label", "more here"));
+      /* The hint is only true while the rows are still behind the count, and the
+         stylesheet withdraws it in BOTH directions, so it also comes back when
+         the captain collapses a stage he opened. */
+      summary.appendChild(el("span", "bb-more__hint", cap.hint));
+      more.appendChild(summary);
+      var hidden = el("div", "bb-rows");
+      rest.forEach(function (t) { hidden.appendChild(build(t)); });
+      more.appendChild(hidden);
+      cell.appendChild(more);
+    }
+    parent.appendChild(cell);
   }
-
-  var busiest = lanes.reduce(function (m, l) { return Math.max(m, l.load); }, 0);
 
   if (!lanes.length) {
     yard.appendChild(el("div", "bb-empty", "No projects are on the board."));
@@ -1005,108 +1203,75 @@ __FM_BEARINGS_BOARD_DATA__
     }
     card.appendChild(head);
 
-    /* the gauge is a ratio between lanes, never an invented rate; a lane with
-       nothing in progress draws no track rather than an empty one */
-    if (busiest > 0 && l.load > 0) {
-      var gauge = el("div", "bb-gauge");
-      [["ways", l.ways.length], ["dock", l.dock.length], ["order", l.order.length]].forEach(function (pair) {
-        if (!pair[1]) return;
-        var seg = el("div", "bb-gauge__seg bb-gauge__seg--" + pair[0]);
-        seg.setAttribute("style", "width:" + (pair[1] / busiest * 100) + "%");
-        seg.setAttribute("title", pair[1] + " " + pair[0]);
-        gauge.appendChild(seg);
-      });
-      card.appendChild(gauge);
-    }
+    /* Every lane draws the same route in the same order, so a project can be
+       read against another without re-reading a header. A lane holding no rows
+       at all draws none of it: its head already says what it is waiting on, and
+       four empty stages would be four claims about a payload that is capped. */
+    if (l.dock.length || l.order.length || l.ways.length || l.launched.length) {
+      var flow = el("div", "bb-flow");
 
-    if (l.ways.length) {
-      var ways = berth(card, "On the ways");
-      l.ways.forEach(function (t) {
+      stage(flow, "dock", "Dry dock", oldestOrderFirst(l.dock), function (t) {
+        var ordered = orderedText(t.since);
+        var holds = reasonText(t);
+        return workRow({
+          badgeTone: "warn",
+          badgeText: "held",
+          title: t.title,
+          sub: holds || "held with no reason recorded",
+          id: identity(t),
+          when: ordered,
+          aged: isAged(t.since)
+        });
+      }, { show: STAGE_SHOW, hint: "open to read what holds them" });
+
+      stage(flow, "order", "Clear to start", oldestOrderFirst(l.order), function (t) {
+        var ordered = orderedText(t.since);
+        var why = reasonText(t);
+        return workRow({
+          pick: t.id,
+          title: t.title,
+          sub: why || (ordered ? "" : "waiting for a crew"),
+          id: identity(t),
+          when: ordered,
+          aged: isAged(t.since)
+        });
+      }, { show: STAGE_SHOW, hint: "open to pick" });
+
+      stage(flow, "ways", "On the ways", l.ways, function (t) {
         /* No age here on purpose: the backlog's recorded date is when the work
            was FILED, not when a worker picked it up, so printing it as time
            under construction would invent a tempo. The live state is the real
-           movement signal, and it is current-state truth. */
-        ways.appendChild(workRow({
+           movement signal, and it is current-state truth. That is also why this
+           stage is the one the route never sorts: it holds no date to sort by.
+           And that same absence is why it is the one stage the route never
+           caps. A cap is only honest because the stage's own ordering decides
+           which rows survive it - oldest waits stay in the queued stages, the
+           most recent launches stay in Launched - and with no date to order by
+           there is nothing here to make that decision. Imposing a stable but
+           meaningless order would only make the omission repeatable rather
+           than arbitrary, which is not a fix, and live work is the most
+           actionable thing on the page to hide any of. */
+        return workRow({
           badgeTone: t.state === "working" ? "online" : "info",
           badgeText: t.state,
           title: t.doing,
           sub: t.kind,
           id: identity(t)
-        }));
-      });
-    }
-
-    var depth = l.order.length + l.dock.length;
-    if (depth) {
-      var drawer = document.createElement("details");
-      drawer.className = "bb-drawer";
-      /* shallow enough to read at a glance stays open; a deep book stays a
-         number until the captain asks for the rows */
-      if (depth <= 4) drawer.open = true;
-      var summary = document.createElement("summary");
-      summary.className = "bb-drawer__summary";
-      summary.appendChild(el("span", "bb-drawer__depth", String(depth)));
-      var split = [];
-      if (l.order.length) split.push(l.order.length + " clear to start");
-      if (l.dock.length) split.push(l.dock.length + " held in dry dock");
-      summary.appendChild(el("span", "bb-drawer__split", "in the order book · " + split.join(", ")));
-      /* A summary reads the same open or closed, so the hint is only true while
-         the book is still behind its depth figure. The withdrawal is the
-         stylesheet's job, never a render-time branch: `.bb-drawer[open]
-         .bb-drawer__hint` follows the drawer in BOTH directions, so it also
-         gives the hint back when the captain collapses a shallow lane that
-         opened by default - a state a render-time test of the initial value
-         cannot reach. Only l.order rows carry a checkbox, so a wholly held book
-         names what it does hold instead of advertising a pick no row accepts. */
-      summary.appendChild(el("span", "bb-drawer__hint",
-        l.order.length ? "open to pick" : "open to read what holds them"));
-      drawer.appendChild(summary);
-
-      if (l.order.length) {
-        var orderRows = berth(drawer, "Clear to start");
-        l.order.forEach(function (t) {
-          var waited = agoText(t.since);
-          var why = reasonText(t);
-          orderRows.appendChild(workRow({
-            pick: t.id,
-            title: t.title,
-            sub: why || (waited ? "ordered " + waited : "waiting for a crew"),
-            id: identity(t),
-            when: waited && why ? waited : null
-          }));
         });
-      }
-      if (l.dock.length) {
-        var dockRows = berth(drawer, "Dry dock");
-        l.dock.forEach(function (t) {
-          var heldFor = agoText(t.since);
-          var holds = reasonText(t);
-          dockRows.appendChild(workRow({
-            spacer: true,
-            badgeTone: "warn",
-            badgeText: "held",
-            title: t.title,
-            sub: holds || (heldFor ? "held " + heldFor : "held with no reason recorded"),
-            id: identity(t),
-            when: heldFor && holds ? heldFor : null
-          }));
-        });
-      }
-      card.appendChild(drawer);
-    }
+      }, null);
 
-    if (l.launched.length) {
-      var launched = berth(card, "Launched");
-      l.launched.forEach(function (t) {
-        launched.appendChild(workRow({
+      stage(flow, "launched", "Launched", newestLaunchFirst(l.launched), function (t) {
+        return workRow({
           check: true,
           title: t.what,
           sub: (t.pr_url ? "merged · " : "delivered · ") + t.owner,
           id: identity(t),
-          when: agoText(t.landed_on),
+          when: launchedText(t.landed_on),
           pr_url: t.pr_url
-        }));
-      });
+        });
+      }, { show: STAGE_SHOW, hint: "open to read them" });
+
+      card.appendChild(flow);
     }
 
     yard.appendChild(card);

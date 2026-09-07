@@ -3,8 +3,8 @@
 # (.agents/skills/bearings/assets/board-template.html), exercised through a real
 # `fm-bearings-board.sh build` and then executed under the minimal DOM shim in
 # tests/assets/board-render-harness.mjs. The assertions are on what the page
-# renders - project lanes, their readings, the order-book depth, the notices
-# band - never on the template's source text.
+# renders - the route rail, each project lane's four stages, what each stage
+# keeps in view, the notices band - never on the template's source text.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -44,6 +44,11 @@ render() {  # <home> <payload-body-json>
 
 stat_n() {  # <render-json> <label>
   printf '%s' "$1" | jq -r --arg l "$2" '.stats[] | select(.label == $l) | .n'
+}
+
+# One lane's stage, by the name printed on its column header.
+stage_of() {  # <lane-json> <stage-label>
+  printf '%s' "$1" | jq -c --arg l "$2" '.berths[] | select(.label == $l)'
 }
 
 # Build N charted rows for one repo, alternating nothing but the id.
@@ -91,24 +96,205 @@ test_two_projects_with_the_same_queue_read_differently() {
   printf '%s' "$bg" | jq -e '.launch == "last launch today"' >/dev/null \
     || fail "a lane that delivered today does not say so: $bg"
 
-  # the gauge carries the same contrast without words: hulls only on one lane
-  printf '%s' "$fm" | jq -e '[.gauge[].part] == ["ways","order"]' >/dev/null \
-    || fail "the building lane's gauge does not show a hull segment: $fm"
-  printf '%s' "$bg" | jq -e '[.gauge[].part] == ["order"]' >/dev/null \
-    || fail "the idle lane's gauge invented a hull segment: $bg"
+  # the same contrast without words: the stage counts stand where the work does
+  printf '%s' "$fm" | jq -e '
+    [.berths[] | {(.label): .count}] | add
+      == {"Dry dock":"0","Clear to start":"13","On the ways":"4","Launched":"0"}
+  ' >/dev/null || fail "the building lane's stages do not carry its own counts: $fm"
+  printf '%s' "$bg" | jq -e '
+    [.berths[] | {(.label): .count}] | add
+      == {"Dry dock":"0","Clear to start":"18","On the ways":"0","Launched":"1"}
+  ' >/dev/null || fail "the idle lane invented a hull or lost its order book: $bg"
 
-  # depth, not a checklist: the order book is one number per lane
-  printf '%s' "$fm" | jq -e '.drawer.depth == "13" and .drawer.open == false' >/dev/null \
-    || fail "firstmate's order book is not presented as depth: $fm"
-  # a book still behind its depth figure is where the hint earns its keep
-  printf '%s' "$fm" | jq -e '.drawer.hint == "open to pick"' >/dev/null \
-    || fail "a closed book holding startable work does not offer the pick: $fm"
-  printf '%s' "$bg" | jq -e '.drawer.depth == "18" and (.drawer.split | test("18 clear to start"))' >/dev/null \
-    || fail "seawall's order book is not presented as depth: $bg"
+  # depth, not a checklist: a stage deeper than the board can show at a glance
+  # keeps its remainder behind a count instead of dealing out every row
+  printf '%s' "$fm" | jq -e '
+    .berths[] | select(.label == "Clear to start")
+      | (.shown | length) == 4 and .more.n == "+9" and .more.hint == "open to pick"
+  ' >/dev/null || fail "firstmate's order stage was dealt out instead of kept as depth: $fm"
+  printf '%s' "$bg" | jq -e '
+    .berths[] | select(.label == "Clear to start")
+      | (.shown | length) == 4 and .more.n == "+14" and (.rows | length) == 18
+  ' >/dev/null || fail "seawall's order stage lost rows or lost its depth: $bg"
 
   printf '%s' "$out" | jq -e '.headline == "4 hulls on the ways in 1 of 2 projects, and 31 more in the order book."' \
     >/dev/null || fail "the yard report does not state the contrast: $out"
   pass "two projects with the same queue depth read as different yards"
+}
+
+# ---------------------------------------------------------------------------
+# The captain asked for a board that reads as a route rather than as four
+# lists. That is one structural promise: every lane prints the SAME four stages
+# in the SAME order, whether or not it has anything standing in them, so one
+# project's yard can be read against another's without re-reading a header. A
+# lane with nothing recorded anywhere draws no route at all, because four empty
+# stages there would be four claims about a payload that is deliberately capped.
+# ---------------------------------------------------------------------------
+test_every_lane_draws_the_same_route_in_the_same_order() {
+  local home out
+  home=$(make_home route)
+  out=$(render "$home" '{
+    "captains_call": [
+      {"key":"quiet-call","type":"decision","repo":"quiet","title":"Pick one",
+       "options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}
+    ],
+    "underway": [
+      {"id":"live","repo":"busy","kind":"ship","state":"working","doing":"building"}
+    ],
+    "landed": [
+      {"id":"done","repo":"still","what":"Shipped","owner":"firstmate","landed_on":"2026-08-25"}
+    ],
+    "charted": [
+      {"id":"held","repo":"busy","title":"Held order","reason":"waiting on the vendor",
+       "dispatchable":false,"since":"2026-08-10"}
+    ]}')
+
+  # the rail states the route once for the whole yard, in the order work takes
+  printf '%s' "$out" | jq -e '
+    [.stats[].label] == ["need you","dry dock","clear to start","on the ways","launched"]
+  ' >/dev/null || fail "the route rail does not state the stages in order: $out"
+
+  # and every lane that holds anything repeats exactly that route
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | select(.flow) | [.berths[].label]] | unique
+      == [["Dry dock","Clear to start","On the ways","Launched"]]
+  ' >/dev/null || fail "the lanes do not all draw the same route: $out"
+  printf '%s' "$out" | jq -e '
+    ([.lanes[] | select(.name == "busy") | [.berths[] | .count]] == [["1","0","1","0"]])
+      and ([.lanes[] | select(.name == "still") | [.berths[] | .count]] == [["0","0","0","1"]])
+  ' >/dev/null || fail "a lane placed its work in the wrong stage: $out"
+
+  # an empty stage is a real reading, scoped to the artifact and naming no feed,
+  # because every feed the board is handed is bounded and no stage draws from
+  # all of them
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | .berths[] | select(.count == "0") | .none] | unique == ["none on this board"]
+  ' >/dev/null || fail "an empty stage claimed something the payload cannot support: $out"
+
+  # the lane whose only item is the captain's own call draws no route at all
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | select(.name == "quiet") | {flow, berths: (.berths | length)}]
+      == [{flow:false, berths:0}]
+  ' >/dev/null || fail "a lane holding only a captain's call still drew empty stages: $out"
+  pass "every lane draws the same route in the same order"
+}
+
+# ---------------------------------------------------------------------------
+# "At a certain rhythm" is the one thing the fleet cannot honestly draw: it
+# keeps no prior snapshot, so no rate, trend, streak or change since yesterday
+# has any measurement behind it. This is the regression guard for that. The
+# fixture's own text is deliberately neutral, so anything the corpus matches was
+# written by the template rather than passed in by the composer, and a control
+# assertion proves the corpus is real rather than empty.
+# ---------------------------------------------------------------------------
+test_the_board_never_states_a_rate_or_a_change() {
+  local home out corpus
+  home=$(make_home no-rate)
+  out=$(render "$home" "$(jq -n \
+    --argjson q "$(rows alpha 9 true '' 2026-08-10)" '{
+      underway: [{id:"a1", repo:"alpha", kind:"ship", state:"working", doing:"one"}],
+      landed: [{id:"a2", repo:"alpha", what:"two", owner:"crew", landed_on:"2026-08-24"}],
+      charted: $q}')")
+  corpus=$(printf '%s' "$out" | jq -r '[.. | strings] | join(" ") | ascii_downcase')
+
+  # control: the corpus is the rendered board, not an empty string
+  case $corpus in
+    *"ordered 16 days ago"*) : ;;
+    *) fail "the rendered corpus is not the board: $corpus" ;;
+  esac
+
+  if printf '%s' "$corpus" | grep -Eq 'velocit|throughput|per day|per week|/day|/week|trend|streak|faster|slower|since yesterday|this week|last week|up from|down from|%'; then
+    fail "the board stated a rate, a trend or a change it has no measurement for: $corpus"
+  fi
+  # the two ages it MAY state are ages, and each says what it measures
+  printf '%s' "$out" | jq -e '
+    ([.lanes[].berths[] | select(.label == "Clear to start") | .rows[].when]
+       | all(startswith("ordered ")))
+      and ([.lanes[].berths[] | select(.label == "Launched") | .rows[].when]
+       | all(startswith("launched ")))
+  ' >/dev/null || fail "an age chip did not say what it measures: $out"
+  pass "the board states ages and never a rate, a trend or a change"
+}
+
+# ---------------------------------------------------------------------------
+# A held row records no date for when the hold STARTED - only when the order was
+# filed - so both queued stages say "ordered", and neither claims a hold age.
+# Sorting is what makes that age worth printing: a stage deeper than the board
+# shows at a glance keeps the rows that have waited LONGEST in view, so the cap
+# can never be what hides the oldest thing in the yard.
+# ---------------------------------------------------------------------------
+test_a_deep_stage_keeps_its_longest_waits_in_view() {
+  local home out order dock
+  home=$(make_home longest-waits)
+  out=$(render "$home" '{
+    "charted": [
+      {"id":"new-1","repo":"sample","title":"Newest","reason":"","dispatchable":true,"since":"2026-08-25"},
+      {"id":"mid-1","repo":"sample","title":"Middle","reason":"","dispatchable":true,"since":"2026-08-20"},
+      {"id":"old-1","repo":"sample","title":"Oldest","reason":"","dispatchable":true,"since":"2026-07-01"},
+      {"id":"new-2","repo":"sample","title":"Newer","reason":"","dispatchable":true,"since":"2026-08-24"},
+      {"id":"undated","repo":"sample","title":"Undated","reason":"","dispatchable":true,"since":null},
+      {"id":"new-3","repo":"sample","title":"Newish","reason":"","dispatchable":true,"since":"2026-08-23"},
+      {"id":"held-old","repo":"sample","title":"Held long","reason":"waiting on the vendor",
+       "dispatchable":false,"since":"2026-07-15"}
+    ]}')
+  order=$(stage_of "$(printf '%s' "$out" | jq -c '.lanes[0]')" "Clear to start")
+  dock=$(stage_of "$(printf '%s' "$out" | jq -c '.lanes[0]')" "Dry dock")
+
+  # oldest first, undated last, and the cap falls on the newest rows
+  printf '%s' "$order" | jq -e '
+    [.shown[].title] == ["Oldest","Middle","Newish","Newer"]
+      and [.more.rows[].title] == ["Newest","Undated"]
+  ' >/dev/null || fail "the deep stage hid its longest waits instead of its newest rows: $order"
+
+  # a hold is never given a duration the records do not carry
+  printf '%s' "$dock" | jq -e '.rows[0].when == "ordered 42 days ago"' >/dev/null \
+    || fail "a held row was dated by something other than when it was ordered: $dock"
+  printf '%s' "$out" | jq -e '
+    [.lanes[].berths[].rows[] | select(.when | startswith("held"))] == []
+  ' >/dev/null || fail "the board claimed how long something had been held: $out"
+  pass "a deep stage keeps its longest waits in view and never dates a hold"
+}
+
+# ---------------------------------------------------------------------------
+# The cap is only honest where the stage's own ordering decides which rows
+# survive it. On the ways holds no date to order by, so it is the one stage the
+# route never caps: every live hull stays in view rather than four arbitrary
+# ones. The assertion is the ASYMMETRY on a single board - the unsorted stage
+# renders all of its rows and offers no overflow at all, while a sorted stage
+# past the same depth still holds its remainder back.
+# ---------------------------------------------------------------------------
+test_the_unsorted_stage_is_the_one_the_route_never_caps() {
+  local home out lane ways order
+  home=$(make_home ways-uncapped)
+  out=$(render "$home" "$(jq -n \
+    --argjson q "$(rows sample 6 true '' 2026-08-10)" '{
+      underway: [
+        {id:"w1", repo:"sample", kind:"ship", state:"working", doing:"Hull one"},
+        {id:"w2", repo:"sample", kind:"ship", state:"working", doing:"Hull two"},
+        {id:"w3", repo:"sample", kind:"scout", state:"validating", doing:"Hull three"},
+        {id:"w4", repo:"sample", kind:"ship", state:"working", doing:"Hull four"},
+        {id:"w5", repo:"sample", kind:"ship", state:"working", doing:"Hull five"},
+        {id:"w6", repo:"sample", kind:"scout", state:"working", doing:"Hull six"}
+      ],
+      charted: $q}')")
+  lane=$(printf '%s' "$out" | jq -c '.lanes[0]')
+  ways=$(stage_of "$lane" "On the ways")
+  order=$(stage_of "$lane" "Clear to start")
+
+  # every live hull is in view, in the order the composer ranked them, and the
+  # stage offers nothing to open because it withheld nothing
+  printf '%s' "$ways" | jq -e '
+    .count == "6"
+      and ([.shown[].title] == ["Hull one","Hull two","Hull three","Hull four","Hull five","Hull six"])
+      and (.more == null)
+  ' >/dev/null || fail "the unsorted underway stage hid live hulls behind a cap: $ways"
+
+  # the same board, the same depth, a stage that IS ordered: still capped, so
+  # what changed is the ordering rule and not the cap machinery itself
+  printf '%s' "$order" | jq -e '
+    .count == "6" and (.shown | length) == 4 and .more.n == "+2"
+  ' >/dev/null || fail "a sorted stage past the cap stopped holding its remainder back: $order"
+  pass "the stage with no order to cap by renders every live hull, while a sorted stage still caps"
 }
 
 # ---------------------------------------------------------------------------
@@ -128,18 +314,21 @@ test_a_stopped_fleet_reads_as_capacity_not_as_a_checklist() {
   printf '%s' "$out" | jq -e '.headline == "Nothing is being built right now. 35 orders are clear to start."' \
     >/dev/null || fail "a stopped yard does not report itself as available capacity: $out"
 
-  # 35 queued rows must not be 35 top-level rows: the yard is two lanes, and
-  # every order sits behind its lane's depth figure
+  # 35 queued rows must not be 35 dealt-out rows: the yard is two lanes, and
+  # each lane's order stage keeps all but its longest waits behind a count
   printf '%s' "$out" | jq -e '(.lanes | length) == 2' >/dev/null \
     || fail "the stopped yard did not fold into project lanes: $out"
-  printf '%s' "$out" | jq -e '[.lanes[] | .drawer.open] == [false, false]' >/dev/null \
-    || fail "a deep order book was dealt out as a checklist instead of a depth figure: $out"
-  printf '%s' "$out" | jq -e '[.lanes[] | .drawer.depth] == ["20","15"]' >/dev/null \
-    || fail "the lanes do not carry their own order-book depth: $out"
-  [ "$(stat_n "$out" "order book")" = 35 ] \
-    || fail "the order-book tally lost work: $out"
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | .berths[] | select(.label == "Clear to start")
+     | {count, shown: (.shown | length), more: .more.n}]
+      == [{count:"20", shown:4, more:"+16"}, {count:"15", shown:4, more:"+11"}]
+  ' >/dev/null || fail "a deep order stage was dealt out as a checklist: $out"
+  [ "$(stat_n "$out" "clear to start")" = 35 ] \
+    || fail "the rail's clear-to-start figure lost work: $out"
   [ "$(stat_n "$out" "on the ways")" = 0 ] \
     || fail "a stopped yard claimed work under construction: $out"
+  printf '%s' "$out" | jq -e '.yardSub | test("35 in the order book")' >/dev/null \
+    || fail "the yard lost its own order-book total: $out"
   # a yard with no alarms switches the notices band off rather than leaving an
   # empty frame behind
   printf '%s' "$out" | jq -e '.noticesShown == false and (.notices | length) == 0' >/dev/null \
@@ -149,40 +338,38 @@ test_a_stopped_fleet_reads_as_capacity_not_as_a_checklist() {
 
 # ---------------------------------------------------------------------------
 # Ready work and held work were near-identical on the old board. They are now
-# different berths with different affordances.
+# two stages of the route, upstream and downstream of each other, with different
+# affordances: only what the fleet could start now accepts a dispatch pick.
 # ---------------------------------------------------------------------------
-test_dry_dock_and_clear_to_start_are_different_berths() {
-  local home out lane
+test_dry_dock_and_clear_to_start_are_different_stages() {
+  local home lane
   home=$(make_home berths)
-  out=$(render "$home" '{
+  lane=$(render "$home" '{
     "charted": [
       {"id":"ready-one","repo":"sample","title":"Ready order","reason":"",
        "dispatchable":true,"since":"2026-08-24"},
       {"id":"held-one","repo":"sample","title":"Held order","reason":"blocked on the cutover",
        "dispatchable":false,"since":"2026-08-06"}
-    ]}')
-  lane=$(printf '%s' "$out" | jq -c '.lanes[0]')
+    ]}' | jq -c '.lanes[0]')
 
-  printf '%s' "$lane" | jq -e '[.berths[].label] == ["Clear to start","Dry dock"]' >/dev/null \
-    || fail "the lane did not separate ready work from held work: $lane"
-  # only work the fleet can actually start is pickable for dispatch
+  # held sits UPSTREAM of ready, because a hold has to clear before the order can
   printf '%s' "$lane" | jq -e '
-    (.berths[0].rows[0] | .pickable == true and .badges == [])
-      and (.berths[1].rows[0]
-           | .pickable == false
-             and ([.badges[] | .text] == ["held"])
-             and .sub == "blocked on the cutover")
-  ' >/dev/null || fail "held work is still pickable or still unexplained: $lane"
-  printf '%s' "$lane" | jq -e '.drawer.split == "in the order book · 1 clear to start, 1 held in dry dock"' \
-    >/dev/null || fail "the order-book summary does not state the split: $lane"
-  # this book is shallow enough to render already open. The hint is still put on
-  # the page - collapsing it makes the hint true again - and the stylesheet is
-  # what withdraws it while it is open; that half is covered by
-  # test_opening_the_order_book_withdraws_its_hint, which the DOM shim cannot
-  # see because it has no cascade.
-  printf '%s' "$lane" | jq -e '.drawer.open == true and .drawer.hint == "open to pick"' >/dev/null \
-    || fail "a shallow book lost the hint it needs the moment it is collapsed: $lane"
-  pass "dry dock and clear-to-start are separate berths with separate affordances"
+    [.berths[] | {(.label): .count}] | add
+      == {"Dry dock":"1","Clear to start":"1","On the ways":"0","Launched":"0"}
+  ' >/dev/null || fail "the lane did not separate ready work from held work: $lane"
+  printf '%s' "$lane" | jq -e '
+    (.berths[] | select(.label == "Clear to start") | .rows[0]
+      | .pickable == true and .badges == [] and .when == "ordered 2 days ago")
+    and (.berths[] | select(.label == "Dry dock") | .rows[0]
+      | .pickable == false
+        and ([.badges[] | .text] == ["held"])
+        and .sub == "blocked on the cutover"
+        and .when == "ordered 20 days ago")
+  ' >/dev/null || fail "held work is still pickable, unexplained or undated: $lane"
+  # neither stage is deep enough to withhold anything, so neither offers to open
+  printf '%s' "$lane" | jq -e '[.berths[] | .more] | unique == [null]' >/dev/null \
+    || fail "a stage that shows every row still offered to reveal more: $lane"
+  pass "dry dock and clear-to-start are separate stages with separate affordances"
 }
 
 # ---------------------------------------------------------------------------
@@ -213,8 +400,10 @@ test_integrity_warnings_never_enter_a_lane() {
            and [.badges[] | .tone] == ["danger"]
            and .pickable == false)
   ' >/dev/null || fail "the integrity alarm did not surface in its own band: $out"
-  [ "$(stat_n "$out" "order book")" = 1 ] \
-    || fail "the order-book tally counted an alarm as work: $out"
+  [ "$(stat_n "$out" "clear to start")" = 1 ] \
+    || fail "the rail counted an alarm as work the fleet could start: $out"
+  [ "$(stat_n "$out" "dry dock")" = 0 ] \
+    || fail "the rail counted an alarm as work held in dry dock: $out"
   pass "integrity warnings stay out of every lane and out of the work tally"
 }
 
@@ -226,8 +415,10 @@ test_a_yard_of_only_warnings_reports_no_work_at_all() {
       {"id":"warn-only","repo":"sample","title":"Home unreadable",
        "reason":"current home state unavailable","dispatchable":false,"kind":"warning","since":null}
     ]}')
-  [ "$(stat_n "$out" "order book")" = 0 ] \
-    || fail "a warning-only board claimed queued work: $out"
+  [ "$(stat_n "$out" "clear to start")" = 0 ] \
+    || fail "a warning-only board claimed work the fleet could start: $out"
+  [ "$(stat_n "$out" "dry dock")" = 0 ] \
+    || fail "a warning-only board claimed work held in dry dock: $out"
   printf '%s' "$out" | jq -e '
     (.lanes | length) == 0
       and (.yardEmpty | length) == 1
@@ -247,11 +438,12 @@ test_omitted_warnings_never_count_as_more_queued() {
        "reason":"current home state unavailable","dispatchable":false,"kind":"warning","since":null}
     ],
     "charted_warning_more": 1}')
-  [ "$(stat_n "$out" "order book")" = 0 ] \
+  [ "$(stat_n "$out" "clear to start")" = 0 ] \
     || fail "an omitted warning was counted as queued work: $out"
   printf '%s' "$out" | jq -e '
     (.noticeMore == ["+1 more repair warning - ask firstmate for the full chart"])
       and (.more == [])
+      and (.flowNote == "on the ways counts the live work this board was given, not every worker under way · launched counts the recent completions this board was given, not every launch on record")
   ' >/dev/null || fail "an omitted warning was labeled as more queued: $out"
   pass "omitted warnings remain separate from omitted queued work"
 }
@@ -265,14 +457,98 @@ test_omitted_queued_work_is_reported_against_the_yard() {
        "dispatchable":true,"since":"2026-08-18"}
     ],
     "charted_more": 4}')
-  [ "$(stat_n "$out" "order book")" = 5 ] \
-    || fail "the order-book tally dropped omitted queued work: $out"
+  # a truncated row is queued work of unknown disposition, so it may be added to
+  # NEITHER queued stage: the rail counts what it can place and says the rest is
+  # off the route, while the yard still discloses the true depth
+  [ "$(stat_n "$out" "clear to start")" = 1 ] \
+    || fail "an omitted queued row was placed in a stage it was never charted in: $out"
+  [ "$(stat_n "$out" "dry dock")" = 0 ] \
+    || fail "an omitted queued row was placed in a stage it was never charted in: $out"
   printf '%s' "$out" | jq -e '
     (.more == ["+4 more queued - ask firstmate for the full chart"])
       and (.noticeMore == [])
       and (.yardSub | test("5 in the order book"))
+      and (.flowNote == "+4 more queued, not charted here, so no stage counts them · on the ways counts the live work this board was given, not every worker under way · launched counts the recent completions this board was given, not every launch on record")
   ' >/dev/null || fail "omitted queued work was not disclosed against the yard: $out"
-  pass "omitted queued work is disclosed as yard depth, not as an alarm"
+  pass "omitted queued work is disclosed as yard depth, never folded into a stage"
+}
+
+# ---------------------------------------------------------------------------
+# Two rail figures are not complete occupancy the way the queued ones are: `on
+# the ways` counts the bounded in-flight projection the payload carried and
+# `launched` counts its bounded recent-completions baseline. The payload holds
+# no count of what either feed left out, so the board can never know whether
+# they truncated, and it states both bounds on every board it draws rather than
+# only where some second, unrelated condition happens to hold.
+# ---------------------------------------------------------------------------
+test_the_bounded_rail_figures_always_disclose_their_bounds() {
+  local home out
+  home=$(make_home bounded-figures)
+  out=$(render "$home" '{
+    "charted": [
+      {"id":"shown","repo":"sample","title":"Shown order","reason":"",
+       "dispatchable":true,"since":"2026-08-18"}
+    ],
+    "underway": [
+      {"id":"live","repo":"sample","kind":"ship","state":"working","doing":"Fitting the keel"}
+    ],
+    "landed": [
+      {"id":"done","repo":"sample","what":"Shipped the cutover","owner":"firstmate",
+       "landed_on":"2026-08-25"}
+    ]}')
+  # nothing was truncated, so the conditional queued entry must be absent while
+  # both unconditional bounds stand, in route order
+  printf '%s' "$out" | jq -e '
+    (.more == []) and (.noticeMore == [])
+      and (.flowNote == "on the ways counts the live work this board was given, not every worker under way · launched counts the recent completions this board was given, not every launch on record")
+  ' >/dev/null || fail "a bounded rail figure was drawn without disclosing its bound: $out"
+  # each disclosure names the kind of bound only: no number, window, rate or change
+  printf '%s' "$out" | jq -e '
+    (.flowNote | test("[0-9]") | not)
+  ' >/dev/null || fail "a bound asserted a figure the payload never carried: $out"
+  printf '%s' "$out" | jq -e '
+    ([.stats[] | select(.label == "on the ways" or .label == "launched") | .n] == [1,1])
+  ' >/dev/null || fail "a stage lost its own count while disclosing its bound: $out"
+  pass "both bounded rail figures disclose their bound on every board, not only a truncated one"
+}
+
+# ---------------------------------------------------------------------------
+# The yard report's time bracket reduces over the charted feed, which is a
+# bounded prefix the composer ranked by its own judgment rather than by age. So
+# "the oldest order in the yard" is a claim no payload supports, and the line
+# names the scope it actually has. It does so on every board, not only where
+# `charted_more` says rows were cut: that field is optional, so its absence
+# means the composer did not say, never that nothing was omitted.
+# ---------------------------------------------------------------------------
+test_the_oldest_wait_never_claims_more_than_the_board_was_handed() {
+  local body cut whole
+  body='{
+    "charted": [
+      {"id":"old","repo":"sample","title":"Long wait","reason":"",
+       "dispatchable":true,"since":"2026-07-01"},
+      {"id":"new","repo":"sample","title":"Short wait","reason":"",
+       "dispatchable":true,"since":"2026-08-24"}
+    ]'
+  cut=$(render "$(make_home oldest-scope-cut)" "$body, \"charted_more\": 30}")
+  whole=$(render "$(make_home oldest-scope-whole)" "$body}")
+
+  # a truncated board: the bracket is the oldest it was HANDED, never the yard's
+  printf '%s' "$cut" | jq -e '
+    (.headlineSub | test("oldest order charted here waiting 56 days"))
+      and (.yardSub | test("32 in the order book"))
+  ' >/dev/null || fail "the time bracket claimed a yard-wide oldest over a cut feed: $cut"
+
+  # and the scope is named just the same where nothing was cut, so the
+  # qualification cannot regress to something an optional field switches on
+  printf '%s' "$whole" | jq -e '
+    .headlineSub | test("oldest order charted here waiting 56 days")
+  ' >/dev/null || fail "the time bracket dropped its scope on an untruncated board: $whole"
+
+  # neither board may state the unscoped superlative anywhere
+  if printf '%s\n%s' "$cut" "$whole" | grep -q "oldest order waiting"; then
+    fail "the board stated an unscoped oldest-order superlative: $cut"
+  fi
+  pass "the oldest-wait bracket names the board it was computed over, always"
 }
 
 # ---------------------------------------------------------------------------
@@ -305,9 +581,17 @@ test_an_empty_lane_names_which_empty_it_is() {
   # nothing anywhere reads as "no record", never as abandonment
   printf '%s' "$out" | jq -e '[.lanes[].reading] | map(select(test("abandon"))) | length == 0' \
     >/dev/null || fail "the board called a lane abandoned from current state alone: $out"
-  # a lane with nothing in progress draws no gauge rather than an empty track
-  printf '%s' "$out" | jq -e '[.lanes[] | select(.name == "quiet") | .gauge] == [[]]' >/dev/null \
-    || fail "a lane with nothing in progress still drew a progress gauge: $out"
+  # a lane with nothing in progress still draws the whole route, and its own gaps
+  # are the reading: three empty stages, worded against the board, no gauge and
+  # nothing whose size could be read as progress toward launch
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | select(.name == "quiet") | [.berths[] | {(.label): .count}] | add]
+      == [{"Dry dock":"0","Clear to start":"0","On the ways":"0","Launched":"1"}]
+  ' >/dev/null || fail "a quiet lane stopped drawing the route it is quiet on: $out"
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | select(.name == "quiet") | .berths[] | select(.count == "0") | .none]
+      == ["none on this board","none on this board","none on this board"]
+  ' >/dev/null || fail "an empty stage claimed more than the board can hold: $out"
   pass "an empty lane names which empty it is instead of implying abandonment"
 }
 
@@ -330,15 +614,17 @@ test_omitted_queued_work_is_never_reported_as_available_capacity() {
     .headline == "Nothing is being built right now. 5 orders are held in dry dock."
   ' >/dev/null || fail "the yard report does not name what actually holds the book: $out"
   # the omitted rows are still disclosed as depth, just never as capacity
-  [ "$(stat_n "$out" "order book")" = 8 ] \
-    || fail "the order-book tally dropped omitted queued work: $out"
-  # the drawer's own summary line must agree: this book is deep enough to stay
-  # closed, and what it offers to reveal is the hold, never a pick, because no
-  # row inside it accepts one
+  [ "$(stat_n "$out" "clear to start")" = 0 ] \
+    || fail "omitted queued rows were counted as work clear to start: $out"
+  printf '%s' "$out" | jq -e '.yardSub | test("8 in the order book")' >/dev/null \
+    || fail "the yard dropped omitted queued work from its own depth: $out"
+  # the held stage is deep enough to keep rows back, and what it offers to reveal
+  # is the hold, never a pick, because no row inside it accepts one
   printf '%s' "$out" | jq -e '
-    [.lanes[] | select(.name == "sample") | .drawer | {open, hint}]
-      == [{open:false, hint:"open to read what holds them"}]
-  ' >/dev/null || fail "a wholly held order book advertised a pick it cannot accept: $out"
+    [.lanes[] | select(.name == "sample") | .berths[] | select(.label == "Dry dock")
+     | {count, shown: (.shown | length), hint: .more.hint}]
+      == [{count:"5", shown:4, hint:"open to read what holds them"}]
+  ' >/dev/null || fail "a wholly held stage advertised a pick it cannot accept: $out"
   printf '%s' "$out" | jq -e '
     [.lanes[] | select(.name == "sample") | .berths[].rows[] | select(.pickable)] == []
   ' >/dev/null || fail "a held row rendered a dispatch checkbox: $out"
@@ -346,17 +632,17 @@ test_omitted_queued_work_is_never_reported_as_available_capacity() {
 }
 
 # ---------------------------------------------------------------------------
-# The hint tells the captain that opening the order book reveals something, so
-# it must be gone the moment the book is open and back the moment it is
-# collapsed - in both directions, whoever moved it. That is declared in the
-# stylesheet rather than in the script, so it leaves no trace in the rendered
-# DOM. The assertion is on the BUILT BOARD's own <style> - the generated
-# artifact a browser consumes - parsed into rules and resolved through the
-# cascade for the real rendered hint element in each drawer state, never on the
-# template's source text. A property the hint declares in both states is
-# asserted as a control, so a probe that resolved nothing could not pass here.
+# The hint tells the captain that opening a deep stage reveals something, so it
+# must be gone the moment the stage is open and back the moment it is collapsed
+# - in both directions, whoever moved it. That is declared in the stylesheet
+# rather than in the script, so it leaves no trace in the rendered DOM. The
+# assertion is on the BUILT BOARD's own <style> - the generated artifact a
+# browser consumes - parsed into rules and resolved through the cascade for the
+# real rendered hint element in each state, never on the template's source text.
+# A property the hint declares in both states is asserted as a control, so a
+# probe that resolved nothing could not pass here.
 # ---------------------------------------------------------------------------
-test_opening_the_order_book_withdraws_its_hint() {
+test_opening_a_deep_stage_withdraws_its_hint() {
   local home out
   home=$(make_home hint-style)
   out=$(render "$home" "$(jq -n \
@@ -369,10 +655,10 @@ test_opening_the_order_book_withdraws_its_hint() {
   ' >/dev/null || fail "the cascade probe never reached the hint element: $out"
 
   printf '%s' "$out" | jq -e '.hintStyle.closed.display == null' >/dev/null \
-    || fail "a closed order book withheld the hint that its rows are worth opening: $out"
+    || fail "a stage holding rows back withheld the hint that they are worth opening: $out"
   printf '%s' "$out" | jq -e '.hintStyle.open.display == "none"' >/dev/null \
-    || fail "an open order book still told the captain to open it: $out"
-  pass "opening the order book withdraws the hint that told him to open it"
+    || fail "an opened stage still told the captain to open it: $out"
+  pass "opening a deep stage withdraws the hint that told him to open it"
 }
 
 # ---------------------------------------------------------------------------
@@ -397,6 +683,9 @@ test_a_lane_holding_only_a_captains_call_still_reads_as_recorded() {
     || fail "the lane lost the badge saying it waits on the captain: $lane"
   printf '%s' "$lane" | jq -e '.empty == []' >/dev/null \
     || fail "a lane holding a live captain decision claimed nothing was recorded: $lane"
+  # and it draws no route: four empty stages here would be four absence claims
+  printf '%s' "$lane" | jq -e '.flow == false and (.berths | length) == 0' >/dev/null \
+    || fail "a lane with no rows at all still drew empty stages: $lane"
   pass "a lane holding only a Captain's Call reads as waiting, not as unrecorded"
 }
 
@@ -424,15 +713,18 @@ test_a_placeholder_reason_never_becomes_a_subtitle() {
     ]}')
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Clear to start") | .rows[] | {s:.sub, w:.when}]
-      == [{s:"ordered 2 days ago", w:""}]
+      == [{s:"", w:"ordered 2 days ago"}]
   ' >/dev/null || fail "a placeholder reason was rendered instead of the wait age: $out"
   # a dry-dock row is the one the reason invariant exists for, so a bare dash
   # there is the worst case: still badged held, still saying nothing
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Dry dock") | .rows[]
      | {s:.sub, w:.when, b:[.badges[].text]}]
-      == [{s:"held 10 days ago", w:"", b:["held"]}]
-  ' >/dev/null || fail "a held row rendered a bare dash instead of how long it has waited: $out"
+      == [{s:"held with no reason recorded", w:"ordered 10 days ago", b:["held"]}]
+  ' >/dev/null || fail "a held row whose reason is the placeholder did not declare that its reason is missing: $out"
+  printf '%s' "$out" | jq -e '
+    [.lanes[].berths[].rows[] | select((.sub | startswith("-")) or (.when | startswith("-")))] == []
+  ' >/dev/null || fail "a placeholder reason survived into a lane: $out"
   # the notices band reads a reason by the same rule as the two berths: an
   # alarm falls back to when it was recorded, or to the project alone
   printf '%s' "$out" | jq -e '
@@ -459,8 +751,8 @@ test_ages_are_read_against_the_payload_not_the_clock() {
     ]}')
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Launched") | .rows[] | {t:.title, w:.when}] == [
-      {t:"Landed today", w:"today"},
-      {t:"Landed earlier", w:"2 days ago"},
+      {t:"Landed today", w:"launched today"},
+      {t:"Landed earlier", w:"launched 2 days ago"},
       {t:"Landed undated", w:""}
     ]
   ' >/dev/null || fail "launch ages are not measured against the payload date: $out"
@@ -517,9 +809,9 @@ test_only_the_unnamed_lane_carries_a_row_identity() {
   # from the sub because it renders outside the block that truncates
   printf '%s' "$orphan" | jq -e '
     [.berths[] | {l:.label, ids:[.rows[].id]}] == [
-      {l:"On the ways",   ids:["orphan-task"]},
-      {l:"Clear to start",ids:["orphan-order"]},
       {l:"Dry dock",      ids:["orphan-held"]},
+      {l:"Clear to start",ids:["orphan-order"]},
+      {l:"On the ways",   ids:["orphan-task"]},
       {l:"Launched",      ids:["orphan-landed"]}
     ]
   ' >/dev/null || fail "a berth in the unassigned lane rendered a row with no identity: $orphan"
@@ -569,7 +861,7 @@ test_a_recorded_value_that_is_not_a_date_renders_no_age() {
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | .rows[] | .when] == ["", "", ""]
       and ([.lanes[0].berths[] | .rows[] | .sub]
-           == ["waiting for a crew", "waiting on legal", "delivered · firstmate"])
+           == ["waiting on legal", "waiting for a crew", "delivered · firstmate"])
   ' >/dev/null || fail "a value that is not a date was rendered as an age: $out"
   # the lane cannot claim a last launch it could not date
   printf '%s' "$out" | jq -e '.lanes[0].launch == ""' >/dev/null \
@@ -608,8 +900,8 @@ test_a_day_the_calendar_does_not_have_renders_no_age() {
   # the impossible day carries no age; the real one beside it is untouched
   printf '%s' "$out" | jq -e '
     [.lanes[0].berths[] | select(.label == "Clear to start") | .rows[] | {t:.title, w:.when, s:.sub}] == [
-      {t:"Ordered on a missing day", w:"", s:"waiting for a crew"},
-      {t:"Ordered on a real day", w:"", s:"ordered 2 days ago"}
+      {t:"Ordered on a real day", w:"ordered 2 days ago", s:""},
+      {t:"Ordered on a missing day", w:"", s:"waiting for a crew"}
     ]
   ' >/dev/null || fail "an impossible day was dated, or a real day beside it was lost: $out"
   printf '%s' "$out" | jq -e '
@@ -653,8 +945,8 @@ test_a_record_dated_after_the_snapshot_renders_no_age() {
   # the forward-dated order carries no age; the real past date beside it does
   printf '%s' "$lane" | jq -e '
     [.berths[] | select(.label == "Clear to start") | .rows[] | {t:.title, w:.when, s:.sub}] == [
-      {t:"Ordered ahead of the snapshot", w:"", s:"waiting for a crew"},
-      {t:"Ordered before the snapshot", w:"", s:"ordered 2 days ago"}
+      {t:"Ordered before the snapshot", w:"ordered 2 days ago", s:""},
+      {t:"Ordered ahead of the snapshot", w:"", s:"waiting for a crew"}
     ]
   ' >/dev/null || fail "a forward-dated order was aged, or a real one beside it was lost: $lane"
   printf '%s' "$lane" | jq -e '
@@ -696,7 +988,7 @@ test_a_forward_dated_launch_does_not_hide_a_real_one() {
     || fail "a mistyped launch date hid the most recent real launch: $lane"
   printf '%s' "$lane" | jq -e '
     [.berths[] | select(.label == "Launched") | .rows[] | {t:.title, w:.when}] == [
-      {t:"Landed for real", w:"6 days ago"},
+      {t:"Landed for real", w:"launched 6 days ago"},
       {t:"Landed on a mistyped year", w:""}
     ]
   ' >/dev/null || fail "the real launch lost its age, or the mistyped one gained one: $lane"
@@ -801,15 +1093,21 @@ test_the_board_still_emits_every_answer_key() {
 }
 
 test_two_projects_with_the_same_queue_read_differently
+test_every_lane_draws_the_same_route_in_the_same_order
+test_the_board_never_states_a_rate_or_a_change
+test_a_deep_stage_keeps_its_longest_waits_in_view
+test_the_unsorted_stage_is_the_one_the_route_never_caps
 test_a_stopped_fleet_reads_as_capacity_not_as_a_checklist
 test_the_board_still_emits_every_answer_key
-test_dry_dock_and_clear_to_start_are_different_berths
+test_dry_dock_and_clear_to_start_are_different_stages
 test_integrity_warnings_never_enter_a_lane
 test_a_yard_of_only_warnings_reports_no_work_at_all
 test_omitted_warnings_never_count_as_more_queued
 test_omitted_queued_work_is_reported_against_the_yard
+test_the_bounded_rail_figures_always_disclose_their_bounds
+test_the_oldest_wait_never_claims_more_than_the_board_was_handed
 test_omitted_queued_work_is_never_reported_as_available_capacity
-test_opening_the_order_book_withdraws_its_hint
+test_opening_a_deep_stage_withdraws_its_hint
 test_an_empty_lane_names_which_empty_it_is
 test_a_lane_holding_only_a_captains_call_still_reads_as_recorded
 test_a_placeholder_reason_never_becomes_a_subtitle
