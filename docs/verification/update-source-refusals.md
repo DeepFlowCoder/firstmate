@@ -3,12 +3,15 @@
 Repeatable evidence for the `/updatefirstmate` negative guarantees: a configured update source that cannot be proven refuses the run instead of falling back to `origin`, a refused firstmate target advances no secondmate, and a remote secondmate route is refused before any contact.
 Current behavior and rationale are owned by [`../configuration.md`](../configuration.md) ("Update source"), the [`updatefirstmate`](../../.agents/skills/updatefirstmate/SKILL.md) skill, and [`bin/fm-update.sh`](../../bin/fm-update.sh)'s header; this page records evidence only.
 
-Date: 2026-08-20.
+Date: 2026-09-08.
 Shell: GNU bash 5.3.9 (macOS).
-Comparison base: `main` at `d5549d8`.
+Comparison base: `main` at `deb65bd`.
 
 `tests/fm-update.test.sh` is the hermetic suite for `bin/fm-update.sh`, the fast-forward-only self-update of a running firstmate repo and every registered secondmate home.
-Each scenario is built in an isolated throwaway world - a bare origin, a firstmate clone on `main`, and a home with `state/` and `data/` - and every refusal is measured against a checkout that is genuinely advanceable: origin is deliberately left ahead, so a silent fallback to `origin` would visibly move a target's HEAD.
+Each scenario is built in an isolated throwaway world - a bare origin, a firstmate clone on `main`, and a home with `state/` and `data/` - and each refusal is measured against whatever that particular guarantee could have wrongly moved.
+The source-fallback cases (T14, T15, T23) leave origin ahead of the checkout, so a silent fallback to `origin` would visibly move the target's HEAD.
+The remote-route case (T19) bumps only `upstream` and never origin; its measurement is the absent `ssh` attempt log, which proves the host was never contacted.
+The no-advance case (T22) bumps origin and then fast-forwards the primary onto it before the run, so at refusal time the advanceable target is the leased secondmate home relative to the primary, not origin.
 The suite touches no network and no live fleet; the remote-route case runs an `ssh` shim that records any attempt instead of contacting a host.
 
 The three negative guarantees are each pinned by at least one test:
