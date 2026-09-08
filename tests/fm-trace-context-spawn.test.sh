@@ -13,7 +13,8 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-trace-context-spawn)
 
 # Fake tmux: answers the pane-path query and logs every literal `send-keys -l`
-# argument (the GOTMPDIR export, the TRACEPARENT export, and the launch command)
+# argument (the GOTMPDIR export, the git-editor guard export, the TRACEPARENT
+# export, and the launch command)
 # one per line, in send order, so ordering is observable.
 make_spawn_fakebin() {
   local dir=$1 fakebin

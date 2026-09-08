@@ -55,7 +55,7 @@ Membership is derived rather than enumerated, so a newly added test lands here b
 
 ## Portable serial CI shards
 
-That remainder now measures about 55 minutes of serial work (3322594 ms, from the hints recorded below), so `portable-serial-<k>of<n>` splits it across `n` separate CI runners, each under a 20-minute job cap.
+That remainder now measures about 56 minutes of serial work (3372312 ms, from the hints recorded below), so `portable-serial-<k>of<n>` splits it across `n` separate CI runners, each under a 20-minute job cap.
 Each shard is still strictly serial in itself, and separate runners mean no two of these stateful scripts ever share a machine, so the split needs no concurrency isolation proof.
 
 The split exists because the unsharded lane outgrew its cap. The figures below are pre-shard history, not a current measurement:
@@ -79,21 +79,21 @@ Refresh the hints whenever the serial lane gains scripts, rather than waiting fo
 Stale hints still cost a red lane once the drift is large enough to cross the job cap.
 The previous table described a 1143762 ms lane while the real lane had grown to 2958555 ms, so four shards carried 903113 / 632913 / 879800 / 542729 ms and the worst shard held 903 s of work against a 900 s cap.
 `Behavior portable serial 1` therefore reported as cancelled at that cap with all 28 of its scripts passing: the lane went red on the clock, not on a test.
-The shard count is derived from the refreshed measurement rather than chosen freely: eight shards put the balanced estimate near 415 s, and the measured worst shard of green 8-shard run [33246490613](https://github.com/DeepFlowCoder/firstmate/actions/runs/33246490613) ran 53% above its estimate of that era, so the cap is a hang tripwire with real margin rather than the expected end of the lane.
+The shard count is derived from the refreshed measurement rather than chosen freely: eight shards put the balanced estimate near 422 s, and the measured worst shard of green 8-shard run [33246490613](https://github.com/DeepFlowCoder/firstmate/actions/runs/33246490613) ran 53% above its estimate of that era, so the cap is a hang tripwire with real margin rather than the expected end of the lane.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of8` | 16 | 415329 ms (~415.3 s) |
-| `portable-serial-2of8` | 15 | 415324 ms (~415.3 s) |
-| `portable-serial-3of8` | 17 | 415334 ms (~415.3 s) |
-| `portable-serial-4of8` | 18 | 415332 ms (~415.3 s) |
-| `portable-serial-5of8` | 17 | 415315 ms (~415.3 s) |
-| `portable-serial-6of8` | 17 | 415316 ms (~415.3 s) |
-| `portable-serial-7of8` | 20 | 415316 ms (~415.3 s) |
-| `portable-serial-8of8` | 20 | 415328 ms (~415.3 s) |
-| imbalance | | 19 ms |
+| `portable-serial-1of8` | 13 | 421599 ms (~421.6 s) |
+| `portable-serial-2of8` | 17 | 421525 ms (~421.5 s) |
+| `portable-serial-3of8` | 17 | 421539 ms (~421.5 s) |
+| `portable-serial-4of8` | 18 | 421524 ms (~421.5 s) |
+| `portable-serial-5of8` | 19 | 421541 ms (~421.5 s) |
+| `portable-serial-6of8` | 17 | 421533 ms (~421.5 s) |
+| `portable-serial-7of8` | 20 | 421527 ms (~421.5 s) |
+| `portable-serial-8of8` | 20 | 421524 ms (~421.5 s) |
+| imbalance | | 75 ms |
 
-That packing runs over the whole sorted lane, so one added script re-cuts every bin rather than only its own: adding `tests/fm-notify-moshi.test.sh` moved script counts that were 16/17/17/17/17/18/18/19 to the table above.
+That packing runs over the whole sorted lane, so one added script re-cuts every bin rather than only its own: adding `tests/fm-spawn-git-editor.test.sh` moved script counts that were 16/15/17/18/17/17/20/20 to the table above.
 Read a shard's membership from `bin/fm-test-run.sh --list --lane portable-serial-<k>of8` at the head you care about rather than carrying it forward from an earlier run.
 
 The single longest script, `tests/fm-pr-check-security.test.sh` at 252478 ms, is the floor for any shard count, and every security case added to it raises that floor.
@@ -102,7 +102,7 @@ A wholesale refresh is DUE and is the real fix for the cap being raised.
 On run 33296163782 shard 3 ran 15m18s against a 412 s estimate while the other seven shards each finished between 6 and 7 minutes, so the imbalance is real rather than runner noise.
 That run's shard 3 timing artifact never uploaded, so the overrunning script is not identified here rather than guessed at; the next green run supplies it.
 Look first at the two scripts that shard carried at that head with `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` rather than a measurement: `tests/fm-send-inbox-doorbell-live-e2e.test.sh`, a live e2e, and `tests/fm-branch-supervision.test.sh`, 552 new lines on the same 20000 ms placeholder.
-The rebalance recorded above has since moved the first of those to shard 4, so they are suspect scripts rather than a current shard-3 membership.
+The rebalances recorded above have since moved both out of shard 3, the first to shard 2 and the second to shard 7, so they are suspect scripts rather than a current shard-3 membership.
 An unmeasured script is where the estimate can be wrong by the ~500 s between shard 3's 412833 ms estimate and the >900 s it ran.
 
 `tests/fm-remote-secondmate-lifecycle-e2e.test.sh` does not explain that gap, though it is the heaviest script in the shard and the obvious suspect: its 211342 ms hint is already inside the 412833 ms estimate, so it cannot by itself open a gap against that estimate.

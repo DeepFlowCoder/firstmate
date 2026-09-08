@@ -160,8 +160,8 @@ CHANGED_DEFAULT_TIMEOUT_SECS=900
 # crossed the 900 s cap and timed out. Eight put the balanced estimate near 370 s
 # then, and the worst shard measured on green run 33246490613 ran 565 s, 53%
 # above that estimate, so the cap stays a hang tripwire with real margin. The
-# lane has since grown to about 3303 s, which the same eight shards balance near
-# 413 s; docs/fm-test-portable-shards.md owns the current per-shard table and the
+# lane has since grown to about 3372 s, which the same eight shards balance near
+# 422 s; docs/fm-test-portable-shards.md owns the current per-shard table and the
 # refresh procedure.
 PORTABLE_SERIAL_SHARDS=8
 
