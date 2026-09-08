@@ -55,7 +55,10 @@
 # Ship and scout briefs carry the credential-store safety rule: the captain's
 # real keychain is never read, `security` and `op` are refused by name in every
 # reading form, a PATH stub is the tested alternative, and an unmeasurable case
-# is a refusal rather than a silent pass. It is a brief section rather than
+# is a refusal rather than a silent pass. The rule binds direct invocations and
+# readers the worker itself introduces; the brief's own sanctioned delivery
+# commands are exempt, and one hanging on a credential is a block to report
+# rather than something to work around. It is a brief section rather than
 # firstmate-side knowledge because the worker never reads firstmate's private
 # data/, and the no-mistakes definition of done exempts it by name from the
 # scaffold-boilerplate exclusion so it also reaches the pipeline through
@@ -207,15 +210,28 @@ INBOX_SECTION=${INBOX_SECTION%$'\n'}
 # scaffolds. Quoted delimiter: every backtick and brace below is literal brief
 # text. The refusal is by command NAME on purpose - a runtime detector that
 # guessed from process ancestry was built, failed twice, and is retired.
+# The scope is drawn by INTENT, not by region: a fence around "anything that
+# reaches the keychain" would also freeze the delivery path this same brief
+# mandates, so a literal reader blocks itself and the rule protects nothing.
+# What actually bit was a direct `security find-generic-password -w`, never a
+# `git push`, so the rule binds direct reads and worker-introduced readers and
+# exempts the sanctioned delivery commands - which instead have their own
+# report-the-block clause. That narrowing is firstmate's own decision, not the
+# captain's instruction.
 IFS= read -r -d '' CREDENTIALS_SECTION <<'EOF' || true
 # The captain's real credential store - HARD SAFETY RULE
 Never read the captain's real keychain or credential store, and never let code, a test, a fixture, an example, or a helper you write reach it either.
-This covers `security` and `op` in every reading form, not only the one command that caused the last incident: `security find-generic-password`, `security find-internet-password`, `security unlock-keychain`, `op read`, `op item get`, `op signin`, `op run`, any `-w` or `--reveal` variant that prints a secret, and any tool, wrapper, or credential helper that reaches one of them on your behalf.
+This covers directly invoking the `security` or `op` executables in every reading form, not only the one command that caused the last incident: `security find-generic-password`, `security find-internet-password`, `security unlock-keychain`, `op read`, `op item get`, `op signin`, `op run`, and any `-w` or `--reveal` variant that prints a secret.
+It equally covers any tool, wrapper, or credential helper that YOU introduce to reach one of them on your behalf, because routing the same read through something you added does not make it a different read.
+It does NOT cover the sanctioned delivery commands this brief itself orders you to run - `git checkout -b`, `git push`, `gh-axi`, and the rest of the mandated delivery path - because those are not interactive credential reads you elected to make.
+That exemption reaches only those commands doing their own ordinary work, and it is never cover for adding a credential read of your own inside, alongside, or underneath one of them.
 A real read against a locked store blocks on a system password dialog that holds the captain's screen until they answer it - measured once at 6h49m - while supervision still reads the worker as working, so the only symptom is that nothing happens.
 Killing the process does not undo it: the dialog belongs to a system agent that outlives the client, so there is no cleanup afterwards and prevention is the only control that works.
 Use a stub instead: put your own fake `security` and `op` executables first on `PATH` for anything under test, and assert against the stub rather than the real store.
-Refuse by name, never by measurement: if a command names `security` or `op`, or you cannot tell whether it reaches them, refuse it and say which command it was and what you could not determine.
+Refuse by name, never by measurement: if the command you are about to run is `security` or `op`, or you cannot tell whether a reader you are introducing reaches them, refuse it and say which command it was and what you could not determine.
 Being unable to measure whether something reads a credential is NOT the same as it not reading one, so an unmeasurable case is a refusal and this rule never passes in silence.
+If a sanctioned delivery command hangs or fails asking for a credential - a `git` operation waiting on its credential helper, or failing with `-25308` because the Mac is locked - that is a BLOCK to report, never something to work around.
+The known cure is `gh auth setup-git`, which moves git onto gh's credentials, but report the block and let firstmate decide rather than quietly applying the cure and moving on.
 If the task genuinely cannot proceed without a real credential, append `blocked: {which credential}` to the status file and stop; firstmate obtains it.
 EOF
 CREDENTIALS_SECTION=${CREDENTIALS_SECTION%$'\n'}
