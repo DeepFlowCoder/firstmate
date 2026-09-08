@@ -1081,6 +1081,112 @@ test_stale_watch_reclaim_publishes_before_clear() {
   pass "stale watcher reclaim publishes durable recovery evidence before clear"
 }
 
+# A lock directory that cannot be written at all is not a contended lock, and
+# fm_lock_try_acquire used to treat it as one: its stale-owner path re-enters
+# itself on "<lock>.steal", so every level failed to create its path the same
+# way and recursed one frame deeper, until bash overflowed its stack and the
+# whole interpreter died on SIGSEGV. That is how a watcher cycle's process-event
+# reconcile reported "Segmentation fault: 11" while the state directory's own
+# writes were failing with "No space left on device": ENOSPC and an unwritable
+# directory reach the identical failed-create path, and this uses permissions
+# because a full filesystem is not something a portable test can arrange.
+#
+# Both halves of the contract are asserted, because the two failure modes trade
+# off against each other: the recursion must be bounded (no signal death), AND
+# the bounded form must not simply become an unbounded wait, since the fleet's
+# one spinning waiter would then wedge the caller a crash used to at least free.
+test_unwritable_lock_directory_fails_fast() {
+  local dir state lockdir rc started elapsed pid i spun wait_rc
+  dir=$(make_case unwritable-lock-directory)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  chmod a-w "$state" || fail "could not drop write permission on the case state dir"
+
+  # Running as root (common in CI containers) ignores the permission bit, and a
+  # case that cannot arrange its precondition must say so rather than pass on an
+  # assertion it never got to make.
+  if ( : > "$state/.writable-probe" ) 2>/dev/null; then
+    rm -f "$state/.writable-probe" 2>/dev/null || true
+    chmod u+w "$state" 2>/dev/null || true
+    pass "unwritable lock directory regression skipped (this user can write it anyway)"
+    return
+  fi
+
+  # Both probes run before any assertion, so write permission is restored on
+  # every path: `fail` ends the run, and a case that left its own temp dir
+  # unwritable would take the harness's cleanup down with it.
+  started=$(date +%s)
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+  ' _ "$LIB" "$lockdir" >/dev/null 2>&1
+  rc=$?
+  elapsed=$(( $(date +%s) - started ))
+
+  # fm_lock_acquire_wait is the fleet's only unbounded lock wait. It may wait out
+  # a holder forever, but sleeping cannot make a failed write succeed, so this
+  # verdict has to end the wait instead of spinning in it.
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+  ' _ "$LIB" "$lockdir" >/dev/null 2>&1 &
+  pid=$!
+  i=0
+  while [ "$i" -lt 300 ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  spun=0
+  if kill -0 "$pid" 2>/dev/null; then
+    spun=1
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null
+  wait_rc=$?
+  chmod u+w "$state" 2>/dev/null || true
+
+  [ "$rc" -le 128 ] \
+    || fail "fm_lock_try_acquire on an unwritable lock directory died on signal $((rc - 128))"
+  [ "$rc" -eq 2 ] \
+    || fail "fm_lock_try_acquire did not report the unusable-directory verdict (rc=$rc)"
+  [ "$elapsed" -lt 30 ] \
+    || fail "fm_lock_try_acquire took ${elapsed}s on an unwritable lock directory"
+  [ "$spun" -eq 0 ] \
+    || fail "fm_lock_acquire_wait spun on an unwritable lock directory instead of giving up"
+  [ "$wait_rc" -le 128 ] \
+    || fail "fm_lock_acquire_wait on an unwritable lock directory died on signal $((wait_rc - 128))"
+  [ "$wait_rc" -ne 0 ] \
+    || fail "fm_lock_acquire_wait reported success without holding an unwritable lock"
+  pass "an unwritable lock directory fails fast instead of recursing or spinning"
+}
+
+# The steal path still has to survive a leaked steal lock, which is the one
+# legitimate reason to nest a second level: a reclaim killed mid-flight leaves
+# "<lock>.steal" behind with a dead owner, and the successor can only break the
+# primary lock by stealing that leftover first. The bound added for the runaway
+# above must sit clear of this, so pin the two-level chain explicitly - otherwise
+# a tighter bound would look correct while quietly stranding every lock whose
+# reclaim was interrupted.
+test_lock_steals_through_a_leaked_steal_lock() {
+  local dir state lockdir rc
+  dir=$(make_case leaked-steal-chain)
+  state="$dir/state"
+  lockdir="$state/.watch.lock"
+  mkdir -p "$lockdir" "$lockdir.steal"
+  printf '99999999\n' > "$lockdir/pid"
+  printf '99999998\n' > "$lockdir.steal/pid"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2" || exit 1
+    fm_lock_release "$2"
+  ' _ "$LIB" "$lockdir" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "a lock whose steal marker leaked from a dead owner was not reclaimable (rc=$rc)"
+  pass "a leaked steal lock is still stolen through, two levels deep"
+}
+
 test_msys_pid_identity_uses_proc() {
   local live identity
   case "$(uname)" in
@@ -1112,6 +1218,8 @@ test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
+test_unwritable_lock_directory_fails_fast
+test_lock_steals_through_a_leaked_steal_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock

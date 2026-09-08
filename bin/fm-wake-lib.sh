@@ -9,6 +9,19 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
+# fm_lock_try_acquire breaks a stale lock by re-entering itself on "<lock>.steal".
+# A genuine chain is one level per steal lock that a killed reclaim leaked and
+# left on disk, so two or three levels are reachable in practice and this cap is
+# pure headroom: a backstop that bounds the bash stack whatever happens, never a
+# limit real recovery is expected to reach.
+FM_LOCK_STEAL_MAX_DEPTH="${FM_LOCK_STEAL_MAX_DEPTH:-32}"
+# A malformed override would make every single lock acquisition noisy, and this
+# is a backstop, not a knob anyone should need: take the default rather than
+# carry a value the comparison below cannot use.
+case "$FM_LOCK_STEAL_MAX_DEPTH" in
+  ''|*[!0-9]*|0) FM_LOCK_STEAL_MAX_DEPTH=32 ;;
+esac
+_FM_LOCK_STEAL_DEPTH=0
 # Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
@@ -792,13 +805,35 @@ fm_recovery_marker_reopen_announced() {
 }
 
 fm_lock_try_acquire() {
-  local lockdir=$1 pid steal cur rc steal_owner primary_owner
+  local lockdir=$1 pid steal cur rc steal_rc steal_owner primary_owner
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
   FM_LOCK_RECOVERED_PID=
 
   if fm_lock_try_create "$lockdir"; then
     return 0
+  fi
+
+  # try_create fails for two very different reasons, and only one of them has an
+  # owner worth stealing from: either the lock is HELD (some path exists there),
+  # or this process cannot write the lock's directory at all - ENOSPC, EACCES, a
+  # read-only mount. With nothing at "$lockdir" there is no holder to break, and
+  # the steal path below would ask that same unwritable directory for one more
+  # path, fail identically, and recurse a level deeper forever. That is not
+  # theoretical: with the state directory full, this recursed roughly 900 frames
+  # deep and bash died on SIGSEGV, which is how a watcher cycle's process-event
+  # reconcile reported "Segmentation fault: 11" while its own writes were still
+  # failing with "No space left on device".
+  #
+  # Status 2 names that second reason, as distinct from 1's "the lock is held".
+  # Both are false to every `if !` and `||` caller, so nothing that only tests
+  # success changes; the one consumer that must tell them apart is
+  # fm_lock_acquire_wait, which can wait out a holder but never a directory it
+  # cannot write.
+  if [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ]; then
+    FM_LOCK_HELD_PID=
+    FM_LOCK_OWNER_DIR=
+    return 2
   fi
 
   # Compare against ${BASHPID:-$$} inline, never via a command substitution:
@@ -830,9 +865,28 @@ fm_lock_try_acquire() {
   fi
 
   steal="$lockdir.steal"
-  if ! fm_lock_try_acquire "$steal"; then
+  # Structural backstop for the same runaway. The guard above is what actually
+  # bounds it - recursion now needs each "<lock>.steal" level to already EXIST,
+  # and a level that does not exist either gets created or reports the directory
+  # unusable - so this cap only has to sit above any chain of leaked steal locks
+  # real recovery can meet. The counter is restored immediately after the call,
+  # so an outer caller keeps its own budget and a later independent acquire
+  # starts from zero.
+  if [ "$_FM_LOCK_STEAL_DEPTH" -ge "$FM_LOCK_STEAL_MAX_DEPTH" ]; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
+    return 1
+  fi
+  _FM_LOCK_STEAL_DEPTH=$((_FM_LOCK_STEAL_DEPTH + 1))
+  fm_lock_try_acquire "$steal"
+  steal_rc=$?
+  _FM_LOCK_STEAL_DEPTH=$((_FM_LOCK_STEAL_DEPTH - 1))
+  if [ "$steal_rc" -ne 0 ]; then
+    FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+    FM_LOCK_OWNER_DIR=
+    # An unusable directory under the steal path is the same verdict for this
+    # lock: the holder may be stale, but nothing here can be written to break it.
+    [ "$steal_rc" -eq 2 ] && return 2
     return 1
   fi
   steal_owner=${FM_LOCK_OWNER_DIR:-}
@@ -892,9 +946,19 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
+# Wait for a contended lock. This is the fleet's only unbounded lock wait, which
+# is correct for a holder that will eventually let go and wrong for a directory
+# that cannot be written at all: sleeping cannot make a failed write succeed, so
+# an unusable lock directory would spin here forever and wedge the caller. Give
+# up on that verdict and let the caller report it. Every caller already treats a
+# nonzero return as failure.
 fm_lock_acquire_wait() {
-  local lockdir=$1
-  while ! fm_lock_try_acquire "$lockdir"; do
+  local lockdir=$1 rc
+  while :; do
+    fm_lock_try_acquire "$lockdir"
+    rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$rc" -eq 2 ] && return 1
     sleep 0.1
   done
 }
