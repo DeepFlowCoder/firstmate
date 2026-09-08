@@ -52,6 +52,14 @@
 # Every scaffold also carries the steering-inbox receive-and-ack section:
 # process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
 # handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
+# Ship and scout briefs carry the credential-store safety rule: the captain's
+# real keychain is never read, `security` and `op` are refused by name in every
+# reading form, a PATH stub is the tested alternative, and an unmeasurable case
+# is a refusal rather than a silent pass. It is a brief section rather than
+# firstmate-side knowledge because the worker never reads firstmate's private
+# data/, and the no-mistakes definition of done exempts it by name from the
+# scaffold-boilerplate exclusion so it also reaches the pipeline through
+# --intent, which is the placement that measured as obeyed.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -195,6 +203,23 @@ The move IS the acknowledgement: without it firstmate rings again and eventually
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
 
+# The credential-store rule, stated once and shared by the ship and scout
+# scaffolds. Quoted delimiter: every backtick and brace below is literal brief
+# text. The refusal is by command NAME on purpose - a runtime detector that
+# guessed from process ancestry was built, failed twice, and is retired.
+IFS= read -r -d '' CREDENTIALS_SECTION <<'EOF' || true
+# The captain's real credential store - HARD SAFETY RULE
+Never read the captain's real keychain or credential store, and never let code, a test, a fixture, an example, or a helper you write reach it either.
+This covers `security` and `op` in every reading form, not only the one command that caused the last incident: `security find-generic-password`, `security find-internet-password`, `security unlock-keychain`, `op read`, `op item get`, `op signin`, `op run`, any `-w` or `--reveal` variant that prints a secret, and any tool, wrapper, or credential helper that reaches one of them on your behalf.
+A real read against a locked store blocks on a system password dialog that holds the captain's screen until they answer it - measured once at 6h49m - while supervision still reads the worker as working, so the only symptom is that nothing happens.
+Killing the process does not undo it: the dialog belongs to a system agent that outlives the client, so there is no cleanup afterwards and prevention is the only control that works.
+Use a stub instead: put your own fake `security` and `op` executables first on `PATH` for anything under test, and assert against the stub rather than the real store.
+Refuse by name, never by measurement: if a command names `security` or `op`, or you cannot tell whether it reaches them, refuse it and say which command it was and what you could not determine.
+Being unable to measure whether something reads a credential is NOT the same as it not reading one, so an unmeasurable case is a refusal and this rule never passes in silence.
+If the task genuinely cannot proceed without a real credential, append `blocked: {which credential}` to the status file and stop; firstmate obtains it.
+EOF
+CREDENTIALS_SECTION=${CREDENTIALS_SECTION%$'\n'}
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -328,6 +353,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 $HERDR_SECTION
 
+$CREDENTIALS_SECTION
+
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 This is a SCOUT task: the deliverable is a written report, not a PR.
@@ -418,6 +445,7 @@ Firstmate will then instruct you to run /no-mistakes, which validates the work a
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+The one scaffold section that is never boilerplate is the credential-store rule above: carry its prohibition, its named commands, and its unmeasurable-is-a-refusal clause into every \`--intent\`, because the workers the pipeline runs never see this brief and that is the placement measured to be obeyed.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:
@@ -443,6 +471,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $HERDR_SECTION
+
+$CREDENTIALS_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.

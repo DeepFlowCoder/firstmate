@@ -886,6 +886,69 @@ test_crewmate_briefs_route_captain_questions_through_the_status_log() {
   pass "fm-brief.sh: crewmate briefs route captain questions through the status log, never the harness dialog"
 }
 
+# A worker that reads the captain's real keychain can block on a system password
+# dialog for hours while supervision still reads it as working, and killing the
+# process does not dismiss the dialog. The prohibition therefore has to travel in
+# the brief itself: firstmate's private data/ is never read by a worker. This bit
+# twice, so every generated crewmate brief must carry the rule, name both
+# binaries in more than one reading form, offer the PATH stub as the alternative,
+# and state that an unmeasurable case is a refusal rather than a silent pass.
+test_crewmate_briefs_forbid_reading_the_real_credential_store() {
+  local home brief kind
+  home="$TMP_ROOT/credential-store-home"
+  write_registry "$home"
+  for kind in no-mistakes direct-PR local-only; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-cred-$kind" ship-proj --mode "$kind" >/dev/null 2>&1 \
+      || fail "$kind: ship scaffold exited non-zero"
+  done
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" brief-cred-scout ship-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+
+  for kind in brief-cred-no-mistakes brief-cred-direct-PR brief-cred-local-only brief-cred-scout; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep "Never read the captain's real keychain or credential store" "$brief" \
+      "$kind: brief did not forbid reading the captain's real credential store"
+    # Both binaries, and more than one reading form each: pinning only the single
+    # command from the incident would leave every sibling read wide open.
+    assert_grep 'security find-generic-password' "$brief" \
+      "$kind: brief did not name the keychain read from the incident"
+    assert_grep 'security unlock-keychain' "$brief" \
+      "$kind: brief named only one \`security\` reading form"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep '`op read`' "$brief" \
+      "$kind: brief did not name \`op\` alongside \`security\`"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep '`op item get`' "$brief" \
+      "$kind: brief named only one \`op\` reading form"
+    assert_grep 'credential helper that reaches one of them on your behalf' "$brief" \
+      "$kind: brief did not cover indirect readers that reach the store for the worker"
+    # The alternative has to be concrete, or the prohibition just blocks the task.
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'fake `security` and `op` executables first on `PATH`' "$brief" \
+      "$kind: brief did not offer the PATH stub as the tested alternative"
+    # Unmeasurable is a refusal. Without this, "I could not confirm it reads the
+    # keychain" reads as permission and the incident repeats.
+    assert_grep 'Refuse by name, never by measurement' "$brief" \
+      "$kind: brief did not make the refusal name-based rather than a runtime measurement"
+    assert_grep 'NOT the same as it not reading one' "$brief" \
+      "$kind: brief did not state that being unable to measure is not the absence of a problem"
+    assert_grep 'never passes in silence' "$brief" \
+      "$kind: brief allowed the rule to pass silently when it cannot decide"
+  done
+
+  # The no-mistakes pipeline's own workers never see this brief, so the rule has
+  # to be exempted by name from the boilerplate exclusion or --intent drops it.
+  brief="$home/data/brief-cred-no-mistakes/brief.md"
+  assert_grep 'never boilerplate is the credential-store rule' "$brief" \
+    "no-mistakes brief did not exempt the credential-store rule from the --intent boilerplate exclusion"
+  # shellcheck disable=SC2016 # Literal backticked --intent flag must remain unexpanded.
+  assert_grep 'unmeasurable-is-a-refusal clause into every `--intent`' "$brief" \
+    "no-mistakes brief did not require the rule to be carried into --intent"
+  pass "fm-brief.sh: every crewmate brief forbids reading the captain's real credential store"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -932,4 +995,5 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_crewmate_briefs_route_captain_questions_through_the_status_log
+test_crewmate_briefs_forbid_reading_the_real_credential_store
 test_scout_and_secondmate_scaffold
