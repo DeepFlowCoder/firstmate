@@ -212,7 +212,7 @@ The file is inherited into secondmate homes under the primary-authoritative cont
 An inherited copy does not make that home resolve upstream on its own: a checkout carrying the `.fm-secondmate-home` marker notes that it is ignoring the inherited file and uses its own `origin` instead.
 A standalone-clone home is the one that advances that way, because its `origin` is the primary checkout it was seeded from and it stays on its default branch.
 A linked-worktree home is leased at a detached HEAD, and a remote home is detached by its own guarded sync the first time that sync advances it, so either one stops at the detached-HEAD guard without advancing; a linked worktree advances through the primary's run, and a remote home through the manual command named above.
-[`bin/fm-update.sh`](../bin/fm-update.sh)'s header owns the exact resolution and refusal mechanics.
+[`bin/fm-update.sh`](../bin/fm-update.sh)'s header owns the exact resolution and refusal mechanics; [`verification/update-source-refusals.md`](verification/update-source-refusals.md) records the repeatable test evidence for the refusal guarantees.
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
 
