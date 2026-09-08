@@ -3755,6 +3755,54 @@ procevent_watch_bg() {  # <dir> <out>
     FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
 }
 
+# The watcher's process-event repair used to run with both streams pointed at
+# /dev/null, so a reconcile that died on a signal left exactly the same trace as
+# one that found nothing to do: none. A real run of SIGSEGV deaths sat in the
+# watcher's log for a night looking like silence, and only the shell's own job
+# report - on the watcher's stderr, not in any durable record - showed it had
+# happened at all. An abnormal end must now leave evidence behind.
+#
+# The cycle must also stay quiet: this repair is idempotent and retried on the
+# very next poll, so one bad run is not supervisor-actionable and must not become
+# a wake. Assert both, or "record the failure" quietly turns into wake-per-cycle
+# noise on a state directory that stays unwritable.
+test_procevent_reconcile_abnormal_end_is_recorded() {
+  local dir state out pid triage
+  dir=$(make_case procevent-reconcile-abnormal); state="$dir/state"
+  out="$dir/watch.out"; triage="$state/.watch-triage.log"
+  mkdir -p "$state/procevent"
+
+  # A stub that dies exactly the way the reported crash did. No real runner can
+  # be asked to segfault on demand, and the point of the case is what the WATCHER
+  # does with a child that ends abnormally, not what makes a child end that way.
+  cat > "$dir/fakebin/fm-procevent-segv.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'reconcile stub: about to die\n' >&2
+kill -SEGV $$
+STUB
+  chmod +x "$dir/fakebin/fm-procevent-segv.sh"
+
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
+    FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_PROCEVENT_BIN="$dir/fakebin/fm-procevent-segv.sh" \
+    FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_poll_cycle "$state" "$pid" 300 \
+    || fail "the watcher exited instead of completing a cycle with a crashing reconcile: $(cat "$out")"
+  kill -TERM "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  [ -s "$out" ] \
+    && fail "a crashing process-event repair woke firstmate instead of being recorded: $(cat "$out")"
+  [ -f "$triage" ] \
+    || fail "a process-event repair killed by a signal left no durable evidence at all"
+  grep -F "process-event reconcile killed by signal 11" "$triage" >/dev/null \
+    || fail "the recorded evidence did not name the signal that killed the repair: $(cat "$triage")"
+  grep -F "reconcile stub: about to die" "$triage" >/dev/null \
+    || fail "the recorded evidence dropped the failing repair's own output: $(cat "$triage")"
+  pass "a process-event repair that dies on a signal is recorded, not discarded to /dev/null"
+}
+
 test_procevent_captured_result_surfaces_proactively() {
   local dir state out drain_out pid beacon_age
   dir=$(make_case procevent-delivery); state="$dir/state"
@@ -4238,6 +4286,7 @@ test_secondmate_home_supervision_churn_is_not_write_evidence
 test_timer_repair_drops_a_finished_write_deferral_chain
 test_terminal_first_sight_drops_a_finished_write_deferral_chain
 test_triage_log_size_cap_accepts_spaced_wc_counts
+test_procevent_reconcile_abnormal_end_is_recorded
 test_procevent_captured_result_surfaces_proactively
 test_procevent_unacknowledged_result_redrains_until_handled
 test_procevent_marker_keys_are_injective

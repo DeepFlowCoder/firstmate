@@ -182,6 +182,14 @@ HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
+# Bytes of a failing process-event reconcile's output kept for the triage log.
+# A failing reconcile can be noisy, and this evidence is a diagnostic tail, not
+# a transcript.
+PROCEVENT_RECONCILE_LOG_BYTES=${FM_PROCEVENT_RECONCILE_LOG_BYTES:-400}
+# The process-event runner this watcher reconciles through. Same seam shape as
+# FM_CREW_STATE_BIN in bin/fm-classify-lib.sh: a test stubs the abnormal ends
+# this cycle must record, which is not something a real runner can be asked for.
+FM_PROCEVENT_BIN="${FM_PROCEVENT_BIN:-$SCRIPT_DIR/fm-procevent.sh}"
 HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
 case "$HOME_SUMMARY_INTERVAL" in
   ''|*[!0-9]*|0) HOME_SUMMARY_INTERVAL=300 ;;
@@ -1043,6 +1051,36 @@ procevent_surfaced_marker() {  # <queue-key>
   printf '%s/.seen-procevent-%s' "$STATE" "$(printf '%s' "$1" | LC_ALL=C od -An -tx1 | tr -d ' \n')"
 }
 
+# Run one process-event liveness repair and keep evidence of an abnormal end.
+# A healthy reconcile prints one counter line per cycle, which is not news and
+# stays quiet. Its FAILURES used to be discarded with it: the call sent both
+# streams to /dev/null, so a reconcile that died on a signal was indistinguishable
+# from one that found nothing to do, and a run of SIGSEGV deaths sat in the log
+# for a whole night looking like silence. Record an abnormal end in the triage
+# log instead, naming the signal when the child was killed by one.
+#
+# This still does not WAKE firstmate. The repair is idempotent and retried on the
+# very next cycle, so one bad run is not supervisor-actionable, and waking per
+# cycle on a persistently unwritable state directory would be its own noise. The
+# triage log is exactly the bounded, best-effort sink for that class of evidence.
+# Output is captured through a pipe rather than a temp file, and bounded by
+# `tail -c`, so this path needs no disk of its own and cannot itself be starved
+# by the conditions it is there to report.
+procevent_reconcile_once() {
+  local out rc
+  out=$(FM_HOME="$FM_HOME" "$FM_PROCEVENT_BIN" reconcile 2>&1 \
+    | tail -c "$PROCEVENT_RECONCILE_LOG_BYTES"; exit "${PIPESTATUS[0]}")
+  rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  out=$(printf '%s' "$out" | tr '\t\r\n' '   ')
+  if [ "$rc" -gt 128 ]; then
+    triage_log "process-event reconcile killed by signal $((rc - 128)): $out"
+  else
+    triage_log "process-event reconcile failed (rc=$rc): $out"
+  fi
+  return 0
+}
+
 procevent_surface_after_output() {
   local output_status=$1 key marker tmp status=0
   if [ "$output_status" -eq 0 ]; then
@@ -1514,7 +1552,7 @@ while :; do
   # only republishes results already captured durably and restarts a source
   # whose owner is gone. It is a no-op with nothing registered.
   if [ -d "$STATE/procevent" ]; then
-    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-procevent.sh" reconcile >/dev/null 2>&1 || true
+    procevent_reconcile_once
   fi
   # Then deliver any queued-but-unsurfaced result, including one a runner
   # published while this watcher was between cycles.
