@@ -25,7 +25,12 @@
 #                          external-wait pause or verified captain-held transfer is
 #                          absorbed instead with its own long re-surface cadence,
 #                          never as a wedge, and that recheck reason names which
-#                          human the wait is on. A crew whose authoritative state is
+#                          human the wait is on. That declaration is the one status
+#                          line an active run-step does not outrank: the two agree
+#                          that the quiet is expected, so a declared wait whose run
+#                          step is still running takes the pause cadence rather
+#                          than the wedge timer (pause_state_class owns why).
+#                          A crew whose authoritative state is
 #                          parked at a gate or done and waiting for the merge is
 #                          absorbed outright: a human holds its next step, so its
 #                          quiet pane is a healthy idle wait and carries no wedge
@@ -830,6 +835,15 @@ absorb_class_for_stale() {  # <window> <task>
 # whose endpoint liveness this function deliberately never reads; or a VERIFIED
 # captain-held transfer, which skips both liveness gates because the hold is already
 # tracked off the pane. A worker-declared `paused:` never skips them.
+#
+# This function answers "is this silence expected?", which is NOT the question
+# bin/fm-crew-state.sh answers. That helper answers "what is this task doing?", and
+# there the run step is authoritative and must stay so - the validation verdict
+# depends on it. Deriving the first answer from the second made a declared wait
+# visible only while nothing else was speaking, which is exactly backwards: a live
+# run step is the single most common reason a worker's pane goes quiet for a long
+# time, so it CORROBORATES a declared wait rather than outranking it (see the
+# working branch below).
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive kind held=0
   key=$(window_key "$win")
@@ -871,9 +885,55 @@ pause_state_class() {  # <window> <task>
     return
   fi
   class=$(absorb_class_for_stale "$win" "$task")
+  # A live run step under a declared wait is CORROBORATION, not contradiction. The
+  # worker declared the wait about the work it is doing right now: `paused: waiting
+  # on the review gate, the blocking respond call will tell me when it returns` and
+  # `working - source: run-step - validating (running)` are the same fact seen from
+  # two sides. Reporting `working` here handed such a pane to the wedge timer, so
+  # the ONE way a worker has of saying "this silence is expected" was inert in the
+  # most common case of long expected silence - a background pipeline step - and the
+  # pane re-escalated as a possible wedge every FM_STALE_ESCALATE_SECS for the whole
+  # legitimate wait (measured twice: 2026-09-07 and 2026-09-08).
+  #
+  # This does NOT silence a wedge, for four independent reasons:
+  #   * It applies only while the LAST status line still declares the wait. A worker
+  #     that never declared one, or that appends any later line that stops declaring
+  #     one, never reaches here (the gate at the top of this function) and keeps the
+  #     unchanged wedge path.
+  #   * The recheck file is deliberately left cleared, so the cheap repeat path above
+  #     stays disarmed and every poll re-derives the corroboration from a fresh
+  #     authoritative read. The absorb ends on the first poll the run stops reading
+  #     `working`; it is never cached.
+  #   * `working` rules out the hazard the liveness gate below exists for - a
+  #     `paused:` line hiding a live decision gate - only where a gated run actually
+  #     reads `parked` AND that verdict reaches a surface. Neither holds everywhere,
+  #     so the reach of this bullet is narrower than "the crew surfaces the moment a
+  #     human holds its next step", and both limits are the same accepted trade:
+  #     bounded latency with a backstop, never silence.
+  #     Reading it: only bin/fm-crew-state.sh's FULL `axi status` path says `parked`.
+  #     Its COARSE runs-list fallback carries only
+  #     pending/running/completed/failed/cancelled (fm-nm-run-lib.sh's
+  #     fm_nm_status_is_active) with no gate word, so a run parked at a gate still
+  #     carries `running` there and reads `working - validating (background run)`.
+  #     Surfacing it: even on the full path, a gated run surfaces promptly only when
+  #     the stale hash CHANGES, so the first-sighting route runs and turns this
+  #     function's `none` into surface_nonterminal_stale - the ordinary case, where
+  #     the worker is blocked in the foreground call and its pane redraws when the
+  #     gate returns. On a static pane, typically because the run was backgrounded,
+  #     the repeat-poll route takes the `*)` arm into handle_paused_stale instead
+  #     (pre-existing routing this change does not alter), so the gate is not
+  #     surfaced there.
+  #     In both configurations the crew is surfaced by the FM_PAUSE_RESURFACE_SECS
+  #     recheck (3600s, one hour, by default) rather than by the
+  #     FM_STALE_ESCALATE_SECS wedge escalation (240s, four minutes, by default), and
+  #     the worker's own `needs-decision:`/`blocked:` append surfaces immediately
+  #     through the signal path on any route, for the reason bin/fm-crew-state.sh's
+  #     coarse branch already spells out.
+  #   * handle_paused_stale still re-surfaces it once per FM_PAUSE_RESURFACE_SECS, so
+  #     a declaration that outlives its reason cannot rot invisibly.
   if [ "$class" = working ]; then
     rm -f "$recheck_file"
-    printf 'working'
+    printf 'paused'
     return
   fi
   if [ "$kind" != secondmate ] && [ "$held" -ne 1 ]; then
@@ -1783,8 +1843,10 @@ EOF
           #     pane (e.g. waiting on CI), so absorb and start the wedge timer so a
           #     genuinely frozen run still escalates past STALE_ESCALATE_SECS;
           #   - paused: a declared wait pause_state_class admits (its header owns which
-          #     liveness evidence each kind of crew must supply), so absorb on the long
-          #     PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
+          #     liveness evidence each kind of crew must supply, and why a live run
+          #     step corroborates the declaration instead of replacing it with
+          #     `working`), so absorb on the long PAUSE_RESURFACE_SECS cadence
+          #     instead of wedge-escalating;
           #   - parked/done: the authoritative state says a human holds the next
           #     step (a gate awaiting a decision, or delivered work awaiting the
           #     merge), so the quiet pane is a healthy idle wait and is absorbed
@@ -1825,6 +1887,12 @@ EOF
           else
             task=$(window_to_task "$w" "$STATE")
             if [ -e "$pf" ] || status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")"; then
+              # `working` here means the declaration is GONE: pause_state_class
+              # reports it only from its no-declaration path (a line appended
+              # between this branch's own read and the classifier's), because a
+              # live run step under a live declaration corroborates the wait and
+              # reports `paused` instead. So this arm is the resume path - drop the
+              # pause bookkeeping and restore the ordinary wedge timer.
               case "$(pause_state_class "$w" "$task")" in
                 paused)  handle_paused_stale "$w" "$task" "$h" ;;
                 working) clear_pause_state "$key"
