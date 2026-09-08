@@ -2797,8 +2797,8 @@ test_check_name_cannot_forge_the_verdict() {
 # that reads the current record apart from one that has learned to ignore reds.
 # The name and the shape are the live pair measured on the head of
 # DeepFlowCoder/firstmate#17: a Require no-mistakes run that failed before the
-# pull request body was attested, and the run 60 seconds later that passed.
-CURRENT_RUN_STARTED=1788277595
+# pull request body was attested, and the run 55 seconds later that passed.
+CURRENT_RUN_STARTED=1788277590
 EARLIER_RUN_STARTED=1788277535
 
 test_superseded_red_record_does_not_refuse() {
