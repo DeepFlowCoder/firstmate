@@ -2290,10 +2290,14 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash() {
 # The declared-wait absorb is only ever as good as its recheck, so the pane must
 # leave it the moment the authoritative state stops corroborating the wait. The
 # run reaching a gate is that moment, and the disconfirming case for the
-# corroboration rule below: a run at a gate reads `parked`, never `working`, so
-# the declaration loses its corroboration exactly when a human takes ownership of
-# the next step - which is the property that keeps `paused:` from being a way to
-# hide a live decision behind a long cadence.
+# corroboration rule below: on bin/fm-crew-state.sh's full `axi status` path a run
+# at a gate reads `parked`, so the declaration loses its corroboration exactly when
+# a human takes ownership of the next step - which is the property that keeps
+# `paused:` from being a way to hide a live decision behind a long cadence. On that
+# helper's coarse runs-list fallback a gated run instead reads `working -
+# validating (background run)` and comes back on the FM_PAUSE_RESURFACE_SECS
+# recheck (3600s) rather than the FM_STALE_ESCALATE_SECS escalation (240s);
+# pause_state_class's third bullet owns that argument.
 test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid
   dir=$(make_case nonterminal-paused-recheck); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2345,10 +2349,13 @@ test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate() {
 #
 # The pane here carries a LIVE agent (the hard configuration): a bare `paused:`
 # with a live agent deliberately surfaces once, in case the declaration hides a
-# live decision gate. A `working` run step is what rules that hazard out - a run
-# at a gate reads `parked`, and
-# test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate pins that it still
-# surfaces there.
+# live decision gate. A `working` run step is what rules that hazard out on
+# bin/fm-crew-state.sh's full `axi status` path, where a run at a gate reads
+# `parked`, and test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate pins that
+# it still surfaces there. On the coarse runs-list fallback it reads `working -
+# validating (background run)` instead and takes the 3600s recheck rather than the
+# 240s escalation; pause_state_class's third bullet owns that argument, and
+# test_coarse_gated_run_read_takes_the_pause_cadence_not_the_wedge_timer pins it.
 test_paused_authoritative_working_takes_the_pause_cadence() {
   local dir state fakebin out drain_out capture_file statusf window key pane_hash sig pid back i
   dir=$(make_case paused-working-pause-cadence); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2431,10 +2438,13 @@ test_paused_authoritative_working_takes_the_pause_cadence() {
 # away. fm-crew-state.sh has two run-reading paths, and only the full `axi status`
 # one can say `parked`: its coarse runs-list fallback carries just
 # pending/running/completed/failed/cancelled, so a run sitting at a gate is
-# reported as still running. The fixture's detail string is the whole point -
-# `validating (background run)` is the exact shape that coarse path emits, where
-# `validating (running)` is the full path's - and under it a genuinely gated crew
-# reads `working` and is absorbed by the corroboration rule.
+# reported as still running. The fixture carries the exact verdict shape that
+# coarse path emits - `validating (background run)`, where `validating (running)`
+# is the full path's - so the latency below is pinned against the configuration it
+# describes. The watcher classifies that verdict identically to any other `working`
+# one (absorb_class_of_state_line reads only the state and source fields), so this
+# test pins the latency but cannot catch drift in the coarse emitter that produces
+# the shape.
 #
 # The accepted trade is bounded latency with a backstop, not silence: such a crew
 # is surfaced by the FM_PAUSE_RESURFACE_SECS recheck (3600s by default) instead of
