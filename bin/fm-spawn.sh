@@ -2979,6 +2979,27 @@ spawn_record_traceparent() {
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+# Neutralize git's interactive editor for pane workers, on the same channel and
+# for the same reason as GOTMPDIR above. A worker that runs `git commit`,
+# `rebase --continue`, `merge`, `revert`, `cherry-pick` or `tag -a` without a
+# message gets an editor and blocks inside that call forever: it cannot rescue
+# itself (it IS the blocked call) and a steering message cannot reach it either,
+# because it only reads the inbox once the call returns. Only firstmate can free
+# it, by killing the call tree.
+#
+# GIT_EDITOR is the one lever that closes all three doors git picks an editor
+# through, because it outranks core.editor, VISUAL and EDITOR (git var
+# GIT_EDITOR). Setting EDITOR here instead would both lose to core.editor and
+# reach well past git, so it is deliberately left alone. GIT_SEQUENCE_EDITOR is
+# separately load-bearing: `rebase -i` resolves its todo-list editor through
+# sequence.editor BEFORE falling back to GIT_EDITOR, so a configured
+# sequence.editor still wedges a worker without it. Both are covered by
+# tests/fm-spawn-git-editor.test.sh.
+#
+# This is scoped to the pane environment fm-spawn hands a worker. It writes no
+# git config and touches nothing global, so the captain's own terminal keeps a
+# real interactive editor.
+spawn_send_text_line "$T" "export GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.

@@ -288,7 +288,8 @@ family_for_basename() {
     fm-control.test.sh|fm-control-relaunch.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|\
     fm-send-inbox.test.sh|fm-spawn-batch.test.sh|\
-    fm-spawn-dispatch-profile.test.sh|fm-spawn-local-origin-base.test.sh|\
+    fm-spawn-dispatch-profile.test.sh|fm-spawn-git-editor.test.sh|\
+    fm-spawn-local-origin-base.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
@@ -605,6 +606,7 @@ tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 20
 tests/fm-sessionstart-nudge.test.sh 30324
 tests/fm-shared-captain-inheritance.test.sh 14338
 tests/fm-spawn-dispatch-profile.test.sh 59627
+tests/fm-spawn-git-editor.test.sh 49718
 tests/fm-spawn-local-origin-base.test.sh 10895
 tests/fm-spawn-pool-base-freshen.test.sh 13669
 tests/fm-spawn-worktree-settle.test.sh 4953
