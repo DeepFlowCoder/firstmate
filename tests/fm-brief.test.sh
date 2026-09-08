@@ -893,11 +893,16 @@ test_crewmate_briefs_route_captain_questions_through_the_status_log() {
 # twice, so every generated crewmate brief must carry the rule, name both
 # binaries in more than one reading form, offer the PATH stub as the alternative,
 # and state that an unmeasurable case is a refusal rather than a silent pass.
-# The scope is drawn by intent: direct reads and readers the worker introduces
-# are refused, while the delivery commands the same brief mandates are exempt -
-# a rule that also froze `git push` would make a literal reader block itself
-# instead of delivering. A sanctioned command that hangs on a credential is
-# still a block to report, so that path does not become a silent workaround.
+# The scope is drawn by intention, not by region: what the task RUNS against the
+# real store is refused, while three things the brief itself sanctions are named
+# as never fenced - authoring credential code this task does not execute (the
+# repo's own bin/fm-notify-moshi.sh reads the Keychain by design), the PATH stub
+# this section prescribes, and the commands the brief orders. A rule that froze
+# any of them would have a literal reader block itself instead of delivering. The
+# sanctioned-command phrase renders per scaffold, since a scout is forbidden to
+# push and must not be told its brief ordered it to. The exemptions keep their
+# limits: a sanctioned command hanging on a credential is still a block to
+# report, so that path does not become a silent workaround.
 test_crewmate_briefs_forbid_reading_the_real_credential_store() {
   local home brief kind
   home="$TMP_ROOT/credential-store-home"
@@ -913,13 +918,19 @@ test_crewmate_briefs_forbid_reading_the_real_credential_store() {
   for kind in brief-cred-no-mistakes brief-cred-direct-PR brief-cred-local-only brief-cred-scout; do
     brief="$home/data/$kind/brief.md"
     assert_present "$brief" "$kind: brief was not scaffolded"
-    assert_grep "Never read the captain's real keychain or credential store" "$brief" \
-      "$kind: brief did not forbid reading the captain's real credential store"
+    assert_grep "never cause to run during this task, a command that reads the captain's real keychain" "$brief" \
+      "$kind: brief did not forbid running a read against the captain's real credential store"
+    # What executes is the harm; authoring is not. Otherwise a worker briefed to
+    # maintain the repo's own keychain reader reads the rule as forbidding the task.
+    assert_grep 'The prohibition is on what EXECUTES here while you work, not on what you write' "$brief" \
+      "$kind: brief did not separate running a credential read from authoring one"
+    assert_grep 'is ordinary work you may be briefed to do' "$brief" \
+      "$kind: brief did not permit maintaining credential-reading code it never executes"
     # Both binaries, and more than one reading form each: pinning only the single
     # command from the incident would leave every sibling read wide open.
     # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
-    assert_grep 'covers directly invoking the `security` or `op` executables' "$brief" \
-      "$kind: brief did not bind the refusal to a direct invocation of either binary"
+    assert_grep 'invoking the REAL `security` or `op` executables against the real store' "$brief" \
+      "$kind: brief did not bind the refusal to the real binaries against the real store"
     assert_grep 'security find-generic-password' "$brief" \
       "$kind: brief did not name the keychain read from the incident"
     assert_grep 'security unlock-keychain' "$brief" \
@@ -930,25 +941,27 @@ test_crewmate_briefs_forbid_reading_the_real_credential_store() {
     # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
     assert_grep '`op item get`' "$brief" \
       "$kind: brief named only one \`op\` reading form"
-    assert_grep 'credential helper that YOU introduce to reach one of them on your behalf' "$brief" \
+    assert_grep 'credential helper YOU introduce to reach the real store on your behalf' "$brief" \
       "$kind: brief did not cover indirect readers the worker itself introduces"
-    # Scoped by intent, not by region: the same brief orders the delivery path,
-    # so a rule that also caught it would have the worker block itself.
-    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
-    assert_grep 'does NOT cover the sanctioned delivery commands this brief itself orders you to run - `git checkout -b`, `git push`, `gh-axi`' "$brief" \
-      "$kind: brief did not exempt its own mandated delivery commands from the refusal"
-    assert_grep 'never cover for adding a credential read of your own' "$brief" \
-      "$kind: brief let the delivery exemption be read as permission for a new credential read"
-    # The exempt path still must not become a silent workaround.
-    assert_grep 'that is a BLOCK to report, never something to work around' "$brief" \
-      "$kind: brief did not make a delivery command hanging on a credential a reportable block"
-    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
-    assert_grep '`gh auth setup-git`' "$brief" \
-      "$kind: brief did not name the known cure for the git credential-helper hang"
     # The alternative has to be concrete, or the prohibition just blocks the task.
     # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
     assert_grep 'fake `security` and `op` executables first on `PATH`' "$brief" \
       "$kind: brief did not offer the PATH stub as the tested alternative"
+    # A rule that forbids the alternative it prescribes contradicts itself: the
+    # stub is named `security`/`op` too, and tests that call it must stay runnable.
+    assert_grep 'This rule never fences that stub' "$brief" \
+      "$kind: brief refused by name the very PATH stub it prescribes"
+    assert_grep 'running the tests that call it, is allowed' "$brief" \
+      "$kind: brief did not allow running the tests that exercise the stub"
+    # Exempt, but not a loophole.
+    assert_grep 'Neither exemption is cover for adding a credential read of your own' "$brief" \
+      "$kind: brief let an exemption be read as permission for a new credential read"
+    # The exempt path still must not become a silent workaround.
+    assert_grep 'that is a BLOCK to report, never something to work around' "$brief" \
+      "$kind: brief did not make a sanctioned command hanging on a credential a reportable block"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep '`gh auth setup-git`' "$brief" \
+      "$kind: brief did not name the known cure for the git credential-helper hang"
     # Unmeasurable is a refusal. Without this, "I could not confirm it reads the
     # keychain" reads as permission and the incident repeats.
     assert_grep 'Refuse by name, never by measurement' "$brief" \
@@ -957,7 +970,30 @@ test_crewmate_briefs_forbid_reading_the_real_credential_store() {
       "$kind: brief did not state that being unable to measure is not the absence of a problem"
     assert_grep 'never passes in silence' "$brief" \
       "$kind: brief allowed the rule to pass silently when it cannot decide"
+    assert_grep 'blocked: {which credential}' "$brief" \
+      "$kind: brief dropped the escalation route for a genuinely needed credential"
+    # A brief that shipped the unfilled placeholder would name no sanctioned
+    # command at all, which is the exemption silently disappearing.
+    assert_no_grep 'SANCTIONED_COMMANDS' "$brief" \
+      "$kind: brief leaked the unfilled sanctioned-command placeholder"
   done
+
+  # The exemption must name what THAT brief actually authorizes. A ship brief is
+  # ordered to branch, push, and open a PR; a scout brief is forbidden to push,
+  # so telling it that pushing is a command its brief ordered is incoherent.
+  for kind in brief-cred-no-mistakes brief-cred-direct-PR brief-cred-local-only; do
+    brief="$home/data/$kind/brief.md"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'orders you to run either - `git checkout -b`, `git push`, `gh-axi`, and the rest of the mandated delivery path' "$brief" \
+      "$kind: ship brief did not exempt its own mandated delivery commands from the refusal"
+  done
+  brief="$home/data/brief-cred-scout/brief.md"
+  # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+  assert_grep 'orders you to run either - `gh-axi` for the GitHub operations this brief assigns you, the status-file append, and the rest of the mandated reporting path' "$brief" \
+    "scout brief did not exempt its own mandated reporting commands from the refusal"
+  # shellcheck disable=SC2016 # Literal backticked command name must remain unexpanded.
+  assert_no_grep '`git push`' "$brief" \
+    "scout brief claimed it is ordered to push, while its own rule 1 forbids pushing"
 
   # The no-mistakes pipeline's own workers never see this brief, so the rule has
   # to be exempted by name from the boilerplate exclusion or --intent drops it.
