@@ -23,7 +23,8 @@ A bound hit is reported as exit 124.
 
 `test_every_editor_command_wedges_without_the_guard` builds the field environment - a blocking editor wired through `core.editor`, `sequence.editor`, `EDITOR` and `VISUAL` at once - and runs `commit --amend`, `rebase --continue`, `merge --edit`, `revert --edit`, `cherry-pick --edit`, `tag -a` and `rebase -i`.
 All seven hit the bound.
-The stand-in editor records each launch, and the case fails if that log is empty, so a command that blocked on something other than an editor cannot be miscounted as reproducing the failure.
+Hitting the bound only says a command did not return, so the stand-in editor records every launch and the case reads that log per command: it snapshots the launch count immediately before each invocation and fails, naming that command, if the count did not grow across it.
+Each of the seven therefore has to show its own editor launch, and a command that blocked on something other than an editor - stdin, an index.lock, a fixture that stopped reaching the editor state - cannot be miscounted as reproducing the failure by borrowing another command's launch.
 
 `test_every_editor_command_returns_with_the_guard` runs the same seven commands in the same environment with `GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true` added, and asserts both that none hits the bound and that the launch log stays empty.
 `git tag -a` returns non-zero there because git refuses an empty tag message; returning control is the guarantee, not a zero status.

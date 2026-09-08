@@ -15,12 +15,11 @@
 # and this suite cannot become the thing it tests.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-timeout-lib.sh"
 
-SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-git-editor)
 BOUND=${FM_GIT_EDITOR_TEST_BOUND:-5}
 
@@ -126,11 +125,22 @@ each_editor_command() {  # <callback>
 
 # --- the two directions -----------------------------------------------------
 
+editor_launches() { wc -l < "$EDITOR_LOG" | tr -d ' '; }
+
+# The bound alone only says "this command did not return". It is the launch log
+# growing across THIS command that says an editor is why. Checked per command
+# rather than over the family, so a command that blocked on something else -
+# stdin, an index.lock, a fixture that no longer reaches the editor state - can
+# never be covered by a different command's launch.
 case_wedges() {  # <label> <repo> <git args...>
-  local label=$1 repo=$2 rc
+  local label=$1 repo=$2 rc before after
   shift 2
+  before=$(editor_launches)
   run_git unguarded "$repo" "$@"; rc=$?
   assert_wedges "$label" "$rc"
+  after=$(editor_launches)
+  [ "$after" -gt "$before" ] \
+    || fail "$label hit the bound without launching the editor (launch count stayed at $before): it blocked on something other than an editor, so it does not reproduce the field failure"
 }
 
 case_returns() {  # <label> <repo> <git args...>
@@ -143,8 +153,6 @@ case_returns() {  # <label> <repo> <git args...>
 test_every_editor_command_wedges_without_the_guard() {
   : > "$EDITOR_LOG"
   each_editor_command case_wedges
-  [ -s "$EDITOR_LOG" ] \
-    || fail "no editor launch was recorded: the unguarded cases blocked on something other than the editor, so they do not reproduce the field failure"
   pass "unguarded: every editor-opening git command blocks on a launched editor and never returns"
 }
 
@@ -187,64 +195,23 @@ test_sequence_editor_is_not_covered_by_git_editor() {
 
 # --- the guard actually reaches a spawned worker ----------------------------
 
-make_spawn_fakebin() {
-  local dir=$1 fakebin
-  fakebin=$(fm_fakebin "$dir")
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
-case "${1:-}" in
-  display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
-  send-keys)
-    if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
-      shift
-      skip_next=
-      for a in "$@"; do
-        if [ -n "$skip_next" ]; then skip_next=; continue; fi
-        case "$a" in
-          -t) skip_next=1; continue ;;
-          -l) continue ;;
-          Enter|C-m) continue ;;
-          *) printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG" ;;
-        esac
-      done
-    fi
-    exit 0
-    ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
-  printf '%s\n' "$fakebin"
-}
-
+# The shared spawn world from tests/fixtures.sh, with its launch log widened to
+# the text-line sends too: the guard is shipped as a text line and the launch
+# command as an -l literal, and this case is about their order.
 run_spawn_case() {  # <name> -> sets LAUNCH_LOG
   local name=$1 case_dir home proj wt fakebin id
   case_dir="$TMP_ROOT/spawn-$name"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
   LAUNCH_LOG="$case_dir/launch.log"
-  fakebin=$(make_spawn_fakebin "$case_dir/fake")
-  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
-  printf 'claude\n' > "$home/config/crew-harness"
-  printf '%s\n' "$$" > "$home/state/.lock"
+  fakebin=$(fm_test_make_spawn_fakebin "$case_dir/fake")
+  fm_test_spawn_home "$home" claude
   fm_git_worktree "$proj" "$wt" "wt-$name"
-  touch "$home/state/.last-watcher-beat"
   id="$name-z1"
-  mkdir -p "$home/data/$id"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  fm_test_spawn_brief "$home" "$id"
   : > "$LAUNCH_LOG"
-  env -u FM_TRACE_CONTEXT FM_ROOT_OVERRIDE='' FM_HOME="$home" \
-    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
-    FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" "$proj" --mode no-mistakes --yolo off >/dev/null 2>&1 || true
+  FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" FM_FAKE_LAUNCH_LOG_TEXT_LINES=1 \
+    fm_test_run_spawn "$home" "$wt" "$fakebin" \
+    "$id" "$proj" --mode no-mistakes --yolo off >/dev/null 2>&1 || true
 }
 
 test_spawn_sends_the_guard_before_the_launch_command() {

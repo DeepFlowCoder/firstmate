@@ -97,6 +97,13 @@ fm_test_fake_gh_axi() {
 # set, each send-keys -l payload is appended one per line. Optional
 # FM_FAKE_DUPLICATE_WINDOW is printed from list-windows.
 #
+# fm-spawn ships a pane's pre-launch environment (GOTMPDIR, the git editor
+# guard, TRACEPARENT) as text lines - `send-keys -t <pane> <text> Enter`, with
+# no -l - and its launch command as an -l literal. FM_FAKE_LAUNCH_LOG_TEXT_LINES
+# widens the log to both forms, in send order, so a suite can assert what a pane
+# receives BEFORE its agent starts. It is off by default: suites that assert on
+# the launch command alone must keep seeing only -l payloads.
+#
 # The pane path defaults to empty when FM_FAKE_PANE_PATH is unset. Window
 # cleanup and option operations are no-ops. Launch logging is env-gated, so
 # suites that do not set FM_FAKE_LAUNCH_LOG keep a silent send-keys.
@@ -119,13 +126,27 @@ case "${1:-}" in
   has-session|new-session|new-window|kill-window|set-window-option) exit 0 ;;
   send-keys)
     if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
-      prev=
-      for a in "$@"; do
-        if [ "$prev" = "-l" ]; then
-          printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG"
-        fi
-        prev=$a
-      done
+      if [ -n "${FM_FAKE_LAUNCH_LOG_TEXT_LINES:-}" ]; then
+        shift
+        skip_next=
+        for a in "$@"; do
+          if [ -n "$skip_next" ]; then skip_next=; continue; fi
+          case "$a" in
+            -t) skip_next=1; continue ;;
+            -l) continue ;;
+            Enter|C-m) continue ;;
+            *) printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG" ;;
+          esac
+        done
+      else
+        prev=
+        for a in "$@"; do
+          if [ "$prev" = "-l" ]; then
+            printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG"
+          fi
+          prev=$a
+        done
+      fi
     fi
     exit 0
     ;;
