@@ -104,6 +104,14 @@ fm_test_fake_gh_axi() {
 # receives BEFORE its agent starts. It is off by default: suites that assert on
 # the launch command alone must keep seeing only -l payloads.
 #
+# FM_FAKE_SEND_KEYS_FAIL_MATCH makes send-keys fail, with
+# FM_FAKE_SEND_KEYS_FAIL_RC (default 1), for the one send whose payload starts
+# with that string, and log nothing for it. It is how a suite reaches a
+# backend's degraded-delivery statuses through the real spawn path: 1 for a send
+# that did not land, 2 for a line that landed but could be neither submitted nor
+# cleared, which is the status fm-spawn refuses to append a launch command
+# after. Unset by default, so every other send stays successful.
+#
 # The pane path defaults to empty when FM_FAKE_PANE_PATH is unset. Window
 # cleanup and option operations are no-ops. Launch logging is env-gated, so
 # suites that do not set FM_FAKE_LAUNCH_LOG keep a silent send-keys.
@@ -125,6 +133,13 @@ case "${1:-}" in
     ;;
   has-session|new-session|new-window|kill-window|set-window-option) exit 0 ;;
   send-keys)
+    if [ -n "${FM_FAKE_SEND_KEYS_FAIL_MATCH:-}" ]; then
+      for a in "$@"; do
+        case "$a" in
+          "$FM_FAKE_SEND_KEYS_FAIL_MATCH"*) exit "${FM_FAKE_SEND_KEYS_FAIL_RC:-1}" ;;
+        esac
+      done
+    fi
     if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
       if [ -n "${FM_FAKE_LAUNCH_LOG_TEXT_LINES:-}" ]; then
         shift

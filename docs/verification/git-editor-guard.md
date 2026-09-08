@@ -50,10 +50,21 @@ Removing the export line from `bin/fm-spawn.sh` fails this case while the four b
 `test_spawn_writes_no_git_editor_configuration` asserts a spawn changes no global `core.editor` or `sequence.editor` and writes no git configuration into the pane.
 The guard lives only in the environment a worker is handed, so the captain's own terminal keeps a real interactive editor.
 
+## What a degraded pane does to the send, and why only one status stops the spawn
+
+The send reports status 2 when the line was typed into the pane but was neither submitted nor cleared, so the export is still sitting on the input line.
+The launch literal is sent next, so it would concatenate onto that leftover and the worker would run a corrupt command.
+That, and not the value of the guard, is why the spawn stops there.
+Status 1 means the input line is clean - the line either never landed or was cleared - so the launch command is safe to append and the spawn continues.
+
+Both statuses are driven through the real `bin/fm-spawn.sh` by making the pane stub fail that one send.
+`test_uncleared_guard_input_refuses_to_append_the_launch_command` drives status 2 and asserts all three of: the spawn exits non-zero, it reports `git editor guard input could not be cleared ... refusing to append the launch command`, and the launch command never reaches the pane's send log.
+`test_undelivered_guard_export_still_launches` drives status 1 and asserts the opposite - the spawn exits 0 and the launch command is sent - so a later change that made every degraded send fatal would be caught rather than silently accepted.
+
 ## Commands
 
 ```
 bin/fm-test-run.sh tests/fm-spawn-git-editor.test.sh
 ```
 
-Six assertions, `family=backend-dispatch`, roughly 50 s; the runtime is dominated by the seven deliberate bound hits in the unguarded case.
+Eight assertions, `family=backend-dispatch`, roughly 50 s; the runtime is dominated by the seven deliberate bound hits in the unguarded case.

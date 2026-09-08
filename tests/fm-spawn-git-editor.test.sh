@@ -198,8 +198,8 @@ test_sequence_editor_is_not_covered_by_git_editor() {
 # The shared spawn world from tests/fixtures.sh, with its launch log widened to
 # the text-line sends too: the guard is shipped as a text line and the launch
 # command as an -l literal, and this case is about their order.
-run_spawn_case() {  # <name> -> sets LAUNCH_LOG
-  local name=$1 case_dir home proj wt fakebin id
+run_spawn_case() {  # <name> [fail-match] [fail-rc] -> sets LAUNCH_LOG SPAWN_OUT SPAWN_STATUS
+  local name=$1 match=${2-} rc=${3-1} case_dir home proj wt fakebin id
   case_dir="$TMP_ROOT/spawn-$name"
   home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
   LAUNCH_LOG="$case_dir/launch.log"
@@ -209,10 +209,14 @@ run_spawn_case() {  # <name> -> sets LAUNCH_LOG
   id="$name-z1"
   fm_test_spawn_brief "$home" "$id"
   : > "$LAUNCH_LOG"
-  FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" FM_FAKE_LAUNCH_LOG_TEXT_LINES=1 \
+  SPAWN_OUT=$(FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" FM_FAKE_LAUNCH_LOG_TEXT_LINES=1 \
+    FM_FAKE_SEND_KEYS_FAIL_MATCH="$match" FM_FAKE_SEND_KEYS_FAIL_RC="$rc" \
     fm_test_run_spawn "$home" "$wt" "$fakebin" \
-    "$id" "$proj" --mode no-mistakes --yolo off >/dev/null 2>&1 || true
+    "$id" "$proj" --mode no-mistakes --yolo off)
+  SPAWN_STATUS=$?
 }
+
+launch_command_sent() { grep -q 'claude --dangerously-skip-permissions' "$LAUNCH_LOG"; }
 
 test_spawn_sends_the_guard_before_the_launch_command() {
   local guard_line launch_line
@@ -243,11 +247,40 @@ test_spawn_writes_no_git_editor_configuration() {
   pass "spawn changes no git configuration, so the captain's own terminal keeps a real editor"
 }
 
+# Status 2 from the guard send means the export was typed into the pane but was
+# neither submitted nor cleared, so it is still sitting on the input line. The
+# launch literal sent next would concatenate onto it and run corrupt, which is
+# why spawn must stop here rather than hand the worker a broken command.
+test_uncleared_guard_input_refuses_to_append_the_launch_command() {
+  run_spawn_case unclearable 'export GIT_EDITOR=' 2
+  [ "$SPAWN_STATUS" -ne 0 ] \
+    || fail "an uncleared guard export left on the pane's input line must stop the spawn, but it exited 0"
+  assert_contains "$SPAWN_OUT" "git editor guard input could not be cleared" \
+    "the refusal must name the guard export as the text left on the input line"
+  assert_contains "$SPAWN_OUT" "refusing to append the launch command" \
+    "the refusal must say the launch command was withheld"
+  ! launch_command_sent \
+    || fail "the launch command was appended to an input line that still held the guard export, so the worker would run a concatenated command"
+  pass "an unclearable guard export stops the spawn before the launch command is appended"
+}
+
+# The companion direction: a send that simply did not land leaves the input line
+# clean, so appending the launch command is safe and spawn must not stop.
+test_undelivered_guard_export_still_launches() {
+  run_spawn_case undelivered 'export GIT_EDITOR=' 1
+  expect_code 0 "$SPAWN_STATUS" "a guard export that never landed must not stop the spawn"
+  launch_command_sent \
+    || fail "spawn withheld the launch command after a plain guard-send failure, though the pane's input line was clean"
+  pass "a guard export that failed to land leaves the input line clean and the worker still launches"
+}
+
 test_every_editor_command_wedges_without_the_guard
 test_every_editor_command_returns_with_the_guard
 test_git_editor_outranks_core_editor_and_editor
 test_sequence_editor_is_not_covered_by_git_editor
 test_spawn_sends_the_guard_before_the_launch_command
 test_spawn_writes_no_git_editor_configuration
+test_uncleared_guard_input_refuses_to_append_the_launch_command
+test_undelivered_guard_export_still_launches
 
 echo "# all fm-spawn-git-editor tests passed"

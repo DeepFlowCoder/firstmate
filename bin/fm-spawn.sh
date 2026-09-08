@@ -2999,7 +2999,21 @@ spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # This is scoped to the pane environment fm-spawn hands a worker. It writes no
 # git config and touches nothing global, so the captain's own terminal keeps a
 # real interactive editor.
-spawn_send_text_line "$T" "export GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true"
+#
+# Status 2 is the one status that must stop the spawn, and not because the guard
+# itself is precious: it means the line was typed into the pane but was neither
+# submitted nor cleared, so it is still sitting on the input line. The launch
+# literal is sent next and would concatenate onto that leftover, giving the
+# worker a corrupt command. Status 1 leaves a clean input line - the line either
+# never landed or was cleared - so the launch command is safe to append and the
+# spawn continues.
+GUARD_SEND_STATUS=0
+spawn_send_text_line "$T" "export GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true" \
+  || GUARD_SEND_STATUS=$?
+if [ "$GUARD_SEND_STATUS" -eq 2 ]; then
+  echo "error: git editor guard input could not be cleared for $W; refusing to append the launch command" >&2
+  exit 1
+fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.
