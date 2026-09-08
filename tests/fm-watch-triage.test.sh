@@ -2292,12 +2292,16 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash() {
 # run reaching a gate is that moment, and the disconfirming case for the
 # corroboration rule below: on bin/fm-crew-state.sh's full `axi status` path a run
 # at a gate reads `parked`, so the declaration loses its corroboration exactly when
-# a human takes ownership of the next step - which is the property that keeps
-# `paused:` from being a way to hide a live decision behind a long cadence. On that
-# helper's coarse runs-list fallback a gated run instead reads `working -
-# validating (background run)` and comes back on the FM_PAUSE_RESURFACE_SECS
-# recheck (3600s) rather than the FM_STALE_ESCALATE_SECS escalation (240s);
-# pause_state_class's third bullet owns that argument.
+# a human takes ownership of the next step - which is what keeps `paused:` from
+# being a way to hide a live decision behind a long cadence.
+#
+# That surface is NOT unconditional, and this fixture drives the route where it
+# happens: no `.stale-<key>` is preset, so the pane is a FIRST SIGHTING and the
+# changed-hash route turns the verdict into surface_nonterminal_stale. Two other
+# configurations take the 3600s FM_PAUSE_RESURFACE_SECS recheck instead of the 240s
+# FM_STALE_ESCALATE_SECS escalation - the coarse runs-list read, and a static pane
+# on the repeat-poll route - each pinned by its own test below;
+# pause_state_class's third bullet owns the full argument.
 test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid
   dir=$(make_case nonterminal-paused-recheck); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2350,12 +2354,14 @@ test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate() {
 # The pane here carries a LIVE agent (the hard configuration): a bare `paused:`
 # with a live agent deliberately surfaces once, in case the declaration hides a
 # live decision gate. A `working` run step is what rules that hazard out on
-# bin/fm-crew-state.sh's full `axi status` path, where a run at a gate reads
-# `parked`, and test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate pins that
-# it still surfaces there. On the coarse runs-list fallback it reads `working -
-# validating (background run)` instead and takes the 3600s recheck rather than the
-# 240s escalation; pause_state_class's third bullet owns that argument, and
-# test_coarse_gated_run_read_takes_the_pause_cadence_not_the_wedge_timer pins it.
+# bin/fm-crew-state.sh's full `axi status` path with a changed hash, where a run at
+# a gate reads `parked` and surfaces -
+# test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate pins that route. Two
+# configurations take the 3600s recheck rather than the 240s escalation instead:
+# the coarse runs-list read, which reports a gated run as `working - validating
+# (background run)`, and a static pane on the repeat-poll route, which absorbs a
+# `parked` verdict rather than surfacing it. pause_state_class's third bullet owns
+# that argument, and the two tests below pin those latencies.
 test_paused_authoritative_working_takes_the_pause_cadence() {
   local dir state fakebin out drain_out capture_file statusf window key pane_hash sig pid back i
   dir=$(make_case paused-working-pause-cadence); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2510,6 +2516,79 @@ test_coarse_gated_run_read_takes_the_pause_cadence_not_the_wedge_timer() {
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the coarse re-surface was not queued"
   unset FM_FAKE_CREW_STATE
   pass "a gated run seen through the coarse runs-list read waits for the pause cadence, not the wedge timer"
+}
+
+# The second documented limit, and the reason this test exists: the route on which
+# a gated run does NOT surface at its gate. Even on the full `axi status` path,
+# where the run correctly reads `parked`, that verdict only becomes a surface on
+# the changed-hash route. Here the pane is static - the fixture presets
+# `.stale-<key>` at the current hash, which is what a backgrounded run's untouched
+# pane looks like after one absorb - so the repeat-poll route runs instead and
+# absorbs the verdict through handle_paused_stale. That routing is pre-existing and
+# unchanged by the corroboration rule; only the claim written about it was wrong.
+#
+# So the gate is surfaced by the FM_PAUSE_RESURFACE_SECS recheck (3600s by default)
+# rather than the FM_STALE_ESCALATE_SECS escalation (240s by default), and the
+# worker's own needs-decision/blocked append still reaches the captain immediately
+# by the signal path. Both halves of that trade are asserted here.
+test_repeat_poll_gated_run_takes_the_pause_cadence_not_the_wedge_timer() {
+  local dir state fakebin out drain_out capture_file statusf window key pane_hash sig pid back i
+  dir=$(make_case repeat-poll-gated-run); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  statusf="$state/repeat-gated.status"; window="test:fm-repeat-gated"
+  printf 'idle awaiting external\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/repeat-gated.meta"
+  printf 'paused: awaiting the review gate of the background run; do not interrupt\n' > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-repeat-gated_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle awaiting external")
+  # The repeat-poll preconditions: the hash is already recorded as the stale one,
+  # so the changed-hash route cannot run for it.
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  printf '1\n' > "$state/.count-$key"
+  : > "$state/.paused-$key"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review: 2 finding(s)'
+
+  # Half one: the four-minute clock does not surface it, even with a live agent in
+  # front of a gate the watcher can see.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 3 ]; do
+    wait_poll_cycle "$state" "$pid" \
+      || { reap "$pid"; fail "a repeat-poll gated run surfaced on the wedge clock, cycle $((i + 1)): $(cat "$out")"; }
+    i=$((i + 1))
+  done
+  [ ! -s "$out" ] || { reap "$pid"; fail "a repeat-poll gated run printed a wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a repeat-poll gated run queued a wake: $(cat "$state/.wake-queue")"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "a repeat-poll gated run armed the wedge timer"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional repeat-poll phase-one stop"
+
+  # Half two: the one-hour clock is what surfaces it, once, as a paused recheck.
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-repeat-gated_status"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a repeat-poll gated run never re-surfaced on the long cadence"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the repeat-poll re-surface did not print a stale wake: $(cat "$out")"
+  grep -F "awaiting external" "$out" >/dev/null || fail "the repeat-poll re-surface was not labeled a paused recheck: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null && fail "the repeat-poll re-surface was mislabeled a possible wedge: $(cat "$out")"
+  [ ! -e "$state/.stale-since-$key" ] || fail "the repeat-poll re-surface armed the wedge timer"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the repeat-poll re-surface failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the repeat-poll re-surface was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a gated run on a static pane waits for the pause cadence, not the wedge timer"
 }
 
 # The safety half of the rule above, and the one that must not regress: the
@@ -4150,6 +4229,7 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash
 test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate
 test_paused_authoritative_working_takes_the_pause_cadence
 test_coarse_gated_run_read_takes_the_pause_cadence_not_the_wedge_timer
+test_repeat_poll_gated_run_takes_the_pause_cadence_not_the_wedge_timer
 test_undeclared_and_lifted_pauses_still_wedge_escalate
 test_nonterminal_stale_repairs_missing_or_corrupt_timer
 test_wedge_escalation_deferred_while_worktree_is_written

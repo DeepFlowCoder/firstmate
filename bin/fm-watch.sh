@@ -905,20 +905,29 @@ pause_state_class() {  # <window> <task>
   #     authoritative read. The absorb ends on the first poll the run stops reading
   #     `working`; it is never cached.
   #   * `working` rules out the hazard the liveness gate below exists for - a
-  #     `paused:` line hiding a live decision gate - on bin/fm-crew-state.sh's FULL
-  #     `axi status` path, where a run sitting at a gate reads `parked`, not
-  #     `working`, and takes that gate as before, so the crew surfaces the moment a
-  #     human actually holds its next step. It does NOT rule it out on that helper's
-  #     COARSE runs-list fallback: the runs list carries only
+  #     `paused:` line hiding a live decision gate - only where a gated run actually
+  #     reads `parked` AND that verdict reaches a surface. Neither holds everywhere,
+  #     so the reach of this bullet is narrower than "the crew surfaces the moment a
+  #     human holds its next step", and both limits are the same accepted trade:
+  #     bounded latency with a backstop, never silence.
+  #     Reading it: only bin/fm-crew-state.sh's FULL `axi status` path says `parked`.
+  #     Its COARSE runs-list fallback carries only
   #     pending/running/completed/failed/cancelled (fm-nm-run-lib.sh's
   #     fm_nm_status_is_active) with no gate word, so a run parked at a gate still
   #     carries `running` there and reads `working - validating (background run)`.
-  #     The accepted trade in that coarse configuration is bounded latency, not
-  #     silence: a genuinely gated run under a declared wait is surfaced by the
-  #     FM_PAUSE_RESURFACE_SECS recheck (3600s, one hour, by default) rather than by
-  #     the FM_STALE_ESCALATE_SECS wedge escalation (240s, four minutes, by default),
-  #     and the worker's own `needs-decision:`/`blocked:` append surfaces immediately
-  #     through the signal path either way, for the reason bin/fm-crew-state.sh's
+  #     Surfacing it: even on the full path, a gated run surfaces promptly only when
+  #     the stale hash CHANGES, so the first-sighting route runs and turns this
+  #     function's `none` into surface_nonterminal_stale - the ordinary case, where
+  #     the worker is blocked in the foreground call and its pane redraws when the
+  #     gate returns. On a static pane, typically because the run was backgrounded,
+  #     the repeat-poll route takes the `*)` arm into handle_paused_stale instead
+  #     (pre-existing routing this change does not alter), so the gate is not
+  #     surfaced there.
+  #     In both configurations the crew is surfaced by the FM_PAUSE_RESURFACE_SECS
+  #     recheck (3600s, one hour, by default) rather than by the
+  #     FM_STALE_ESCALATE_SECS wedge escalation (240s, four minutes, by default), and
+  #     the worker's own `needs-decision:`/`blocked:` append surfaces immediately
+  #     through the signal path on any route, for the reason bin/fm-crew-state.sh's
   #     coarse branch already spells out.
   #   * handle_paused_stale still re-surfaces it once per FM_PAUSE_RESURFACE_SECS, so
   #     a declaration that outlives its reason cannot rot invisibly.
