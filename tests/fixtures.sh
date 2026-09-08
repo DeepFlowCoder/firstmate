@@ -171,6 +171,64 @@ SH
   chmod +x "$fakebin/tmux"
 }
 
+# fm_test_fake_zellij_spawn <fakebin>
+# Spawn-world zellij: enough of the CLI for a real spawn to create its tab and
+# reach its pane sends - a supported version, one live `firstmate` session, a
+# new-tab that echoes a numeric tab id and remembers the title it was given, and
+# one terminal pane. Payloads pasted into the pane are appended to
+# FM_FAKE_LAUNCH_LOG when it is set, matching the tmux spawn stub's log.
+#
+# Unlike tmux, zellij's send_text_line is three CLI calls (paste, then Enter,
+# then C-c if Enter failed), so it is the backend whose adapter defines status 2
+# as "typed but neither submitted nor cleared". FM_FAKE_ZELLIJ_UNCLEARABLE_MATCH
+# reproduces exactly that state: the paste whose payload starts with that string
+# succeeds and every key sent afterwards fails, so the real adapter - not the
+# stub - returns 2. Unset by default.
+#
+# Needs a real jq, as the zellij adapter parses the CLI's JSON.
+fm_test_fake_zellij_spawn() {
+  local fakebin=$1
+  cat > "$fakebin/zellij" <<'SH'
+#!/usr/bin/env bash
+set -u
+state=${FM_FAKE_ZELLIJ_STATE:?fm_test_fake_zellij_spawn needs FM_FAKE_ZELLIJ_STATE}
+mkdir -p "$state"
+[ "${1:-}" = --version ] && { printf 'zellij %s\n' "${FM_FAKE_ZELLIJ_VERSION:-0.44.0}"; exit 0; }
+[ "${1:-}" = list-sessions ] && { printf '%s\n' "${FM_ZELLIJ_SESSION:-firstmate}"; exit 0; }
+sub=${4:-}
+shift 4
+case "$sub" in
+  list-tabs)
+    name=unrelated-tab
+    [ -f "$state/tab-name" ] && name=$(cat "$state/tab-name")
+    printf '[{"tab_id":1,"name":"%s","active":true}]\n' "$name"
+    ;;
+  new-tab)
+    prev=
+    for a in "$@"; do
+      [ "$prev" = --name ] && printf '%s' "$a" > "$state/tab-name"
+      prev=$a
+    done
+    printf '1\n'
+    ;;
+  list-panes) printf '[{"id":5,"tab_id":1,"is_plugin":false}]\n' ;;
+  paste)
+    payload=
+    for a in "$@"; do payload=$a; done
+    if [ -n "${FM_FAKE_ZELLIJ_UNCLEARABLE_MATCH:-}" ]; then
+      case "$payload" in
+        "$FM_FAKE_ZELLIJ_UNCLEARABLE_MATCH"*) : > "$state/keys-fail" ;;
+      esac
+    fi
+    [ -z "${FM_FAKE_LAUNCH_LOG:-}" ] || printf '%s\n' "$payload" >> "$FM_FAKE_LAUNCH_LOG"
+    ;;
+  send-keys) [ ! -f "$state/keys-fail" ] || exit 1 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/zellij"
+}
+
 # fm_test_fake_tmux_send <fakebin>
 # Send-world tmux: logs send-keys -l payloads to FM_SEND_LOG, reports a numeric
 # cursor_y, and renders an empty bordered composer so the submit path reads

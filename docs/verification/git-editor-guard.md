@@ -50,16 +50,20 @@ Removing the export line from `bin/fm-spawn.sh` fails this case while the four b
 `test_spawn_writes_no_git_editor_configuration` asserts a spawn changes no global `core.editor` or `sequence.editor` and writes no git configuration into the pane.
 The guard lives only in the environment a worker is handed, so the captain's own terminal keeps a real interactive editor.
 
-## What a degraded pane does to the send, and why only one status stops the spawn
+## When the guard cannot be delivered, the refusal is diagnosable
 
-The send reports status 2 when the line was typed into the pane but was neither submitted nor cleared, so the export is still sitting on the input line.
-The launch literal is sent next, so it would concatenate onto that leftover and the worker would run a corrupt command.
-That, and not the value of the guard, is why the spawn stops there.
-Status 1 means the input line is clean - the line either never landed or was cleared - so the launch command is safe to append and the spawn continues.
+Any non-zero status from the guard send stops the spawn before the launch command is appended.
+That is the posture the line already had - `bin/fm-spawn.sh` runs under `set -eu`, so a failed send aborted there anyway - and the effective behavior is unchanged; this is not a new guarantee.
+What changed is that the abort was silent and is now a refusal that names the backend and the status, so a reader knows where to look instead of finding an exit with no message.
 
-Both statuses are driven through the real `bin/fm-spawn.sh` by making the pane stub fail that one send.
-`test_uncleared_guard_input_refuses_to_append_the_launch_command` drives status 2 and asserts all three of: the spawn exits non-zero, it reports `git editor guard input could not be cleared ... refusing to append the launch command`, and the launch command never reaches the pane's send log.
-`test_undelivered_guard_export_still_launches` drives status 1 and asserts the opposite - the spawn exits 0 and the launch command is sent - so a later change that made every degraded send fatal would be caught rather than silently accepted.
+The status itself is a bare number whose meaning belongs to the backend that produced it.
+Only the zellij and cmux adapters define 2 as "typed into the pane, then neither submitted nor cleared"; tmux passes the tmux client's status through, and herdr the herdr binary's, where the same number means something unrelated.
+The refusal therefore always states what is known everywhere - the guard did not reach the pane, with the backend name and the status code - and names the concrete cause only on an adapter that defines it, so it never sends the next reader after a phantom.
+
+All three directions run against the real `bin/fm-spawn.sh`, and each asserts the launch command never reached the pane's send log.
+`test_unclearable_guard_input_refuses_and_names_the_cause` drives a real zellij secondmate spawn whose paste lands and whose Enter and `C-c` both fail, so the zellij adapter itself returns 2 rather than a stub asserting the number; the refusal names `backend=zellij status=2` and the input-line cause.
+`test_refusal_does_not_invent_a_cause_the_backend_never_reported` drives the same number on tmux, which does not define it, and asserts the refusal reports `backend=tmux status=2` without claiming anything about the input line.
+`test_undelivered_guard_export_refuses_too` drives status 1 on tmux and asserts it refuses as well, since launching there would start the worker with exactly the unguarded environment this guard exists to prevent.
 
 ## Commands
 
@@ -67,4 +71,4 @@ Both statuses are driven through the real `bin/fm-spawn.sh` by making the pane s
 bin/fm-test-run.sh tests/fm-spawn-git-editor.test.sh
 ```
 
-Eight assertions, `family=backend-dispatch`, roughly 50 s; the runtime is dominated by the seven deliberate bound hits in the unguarded case.
+Nine assertions, `family=backend-dispatch`, roughly 50 s; the runtime is dominated by the seven deliberate bound hits in the unguarded case.

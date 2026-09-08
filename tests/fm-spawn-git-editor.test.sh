@@ -47,7 +47,7 @@ run_git() {  # <guard: guarded|unguarded> <repo> <git args...>
   local -a guard_env=()
   [ "$guard" = unguarded ] || guard_env=(GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true)
   fm_run_timed "$BOUND" env -u GIT_EDITOR -u GIT_SEQUENCE_EDITOR \
-    EDITOR="$BLOCKING_EDITOR" VISUAL="$BLOCKING_EDITOR" "${guard_env[@]}" \
+    EDITOR="$BLOCKING_EDITOR" VISUAL="$BLOCKING_EDITOR" ${guard_env[@]+"${guard_env[@]}"} \
     git -C "$repo" \
     -c core.editor="$BLOCKING_EDITOR" -c sequence.editor="$BLOCKING_EDITOR" \
     "$@" >/dev/null 2>&1
@@ -218,6 +218,31 @@ run_spawn_case() {  # <name> [fail-match] [fail-rc] -> sets LAUNCH_LOG SPAWN_OUT
 
 launch_command_sent() { grep -q 'claude --dangerously-skip-permissions' "$LAUNCH_LOG"; }
 
+# tmux resolves a text line in one send-keys call, so it can never report the
+# typed-but-uncleared status at all. zellij can, and a secondmate spawn is the
+# shortest real route to it: it skips the treehouse worktree handshake, so the
+# whole run is the tab creation and the pane sends this case is about.
+run_spawn_zellij_case() {  # <name> -> sets LAUNCH_LOG SPAWN_OUT SPAWN_STATUS
+  local name=$1 case_dir home sm fakebin zstate
+  case_dir="$TMP_ROOT/zellij-$name"
+  home="$case_dir/home"; sm="$case_dir/secondmate"; zstate="$case_dir/zellij-state"
+  LAUNCH_LOG="$case_dir/launch.log"
+  fakebin=$(fm_fakebin "$case_dir/fake")
+  fm_test_fake_zellij_spawn "$fakebin"
+  fm_test_spawn_home "$home" claude
+  printf 'claude\n' > "$home/config/secondmate-harness"
+  mkdir -p "$sm/bin" "$sm/data" "$zstate"
+  printf '# Firstmate\n' > "$sm/AGENTS.md"
+  printf 'sm\n' > "$sm/.fm-secondmate-home"
+  printf 'charter for the secondmate\n' > "$sm/data/charter.md"
+  : > "$LAUNCH_LOG"
+  SPAWN_OUT=$(FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" FM_FAKE_ZELLIJ_STATE="$zstate" \
+    FM_FAKE_ZELLIJ_UNCLEARABLE_MATCH='export GIT_EDITOR=' CLAUDECODE=1 \
+    fm_test_run_spawn "$home" "$sm" "$fakebin" \
+    sm "$sm" --secondmate --backend zellij)
+  SPAWN_STATUS=$?
+}
+
 test_spawn_sends_the_guard_before_the_launch_command() {
   local guard_line launch_line
   run_spawn_case guard
@@ -247,31 +272,51 @@ test_spawn_writes_no_git_editor_configuration() {
   pass "spawn changes no git configuration, so the captain's own terminal keeps a real editor"
 }
 
-# Status 2 from the guard send means the export was typed into the pane but was
-# neither submitted nor cleared, so it is still sitting on the input line. The
-# launch literal sent next would concatenate onto it and run corrupt, which is
-# why spawn must stop here rather than hand the worker a broken command.
-test_uncleared_guard_input_refuses_to_append_the_launch_command() {
-  run_spawn_case unclearable 'export GIT_EDITOR=' 2
+assert_refused() {  # <label> <backend> <status>
   [ "$SPAWN_STATUS" -ne 0 ] \
-    || fail "an uncleared guard export left on the pane's input line must stop the spawn, but it exited 0"
-  assert_contains "$SPAWN_OUT" "git editor guard input could not be cleared" \
-    "the refusal must name the guard export as the text left on the input line"
+    || fail "$1: a guard export that could not be delivered must stop the spawn, but it exited 0"
+  assert_contains "$SPAWN_OUT" "git editor guard could not be delivered" \
+    "$1: the refusal must say what is known everywhere - the guard did not reach the pane"
+  assert_contains "$SPAWN_OUT" "backend=$2 status=$3" \
+    "$1: the refusal must name the backend that refused and the status it returned, or the reader cannot tell what to look at"
   assert_contains "$SPAWN_OUT" "refusing to append the launch command" \
-    "the refusal must say the launch command was withheld"
+    "$1: the refusal must say the launch command was withheld"
   ! launch_command_sent \
-    || fail "the launch command was appended to an input line that still held the guard export, so the worker would run a concatenated command"
-  pass "an unclearable guard export stops the spawn before the launch command is appended"
+    || fail "$1: the launch command reached the pane after a failed guard send, so a worker started without the guard"
 }
 
-# The companion direction: a send that simply did not land leaves the input line
-# clean, so appending the launch command is safe and spawn must not stop.
-test_undelivered_guard_export_still_launches() {
+# A status whose meaning the backend's own adapter defines. zellij's
+# send_text_line is paste, then Enter, then C-c, and it returns 2 only when the
+# text landed and neither the submit nor the clear did - so this drives the real
+# adapter into that state rather than asserting the number.
+test_unclearable_guard_input_refuses_and_names_the_cause() {
+  run_spawn_zellij_case unclearable
+  assert_refused "zellij unclearable" zellij 2
+  assert_contains "$SPAWN_OUT" "may still be sitting on the pane's input line" \
+    "on a backend whose adapter defines this status, the refusal should name the concrete cause"
+  pass "an unclearable guard export refuses, names the backend, the status and the cause"
+}
+
+# The same status number from a backend that does not define it. tmux's
+# send_text_line is a single send-keys whose status is the tmux client's, so a 2
+# there says nothing about the pane's input line and the refusal must not
+# pretend otherwise.
+test_refusal_does_not_invent_a_cause_the_backend_never_reported() {
+  run_spawn_case foreign-status 'export GIT_EDITOR=' 2
+  assert_refused "tmux status 2" tmux 2
+  assert_not_contains "$SPAWN_OUT" "input line" \
+    "tmux does not define this status, so the refusal must not claim text was left on the input line"
+  pass "a status a backend never defined refuses without inventing a cause for it"
+}
+
+# The plain undelivered case: still a refusal, because launching here would hand
+# a worker exactly the unguarded environment this guard exists to prevent.
+test_undelivered_guard_export_refuses_too() {
   run_spawn_case undelivered 'export GIT_EDITOR=' 1
-  expect_code 0 "$SPAWN_STATUS" "a guard export that never landed must not stop the spawn"
-  launch_command_sent \
-    || fail "spawn withheld the launch command after a plain guard-send failure, though the pane's input line was clean"
-  pass "a guard export that failed to land leaves the input line clean and the worker still launches"
+  assert_refused "tmux status 1" tmux 1
+  assert_not_contains "$SPAWN_OUT" "input line" \
+    "a send that simply did not land says nothing about the input line either"
+  pass "a guard export that never landed refuses rather than launching an unguarded worker"
 }
 
 test_every_editor_command_wedges_without_the_guard
@@ -280,7 +325,8 @@ test_git_editor_outranks_core_editor_and_editor
 test_sequence_editor_is_not_covered_by_git_editor
 test_spawn_sends_the_guard_before_the_launch_command
 test_spawn_writes_no_git_editor_configuration
-test_uncleared_guard_input_refuses_to_append_the_launch_command
-test_undelivered_guard_export_still_launches
+test_unclearable_guard_input_refuses_and_names_the_cause
+test_refusal_does_not_invent_a_cause_the_backend_never_reported
+test_undelivered_guard_export_refuses_too
 
 echo "# all fm-spawn-git-editor tests passed"

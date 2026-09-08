@@ -3000,18 +3000,30 @@ spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 # git config and touches nothing global, so the captain's own terminal keeps a
 # real interactive editor.
 #
-# Status 2 is the one status that must stop the spawn, and not because the guard
-# itself is precious: it means the line was typed into the pane but was neither
-# submitted nor cleared, so it is still sitting on the input line. The launch
-# literal is sent next and would concatenate onto that leftover, giving the
-# worker a corrupt command. Status 1 leaves a clean input line - the line either
-# never landed or was cleared - so the launch command is safe to append and the
-# spawn continues.
+# Any non-zero stops the spawn, which is the posture this line already had:
+# under `set -e` a failed send aborted before the launch literal was ever
+# appended. The behavior is unchanged; what changes is that the abort says so
+# instead of being silent, and the reader learns which backend refused and with
+# what status. Launching anyway would hand a worker the unguarded environment
+# this whole guard exists to prevent.
+#
+# The status is a bare number whose meaning belongs to the backend that produced
+# it. Only zellij and cmux define 2 as "typed into the pane, then neither
+# submitted nor cleared"; tmux passes the tmux client's status through and herdr
+# the herdr binary's, where 2 means something else entirely. So the concrete
+# cause is named only where an adapter actually defines it, and the rest of the
+# message stays with what is known everywhere.
 GUARD_SEND_STATUS=0
 spawn_send_text_line "$T" "export GIT_EDITOR=true GIT_SEQUENCE_EDITOR=true" \
   || GUARD_SEND_STATUS=$?
-if [ "$GUARD_SEND_STATUS" -eq 2 ]; then
-  echo "error: git editor guard input could not be cleared for $W; refusing to append the launch command" >&2
+if [ "$GUARD_SEND_STATUS" -ne 0 ]; then
+  GUARD_SEND_CAUSE=
+  case "$BACKEND:$GUARD_SEND_STATUS" in
+    zellij:2|cmux:2)
+      GUARD_SEND_CAUSE="; the export may still be sitting on the pane's input line, unsubmitted and uncleared"
+      ;;
+  esac
+  echo "error: git editor guard could not be delivered to $W (backend=$BACKEND status=$GUARD_SEND_STATUS)$GUARD_SEND_CAUSE; refusing to append the launch command" >&2
   exit 1
 fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
