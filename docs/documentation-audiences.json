@@ -413,6 +413,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/git-editor-guard.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/muse.md",
       "audience": "maintainer-verification"
     },

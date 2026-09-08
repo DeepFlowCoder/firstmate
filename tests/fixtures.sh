@@ -97,6 +97,21 @@ fm_test_fake_gh_axi() {
 # set, each send-keys -l payload is appended one per line. Optional
 # FM_FAKE_DUPLICATE_WINDOW is printed from list-windows.
 #
+# fm-spawn ships a pane's pre-launch environment (GOTMPDIR, the git editor
+# guard, TRACEPARENT) as text lines - `send-keys -t <pane> <text> Enter`, with
+# no -l - and its launch command as an -l literal. FM_FAKE_LAUNCH_LOG_TEXT_LINES
+# widens the log to both forms, in send order, so a suite can assert what a pane
+# receives BEFORE its agent starts. It is off by default: suites that assert on
+# the launch command alone must keep seeing only -l payloads.
+#
+# FM_FAKE_SEND_KEYS_FAIL_MATCH makes send-keys fail, with
+# FM_FAKE_SEND_KEYS_FAIL_RC (default 1), for the one send whose payload starts
+# with that string, and log nothing for it. It is how a suite reaches a
+# backend's degraded-delivery statuses through the real spawn path: 1 for a send
+# that did not land, 2 for a line that landed but could be neither submitted nor
+# cleared, which is the status fm-spawn refuses to append a launch command
+# after. Unset by default, so every other send stays successful.
+#
 # The pane path defaults to empty when FM_FAKE_PANE_PATH is unset. Window
 # cleanup and option operations are no-ops. Launch logging is env-gated, so
 # suites that do not set FM_FAKE_LAUNCH_LOG keep a silent send-keys.
@@ -118,14 +133,35 @@ case "${1:-}" in
     ;;
   has-session|new-session|new-window|kill-window|set-window-option) exit 0 ;;
   send-keys)
-    if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
-      prev=
+    if [ -n "${FM_FAKE_SEND_KEYS_FAIL_MATCH:-}" ]; then
       for a in "$@"; do
-        if [ "$prev" = "-l" ]; then
-          printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG"
-        fi
-        prev=$a
+        case "$a" in
+          "$FM_FAKE_SEND_KEYS_FAIL_MATCH"*) exit "${FM_FAKE_SEND_KEYS_FAIL_RC:-1}" ;;
+        esac
       done
+    fi
+    if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
+      if [ -n "${FM_FAKE_LAUNCH_LOG_TEXT_LINES:-}" ]; then
+        shift
+        skip_next=
+        for a in "$@"; do
+          if [ -n "$skip_next" ]; then skip_next=; continue; fi
+          case "$a" in
+            -t) skip_next=1; continue ;;
+            -l) continue ;;
+            Enter|C-m) continue ;;
+            *) printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG" ;;
+          esac
+        done
+      else
+        prev=
+        for a in "$@"; do
+          if [ "$prev" = "-l" ]; then
+            printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG"
+          fi
+          prev=$a
+        done
+      fi
     fi
     exit 0
     ;;
@@ -133,6 +169,64 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+}
+
+# fm_test_fake_zellij_spawn <fakebin>
+# Spawn-world zellij: enough of the CLI for a real spawn to create its tab and
+# reach its pane sends - a supported version, one live `firstmate` session, a
+# new-tab that echoes a numeric tab id and remembers the title it was given, and
+# one terminal pane. Payloads pasted into the pane are appended to
+# FM_FAKE_LAUNCH_LOG when it is set, matching the tmux spawn stub's log.
+#
+# Unlike tmux, zellij's send_text_line is three CLI calls (paste, then Enter,
+# then C-c if Enter failed), so it is the backend whose adapter defines status 2
+# as "typed but neither submitted nor cleared". FM_FAKE_ZELLIJ_UNCLEARABLE_MATCH
+# reproduces exactly that state: the paste whose payload starts with that string
+# succeeds and every key sent afterwards fails, so the real adapter - not the
+# stub - returns 2. Unset by default.
+#
+# Needs a real jq, as the zellij adapter parses the CLI's JSON.
+fm_test_fake_zellij_spawn() {
+  local fakebin=$1
+  cat > "$fakebin/zellij" <<'SH'
+#!/usr/bin/env bash
+set -u
+state=${FM_FAKE_ZELLIJ_STATE:?fm_test_fake_zellij_spawn needs FM_FAKE_ZELLIJ_STATE}
+mkdir -p "$state"
+[ "${1:-}" = --version ] && { printf 'zellij %s\n' "${FM_FAKE_ZELLIJ_VERSION:-0.44.0}"; exit 0; }
+[ "${1:-}" = list-sessions ] && { printf '%s\n' "${FM_ZELLIJ_SESSION:-firstmate}"; exit 0; }
+sub=${4:-}
+shift 4
+case "$sub" in
+  list-tabs)
+    name=unrelated-tab
+    [ -f "$state/tab-name" ] && name=$(cat "$state/tab-name")
+    printf '[{"tab_id":1,"name":"%s","active":true}]\n' "$name"
+    ;;
+  new-tab)
+    prev=
+    for a in "$@"; do
+      [ "$prev" = --name ] && printf '%s' "$a" > "$state/tab-name"
+      prev=$a
+    done
+    printf '1\n'
+    ;;
+  list-panes) printf '[{"id":5,"tab_id":1,"is_plugin":false}]\n' ;;
+  paste)
+    payload=
+    for a in "$@"; do payload=$a; done
+    if [ -n "${FM_FAKE_ZELLIJ_UNCLEARABLE_MATCH:-}" ]; then
+      case "$payload" in
+        "$FM_FAKE_ZELLIJ_UNCLEARABLE_MATCH"*) : > "$state/keys-fail" ;;
+      esac
+    fi
+    [ -z "${FM_FAKE_LAUNCH_LOG:-}" ] || printf '%s\n' "$payload" >> "$FM_FAKE_LAUNCH_LOG"
+    ;;
+  send-keys) [ ! -f "$state/keys-fail" ] || exit 1 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/zellij"
 }
 
 # fm_test_fake_tmux_send <fakebin>
