@@ -2427,6 +2427,81 @@ test_paused_authoritative_working_takes_the_pause_cadence() {
   pass "a declared pause whose run is still running takes the bounded pause cadence, never the wedge timer"
 }
 
+# The documented limit of the rule above, pinned as a latency rather than argued
+# away. fm-crew-state.sh has two run-reading paths, and only the full `axi status`
+# one can say `parked`: its coarse runs-list fallback carries just
+# pending/running/completed/failed/cancelled, so a run sitting at a gate is
+# reported as still running. The fixture's detail string is the whole point -
+# `validating (background run)` is the exact shape that coarse path emits, where
+# `validating (running)` is the full path's - and under it a genuinely gated crew
+# reads `working` and is absorbed by the corroboration rule.
+#
+# The accepted trade is bounded latency with a backstop, not silence: such a crew
+# is surfaced by the FM_PAUSE_RESURFACE_SECS recheck (3600s by default) instead of
+# the FM_STALE_ESCALATE_SECS wedge escalation (240s by default), and its own
+# needs-decision/blocked append still reaches the captain immediately by the signal
+# path. Both halves of that trade are asserted here, so a later change that widens
+# or narrows the window has to come through this test.
+test_coarse_gated_run_read_takes_the_pause_cadence_not_the_wedge_timer() {
+  local dir state fakebin out drain_out capture_file statusf window key pane_hash sig pid back i
+  dir=$(make_case coarse-gated-run-read); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  statusf="$state/coarse-gated.status"; window="test:fm-coarse-gated"
+  printf 'idle at the review gate\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/coarse-gated.meta"
+  printf 'paused: awaiting the review gate of the background run; the blocking respond call reports back when it returns; do not interrupt\n' \
+    > "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-coarse-gated_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle at the review gate")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (background run)'
+
+  # Half one: the four-minute clock does NOT surface it. FM_STALE_ESCALATE_SECS as
+  # low as it goes, so a wedge timer armed on any of these polls escalates on the
+  # next one.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  i=0
+  while [ "$i" -lt 3 ]; do
+    wait_poll_cycle "$state" "$pid" \
+      || { reap "$pid"; fail "a coarse gated-run read wedge-escalated on cycle $((i + 1)): $(cat "$out")"; }
+    i=$((i + 1))
+  done
+  [ ! -s "$out" ] || { reap "$pid"; fail "a coarse gated-run read printed a wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a coarse gated-run read queued a wake: $(cat "$state/.wake-queue")"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "a coarse gated-run read did not take the pause cadence"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "a coarse gated-run read armed the wedge timer"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional coarse phase-one stop"
+
+  # Half two: the one-hour clock IS what surfaces it, once, as a paused recheck and
+  # never as a possible wedge.
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-coarse-gated_status"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a coarse gated-run read never re-surfaced on the long cadence"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the coarse re-surface did not print a stale wake: $(cat "$out")"
+  grep -F "awaiting external" "$out" >/dev/null || fail "the coarse re-surface was not labeled a paused recheck: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null && fail "the coarse re-surface was mislabeled a possible wedge: $(cat "$out")"
+  [ ! -e "$state/.stale-since-$key" ] || fail "the coarse re-surface armed the wedge timer"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the coarse re-surface failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the coarse re-surface was not queued"
+  unset FM_FAKE_CREW_STATE
+  pass "a gated run seen through the coarse runs-list read waits for the pause cadence, not the wedge timer"
+}
+
 # The safety half of the rule above, and the one that must not regress: the
 # corroboration is scoped to the declaration, so a worker that never declared a
 # wait keeps the unchanged wedge path even with the identical live run, and one
@@ -4064,6 +4139,7 @@ test_secondmate_unpause_clears_pause_tracking
 test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash
 test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate
 test_paused_authoritative_working_takes_the_pause_cadence
+test_coarse_gated_run_read_takes_the_pause_cadence_not_the_wedge_timer
 test_undeclared_and_lifted_pauses_still_wedge_escalate
 test_nonterminal_stale_repairs_missing_or_corrupt_timer
 test_wedge_escalation_deferred_while_worktree_is_written
