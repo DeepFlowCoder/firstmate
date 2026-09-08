@@ -8,7 +8,8 @@ Shell: GNU bash 5.3.9 (macOS).
 Comparison base: `main` at `deb65bd`.
 
 `tests/fm-update.test.sh` is the hermetic suite for `bin/fm-update.sh`, the fast-forward-only self-update of a running firstmate repo and every registered secondmate home.
-Each scenario is built in an isolated throwaway world - a bare origin, a firstmate clone on `main`, and a home with `state/` and `data/` - and each refusal is measured against whatever that particular guarantee could have wrongly moved.
+Every scenario that drives a git update is built in an isolated throwaway world - a bare origin, a firstmate clone on `main`, and a home with `state/` and `data/`; the one exception is the inheritance case (T17), a config-only fixture of two `config/` directories that exercises the primary-authoritative push and needs no world.
+Each refusal is measured against whatever that particular guarantee could have wrongly moved.
 The source-fallback cases (T14, T15, T23) leave origin ahead of the checkout, so a silent fallback to `origin` would visibly move the target's HEAD.
 The remote-route case (T19) bumps only `upstream` and never origin; its measurement is the absent `ssh` attempt log, which proves the host was never contacted.
 The no-advance case (T22) bumps origin and then fast-forwards the primary onto it before the run, so at refusal time the advanceable target is the leased secondmate home relative to the primary, not origin.
