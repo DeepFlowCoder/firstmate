@@ -30,6 +30,12 @@
 # snapshot marks prose-deferred (deferred_marker) leaves the default decisions
 # and gates views and is disclosed in omitted[], revealed by --all-decisions /
 # --all-queued, unless an in-flight live worker owns its Underway line instead.
+# That omitted[] count of marked holds reports what the default decisions view
+# withholds, not that the row is absent from the output: a marked in-flight hold
+# with a live worker under it is counted there and still renders in_flight.
+# --all-decisions is correspondingly not purely additive for this home: it widens
+# the main decision set itself, so each marked hold it reveals in decisions_open
+# also leaves the in_flight row it was occupying.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
@@ -143,6 +149,11 @@ For every registered secondmate, readable structured facts from its own home are
 Opt-in surfaces: --fields bodies|paths|actions|endpoints, --all-in-flight,
   --all-decisions, --all-secondmates, --all-landed, --all-reports, --all-queued, --all-recorded-prs,
   --all-unhealthy, --all-pr-repos, --include-prs (adds candidate_prs).
+--all-decisions widens this home's decision set rather than only unbounding it: a
+  prose-deferred captain hold it reveals in decisions_open also leaves in_flight when
+  a live worker was carrying that row. The omitted[] count of marked holds counts
+  such a row too, so it names what the default decisions view withholds rather than
+  what the whole output hides.
 Raise FM_BEARINGS_PR_LIMIT to expand per-repository open-PR results.
 EOF
 }
