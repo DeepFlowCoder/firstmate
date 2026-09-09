@@ -58,10 +58,12 @@
 # unmeasurable case is a refusal rather than a silent pass. The rule binds what
 # the task RUNS - the real binaries and readers the worker introduces itself -
 # and never fences authoring credential code it does not execute, the stub it
-# prescribes, or the brief's own setup, delivery, and reporting steps; a
-# sanctioned step hanging on a credential is a block to report rather than
-# something to work around. The exemption names no command, so it holds for
-# every mode without a per-scaffold variant. It is a brief section rather than
+# prescribes, or the setup, delivery, and reporting steps the reader's own
+# instructions order; a sanctioned step hanging on a credential is a block to
+# report rather than something to work around. That exemption names no command
+# and points at no container outside itself, so it holds for every mode without
+# a per-scaffold variant and still resolves once the section is carried into
+# --intent, where the brief is no longer in scope. It is a brief section rather than
 # firstmate-side knowledge because the worker never reads firstmate's private
 # data/, and the no-mistakes definition of done exempts it by name from the
 # scaffold-boilerplate exclusion and carries it whole into --intent, which is
@@ -220,15 +222,17 @@ INBOX_SECTION=${INBOX_SECTION%$'\n'}
 # rule binds what the worker RUNS - the real binaries and readers it introduces
 # itself - and states three things it never fences: authoring credential code
 # that this task does not execute, the PATH stub the same section prescribes,
-# and the commands the brief itself orders. Those exemptions carry their own
-# limits: a hanging sanctioned command is a block to report, not a workaround.
-# The intention-based scoping is firstmate's own decision. The shape of the
-# sanctioned exemption is the captain's: it names this brief's own steps rather
-# than any command, so it cannot contradict rule 1 of any scaffold and is correct
-# by construction for ship, scout, local-only, and any mode added later. Naming
-# commands needed a per-scaffold arm and still shipped a local-only brief that
-# claimed it was ordered to push; with no command names there is nothing left to
-# contradict, so the section has one owner and no per-kind variant.
+# and the steps its reader's own instructions order. Those exemptions carry their
+# own limits: a hanging sanctioned step is a block to report, not a workaround.
+# The intention-based scoping is firstmate's own decision. The de-enumerated
+# shape of the sanctioned exemption is the captain's: it names no command, so it
+# cannot contradict rule 1 of any scaffold and is correct by construction for
+# ship, scout, local-only, and any mode added later. Naming commands needed a
+# per-scaffold arm and still shipped a local-only brief that claimed it was
+# ordered to push. Anchoring that exemption on the reader's own instructions
+# rather than on "this brief" is firstmate's follow-on correction: the section is
+# carried verbatim into --intent, where no brief is in scope, so a pointer to the
+# containing document would not survive the one transport that matters.
 IFS= read -r -d '' CREDENTIALS_SECTION <<'EOF' || true
 # The captain's real credential store - HARD SAFETY RULE
 Never run, and never cause to run during this task, a command that reads the captain's real keychain or credential store, beyond the exemptions this section names below.
@@ -239,7 +243,7 @@ A real read against a locked store blocks on a system password dialog that holds
 Killing the process does not undo it: the dialog belongs to a system agent that outlives the client, so there is no cleanup afterwards and prevention is the only control that works.
 Use a stub instead: put your own fake `security` and `op` executables first on `PATH` for anything under test, and assert against the stub rather than the real store.
 This rule never fences that stub: a fake you placed first on `PATH` yourself and assert against reaches no real store, so running it, and running the tests that call it, is allowed and is the whole point of the alternative.
-It never fences this brief's own setup, delivery, and reporting steps either, whatever they turn out to be for this task, because those are not interactive credential reads you elected to make.
+It never fences the setup, delivery, and reporting steps the instructions you are operating under order you to run, whatever those steps turn out to be, because those are not interactive credential reads you elected to make.
 Neither exemption is cover for adding a credential read of your own inside, alongside, or underneath a sanctioned command or a stub.
 Refuse by name, never by measurement: if you are about to invoke the real `security` or `op`, or you cannot tell whether a reader you are introducing reaches the real store, refuse it and say which command it was and what you could not determine.
 Being unable to measure whether something reads a credential is NOT the same as it not reading one, so an unmeasurable case is a refusal and this rule never passes in silence.
@@ -474,7 +478,7 @@ Firstmate will then instruct you to run /no-mistakes, which validates the work a
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
-The one scaffold section that is never boilerplate is the credential-store rule above: carry that section into every \`--intent\` in full, never in summary and never in part, reading its "this brief" as the intent itself, because the workers the pipeline runs never see this brief and that is the placement measured to be obeyed.
+The one scaffold section that is never boilerplate is the credential-store rule above: carry that section into every \`--intent\` in full, never in summary and never in part, because the workers the pipeline runs never see this brief and that is the placement measured to be obeyed.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:

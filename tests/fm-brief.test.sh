@@ -899,13 +899,14 @@ test_crewmate_briefs_route_captain_questions_through_the_status_log() {
 # repo's own bin/fm-notify-moshi.sh reads the Keychain by design), the PATH stub
 # this section prescribes, and the commands the brief orders. A rule that froze
 # any of them would have a literal reader block itself instead of delivering. The
-# sanctioned exemption names the containing brief's own steps and no command, so
-# it cannot contradict a scaffold that forbids pushing. The exemptions keep their
+# sanctioned exemption names no command and anchors on the reader's own
+# instructions, so it cannot contradict a scaffold that forbids pushing and still
+# resolves after the section is carried into --intent. The exemptions keep their
 # limits: a sanctioned step hanging on a credential is still a block to report,
 # so that path does not become a silent workaround, and the whole section travels
 # into --intent, since enumerating parts is how the exemptions got stripped there.
 test_crewmate_briefs_forbid_reading_the_real_credential_store() {
-  local home brief kind
+  local home brief kind section command_name
   home="$TMP_ROOT/credential-store-home"
   write_registry "$home"
   for kind in no-mistakes direct-PR local-only; do
@@ -973,15 +974,27 @@ test_crewmate_briefs_forbid_reading_the_real_credential_store() {
       "$kind: brief allowed the rule to pass silently when it cannot decide"
     assert_grep 'blocked: {which credential}' "$brief" \
       "$kind: brief dropped the escalation route for a genuinely needed credential"
-    # The exemption points at the containing brief's own steps and names no
-    # command, so it cannot contradict rule 1 of the scaffold carrying it. Naming
-    # commands needed a per-scaffold arm and still told a local-only brief, which
-    # forbids pushing, that its brief had ordered it to push.
-    assert_grep "never fences this brief's own setup, delivery, and reporting steps either" "$brief" \
-      "$kind: brief did not exempt its own mandated steps from the refusal"
-    # shellcheck disable=SC2016 # Literal backticked command name must remain unexpanded.
-    assert_no_grep '`git push`' "$brief" \
-      "$kind: credential rule named a delivery command again, which can contradict the scaffold carrying it"
+    # The exemption names no command and points at the reader's own instructions
+    # rather than at the containing brief, so it cannot contradict rule 1 of the
+    # scaffold carrying it and still resolves once the section is carried into
+    # --intent, where no brief is in scope. Naming commands needed a per-scaffold
+    # arm and still told a local-only brief, which forbids pushing, that its own
+    # brief had ordered it to push.
+    assert_grep 'never fences the setup, delivery, and reporting steps the instructions you are operating under order you to run' "$brief" \
+      "$kind: brief did not exempt the reader's own mandated steps from the refusal"
+    # Scoped to the credential section, because a delivery command named in an
+    # unrelated part of the brief is not this rule re-enumerating anything, and a
+    # whole-brief negative would fail with that wrong diagnosis.
+    section="$TMP_ROOT/$kind.credential-section"
+    awk '/^# The captain.s real credential store/ {inside = 1; next} inside && /^# / {exit} inside' \
+      "$brief" > "$section"
+    assert_grep 'HARD SAFETY RULE' "$brief" "$kind: brief lost the credential-store heading"
+    [ -s "$section" ] || fail "$kind: could not isolate the credential section from the generated brief"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    for command_name in '`git push`' '`git checkout -b`' '`gh-axi`'; do
+      assert_no_grep "$command_name" "$section" \
+        "$kind: credential rule named $command_name again, which can contradict the scaffold carrying it"
+    done
   done
 
   # A brief that forbids pushing must never be told its own brief ordered a push.
