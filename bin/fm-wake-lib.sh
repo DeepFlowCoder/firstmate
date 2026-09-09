@@ -425,17 +425,34 @@ fm_lock_claim() {
   return 0
 }
 
+# Status 0 the lock is now held by this process, 1 the attempt lost to another
+# holder or to a steal in flight, 2 the lock's directory cannot be written at all
+# - ENOSPC, EACCES, a read-only mount, a missing parent. Only 1 has an owner
+# worth breaking; 2 is a property of the directory that no amount of retrying or
+# stealing can change, and fm_lock_try_acquire's steal path depends on telling
+# them apart. Both are false to every `if !` and `||` caller, so nothing that
+# only tests success changes.
+#
+# Status 2 comes from the two writes that cannot fail for any reason BUT an
+# unwritable directory: mktemp -d picks its own unique name, so it never
+# collides, and the owner pid file goes into a directory this call just created
+# alone. Every other failure here is contention by construction - "$lockdir"
+# already exists, the symlink lost a race, or fm_lock_claim backed out - and
+# must stay status 1. Do not re-derive this verdict from whether "$lockdir"
+# exists afterwards: fm_lock_claim removes the symlink it just created whenever
+# "<lock>.steal" is present, so an ordinary steal contention on a perfectly
+# writable filesystem also leaves the path absent.
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
-  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 1
+  ownerdir=$(fm_lock_owner_dir "$lockdir") || return 2
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
   if ! fm_lock_prepare_owner "$ownerdir"; then
     fm_lock_discard_owner "$ownerdir"
-    return 1
+    return 2
   fi
   if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
     if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
@@ -805,32 +822,26 @@ fm_recovery_marker_reopen_announced() {
 }
 
 fm_lock_try_acquire() {
-  local lockdir=$1 pid steal cur rc steal_rc steal_owner primary_owner
+  local lockdir=$1 pid steal cur rc create_rc steal_rc steal_owner primary_owner
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
   FM_LOCK_RECOVERED_PID=
 
-  if fm_lock_try_create "$lockdir"; then
+  fm_lock_try_create "$lockdir"
+  create_rc=$?
+  if [ "$create_rc" -eq 0 ]; then
     return 0
   fi
 
-  # try_create fails for two very different reasons, and only one of them has an
-  # owner worth stealing from: either the lock is HELD (some path exists there),
-  # or this process cannot write the lock's directory at all - ENOSPC, EACCES, a
-  # read-only mount. With nothing at "$lockdir" there is no holder to break, and
-  # the steal path below would ask that same unwritable directory for one more
-  # path, fail identically, and recurse a level deeper forever. That is not
-  # theoretical: with the state directory full, this recursed roughly 900 frames
-  # deep and bash died on SIGSEGV, which is how a watcher cycle's process-event
-  # reconcile reported "Segmentation fault: 11" while its own writes were still
-  # failing with "No space left on device".
-  #
-  # Status 2 names that second reason, as distinct from 1's "the lock is held".
-  # Both are false to every `if !` and `||` caller, so nothing that only tests
-  # success changes; the one consumer that must tell them apart is
-  # fm_lock_acquire_wait, which can wait out a holder but never a directory it
-  # cannot write.
-  if [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ]; then
+  # An unwritable lock directory has no holder to break, and the steal path below
+  # would ask that same directory for one more path, fail identically, and recurse
+  # a level deeper forever. That is not theoretical: with the state directory
+  # full, this recursed roughly 900 frames deep and bash died on SIGSEGV, which is
+  # how a watcher cycle's process-event reconcile reported "Segmentation fault:
+  # 11" while its own writes were still failing with "No space left on device".
+  # fm_lock_try_create's own status is what says so; see its contract for why the
+  # reason has to come from there rather than be guessed at here.
+  if [ "$create_rc" -eq 2 ]; then
     FM_LOCK_HELD_PID=
     FM_LOCK_OWNER_DIR=
     return 2
@@ -849,11 +860,13 @@ fm_lock_try_acquire() {
     # - the hang reproduced by the self-held reclaim regression in
     # tests/fm-wake-queue.test.sh - so reclaim the abandoned hold instead.
     fm_lock_remove_path "$lockdir" || true
-    if fm_lock_try_create "$lockdir"; then
+    fm_lock_try_create "$lockdir"
+    create_rc=$?
+    if [ "$create_rc" -eq 0 ]; then
       return 0
     fi
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
-    return 1
+    return "$create_rc"
   fi
   if fm_pid_alive "$pid"; then
     FM_LOCK_HELD_PID=$pid
@@ -865,13 +878,12 @@ fm_lock_try_acquire() {
   fi
 
   steal="$lockdir.steal"
-  # Structural backstop for the same runaway. The guard above is what actually
-  # bounds it - recursion now needs each "<lock>.steal" level to already EXIST,
-  # and a level that does not exist either gets created or reports the directory
-  # unusable - so this cap only has to sit above any chain of leaked steal locks
-  # real recovery can meet. The counter is restored immediately after the call,
-  # so an outer caller keeps its own budget and a later independent acquire
-  # starts from zero.
+  # Structural backstop for the same runaway. The status-2 guard above is what
+  # actually bounds it - a directory that cannot be written says so on the very
+  # first level instead of failing identically one frame deeper - so this cap only
+  # has to sit above any chain of leaked steal locks real recovery can meet. The
+  # counter is restored immediately after the call, so an outer caller keeps its
+  # own budget and a later independent acquire starts from zero.
   if [ "$_FM_LOCK_STEAL_DEPTH" -ge "$FM_LOCK_STEAL_MAX_DEPTH" ]; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
@@ -931,9 +943,9 @@ fm_lock_try_acquire() {
     return 1
   fi
   fm_lock_remove_path "$lockdir" || true
-  rc=1
-  if fm_lock_try_create "$lockdir" "$steal_owner"; then
-    rc=0
+  fm_lock_try_create "$lockdir" "$steal_owner"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
     # shellcheck disable=SC2034 # Read by sourcing callers after lock acquisition.
     FM_LOCK_RECOVERED_PID=$cur
   fi
@@ -950,8 +962,10 @@ fm_lock_try_acquire() {
 # is correct for a holder that will eventually let go and wrong for a directory
 # that cannot be written at all: sleeping cannot make a failed write succeed, so
 # an unusable lock directory would spin here forever and wedge the caller. Give
-# up on that verdict and let the caller report it. Every caller already treats a
-# nonzero return as failure.
+# up on that verdict and let the caller report it.
+#
+# A nonzero return therefore means the lock is NOT held, and a caller that
+# ignores it runs its critical section unlocked. Check it at every call site.
 fm_lock_acquire_wait() {
   local lockdir=$1 rc
   while :; do
@@ -1444,7 +1458,10 @@ fm_wake_append() {
   recovery_marker="$STATE/.watcher-down"
   status=0
 
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  # Without the lock this appends and bumps ".wake-queue.seq" unserialised, so two
+  # appenders can hand out the same sequence number. Report the wake as not queued
+  # instead, which is what this function's nonzero return already means.
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   _fm_recovery_marker_publish "$recovery_marker" downtime || status=$?
   if [ "$status" -eq 0 ]; then
     seq=$(cat "$seq_file" 2>/dev/null || echo 0)
@@ -1473,7 +1490,7 @@ fm_wake_queued_keys() {
     signal|stale|check|heartbeat) ;;
     *) printf 'fm_wake_queued_keys: invalid wake kind: %s\n' "$kind" >&2; return 2 ;;
   esac
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   fm_wake_queued_keys_locked "$kind"
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 }

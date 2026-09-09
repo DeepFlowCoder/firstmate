@@ -186,6 +186,12 @@ CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 # A failing reconcile can be noisy, and this evidence is a diagnostic tail, not
 # a transcript.
 PROCEVENT_RECONCILE_LOG_BYTES=${FM_PROCEVENT_RECONCILE_LOG_BYTES:-400}
+# A malformed value would make `tail -c` fail on every cycle, emptying the very
+# evidence this exists to keep and leaking tail's own error to the watcher's
+# stderr. Take the default rather than carry a value the tail cannot use.
+case "$PROCEVENT_RECONCILE_LOG_BYTES" in
+  ''|*[!0-9]*|0) PROCEVENT_RECONCILE_LOG_BYTES=400 ;;
+esac
 # The process-event runner this watcher reconciles through. Same seam shape as
 # FM_CREW_STATE_BIN in bin/fm-classify-lib.sh: a test stubs the abnormal ends
 # this cycle must record, which is not something a real runner can be asked for.

@@ -1160,6 +1160,56 @@ test_unwritable_lock_directory_fails_fast() {
   pass "an unwritable lock directory fails fast instead of recursing or spinning"
 }
 
+# Giving up on an unusable lock directory only helps if the caller notices. A
+# caller that ignores fm_lock_acquire_wait's status runs its critical section
+# with no lock at all, and fm_wake_append's is the one that hands out queue
+# sequence numbers: unserialised, two appenders can issue the same one and the
+# wake they each think they queued collides in the durable record.
+#
+# The lock lives in its own unwritable directory here while the queue and its
+# sequence file stay perfectly writable, so nothing else in the critical section
+# fails on its own. That isolates the contract under test to exactly one
+# question: does a failed acquire stop the append, or does the append proceed
+# unlocked and report success?
+test_wake_append_refuses_to_write_unlocked() {
+  local dir state lockroot rc seq queue
+  dir=$(make_case wake-append-unlocked)
+  state="$dir/state"
+  lockroot="$state/locks"
+  queue="$state/.wake-queue"
+  seq="$state/.wake-queue.seq"
+  mkdir -p "$lockroot"
+  : > "$queue"
+  printf '7\n' > "$seq"
+  chmod a-w "$lockroot" || fail "could not drop write permission on the case lock dir"
+
+  # Running as root (common in CI containers) ignores the permission bit, and a
+  # case that cannot arrange its precondition must say so rather than pass on an
+  # assertion it never got to make.
+  if ( : > "$lockroot/.writable-probe" ) 2>/dev/null; then
+    rm -f "$lockroot/.writable-probe" 2>/dev/null || true
+    chmod u+w "$lockroot" 2>/dev/null || true
+    pass "unlocked wake-append regression skipped (this user can write it anyway)"
+    return
+  fi
+
+  FM_STATE_OVERRIDE="$state" FM_WAKE_QUEUE_LOCK="$lockroot/.wake-queue.lock" \
+    bash -c '
+    . "$1"
+    fm_wake_append signal unlocked-probe payload
+  ' _ "$LIB" >/dev/null 2>&1
+  rc=$?
+  chmod u+w "$lockroot" 2>/dev/null || true
+
+  [ "$rc" -ne 0 ] \
+    || fail "fm_wake_append reported a queued wake without ever holding the queue lock"
+  [ "$(cat "$seq")" = "7" ] \
+    || fail "fm_wake_append handed out a sequence number with no lock held: $(cat "$seq")"
+  [ ! -s "$queue" ] \
+    || fail "fm_wake_append wrote a queue record with no lock held: $(cat "$queue")"
+  pass "fm_wake_append reports failure instead of writing the queue unlocked"
+}
+
 # The steal path still has to survive a leaked steal lock, which is the one
 # legitimate reason to nest a second level: a reclaim killed mid-flight leaves
 # "<lock>.steal" behind with a dead owner, and the successor can only break the
@@ -1185,6 +1235,98 @@ test_lock_steals_through_a_leaked_steal_lock() {
   [ "$rc" -eq 0 ] \
     || fail "a lock whose steal marker leaked from a dead owner was not reclaimable (rc=$rc)"
   pass "a leaked steal lock is still stolen through, two levels deep"
+}
+
+# The narrower window of the case above, and the one that made the unusable
+# verdict unsound when it was inferred from "$lockdir" being absent afterwards: a
+# reclaim killed between removing the primary lock and recreating it leaves ONLY
+# "<lock>.steal" behind, with a dead owner. fm_lock_try_create legitimately fails
+# there on a perfectly writable filesystem - fm_lock_claim removes the symlink it
+# just created whenever a steal marker is present - so a verdict read off the
+# absent path condemns the whole directory and strands this lock forever. The
+# successor must still steal through the leftover and acquire.
+test_lock_recovers_when_only_a_dead_steal_marker_remains() {
+  local dir state lockdir rc
+  dir=$(make_case dead-steal-marker-only)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  mkdir -p "$lockdir.steal"
+  printf '99999998\n' > "$lockdir.steal/pid"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2" || exit 1
+    [ -L "$2" ] || exit 2
+    fm_lock_release "$2"
+  ' _ "$LIB" "$lockdir" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 2 ] \
+    || fail "the lock was reported acquired but nothing was created at the lock path"
+  [ "$rc" -eq 0 ] \
+    || fail "a lock left with only a dead steal marker was not recoverable (rc=$rc)"
+  pass "a reclaim killed mid-flight leaves a lock its successor can still acquire"
+}
+
+# The other half of the same boundary: a steal genuinely IN FLIGHT, held by a
+# live process, also leaves the primary lock path absent while it runs. That is
+# ordinary contention with an owner that will let go, so it must stay retryable -
+# fm_lock_acquire_wait giving up on it would turn every concurrent steal into a
+# hard failure. Assert the waiter keeps waiting, and then completes once the
+# contention clears, rather than only that one status code came back.
+test_live_steal_with_primary_absent_stays_retryable() {
+  local dir state lockdir rc holder waiter i alive waiter_rc
+  dir=$(make_case live-steal-primary-absent)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  mkdir -p "$lockdir.steal"
+  sleep 30 &
+  holder=$!
+  printf '%s\n' "$holder" > "$lockdir.steal/pid"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2"
+  ' _ "$LIB" "$lockdir" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 1 ] || {
+    kill -KILL "$holder" 2>/dev/null || true
+    fail "a live steal with the primary absent was not reported as retryable contention (rc=$rc)"
+  }
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    fm_lock_release "$2"
+  ' _ "$LIB" "$lockdir" >/dev/null 2>&1 &
+  waiter=$!
+  sleep 1
+  alive=0
+  kill -0 "$waiter" 2>/dev/null && alive=1
+  [ "$alive" -eq 1 ] || {
+    kill -KILL "$holder" 2>/dev/null || true
+    wait "$waiter" 2>/dev/null || true
+    fail "fm_lock_acquire_wait gave up on a live steal instead of waiting it out"
+  }
+
+  # Releasing the contention is the steal owner dying, exactly as an interrupted
+  # steal ends in production. The waiter must then break through on its own.
+  kill -KILL "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 300 ] && kill -0 "$waiter" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$waiter" 2>/dev/null; then
+    kill -KILL "$waiter" 2>/dev/null || true
+    wait "$waiter" 2>/dev/null || true
+    fail "fm_lock_acquire_wait never acquired the lock after the live steal owner died"
+  fi
+  wait "$waiter" 2>/dev/null
+  waiter_rc=$?
+  [ "$waiter_rc" -eq 0 ] \
+    || fail "fm_lock_acquire_wait failed on a lock whose steal contention had cleared (rc=$waiter_rc)"
+  pass "a live steal with the primary absent stays retryable and is waited out"
 }
 
 test_msys_pid_identity_uses_proc() {
@@ -1219,7 +1361,10 @@ test_guard_warnings
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_unwritable_lock_directory_fails_fast
+test_wake_append_refuses_to_write_unlocked
 test_lock_steals_through_a_leaked_steal_lock
+test_lock_recovers_when_only_a_dead_steal_marker_remains
+test_live_steal_with_primary_absent_stays_retryable
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock
