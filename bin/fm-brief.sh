@@ -217,13 +217,13 @@ INBOX_SECTION=${INBOX_SECTION%$'\n'}
 # guessed from process ancestry was built, failed twice, and is retired.
 # The scope is drawn by INTENTION, not by region: a fence around "anything that
 # reaches the keychain" also freezes what this same brief mandates, so a literal
-# reader blocks itself and the rule protects nothing. What bit was a direct
-# `security find-generic-password -w` executed against the real store, so the
-# rule binds what the worker RUNS - the real binaries and readers it introduces
-# itself - and states three things it never fences: authoring credential code
-# that this task does not execute, the PATH stub the same section prescribes,
-# and the steps its reader's own instructions order. Those exemptions carry their
-# own limits: a hanging sanctioned step is a block to report, not a workaround.
+# reader blocks itself and the rule protects nothing. The harm is a read of the
+# REAL store reaching the captain's screen, so the rule binds what the worker
+# RUNS or CAUSES TO RUN, whether it wrote that reader or found it already in the
+# repo, and states three things it never fences: authoring credential code that
+# this task does not execute, the PATH stub the same section prescribes, and the
+# steps its reader's own instructions order. Those exemptions carry their own
+# limits: a hanging sanctioned step is a block to report, not a workaround.
 # The intention-based scoping is firstmate's own decision. The de-enumerated
 # shape of the sanctioned exemption is the captain's: it names no command, so it
 # cannot contradict rule 1 of any scaffold and is correct by construction for
@@ -245,7 +245,7 @@ Use a stub instead: put your own fake `security` and `op` executables first on `
 This rule never fences that stub: a fake you placed first on `PATH` yourself and assert against reaches no real store, so running it, and running the tests that call it, is allowed and is the whole point of the alternative.
 It never fences the setup, delivery, and reporting steps the instructions you are operating under order you to run, whatever those steps turn out to be, because those are not interactive credential reads you elected to make.
 Neither exemption is cover for adding a credential read of your own inside, alongside, or underneath a sanctioned command or a stub.
-Refuse by name, never by measurement: if you are about to invoke the real `security` or `op`, or you cannot tell whether a reader you are introducing reaches the real store, refuse it and say which command it was and what you could not determine.
+Refuse by name, never by measurement: if you are about to invoke the real `security` or `op`, or you cannot tell whether what you are about to run reaches the real store, refuse it and say which command it was and what you could not determine.
 Being unable to measure whether something reads a credential is NOT the same as it not reading one, so an unmeasurable case is a refusal and this rule never passes in silence.
 If a sanctioned command hangs or fails asking for a credential - a `git` operation waiting on its credential helper, or failing with `-25308` because the Mac is locked - that is a BLOCK to report, never something to work around.
 The known cure is `gh auth setup-git`, which moves git onto gh's credentials, but report the block and let firstmate decide rather than quietly applying the cure and moving on.

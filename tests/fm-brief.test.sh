@@ -966,8 +966,13 @@ test_crewmate_briefs_forbid_reading_the_real_credential_store() {
       "$kind: brief did not name the known cure for the git credential-helper hang"
     # Unmeasurable is a refusal. Without this, "I could not confirm it reads the
     # keychain" reads as permission and the incident repeats.
-    assert_grep 'Refuse by name, never by measurement' "$brief" \
-      "$kind: brief did not make the refusal name-based rather than a runtime measurement"
+    # The whole trigger clause is pinned, not just its opening words: the second
+    # arm was once narrowed to a reader the worker had introduced, which excluded
+    # a pre-existing repo script that reads the keychain internally - the actual
+    # incident path - while the intact opening words kept the suite green.
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'Refuse by name, never by measurement: if you are about to invoke the real `security` or `op`, or you cannot tell whether what you are about to run reaches the real store, refuse it' "$brief" \
+      "$kind: brief did not refuse on uncertainty about anything it is about to run, only on some narrower case"
     assert_grep 'NOT the same as it not reading one' "$brief" \
       "$kind: brief did not state that being unable to measure is not the absence of a problem"
     assert_grep 'never passes in silence' "$brief" \
