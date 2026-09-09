@@ -1077,6 +1077,7 @@ test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call() {
   cat > "$home/data/backlog.md" <<'EOF'
 ## In flight
 - [ ] live-call - Captain holds work with a live worker (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] live-call-capped - A second in-flight captain hold with a live worker (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
 - [ ] live-blocked - Held with a live worker behind work blocked-by: prep (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
 
 ## Queued
@@ -1085,7 +1086,7 @@ test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call() {
 
 ## Done
 EOF
-  for id in live-call live-blocked queued-call; do
+  for id in live-call live-call-capped live-blocked queued-call; do
     fm_write_meta "$home/state/$id.meta" \
       "window=firstmate:fm-$id" \
       "worktree=$home/projects/live-wt" \
@@ -1120,11 +1121,16 @@ EOF
   # Captain's Call is bounded, and it is the RENDERED slice that withholds a row
   # from Underway. A decision truncated out of that slice must fall back to its
   # live worker's Underway line, or the cap would empty all four buckets for it.
+  # The truncated row asserted on is an In flight one, whose role is "held": a
+  # queued row survives the Underway filter on its role alone, so pinning the
+  # fallback there would pass even with the live-worker escape removed.
   json=$(FM_BEARINGS_DECISIONS=1 run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
     ([.decisions_open[].id] == ["live-call"])
+      and (.in_flight | any(.[]; .id == "live-call-capped" and .state == "working"))
+      and (.gates | any(.[]; .id == "live-call-capped") | not)
       and (.in_flight | any(.[]; .id == "queued-call" and .state == "working"))
-      and ([.omitted[].surface] | any(. == "decisions_open showing 1 of 2"))
+      and ([.omitted[].surface] | any(. == "decisions_open showing 1 of 3"))
   ' >/dev/null || fail "a truncated captain decision reached no section at all: $json"
   pass "a captain hold under a live worker renders in Captain's Call and nowhere else"
 }

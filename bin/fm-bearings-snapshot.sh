@@ -31,8 +31,10 @@
 # and gates views and is disclosed in omitted[], revealed by --all-decisions /
 # --all-queued, unless an in-flight live worker owns its Underway line instead.
 # That omitted[] count of marked holds reports what the default decisions view
-# withholds, not that the row is absent from the output: a marked in-flight hold
-# with a live worker under it is counted there and still renders in_flight.
+# withholds, and only a counted row with a live worker running under it is
+# guaranteed to render anywhere else: such an in-flight hold still renders
+# in_flight, while a marked hold with no live worker under it renders in no
+# default section at all.
 # --all-decisions is correspondingly not purely additive for this home: it widens
 # the main decision set itself, so each marked hold it reveals in decisions_open
 # also leaves the in_flight row it was occupying.
@@ -152,8 +154,9 @@ Opt-in surfaces: --fields bodies|paths|actions|endpoints, --all-in-flight,
 --all-decisions widens this home's decision set rather than only unbounding it: a
   prose-deferred captain hold it reveals in decisions_open also leaves in_flight when
   a live worker was carrying that row. The omitted[] count of marked holds counts
-  such a row too, so it names what the default decisions view withholds rather than
-  what the whole output hides.
+  such a row too, so it names what the default decisions view withholds, and only a
+  counted row with a live worker under it is guaranteed to render elsewhere; a marked
+  hold with none renders in no default section.
 Raise FM_BEARINGS_PR_LIMIT to expand per-repository open-PR results.
 EOF
 }
