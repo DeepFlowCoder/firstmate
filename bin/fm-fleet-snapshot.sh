@@ -21,9 +21,13 @@
 #     unresolved_blocker_ids, captain_actionable, and deferred_marker fields.
 #     Repeated blocker tokens remain ordered; a blocker resolves only when its
 #     structured record is Done, and missing ids stay open.
-#     captain_actionable means "waiting on the captain now": queued, held for
-#     the captain, unblocked, and due (no hold_until, or hold_until at or
+#     captain_actionable means "waiting on the captain now": not yet done, held
+#     for the captain, unblocked, and due (no hold_until, or hold_until at or
 #     before the observation date, matching tasks-axi's own date-gate rule).
+#     The row's section is not part of that definition beyond excluding Done: a
+#     captain hold on work already In flight is waiting on the captain exactly
+#     as a Queued one is, and is usually the more urgent of the two.
+#     current_role is unaffected: an in-flight captain hold stays "held".
 #     There is no separate decision type: any captain-held task is the same
 #     primitive, whatever kind its row carries.
 #     deferred_marker is a presentation hint only: the row's hold reason or
@@ -432,7 +436,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
                else "done" end)
           | .requires_child_metadata = (.current_role == "worker")
           | .captain_actionable =
-              (.state == "queued" and .hold_kind == "captain"
+              ((.state == "queued" or .state == "in_flight") and .hold_kind == "captain"
                and .hold_reason != null and (.unresolved_blocker_ids | length) == 0
                and (.hold_until == null or .hold_until <= $today))
           | .deferred_marker =

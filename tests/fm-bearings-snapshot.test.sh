@@ -1025,6 +1025,44 @@ EOF
   pass "captain-held tasks of any kind reach Captain's Call, deferral is honored, and landed excludes answered calls"
 }
 
+# The captain holding work that is ALREADY UNDER WAY is the most urgent call
+# there is, and it used to be the only class Captain's Call could not see: the
+# row landed in Charted Next among ordinary queued work and the digest reported
+# nothing waiting on the captain. It now reaches decisions_open and leaves gates,
+# while the two real guards still park an in-flight hold in Charted Next: an
+# unresolved blocker, and a hold-until date that has not arrived, the latter
+# rendered with its date exactly as a queued dated hold is.
+test_in_flight_captain_hold_reaches_captains_call() {
+  local home fakebin json
+  home=$(make_home in-flight-call)
+  mkdir -p "$home/data"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] flight-call - Captain holds work under way (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] flight-blocked - Held under way behind work blocked-by: prep (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] flight-later - Held under way until a date (repo: firstmate) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-08-01)
+- [ ] flight-external - Held under way on upstream (repo: firstmate) (kind: ship) (hold: upstream release pending) (hold-kind: external)
+
+## Queued
+- [ ] prep - Preparatory work (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "flight-call" and .verb == "captain-hold"))
+      and (.gates | any(.[]; .id == "flight-call") | not)
+      and (.decisions_open | any(.[]; .id == "flight-blocked") | not)
+      and (.gates | any(.[]; .id == "flight-blocked" and .blocked_by == "prep"))
+      and (.decisions_open | any(.[]; .id == "flight-later") | not)
+      and (.gates | any(.[]; .id == "flight-later" and (.reason | startswith("until 2026-08-01"))))
+      and (.decisions_open | any(.[]; .id == "flight-external") | not)
+      and (.gates | any(.[]; .id == "flight-external"))
+  ' >/dev/null || fail "an in-flight captain hold did not reach Captain's Call under the same two guards: $json"
+  pass "a captain hold on work already under way reaches Captain's Call, and only its blocker or its date parks it"
+}
+
 test_include_prs_is_the_only_fetch_path() {
   local home fakebin json
   home=$(make_home prs); write_fixture "$home"
@@ -2019,6 +2057,7 @@ test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
 test_collapsed_captain_call_deferral_and_landed
+test_in_flight_captain_hold_reaches_captains_call
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
