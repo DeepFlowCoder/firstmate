@@ -1172,13 +1172,15 @@ EOF
     record_claude_state "$home/state" "$id" busy
     printf 'working: still building\n' > "$home/state/$id.status"
   done
-  for id in mate-call mate-parked; do
-    fm_write_meta "$mate/state/$id.meta" \
-      "window=firstmate:fm-$id" "worktree=$mate/projects/live-wt" \
+  mate_live_child() {  # <id> - the sole live child the mate backlog owns this phase
+    rm -f "$mate"/state/mate-call.* "$mate"/state/mate-parked.*
+    fm_write_meta "$mate/state/$1.meta" \
+      "window=firstmate:fm-$1" "worktree=$mate/projects/live-wt" \
       "project=firstmate" "harness=claude" "kind=ship" "mode=no-mistakes"
-    record_claude_state "$mate/state" "$id" busy
-    printf 'working: still building\n' > "$mate/state/$id.status"
-  done
+    record_claude_state "$mate/state" "$1" busy
+    printf 'working: still building\n' > "$mate/state/$1.status"
+  }
+  mate_live_child mate-parked
   fm_write_secondmate_meta "$home/state/mate.meta" "$mate" "firstmate:fm-mate" firstmate
   fakebin=$(make_fakebin "$home")
 
@@ -1188,6 +1190,13 @@ EOF
   # a decision renders that decision instead, which is a home-row rule and would
   # mask the per-row comparison this phase makes.
   json=$(run "$home" "$fakebin" --json)
+  # Both homes must be clean structured homes, or the parity claim below would
+  # rest on the parent's tolerance for an invalid summary instead of on the
+  # projection rule under test.
+  printf '%s' "$json" | jq -e '
+    (.secondmates | any(.[]; .id == "mate" and .provenance == "structured-home" and .reason == "-"))
+      and ([.omitted[].surface] | any(test("main in-flight|main unstructured")) | not)
+  ' >/dev/null || fail "the parity fixture did not build two valid structured homes: $json"
   printf '%s' "$json" | jq -e '
     (.gates | any(.[]; .id == "main-parked") | not)
       and (.gates | any(.[]; .id == "mate-parked") | not)
@@ -1209,7 +1218,11 @@ EOF
 
 ## Done
 EOF
+  mate_live_child mate-call
   json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    .secondmates | any(.[]; .id == "mate" and .provenance == "structured-home" and .reason == "-")
+  ' >/dev/null || fail "the parity fixture left an invalid mate home in its second phase: $json"
   printf '%s' "$json" | jq -e '
     (.decisions_open | any(.[]; .id == "main-call" and .verb == "captain-hold"))
       and (.decisions_open | any(.[]; .id == "mate/mate-call" and .verb == "captain-hold"))

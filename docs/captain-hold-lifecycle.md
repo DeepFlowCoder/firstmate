@@ -66,11 +66,11 @@ A captain hold on work already in flight is as actionable as a queued one, and k
 It also emits a presentation-only `deferred_marker` when a hold's reason or body carries an explicit SUPERSEDED / NOT REQUIRED / DEFERRED marker.
 Its secondmate-home summary classifies an actionable captain hold as `captain_decision` and preserves blocked or deferred captain holds as queued work in the owning home.
 Its decision candidate set is the actionable captain holds themselves rather than the liveness-filtered queued set, so a live worker under an actionable hold cannot resolve the home to `active_child_work` and swallow the decision.
-That queued set keeps its own liveness filter, so a parked hold with a live worker under it stays that worker's row in both homes rather than doubling as queued work in one of them.
+That queued set keeps its own liveness filter, so a parked in-flight hold with a live worker under it stays that worker's row in both homes rather than doubling as queued work in one of them.
 
 `bin/fm-bearings-snapshot.sh` projects actionable captain holds into `decisions_open` and leaves blocked captain holds in ordinary queued gates.
 The four rendered buckets stay mutually exclusive: membership in the rendered `decisions_open` slice is itself what withholds a row from Underway, so a task the captain is waiting on renders in Captain's Call alone whether its row is queued or in flight and whatever its child metadata reports, and a row truncated out of that slice keeps its Underway line rather than vanishing.
-A date-deferred captain hold renders as a gate with its `until <date>:` reason, or as its live worker's Underway line while one is running under it; a prose-deferred one leaves the default views with an `omitted[]` disclosure, revealed by `--all-decisions` / `--all-queued`.
+A date-deferred captain hold renders as a gate with its `until <date>:` reason, or, when its row is already in flight, as its live worker's Underway line while one is running under it; a prose-deferred one leaves the default views with an `omitted[]` disclosure, revealed by `--all-decisions` / `--all-queued`, unless an in-flight live worker owns its Underway line instead.
 Recently Landed excludes a record that closed while still held for the captain (surviving `hold-kind: captain` on a Done row), so answered questions do not masquerade as shipped work; a work item released before completion keeps no hold annotations and lands normally.
 The projection remains read-only and does not inspect historical prose beyond the canonical snapshot's marker.
 

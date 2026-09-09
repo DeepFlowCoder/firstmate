@@ -42,7 +42,7 @@ Board answers are acted on later under the normal authority rules; this skill's 
    For registered secondmates, use the snapshot's structured-home classification and provenance.
    A parent event or bounded terminal contradiction is fallback evidence, never authority over readable structured home state.
    A decision is simply a task held for the captain (`captain-hold-lifecycle`); every due, unblocked captain-held task appears under `decisions_open`, whatever its kind.
-   A captain hold deferred by date sits under `gates` with its `until <date>:` reason until it is due, unless a live worker is running under it and owns its Underway line instead, and a hold whose reason or body carries an explicit deferred/superseded marker is suppressed from the default view with an `omitted` disclosure.
+   A captain hold deferred by date sits under `gates` with its `until <date>:` reason until it is due, and a hold whose reason or body carries an explicit deferred/superseded marker leaves the default view with an `omitted` disclosure; when such a hold's row is already in flight with a live worker running under it, either one instead owns that worker's Underway line.
    Do not scrape reports, visual-review artifacts, raw status-event tails, or visible conversation history to supplement current state.
    A queued item under `gates` only becomes "next work" when its blocker is gone and its time/date gate has arrived.
    Until then it stays queued with the reason.
@@ -153,8 +153,8 @@ Rules that keep the contract unambiguous:
 - Recently Landed always renders the bounded current baseline, even when the same completions appeared in an earlier report.
 - The four buckets are mutually exclusive, so every item is forced into exactly one: needs-your-action is Captain's Call, done is Recently Landed, self-progressing is Underway, and not-yet-started work or an action-free fleet-integrity warning is Charted Next.
 - The strict boundary keeps action-free items OUT of Captain's Call: a working or validating task that is not held for the captain, a queued item blocked on another task or a date, landed work, a completed scout's report pointer, a declared `paused:` external wait, and a bare recorded PR with no merge-ready signal each belong to one of the other three sections, never Captain's Call.
-- A task held for the captain and due is never action-free, so it belongs to Captain's Call whichever section its row sits in, and a live worker still under it does not move it to Underway.
-- A hold parked on a blocker or an unarrived date is action-free, so it belongs to Charted Next while nothing is running under it, and to Underway on its worker's own line while one is; main and secondmate homes resolve that row identically.
+- A task held for the captain, due, and free of an explicit deferred/superseded marker is never action-free, so it belongs to Captain's Call whichever section its row sits in, and a live worker still under it does not move it to Underway; a marked hold is the exception and stays out of the default Captain's Call.
+- A hold parked on a blocker or an unarrived date is action-free, so it belongs to Charted Next while nothing is running under it; when its row is already in flight it belongs instead to Underway on its worker's own line while one is, and main and secondmate homes resolve that in-flight row identically.
 - A secondmate's own row appears Underway only for `active_child_work`; `externally_held` belongs in Charted Next, and `unknown` belongs there as an unavailable-state gate unless its reason requires the captain's action.
 - Do not suppress separately projected decisions, landed records, or gates from a `partial-structured` home merely because that secondmate's own row is `unknown` or its `invalidity` reports an inventory mismatch.
 - Include the required direct address to the captain inside one item or empty-state sentence.
