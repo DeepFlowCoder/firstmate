@@ -25,9 +25,11 @@
 # Captain's Call is captain actionability itself: every due, unblocked task held
 # for the captain, whatever its kind. A captain hold deferred by date
 # (hold-until in the future) is not actionable and renders as a Charted Next
-# gate with its date; a row the canonical snapshot marks prose-deferred
-# (deferred_marker) leaves the default decisions and gates views and is
-# disclosed in omitted[], revealed by --all-decisions / --all-queued.
+# gate with its date, or, when its row is already in flight, as its live
+# worker's Underway line while one is running under it; a row the canonical
+# snapshot marks prose-deferred (deferred_marker) leaves the default decisions
+# and gates views and is disclosed in omitted[], revealed by --all-decisions /
+# --all-queued, unless an in-flight live worker owns its Underway line instead.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).

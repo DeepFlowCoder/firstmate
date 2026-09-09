@@ -65,8 +65,8 @@
 #     appear in decisions_open; blocked captain holds remain queued with metadata.
 #     decisions_open is drawn from the actionable holds themselves, so a live
 #     child worker under one cannot hide the decision. queued keeps its own
-#     liveness filter, so a parked hold with a live worker under it stays that
-#     worker's active_children row instead of doubling as queued work.
+#     liveness filter, so a parked in-flight hold with a live worker under it
+#     stays that worker's active_children row instead of doubling as queued work.
 #   secondmate_landed: {records[],truncated[],unreadable[],partial[]} - the
 #     compatibility landed-work roll-up derived from secondmate_current. Readable
 #     structured homes are partial, not unreadable, when an unavailable child state
@@ -190,8 +190,8 @@ deferred_marker, and plural blocker fields for downstream projections. A captain
 hold is actionable only when every blocker is Done and any hold-until date has
 arrived. The decision candidate set is those actionable holds themselves, so a
 home with a live worker under one still resolves to captain_decision; queued
-keeps its liveness filter, so a parked hold under a live worker stays that
-worker's own row.
+keeps its liveness filter, so a parked in-flight hold under a live worker stays
+that worker's own row.
 Cross-home reads use FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the count
 bound), FM_SNAPSHOT_SECONDMATE_TIMEOUT, and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Each per-task current-state read is bounded by FM_SNAPSHOT_CREW_STATE_TIMEOUT
