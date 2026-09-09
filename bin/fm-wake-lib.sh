@@ -827,8 +827,8 @@ fm_lock_try_acquire() {
   FM_LOCK_OWNER_DIR=
   FM_LOCK_RECOVERED_PID=
 
-  fm_lock_try_create "$lockdir"
-  create_rc=$?
+  create_rc=0
+  fm_lock_try_create "$lockdir" || create_rc=$?
   if [ "$create_rc" -eq 0 ]; then
     return 0
   fi
@@ -860,8 +860,8 @@ fm_lock_try_acquire() {
     # - the hang reproduced by the self-held reclaim regression in
     # tests/fm-wake-queue.test.sh - so reclaim the abandoned hold instead.
     fm_lock_remove_path "$lockdir" || true
-    fm_lock_try_create "$lockdir"
-    create_rc=$?
+    create_rc=0
+    fm_lock_try_create "$lockdir" || create_rc=$?
     if [ "$create_rc" -eq 0 ]; then
       return 0
     fi
@@ -890,8 +890,8 @@ fm_lock_try_acquire() {
     return 1
   fi
   _FM_LOCK_STEAL_DEPTH=$((_FM_LOCK_STEAL_DEPTH + 1))
-  fm_lock_try_acquire "$steal"
-  steal_rc=$?
+  steal_rc=0
+  fm_lock_try_acquire "$steal" || steal_rc=$?
   _FM_LOCK_STEAL_DEPTH=$((_FM_LOCK_STEAL_DEPTH - 1))
   if [ "$steal_rc" -ne 0 ]; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
@@ -943,8 +943,8 @@ fm_lock_try_acquire() {
     return 1
   fi
   fm_lock_remove_path "$lockdir" || true
-  fm_lock_try_create "$lockdir" "$steal_owner"
-  rc=$?
+  rc=0
+  fm_lock_try_create "$lockdir" "$steal_owner" || rc=$?
   if [ "$rc" -eq 0 ]; then
     # shellcheck disable=SC2034 # Read by sourcing callers after lock acquisition.
     FM_LOCK_RECOVERED_PID=$cur
@@ -964,13 +964,18 @@ fm_lock_try_acquire() {
 # an unusable lock directory would spin here forever and wedge the caller. Give
 # up on that verdict and let the caller report it.
 #
-# A nonzero return therefore means the lock is NOT held, and a caller that
-# ignores it runs its critical section unlocked. Check it at every call site.
+# A nonzero return therefore means the lock is NOT held. A caller must not enter
+# its critical section or record the lock as held; the sites that set a
+# LOCK_HELD-style flag are the ones where getting this wrong is silent. What
+# happens to a caller that ignores the status is not uniform: under `set -e` the
+# bare call aborts the script, which is fail-closed but carries no diagnostic,
+# while a script without errexit falls straight through into an unlocked
+# critical section. Neither is a substitute for checking it.
 fm_lock_acquire_wait() {
   local lockdir=$1 rc
   while :; do
-    fm_lock_try_acquire "$lockdir"
-    rc=$?
+    rc=0
+    fm_lock_try_acquire "$lockdir" || rc=$?
     [ "$rc" -eq 0 ] && return 0
     [ "$rc" -eq 2 ] && return 1
     sleep 0.1

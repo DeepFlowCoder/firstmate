@@ -22,6 +22,14 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+hold_queue_lock() {
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || {
+    echo "wake grant: cannot acquire the wake-queue lock; the grant was left unchanged" >&2
+    exit 1
+  }
+  LOCK_HELD=true
+}
+
 rows_valid() {
   [ -s "$1" ] && awk 'BEGIN { ok=1 } !/^[0-9]+$/ || seen[$0]++ { ok=0 } END { exit !ok }' "$1"
 }
@@ -57,8 +65,7 @@ case "${1:-}" in
     TMP=$(mktemp "$STATE/.branch-eligible-owner.tmp.XXXXXX") || exit 1
     printf '%s\n%s\n%s\n%s\n' fm-branch-eligible-owner-v1 "$pid" "$identity" "$generation" > "$TMP" || exit 1
     chmod 0600 "$TMP" || exit 1
-    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
-    LOCK_HELD=true
+    hold_queue_lock
     [ "$(fm_pid_identity "$pid" 2>/dev/null || true)" = "$identity" ] || exit 1
     rm -f -- "$BRANCH_ROWS" || exit 1
     _fm_atomic_replace "$TMP" "$BRANCH_OWNER" || exit 1
@@ -73,8 +80,7 @@ case "${1:-}" in
     printf '%s\n' "$@" > "$TMP" || exit 1
     chmod 0600 "$TMP" || exit 1
     rows_valid "$TMP" || exit 2
-    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
-    LOCK_HELD=true
+    hold_queue_lock
     owner_matches '' "$generation" || exit 1
     replace=1
     if [ -e "$BRANCH_ROWS" ] || [ -L "$BRANCH_ROWS" ]; then
@@ -102,8 +108,7 @@ case "${1:-}" in
   release)
     generation=${2:-}
     [ "$#" -eq 2 ] || exit 2
-    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
-    LOCK_HELD=true
+    hold_queue_lock
     owner_matches '' "$generation" || exit 1
     rm -f -- "$BRANCH_ROWS" || exit 1
     ;;
@@ -111,8 +116,7 @@ case "${1:-}" in
     pid=${2:-}
     generation=${3:-}
     [ "$#" -eq 3 ] || exit 2
-    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
-    LOCK_HELD=true
+    hold_queue_lock
     owner_matches "$pid" "$generation" || exit 1
     rm -f -- "$BRANCH_ROWS" "$BRANCH_OWNER" || exit 1
     ;;

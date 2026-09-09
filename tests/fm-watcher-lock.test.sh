@@ -1210,6 +1210,79 @@ test_wake_append_refuses_to_write_unlocked() {
   pass "fm_wake_append reports failure instead of writing the queue unlocked"
 }
 
+# Most of the fleet's lifecycle scripts run under `set -eu` and call
+# fm_lock_acquire_wait bare. Ordinary contention must still WAIT there: giving up
+# was only ever meant for a lock directory that cannot be written at all. The
+# hazard is subtle and invisible to a non-errexit harness - a bare `cmd; rc=$?`
+# inside the library is not exempt from errexit, so a contended attempt kills the
+# CALLER mid-flight with no diagnostic, where the same code under `set -u` waits
+# normally. Drive a real `set -e` consumer against a real live holder.
+test_errexit_caller_waits_out_ordinary_contention() {
+  local dir state lockdir holder waiter out rc i
+  dir=$(make_case errexit-contention)
+  state="$dir/state"
+  lockdir="$state/.contended.lock"
+  out="$dir/waiter.out"
+
+  cat > "$dir/holder.sh" <<'SH'
+set -u
+. "$1"
+fm_lock_try_acquire "$2" || exit 9
+: > "$3"
+sleep 5
+SH
+  cat > "$dir/waiter.sh" <<'SH'
+set -eu
+. "$1"
+fm_lock_acquire_wait "$2"
+printf 'acquired\n'
+fm_lock_release "$2"
+SH
+
+  FM_STATE_OVERRIDE="$state" bash "$dir/holder.sh" "$LIB" "$lockdir" "$dir/held" &
+  holder=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$dir/held" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$dir/held" ] || {
+    kill -KILL "$holder" 2>/dev/null || true
+    fail "the holder never took the lock this case contends for"
+  }
+
+  FM_STATE_OVERRIDE="$state" bash "$dir/waiter.sh" "$LIB" "$lockdir" > "$out" 2>&1 &
+  waiter=$!
+  sleep 1
+  kill -0 "$waiter" 2>/dev/null || {
+    wait "$waiter" 2>/dev/null
+    rc=$?
+    kill -KILL "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    fail "a set -eu caller died on ordinary lock contention instead of waiting (rc=$rc): $(cat "$out")"
+  }
+
+  kill -KILL "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 300 ] && kill -0 "$waiter" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$waiter" 2>/dev/null; then
+    kill -KILL "$waiter" 2>/dev/null || true
+    wait "$waiter" 2>/dev/null || true
+    fail "the set -eu caller never acquired the lock after the holder released it"
+  fi
+  wait "$waiter" 2>/dev/null
+  rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "the set -eu caller failed after waiting out contention (rc=$rc): $(cat "$out")"
+  grep -Fx "acquired" "$out" >/dev/null \
+    || fail "the set -eu caller returned without reporting the lock acquired: $(cat "$out")"
+  pass "a set -eu caller waits out ordinary contention and then acquires"
+}
+
 # The drain is the other half of the same queue's contract. It ignored the wait's
 # status and set DRAIN_LOCK_HELD=true regardless, so an unusable lock directory
 # left the appender refusing to write while the drain still read and rewrote rows
@@ -1441,6 +1514,7 @@ test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_unwritable_lock_directory_fails_fast
 test_wake_append_refuses_to_write_unlocked
+test_errexit_caller_waits_out_ordinary_contention
 test_wake_drain_refuses_to_run_unlocked
 test_watcher_reports_an_unusable_state_directory
 test_lock_steals_through_a_leaked_steal_lock

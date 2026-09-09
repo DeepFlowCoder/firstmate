@@ -1379,8 +1379,8 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
   return 0
 fi
 
-fm_lock_try_acquire "$WATCH_LOCK"
-WATCH_LOCK_RC=$?
+WATCH_LOCK_RC=0
+fm_lock_try_acquire "$WATCH_LOCK" || WATCH_LOCK_RC=$?
 if [ "$WATCH_LOCK_RC" -eq 2 ]; then
   echo "watcher: state directory $STATE cannot be written, so no watcher holds the lock and none can start; repair the filesystem before re-arming." >&2
   exit 1
