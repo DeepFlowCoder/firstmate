@@ -1379,7 +1379,13 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
   return 0
 fi
 
-if ! fm_lock_try_acquire "$WATCH_LOCK"; then
+fm_lock_try_acquire "$WATCH_LOCK"
+WATCH_LOCK_RC=$?
+if [ "$WATCH_LOCK_RC" -eq 2 ]; then
+  echo "watcher: state directory $STATE cannot be written, so no watcher holds the lock and none can start; repair the filesystem before re-arming." >&2
+  exit 1
+fi
+if [ "$WATCH_LOCK_RC" -ne 0 ]; then
   BEAT="$STATE/.last-watcher-beat"
   if [ -n "${FM_LOCK_HELD_PID:-}" ]; then
     if [ -e "$BEAT" ]; then

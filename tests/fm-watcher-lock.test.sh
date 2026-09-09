@@ -1210,6 +1210,85 @@ test_wake_append_refuses_to_write_unlocked() {
   pass "fm_wake_append reports failure instead of writing the queue unlocked"
 }
 
+# The drain is the other half of the same queue's contract. It ignored the wait's
+# status and set DRAIN_LOCK_HELD=true regardless, so an unusable lock directory
+# left the appender refusing to write while the drain still read and rewrote rows
+# with no lock held - and the EXIT cleanup then released a lock it never owned.
+# The lock sits in its own unwritable directory so the queue itself stays
+# writable, which is what makes the unserialised window observable at all.
+test_wake_drain_refuses_to_run_unlocked() {
+  local dir state lockroot rc out err queue_before queue_after
+  dir=$(make_case wake-drain-unlocked)
+  state="$dir/state"
+  lockroot="$state/locks"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  mkdir -p "$lockroot"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_wake_append signal drain-probe payload
+  ' _ "$LIB" >/dev/null 2>&1 \
+    || fail "could not queue the row this case drains"
+  queue_before=$(cat "$state/.wake-queue")
+
+  chmod a-w "$lockroot" || fail "could not drop write permission on the case lock dir"
+  if ( : > "$lockroot/.writable-probe" ) 2>/dev/null; then
+    rm -f "$lockroot/.writable-probe" 2>/dev/null || true
+    chmod u+w "$lockroot" 2>/dev/null || true
+    pass "unlocked wake-drain regression skipped (this user can write it anyway)"
+    return
+  fi
+
+  FM_STATE_OVERRIDE="$state" FM_WAKE_QUEUE_LOCK="$lockroot/.wake-queue.lock" \
+    "$DRAIN" > "$out" 2> "$err"
+  rc=$?
+  chmod u+w "$lockroot" 2>/dev/null || true
+  queue_after=$(cat "$state/.wake-queue")
+
+  [ "$rc" -ne 0 ] \
+    || fail "the drain reported success after running the queue with no lock held: $(cat "$out")"
+  [ "$queue_after" = "$queue_before" ] \
+    || fail "the drain rewrote the queue with no lock held: $queue_after"
+  grep -F "wake drain:" "$err" >/dev/null \
+    || fail "the drain failed without saying why: $(cat "$err")"
+  pass "the wake drain refuses to touch the queue it could not lock"
+}
+
+# The one call site that most needs the unusable-directory diagnosis used to
+# discard it: fm_lock_try_acquire's status 2 leaves FM_LOCK_HELD_PID empty, so
+# the watcher printed "already running" and exited 0 - claiming a healthy
+# singleton collision when no watcher exists and none can start, which is exactly
+# the reading that let a state directory stay broken unnoticed.
+test_watcher_reports_an_unusable_state_directory() {
+  local dir state out err rc
+  dir=$(make_case watcher-unusable-state)
+  state="$dir/state"
+  out="$dir/watch.out"
+  err="$dir/watch.err"
+  chmod a-w "$state" || fail "could not drop write permission on the case state dir"
+
+  if ( : > "$state/.writable-probe" ) 2>/dev/null; then
+    rm -f "$state/.writable-probe" 2>/dev/null || true
+    chmod u+w "$state" 2>/dev/null || true
+    pass "unusable state directory watcher regression skipped (this user can write it anyway)"
+    return
+  fi
+
+  PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2> "$err"
+  rc=$?
+  chmod u+w "$state" 2>/dev/null || true
+
+  [ "$rc" -ne 0 ] \
+    || fail "the watcher exited 0 on a state directory no watcher can start in: $(cat "$out")"
+  grep -F "already running" "$out" "$err" >/dev/null 2>&1 \
+    && fail "the watcher reported a singleton collision that never happened: $(cat "$out") $(cat "$err")"
+  grep -F "cannot be written" "$err" >/dev/null \
+    || fail "the watcher did not name the unwritable state directory: $(cat "$err")"
+  pass "an unusable state directory is reported as such, not as a running watcher"
+}
+
 # The steal path still has to survive a leaked steal lock, which is the one
 # legitimate reason to nest a second level: a reclaim killed mid-flight leaves
 # "<lock>.steal" behind with a dead owner, and the successor can only break the
@@ -1362,6 +1441,8 @@ test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_unwritable_lock_directory_fails_fast
 test_wake_append_refuses_to_write_unlocked
+test_wake_drain_refuses_to_run_unlocked
+test_watcher_reports_an_unusable_state_directory
 test_lock_steals_through_a_leaked_steal_lock
 test_lock_recovers_when_only_a_dead_steal_marker_remains
 test_live_steal_with_primary_absent_stays_retryable
