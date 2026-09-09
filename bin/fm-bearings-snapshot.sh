@@ -395,14 +395,13 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   | ([ .backlog.records[]
        | select(.structured and .captain_actionable == true)
        | select(($all_decisions == 1) or (.deferred_marker != true)) ]) as $main_captain_decisions
-  | ($main_captain_decisions | map(.id)) as $main_decision_ids
+  | ((if $all_decisions == 1 then $main_captain_decisions
+      else $main_captain_decisions[:$decisions_n] end) | map(.id)) as $main_decision_ids
   | ([ .tasks[]
        | select(.kind != "secondmate")
        | select(.backlog.current_role != "program")
-       | select(.id as $tid
-                | .backlog.current_role != "held"
-                  or (.current_state.state == "working"
-                      and ($main_decision_ids | index($tid) | not)))
+       | select(.id as $tid | ($main_decision_ids | index($tid) | not))
+       | select(.backlog.current_role != "held" or .current_state.state == "working")
        | {id, kind, repo:((.backlog.repo // null) | trunc(120)),
         state: .current_state.state,
         doing: ((.current_state.detail // "") as $d

@@ -465,8 +465,12 @@ EOF
 # moment its child reported working. That reproduced the same blind spot one
 # home down: the summary resolved to active_child_work and the captain saw no
 # decision at all. A live worker under a captain hold is precisely the urgent
-# case, so it stays a candidate; only the two real guards may park it, and both
-# are driven to their other side here so neither can go quietly vacuous.
+# case, so the decision candidate set is the actionable holds themselves rather
+# than the liveness-filtered queued set; only the two real guards may park one,
+# and both are driven to their other side here so neither can go quietly vacuous.
+# The queued surface keeps its own liveness filter, so a parked hold stays queued
+# work only while nothing runs under it - otherwise it is its worker's own row,
+# which is exactly how the main home renders the same input.
 test_home_summary_captain_hold_survives_a_live_child_worker() {
   local home fakebin out id gen
   home=$(make_home in-flight-hold-live-worker)
@@ -476,6 +480,8 @@ test_home_summary_captain_hold_survives_a_live_child_worker() {
 - [ ] live-call - Held under way with a live worker (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
 - [ ] live-blocked - Held under way behind work blocked-by: prep (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
 - [ ] live-later - Held under way until a date (repo: alpha) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-09-01)
+- [ ] idle-blocked - Held under way with nothing running blocked-by: prep (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] idle-later - Held under way with nothing running until a date (repo: alpha) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-09-01)
 
 ## Queued
 - [ ] prep - Preparatory work (repo: alpha) (kind: ship)
@@ -510,11 +516,17 @@ EOF
       and (.decisions_open | any(.[]; .id == "live-later") | not)
   ' >/dev/null || fail "a live worker hid a captain hold from the home summary: $out"
   printf '%s' "$out" | jq -e '
-    (.queued[] | select(.id == "live-blocked")
+    (.queued[] | select(.id == "idle-blocked")
       | .unresolved_blocker_ids == ["prep"] and .captain_actionable == false)
-    and (.queued[] | select(.id == "live-later")
+    and (.queued[] | select(.id == "idle-later")
       | .hold_until == "2026-09-01" and .captain_actionable == false)
-  ' >/dev/null || fail "a parked in-flight captain hold lost its queued metadata: $out"
+  ' >/dev/null || fail "a parked captain hold with nothing running lost its queued metadata: $out"
+  printf '%s' "$out" | jq -e '
+    ([.queued[] | .id] | index("live-blocked") | not)
+      and ([.queued[] | .id] | index("live-later") | not)
+      and ([.active_children[] | .id] | index("live-blocked"))
+      and ([.active_children[] | .id] | index("live-later"))
+  ' >/dev/null || fail "a parked captain hold under a live worker doubled as queued work: $out"
 
   # Drive each guard to its other side, with the same live workers still under
   # every row, so a guard that never opens cannot pass as one that closes.
