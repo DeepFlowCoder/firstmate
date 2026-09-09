@@ -1063,6 +1063,53 @@ EOF
   pass "a captain hold on work already under way reaches Captain's Call, and only its blocker or its date parks it"
 }
 
+# The four digest sections are mutually exclusive, so an in-flight captain hold
+# whose worker is still live must land in exactly one of them. It is the captain
+# the fleet is waiting on, so the tie resolves to Captain's Call and the row
+# leaves Underway - otherwise the renderer is told to demote the decision back
+# into Underway and the blind spot returns for the very case that motivated the
+# fix. A held row the captain cannot act on yet keeps its live worker's Underway
+# line instead, so the exclusion is exactly as wide as Captain's Call itself.
+test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call() {
+  local home fakebin json id
+  home=$(make_home in-flight-call-live)
+  mkdir -p "$home/projects/live-wt"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] live-call - Captain holds work with a live worker (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] live-blocked - Held with a live worker behind work blocked-by: prep (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+
+## Queued
+- [ ] prep - Preparatory work (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  for id in live-call live-blocked; do
+    fm_write_meta "$home/state/$id.meta" \
+      "window=firstmate:fm-$id" \
+      "worktree=$home/projects/live-wt" \
+      "project=firstmate" \
+      "harness=claude" \
+      "kind=ship" \
+      "mode=no-mistakes"
+    record_claude_state "$home/state" "$id" busy
+    printf 'working: still building\n' > "$home/state/$id.status"
+  done
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "live-call" and .verb == "captain-hold"))
+      and (.in_flight | any(.[]; .id == "live-call") | not)
+      and (.gates | any(.[]; .id == "live-call") | not)
+  ' >/dev/null || fail "a captain hold under a live worker did not land in Captain's Call alone: $json"
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "live-blocked") | not)
+      and (.in_flight | any(.[]; .id == "live-blocked" and .state == "working"))
+      and (.gates | any(.[]; .id == "live-blocked") | not)
+  ' >/dev/null || fail "a blocked captain hold lost its live worker's Underway line: $json"
+  pass "a captain hold under a live worker renders in Captain's Call and nowhere else"
+}
+
 test_include_prs_is_the_only_fetch_path() {
   local home fakebin json
   home=$(make_home prs); write_fixture "$home"
@@ -2058,6 +2105,7 @@ test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
 test_collapsed_captain_call_deferral_and_landed
 test_in_flight_captain_hold_reaches_captains_call
+test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed

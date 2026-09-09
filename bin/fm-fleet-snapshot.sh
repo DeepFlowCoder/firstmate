@@ -63,6 +63,8 @@
 #     home also carries reconcile_inventory independently of projection trust.
 #     Actionable captain holds
 #     appear in decisions_open; blocked captain holds remain queued with metadata.
+#     A captain hold on an in-flight row reaches those surfaces even while its
+#     child worker is still live, so a live worker cannot hide the decision.
 #   secondmate_landed: {records[],truncated[],unreadable[],partial[]} - the
 #     compatibility landed-work roll-up derived from secondmate_current. Readable
 #     structured homes are partial, not unreadable, when an unavailable child state
@@ -183,7 +185,9 @@ Its invalidity object names the normalized failure kind and affected ids.
 Actionable tasks-axi captain holds appear as decisions_open and stay visible in
 queued with hold_reason, hold_kind, hold_until, deferred_marker, and plural
 blocker fields for downstream projections. A captain hold is actionable only
-when every blocker is Done and any hold-until date has arrived.
+when every blocker is Done and any hold-until date has arrived. A held in-flight
+row enters that candidate set whatever its child worker is doing, so a home with
+a live worker under a captain hold still resolves to captain_decision.
 Cross-home reads use FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the count
 bound), FM_SNAPSHOT_SECONDMATE_TIMEOUT, and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Each per-task current-state read is bounded by FM_SNAPSHOT_CREW_STATE_TIMEOUT
@@ -706,8 +710,10 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
          | select(.structured and
              (.state == "queued" or
               (.state == "in_flight" and .current_role == "held"
-               and (.id as $id
-                    | any($tasks[]; .id == $id and .current_state.state == "working") | not)))) ]) as $queued_all
+               and (.hold_kind == "captain"
+                    or (.id as $id
+                        | any($tasks[]; .id == $id and .current_state.state == "working")
+                        | not))))) ]) as $queued_all
     | ([ $queued_all[]
          | select(.captain_actionable == true)
          | {id,key:.id,verb:"captain-hold",summary:(.title | trunc(160)),

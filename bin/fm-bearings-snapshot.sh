@@ -392,10 +392,17 @@ MODEL=$(printf '%s' "$SNAP" | jq \
           provenance:.provenance.selected,freshness:.freshness.status,
           age_seconds:.freshness.age_seconds,contradiction:(.contradiction // false),
           reason:(.current.reason // "-")} ]) as $secondmates_all
+  | ([ .backlog.records[]
+       | select(.structured and .captain_actionable == true)
+       | select(($all_decisions == 1) or (.deferred_marker != true)) ]) as $main_captain_decisions
+  | ($main_captain_decisions | map(.id)) as $main_decision_ids
   | ([ .tasks[]
        | select(.kind != "secondmate")
        | select(.backlog.current_role != "program")
-       | select(.backlog.current_role != "held" or .current_state.state == "working")
+       | select(.id as $tid
+                | .backlog.current_role != "held"
+                  or (.current_state.state == "working"
+                      and ($main_decision_ids | index($tid) | not)))
        | {id, kind, repo:((.backlog.repo // null) | trunc(120)),
         state: .current_state.state,
         doing: ((.current_state.detail // "") as $d
@@ -405,9 +412,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | select(.bearings_state == "active_child_work")
          | {id,kind:"secondmate",repo:null,state:.bearings_state,
             doing:([.active_children[] | .id + ": " + (.doing // .state)] | join("; ") | trunc(90))} ]) as $in_flight_all
-  | ([ .backlog.records[]
-         | select(.structured and .captain_actionable == true)
-         | select(($all_decisions == 1) or (.deferred_marker != true))
+  | ([ $main_captain_decisions[]
          | {id,key:.id,verb:"captain-hold",
             summary:((.title + ": " + .hold_reason) | trunc(90)),owner:"(main)",
             repo:((.repo // null) | trunc(120))} ]
