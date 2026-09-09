@@ -886,6 +886,155 @@ test_crewmate_briefs_route_captain_questions_through_the_status_log() {
   pass "fm-brief.sh: crewmate briefs route captain questions through the status log, never the harness dialog"
 }
 
+# A worker that reads the captain's real keychain can block on a system password
+# dialog for hours while supervision still reads it as working, and killing the
+# process does not dismiss the dialog. The prohibition therefore has to travel in
+# the brief itself: firstmate's private data/ is never read by a worker. This bit
+# twice, so every generated crewmate brief must carry the rule, name both
+# binaries in more than one reading form, offer the PATH stub as the alternative,
+# and state that an unmeasurable case is a refusal rather than a silent pass.
+# The scope is drawn by intention, not by region: what the task RUNS against the
+# real store is refused, while three things the brief itself sanctions are named
+# as never fenced - authoring credential code this task does not execute (the
+# repo's own bin/fm-notify-moshi.sh reads the Keychain by design), the PATH stub
+# this section prescribes, and the commands the brief orders. A rule that froze
+# any of them would have a literal reader block itself instead of delivering. The
+# sanctioned exemption names no command and anchors on the reader's own
+# instructions, so it cannot contradict a scaffold that forbids pushing and still
+# resolves after the section is carried into --intent. The exemptions keep their
+# limits: a sanctioned step hanging on a credential is still a block to report,
+# so that path does not become a silent workaround, and the whole section travels
+# into --intent, since enumerating parts is how the exemptions got stripped there.
+test_crewmate_briefs_forbid_reading_the_real_credential_store() {
+  local home brief kind section command_name
+  home="$TMP_ROOT/credential-store-home"
+  write_registry "$home"
+  for kind in no-mistakes direct-PR local-only; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-cred-$kind" ship-proj --mode "$kind" >/dev/null 2>&1 \
+      || fail "$kind: ship scaffold exited non-zero"
+  done
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" brief-cred-scout ship-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+
+  for kind in brief-cred-no-mistakes brief-cred-direct-PR brief-cred-local-only brief-cred-scout; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep "never cause to run during this task, a command that reads the captain's real keychain" "$brief" \
+      "$kind: brief did not forbid running a read against the captain's real credential store"
+    # What executes is the harm; authoring is not. Otherwise a worker briefed to
+    # maintain the repo's own keychain reader reads the rule as forbidding the task.
+    assert_grep 'The prohibition is on what EXECUTES here while you work, not on what you write' "$brief" \
+      "$kind: brief did not separate running a credential read from authoring one"
+    assert_grep 'is ordinary work you may be briefed to do' "$brief" \
+      "$kind: brief did not permit maintaining credential-reading code it never executes"
+    # Both binaries, and more than one reading form each: pinning only the single
+    # command from the incident would leave every sibling read wide open.
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'invoking the REAL `security` or `op` executables against the real store' "$brief" \
+      "$kind: brief did not bind the refusal to the real binaries against the real store"
+    assert_grep 'security find-generic-password' "$brief" \
+      "$kind: brief did not name the keychain read from the incident"
+    assert_grep 'security unlock-keychain' "$brief" \
+      "$kind: brief named only one \`security\` reading form"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep '`op read`' "$brief" \
+      "$kind: brief did not name \`op\` alongside \`security\`"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep '`op item get`' "$brief" \
+      "$kind: brief named only one \`op\` reading form"
+    assert_grep 'credential helper YOU introduce to reach the real store on your behalf' "$brief" \
+      "$kind: brief did not cover indirect readers the worker itself introduces"
+    # The alternative has to be concrete, or the prohibition just blocks the task.
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'fake `security` and `op` executables first on `PATH`' "$brief" \
+      "$kind: brief did not offer the PATH stub as the tested alternative"
+    # A rule that forbids the alternative it prescribes contradicts itself: the
+    # stub is named `security`/`op` too, and tests that call it must stay runnable.
+    assert_grep 'This rule never fences that stub' "$brief" \
+      "$kind: brief refused by name the very PATH stub it prescribes"
+    assert_grep 'running the tests that call it, is allowed' "$brief" \
+      "$kind: brief did not allow running the tests that exercise the stub"
+    # Exempt, but not a loophole.
+    assert_grep 'Neither exemption is cover for adding a credential read of your own' "$brief" \
+      "$kind: brief let an exemption be read as permission for a new credential read"
+    # The exempt path still must not become a silent workaround.
+    assert_grep 'that is a BLOCK to report, never something to work around' "$brief" \
+      "$kind: brief did not make a sanctioned command hanging on a credential a reportable block"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep '`gh auth setup-git`' "$brief" \
+      "$kind: brief did not name the known cure for the git credential-helper hang"
+    # Unmeasurable is a refusal. Without this, "I could not confirm it reads the
+    # keychain" reads as permission and the incident repeats.
+    # The whole trigger clause is pinned, not just its opening words: the second
+    # arm was once narrowed to a reader the worker had introduced, which excluded
+    # a pre-existing repo script that reads the keychain internally - the actual
+    # incident path - while the intact opening words kept the suite green.
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'Refuse by name, never by measurement: beyond the exemptions above, if you are about to invoke the real `security` or `op`, or you cannot tell whether what you are about to run reaches the real store, refuse it' "$brief" \
+      "$kind: brief did not refuse on uncertainty about anything it is about to run, only on some narrower case"
+    assert_grep 'NOT the same as it not reading one' "$brief" \
+      "$kind: brief did not state that being unable to measure is not the absence of a problem"
+    assert_grep 'never passes in silence' "$brief" \
+      "$kind: brief allowed the rule to pass silently when it cannot decide"
+    assert_grep 'blocked: {which credential}' "$brief" \
+      "$kind: brief dropped the escalation route for a genuinely needed credential"
+    # The exemption names no command and points at the reader's own instructions
+    # rather than at the containing brief, so it cannot contradict rule 1 of the
+    # scaffold carrying it and still resolves once the section is carried into
+    # --intent, where no brief is in scope. Naming commands needed a per-scaffold
+    # arm and still told a local-only brief, which forbids pushing, that its own
+    # brief had ordered it to push.
+    assert_grep 'never fences the setup, delivery, and reporting steps the instructions you are operating under order you to run' "$brief" \
+      "$kind: brief did not exempt the reader's own mandated steps from the refusal"
+    # Scoped to the credential section, because a delivery command named in an
+    # unrelated part of the brief is not this rule re-enumerating anything, and a
+    # whole-brief negative would fail with that wrong diagnosis.
+    section="$TMP_ROOT/$kind.credential-section"
+    awk '/^# The captain.s real credential store/ {inside = 1; next} inside && /^# / {exit} inside' \
+      "$brief" > "$section"
+    assert_grep 'HARD SAFETY RULE' "$brief" "$kind: brief lost the credential-store heading"
+    [ -s "$section" ] || fail "$kind: could not isolate the credential section from the generated brief"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    for command_name in '`git push`' '`git checkout -b`' '`gh-axi`'; do
+      assert_no_grep "$command_name" "$section" \
+        "$kind: credential rule named $command_name again, which can contradict the scaffold carrying it"
+    done
+  done
+
+  # A brief that forbids pushing must never be told its own brief ordered a push.
+  for kind in brief-cred-local-only brief-cred-scout; do
+    brief="$home/data/$kind/brief.md"
+    assert_grep 'Never push to any remote and never open a PR' "$brief" \
+      "$kind: brief unexpectedly permits pushing, so this contradiction check proves nothing"
+  done
+
+  # The no-mistakes pipeline's own workers never see this brief, so the rule has
+  # to be exempted by name from the boilerplate exclusion or --intent drops it.
+  brief="$home/data/brief-cred-no-mistakes/brief.md"
+  assert_grep 'never boilerplate is the credential-store rule' "$brief" \
+    "no-mistakes brief did not exempt the credential-store rule from the --intent boilerplate exclusion"
+  # In full, because enumerating parts to carry is how the exemptions got left
+  # behind at the boundary while the fence travelled on without them.
+  # shellcheck disable=SC2016 # Literal backticked --intent flag must remain unexpanded.
+  assert_grep 'carry that section into every `--intent` in full, never in summary and never in part' "$brief" \
+    "no-mistakes brief did not require the whole credential-store section to reach --intent"
+
+  # The charter is deliberately out of scope: a secondmate is a firstmate in its
+  # own home reading AGENTS.md, not a task worker. The section is built before the
+  # secondmate branch, so leaking it into the charter is a one-line change away.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='run the demo domain' \
+    "$ROOT/bin/fm-brief.sh" brief-cred-2m --secondmate demo-proj >/dev/null 2>&1 \
+    || fail "secondmate charter scaffold exited non-zero"
+  brief="$home/data/brief-cred-2m/brief.md"
+  assert_present "$brief" "secondmate charter was not scaffolded"
+  assert_no_grep 'HARD SAFETY RULE' "$brief" \
+    "secondmate charter carried the credential-store section, which is deliberately crewmate-only"
+  assert_no_grep "the captain's real keychain" "$brief" \
+    "secondmate charter carried the credential-store prohibition, which is deliberately crewmate-only"
+  pass "fm-brief.sh: every crewmate brief forbids reading the captain's real credential store"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -932,4 +1081,5 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_crewmate_briefs_route_captain_questions_through_the_status_log
+test_crewmate_briefs_forbid_reading_the_real_credential_store
 test_scout_and_secondmate_scaffold
