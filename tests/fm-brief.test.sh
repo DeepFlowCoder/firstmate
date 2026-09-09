@@ -899,10 +899,11 @@ test_crewmate_briefs_route_captain_questions_through_the_status_log() {
 # repo's own bin/fm-notify-moshi.sh reads the Keychain by design), the PATH stub
 # this section prescribes, and the commands the brief orders. A rule that froze
 # any of them would have a literal reader block itself instead of delivering. The
-# sanctioned-command phrase renders per scaffold, since a scout is forbidden to
-# push and must not be told its brief ordered it to. The exemptions keep their
-# limits: a sanctioned command hanging on a credential is still a block to
-# report, so that path does not become a silent workaround.
+# sanctioned exemption names the containing brief's own steps and no command, so
+# it cannot contradict a scaffold that forbids pushing. The exemptions keep their
+# limits: a sanctioned step hanging on a credential is still a block to report,
+# so that path does not become a silent workaround, and the whole section travels
+# into --intent, since enumerating parts is how the exemptions got stripped there.
 test_crewmate_briefs_forbid_reading_the_real_credential_store() {
   local home brief kind
   home="$TMP_ROOT/credential-store-home"
@@ -972,37 +973,47 @@ test_crewmate_briefs_forbid_reading_the_real_credential_store() {
       "$kind: brief allowed the rule to pass silently when it cannot decide"
     assert_grep 'blocked: {which credential}' "$brief" \
       "$kind: brief dropped the escalation route for a genuinely needed credential"
-    # A brief that shipped the unfilled placeholder would name no sanctioned
-    # command at all, which is the exemption silently disappearing.
-    assert_no_grep 'SANCTIONED_COMMANDS' "$brief" \
-      "$kind: brief leaked the unfilled sanctioned-command placeholder"
+    # The exemption points at the containing brief's own steps and names no
+    # command, so it cannot contradict rule 1 of the scaffold carrying it. Naming
+    # commands needed a per-scaffold arm and still told a local-only brief, which
+    # forbids pushing, that its brief had ordered it to push.
+    assert_grep "never fences this brief's own setup, delivery, and reporting steps either" "$brief" \
+      "$kind: brief did not exempt its own mandated steps from the refusal"
+    # shellcheck disable=SC2016 # Literal backticked command name must remain unexpanded.
+    assert_no_grep '`git push`' "$brief" \
+      "$kind: credential rule named a delivery command again, which can contradict the scaffold carrying it"
   done
 
-  # The exemption must name what THAT brief actually authorizes. A ship brief is
-  # ordered to branch, push, and open a PR; a scout brief is forbidden to push,
-  # so telling it that pushing is a command its brief ordered is incoherent.
-  for kind in brief-cred-no-mistakes brief-cred-direct-PR brief-cred-local-only; do
+  # A brief that forbids pushing must never be told its own brief ordered a push.
+  for kind in brief-cred-local-only brief-cred-scout; do
     brief="$home/data/$kind/brief.md"
-    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
-    assert_grep 'orders you to run either - `git checkout -b`, `git push`, `gh-axi`, and the rest of the mandated delivery path' "$brief" \
-      "$kind: ship brief did not exempt its own mandated delivery commands from the refusal"
+    assert_grep 'Never push to any remote and never open a PR' "$brief" \
+      "$kind: brief unexpectedly permits pushing, so this contradiction check proves nothing"
   done
-  brief="$home/data/brief-cred-scout/brief.md"
-  # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
-  assert_grep 'orders you to run either - `gh-axi` for the GitHub operations this brief assigns you, the status-file append, and the rest of the mandated reporting path' "$brief" \
-    "scout brief did not exempt its own mandated reporting commands from the refusal"
-  # shellcheck disable=SC2016 # Literal backticked command name must remain unexpanded.
-  assert_no_grep '`git push`' "$brief" \
-    "scout brief claimed it is ordered to push, while its own rule 1 forbids pushing"
 
   # The no-mistakes pipeline's own workers never see this brief, so the rule has
   # to be exempted by name from the boilerplate exclusion or --intent drops it.
   brief="$home/data/brief-cred-no-mistakes/brief.md"
   assert_grep 'never boilerplate is the credential-store rule' "$brief" \
     "no-mistakes brief did not exempt the credential-store rule from the --intent boilerplate exclusion"
+  # In full, because enumerating parts to carry is how the exemptions got left
+  # behind at the boundary while the fence travelled on without them.
   # shellcheck disable=SC2016 # Literal backticked --intent flag must remain unexpanded.
-  assert_grep 'unmeasurable-is-a-refusal clause into every `--intent`' "$brief" \
-    "no-mistakes brief did not require the rule to be carried into --intent"
+  assert_grep 'carry that section into every `--intent` in full, never in summary and never in part' "$brief" \
+    "no-mistakes brief did not require the whole credential-store section to reach --intent"
+
+  # The charter is deliberately out of scope: a secondmate is a firstmate in its
+  # own home reading AGENTS.md, not a task worker. The section is built before the
+  # secondmate branch, so leaking it into the charter is a one-line change away.
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='run the demo domain' \
+    "$ROOT/bin/fm-brief.sh" brief-cred-2m --secondmate demo-proj >/dev/null 2>&1 \
+    || fail "secondmate charter scaffold exited non-zero"
+  brief="$home/data/brief-cred-2m/brief.md"
+  assert_present "$brief" "secondmate charter was not scaffolded"
+  assert_no_grep 'HARD SAFETY RULE' "$brief" \
+    "secondmate charter carried the credential-store section, which is deliberately crewmate-only"
+  assert_no_grep "the captain's real keychain" "$brief" \
+    "secondmate charter carried the credential-store prohibition, which is deliberately crewmate-only"
   pass "fm-brief.sh: every crewmate brief forbids reading the captain's real credential store"
 }
 
