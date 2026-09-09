@@ -429,7 +429,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || {
+  echo "wake drain: cannot acquire the wake-queue lock; the queue was left untouched" >&2
+  exit 1
+}
 DRAIN_LOCK_HELD=true
 reclaim_stale_branch_grant_locked || exit 1
 [ "$ACTOR" != branch ] || require_branch_eligible_rows || exit 1
@@ -467,7 +470,10 @@ if [ -n "$ACK_THROUGH" ]; then
     echo "wake drain: inactive outcome receipt could not be recorded safely" >&2
     exit 1
   fi
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || {
+    echo "wake drain: cannot reacquire the wake-queue lock; acknowledged rows were left queued" >&2
+    exit 1
+  }
   DRAIN_LOCK_HELD=true
   DRAIN_TMP=$(mktemp "$STATE/.wake-queue.ack.XXXXXX") || exit 1
   chmod 0600 "$DRAIN_TMP" || exit 1
