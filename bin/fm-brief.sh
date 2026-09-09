@@ -56,10 +56,10 @@
 # real keychain is never read, the real `security` and `op` are refused by name
 # in every reading form, a PATH stub is the tested alternative, and an
 # unmeasurable case is a refusal rather than a silent pass. The rule binds what
-# the task RUNS - the real binaries and readers the worker introduces itself -
-# and never fences authoring credential code it does not execute, the stub it
-# prescribes, or the setup, delivery, and reporting steps the reader's own
-# instructions order; a sanctioned step hanging on a credential is a block to
+# the worker RUNS or CAUSES TO RUN, whether it wrote that reader or found it
+# already in the repo, and never fences authoring credential code it does not
+# execute, the stub it prescribes, or the setup, delivery, and reporting steps
+# the reader's own instructions order; a sanctioned step hanging on a credential is a block to
 # report rather than something to work around. That exemption names no command
 # and points at no container outside itself, so it holds for every mode without
 # a per-scaffold variant and still resolves once the section is carried into
@@ -245,7 +245,7 @@ Use a stub instead: put your own fake `security` and `op` executables first on `
 This rule never fences that stub: a fake you placed first on `PATH` yourself and assert against reaches no real store, so running it, and running the tests that call it, is allowed and is the whole point of the alternative.
 It never fences the setup, delivery, and reporting steps the instructions you are operating under order you to run, whatever those steps turn out to be, because those are not interactive credential reads you elected to make.
 Neither exemption is cover for adding a credential read of your own inside, alongside, or underneath a sanctioned command or a stub.
-Refuse by name, never by measurement: if you are about to invoke the real `security` or `op`, or you cannot tell whether what you are about to run reaches the real store, refuse it and say which command it was and what you could not determine.
+Refuse by name, never by measurement: beyond the exemptions above, if you are about to invoke the real `security` or `op`, or you cannot tell whether what you are about to run reaches the real store, refuse it and say which command it was and what you could not determine.
 Being unable to measure whether something reads a credential is NOT the same as it not reading one, so an unmeasurable case is a refusal and this rule never passes in silence.
 If a sanctioned command hangs or fails asking for a credential - a `git` operation waiting on its credential helper, or failing with `-25308` because the Mac is locked - that is a BLOCK to report, never something to work around.
 The known cure is `gh auth setup-git`, which moves git onto gh's credentials, but report the block and let firstmate decide rather than quietly applying the cure and moving on.
