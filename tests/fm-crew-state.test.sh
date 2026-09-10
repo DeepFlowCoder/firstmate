@@ -2350,6 +2350,39 @@ test_an_answered_list_with_no_row_names_the_row_limit_not_the_budget() {
   pass "an answered list with no row names the row limit, not the budget"
 }
 
+# The third silence, and the one that looks least like silence: the query printed
+# bytes, but not a LISTING - a banner, a diagnostic on stdout, a reformatted
+# listing where no row parses. Bytes are not evidence, and reading them as an
+# answer sends every reader on the fleet to raise a row limit that had nothing to
+# do with it. The library owns this predicate; the scan asks it.
+test_an_unparseable_listing_is_silence_not_a_row_limit() {
+  reset_fakes
+  local d out
+  d=$(new_case unparseable-listing)
+  make_repo_on_branch "$d/wt" fm/feat-unparseable
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unparseable.meta" "window=fm:fm-unparseable" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/unparseable.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-unparseable)"
+  # Non-empty, and not one line of it parses as a run row.
+  FM_FAKE_RUNS_LIST="$(cat <<'EOF'
+no-mistakes 2.0.0
+Runs for this store:
+  (nothing to show)
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" unparseable
+  out=$(run_crew_state "$d" unparseable)
+  assert_contains "$out" "state: unknown" "output without a listing establishes nothing"
+  assert_contains "$out" "source: run-step" "and the run-step still owns the reading"
+  assert_contains "$out" "did not answer for fm/feat-unparseable within budget" \
+    "bytes that carry no row are silence, and the line says so"
+  assert_not_contains "$out" "answered with no row" "nothing answered here"
+  assert_not_contains "$out" "rows may fall past" "so the reader is not sent after the row limit"
+  pass "an unparseable listing is silence, not a row limit"
+}
+
 # A reading the arbitration could not stand behind has no merge question left to
 # ask: its state is `unknown` for a reason the forge cannot settle. Asking anyway
 # spends a bounded network call - inside a deadline the other calls still need -
@@ -2582,20 +2615,24 @@ EOF
   pass "an unnameable successor lets the blocker answer"
 }
 
-# FM_CREW_STATE_NM_TIMEOUT bounds the WHOLE read, and the read has to finish
-# inside it with room to spare. Two things fail otherwise, and only elapsed time
-# can tell them apart from a healthy read. Spending the bound once per call
-# overruns the caller that is timing this script as a unit - the fleet snapshot
-# then folds a healthy crew to `unknown` from outside. Spending it right down to
-# the last second fails the same way for a subtler reason: the caller's clock
-# started at exec, this one after six library sources, so the caller's timer
-# fires first, kills the read, and discards the very reason the budget exists to
-# deliver. Here a 1s `axi status` under a 6s bound leaves a few seconds for a
-# runs list that never answers, and the whole read must still land - reason and
-# all - comfortably before that 6s is up.
+# FM_CREW_STATE_NM_TIMEOUT bounds the WHOLE read, and what that buys is measured
+# HERE the way a caller experiences it: the read is run under the same bound its
+# callers apply - bin/fm-fleet-snapshot.sh and bin/fm-inactive-reconcile.sh both
+# wrap it in exactly this - and it has to come back with its own reasoned answer
+# instead of being killed and folded into a bare, reasonless `unknown` from
+# outside. That is the property, and it is a yes-or-no fact about the read's
+# output rather than a number of seconds, so nothing here depends on how loaded
+# the runner is.
+#
+# It rejects both spends it was written for, and rejects them structurally.
+# Spending the bound once per call takes about a second longer than the caller
+# allows, so the caller's timer fires. Spending it down to the last second fails
+# for the subtler reason the reserve exists for: the caller's clock starts at
+# exec and this one only after bash has sourced six libraries, so the caller's
+# timer fires FIRST however fast the machine is.
 test_the_whole_read_lands_inside_its_bound_with_its_reason() {
   reset_fakes
-  local d out start elapsed
+  local d out rc
   d=$(new_case shared-deadline)
   make_repo_on_branch "$d/wt" fm/feat-deadline
   make_fakebin "$d" >/dev/null
@@ -2618,22 +2655,19 @@ SH
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-deadline)"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" deadline
-  start=$SECONDS
-  out=$(FM_CREW_STATE_NM_TIMEOUT=20 run_crew_state "$d" deadline)
-  elapsed=$((SECONDS - start))
-  # The separation between the passing band and the nearest failing one is the
-  # reserve itself (a fifth of the bound, so 4s at 20), and this suite shares
-  # cores with the rest of the portable shard - so the bound is sized to buy that
-  # margin in ABSOLUTE seconds rather than to sit close to a four-second read.
-  # Expected here: ~16s (a 1s `axi status`, then the hung runs query killed with
-  # the remaining budget). Spending the bound once per call would take ~21s and
-  # keeping no reserve ~20s; the threshold sits 2s clear of both directions,
-  # which whole-second `$SECONDS` and a loaded runner can absorb.
-  [ "$elapsed" -lt 18 ] \
-    || fail "the read did not finish inside its own bound with headroom (elapsed ${elapsed}s of 20s)"
+  # The caller's bound, applied the way bin/fm-fleet-snapshot.sh applies it: the
+  # same number the read is given, through the repo's own bounded runner, with
+  # rc 124 meaning the caller killed it.
+  out=$( . "$ROOT/bin/fm-timeout-lib.sh"
+         fm_run_timed 6 env "PATH=$d/fakebin:$PATH" "FM_STATE_OVERRIDE=$d/state" \
+           FM_CREW_STATE_NM_TIMEOUT=6 "$CREW_STATE" deadline )
+  rc=$?
+  [ "$rc" -ne 124 ] \
+    || fail "the caller's bound killed the read before it could answer (rc $rc)"
+  [ -n "$out" ] || fail "the read returned nothing for its caller to report"
   assert_contains "$out" "state: unknown" "a runs list that never answered leaves the reading unchecked"
   assert_contains "$out" "within budget" "and the line says the budget is what ran out"
-  pass "the whole read lands inside its bound, with its reason"
+  pass "the whole read lands inside its caller's bound, with its reason"
 }
 
 
@@ -3000,6 +3034,7 @@ test_open_forge_still_surfaces_a_contradicting_record
 test_checks_passed_reports_done_without_a_pull_request_claim
 test_active_reading_degrades_to_unknown_when_the_list_is_silent
 test_an_answered_list_with_no_row_names_the_row_limit_not_the_budget
+test_an_unparseable_listing_is_silence_not_a_row_limit
 test_a_degraded_reading_never_spends_a_forge_call
 test_a_busy_pane_answers_over_a_silent_arbitrator
 test_a_busy_pane_answer_shows_the_blocker_it_cannot_supersede

@@ -69,6 +69,11 @@
 #      from the pipeline outcome in any of those cases. No other run word claims
 #      a merge: `checks-passed` and a coarse `completed` report `done` and say
 #      nothing about a pull request either way.
+#      WHERE THAT SPLIT REACHES: only where the forge can be asked. The periodic,
+#      timer-driven read is forbidden to ask it, so on that path a merged pull
+#      request and one closed without merging are the same reading - the run's
+#      established verdict, with the pull request clause naming that no forge was
+#      asked. Closing that seam is tracked as `fm-barrido-pr-cerrado-sin-fusionar`.
 #   4. Reconcile the status log: a needs-decision/blocked line under an ACTIVE
 #      run is deterministically stale (the gate resolved and the run resumed) and
 #      is flagged superseded. Under a finished run it is not stale - a finished
@@ -595,11 +600,18 @@ nm_ci_checks_state() {
 #   COARSE_ROW_IS_NEWEST whether that answering row IS the branch's newest row.
 #                        When it is not, a strictly newer run exists, so the
 #                        coarse verdict belongs to a run already replaced.
-#   RUNS_ANSWERED        whether the list produced any output at all. `nm_run` is
-#                        fail-open and bounded, so a timed-out or failed query is
-#                        indistinguishable from an empty one EXCEPT that it is
-#                        silence, not evidence, and the arbitration below must
-#                        not read it as "no newer run exists".
+#   RUNS_ANSWERED        whether the list produced a LISTING, which is a stricter
+#                        question than whether it printed bytes and belongs to
+#                        fm_nm_runs_listing_is_answered in bin/fm-nm-run-lib.sh -
+#                        the same predicate bin/fm-teardown.sh asks. A banner, a
+#                        diagnostic on stdout, or a reformatted listing no row
+#                        parses is output without evidence, and reading it as an
+#                        answer would send the reader after a row limit that had
+#                        nothing to do with it. `nm_run` is fail-open and bounded,
+#                        so a timed-out or failed query looks the same as an empty
+#                        one EXCEPT that all of them are silence, not evidence,
+#                        and the arbitration below must never read that silence as
+#                        "no newer run exists".
 RUNS_SCANNED=0
 RUNS_ANSWERED=0
 BRANCH_NEWEST_FOUND=0
@@ -615,7 +627,7 @@ nm_scan_runs_for_branch() {  # <branch>
   [ "$RUNS_SCANNED" = 1 ] && return 0
   RUNS_SCANNED=1
   out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
-  [ -n "$out" ] || return 0
+  fm_nm_runs_listing_is_answered "$out" || return 0
   RUNS_ANSWERED=1
   while IFS= read -r row; do
     parsed=$(fm_nm_runs_parse_row "$row") || continue
