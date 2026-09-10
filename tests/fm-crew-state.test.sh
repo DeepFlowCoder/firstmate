@@ -2352,6 +2352,117 @@ test_unarbitrated_terminal_run_lets_the_blocker_answer() {
   pass "an unarbitrated terminal run lets the blocker answer"
 }
 
+# A busy-pane reading knows two things: a pane is emitting, and the run verdict
+# could not be arbitrated. It does NOT know that a run-step says this run is live,
+# which is what the ci-log refine assumes about anything reading `working`. Refine
+# it anyway and an unchecked reading is promoted into a finished-work claim -
+# `state: done · source: pane · checks green` - with both the pane observation and
+# the unarbitrated reason overwritten by a detail from the run-step ci log.
+test_a_degraded_reading_is_never_refined_into_checks_green() {
+  reset_fakes
+  local d out
+  d=$(new_case degraded-vs-ci-green)
+  make_repo_on_branch "$d/wt" fm/feat-degradedgreen
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/degradedgreen.meta" "window=fm:fm-degradedgreen" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-degradedgreen)"
+  FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" degradedgreen)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" degradedgreen busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  out=$(run_crew_state "$d" degradedgreen)
+  assert_not_contains "$out" "state: done" "an unchecked reading is never promoted to finished work"
+  assert_not_contains "$out" "checks green" "a run-step ci log may not re-detail a pane reading"
+  assert_contains "$out" "state: working" "the pane's own observation still answers"
+  assert_contains "$out" "source: pane" "and the line still names the pane"
+  assert_contains "$out" "could not be arbitrated" "the unarbitrated verdict survives the refine blocks"
+  pass "a degraded reading is never refined into checks green"
+}
+
+# The same promotion through the other door: a stale `done:` status line under the
+# same degraded reading. Neither block may treat "a pane is emitting" as "the
+# run-step says this run is live".
+test_a_degraded_reading_is_never_promoted_by_a_stale_ready_log() {
+  reset_fakes
+  local d out
+  d=$(new_case degraded-vs-ready-log)
+  make_repo_on_branch "$d/wt" fm/feat-degradedready
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/degradedready.meta" "window=fm:fm-degradedready" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'done: PR https://github.com/o/r/pull/4 checks green\n' > "$d/state/degradedready.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-degradedready)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" degradedready)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" degradedready busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  out=$(run_crew_state "$d" degradedready)
+  assert_not_contains "$out" "state: done" "a stale ready line may not finish an unchecked reading"
+  assert_contains "$out" "state: working" "the pane's own observation still answers"
+  assert_contains "$out" "source: pane" "and the line still names the pane"
+  assert_contains "$out" "could not be arbitrated" "the unarbitrated verdict survives the refine blocks"
+  pass "a degraded reading is never promoted by a stale ready log"
+}
+
+# Requirement 3 on the SUPERSEDED arms, which used to emit and exit before any
+# reconcile: a failed successor outranks the record, but the open blocker is still
+# named on the line rather than dropped.
+test_a_failed_successor_still_names_the_open_blocker() {
+  reset_fakes
+  local d short out
+  d=$(new_case failed-successor-vs-blocker)
+  make_repo_on_branch "$d/wt" fm/feat-failsucc
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/failsucc.meta" "window=fm:fm-failsucc" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/failsucc.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-failsucc)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed   fm/feat-failsucc ${short}  2026-09-09 12:10
+  running  fm/feat-failsucc ${short}  2026-09-09 09:05
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" failsucc
+  out=$(run_crew_state "$d" failsucc)
+  assert_contains "$out" "state: failed" "a failure still outranks the record"
+  assert_contains "$out" "source: run-step" "the failure is still a run-step verdict"
+  assert_contains "$out" "an unresolved blocked is still on the record" \
+    "and the open blocker is named rather than dropped"
+  assert_contains "$out" "pick the base branch" "with the record's own words"
+  pass "a failed successor still names the open blocker"
+}
+
+# The other superseded direction: a successor whose outcome this read cannot name
+# establishes nothing about the work, so the durable unanswered record answers
+# instead of being replaced by a bare unknown.
+test_an_unnameable_successor_lets_the_blocker_answer() {
+  reset_fakes
+  local d short out
+  d=$(new_case pending-successor-vs-blocker)
+  make_repo_on_branch "$d/wt" fm/feat-pendsucc
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/pendsucc.meta" "window=fm:fm-pendsucc" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/pendsucc.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled_superseded fm/feat-pendsucc)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  pending    fm/feat-pendsucc ${short}  2026-08-29 07:45
+  cancelled  fm/feat-pendsucc ${short}  2026-08-29 01:30
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" pendsucc
+  out=$(run_crew_state "$d" pendsucc)
+  assert_contains "$out" "state: blocked" "the unanswered blocker answers for the crew"
+  assert_contains "$out" "source: status-log" "the durable record is the source that answered"
+  assert_contains "$out" "pick the base branch" "the blocker keeps its own words"
+  assert_contains "$out" "supersedes" "and the superseding run is still reported"
+  pass "an unnameable successor lets the blocker answer"
+}
+
 # FM_CREW_STATE_NM_TIMEOUT bounds the WHOLE read, and the read has to finish
 # inside it with room to spare. Two things fail otherwise, and only elapsed time
 # can tell them apart from a healthy read. Spending the bound once per call
@@ -2754,6 +2865,10 @@ test_active_reading_degrades_to_unknown_when_the_list_is_silent
 test_a_busy_pane_answers_over_a_silent_arbitrator
 test_a_busy_pane_answer_still_passes_the_record_reconcile
 test_unarbitrated_terminal_run_lets_the_blocker_answer
+test_a_degraded_reading_is_never_refined_into_checks_green
+test_a_degraded_reading_is_never_promoted_by_a_stale_ready_log
+test_a_failed_successor_still_names_the_open_blocker
+test_an_unnameable_successor_lets_the_blocker_answer
 test_the_whole_read_lands_inside_its_bound_with_its_reason
 
 echo "all fm-crew-state tests passed"

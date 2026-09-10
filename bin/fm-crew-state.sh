@@ -179,10 +179,30 @@ SEP=' · '
 # reader after the search falls through to the pane or the durable record.
 EMIT_ASIDE=""
 
+# Whether the verdict about to be printed is a RUN's, and so owes the durable
+# record an answer. Set once, where a run reading takes ownership of the line;
+# see reconcile_run_verdict below for what it buys.
+RECONCILE_RUN_VERDICT=0
+
 # Emit the one canonical line and exit 0. Detail is optional.
+#
+# THE funnel. Every verdict this script prints leaves through here, which is why
+# the durable-record reconcile is applied here and not at each call site: "a run
+# outcome never supersedes evidence that contradicts it" is an invariant, and an
+# invariant each new emit has to REMEMBER is one some later emit forgets. This
+# file shipped exactly that mistake twice - first the passed-plus-open path, then
+# four superseding-run paths - each time by adding an emit that exited before the
+# reconcile could run. Enforcing it at the single exit makes a new emit path
+# reconciled by construction rather than by review.
 emit() {  # <state> <source> [detail]
-  local line="state: $1${SEP}source: $2"
-  [ -n "${3:-}" ] && line="$line${SEP}$3"
+  local state=$1 source=$2 detail=${3:-} line
+  if [ "$RECONCILE_RUN_VERDICT" = 1 ]; then
+    RECONCILE_RUN_VERDICT=0
+    IFS=$'\t' read -r state source detail \
+      <<< "$(reconcile_run_verdict "$state" "$source" "$detail")"
+  fi
+  line="state: $state${SEP}source: $source"
+  [ -n "$detail" ] && line="$line${SEP}$detail"
   [ -n "$EMIT_ASIDE" ] && line="$line${SEP}$EMIT_ASIDE"
   printf '%s\n' "$line"
   exit 0
@@ -238,6 +258,56 @@ map_log_state() {  # <line>
 
 LOG_LINE=$(log_last_line || true)
 LOG_VERB=$(status_line_verb "$LOG_LINE")
+
+# The durable-record reconcile, as ONE decision applied to whatever run verdict is
+# on its way out through emit. Echoes "<state><TAB><source><TAB><detail>": the
+# same verdict with the record accounted for, or the record's own answer in its
+# place. An unanswered needs-decision or blocker is the only record that has a
+# claim here; any other last line is not evidence about this question.
+#
+# It keys on WHAT THE VERDICT SAYS, never on which arm produced it, and that is
+# what makes one decision serve every emit path. A `working` verdict says work is
+# happening now - whether that comes from the reported run, from a live successor
+# row, or from a pane that is emitting - and a decision the crew has resumed past
+# is deterministically stale, so the record is marked superseded rather than
+# printed. `failed` outranks the record, because a failure a stale-looking record
+# could mask is worse than a contradiction left visible, but the open item is
+# still named. A terminal `done` is the 2026-08-30 case: a finished run answers no
+# decision, so the record keeps its own words and the contradiction is stated -
+# while the ci-green reading reports `done` for a run that is still monitoring its
+# pull request, and that one is active, so it takes the active path. Anything else
+# - `unknown` from a claim nobody could verify, from an unarbitrated reading, from
+# a successor whose outcome this read cannot name - established nothing, so it
+# settles nothing about the record either: the record answers and the verdict's
+# own account rides with it. A gate agrees with the record and leaves it alone.
+reconcile_run_verdict() {  # <state> <source> <detail>
+  local state=$1 src=$2 detail=$3 note
+  case "$LOG_VERB" in
+    needs-decision|blocked) ;;
+    *) printf '%s\t%s\t%s' "$state" "$src" "$detail"; return 0 ;;
+  esac
+  note=$(status_line_note "$LOG_LINE")
+  case "$state" in
+    parked) ;;
+    working)
+      detail="$detail${SEP}status-log superseded by active run" ;;
+    failed)
+      detail="$detail${SEP}an unresolved $LOG_VERB is still on the record: $note" ;;
+    done)
+      if [ "$RUN_IS_TERMINAL" = 1 ]; then
+        state=$(map_log_state "$LOG_LINE")
+        src='status-log'
+        detail="$note${SEP}still unresolved on the record, which the run's own verdict ($detail) contradicts"
+      else
+        detail="$detail${SEP}status-log superseded by active run"
+      fi ;;
+    *)
+      state=$(map_log_state "$LOG_LINE")
+      src='status-log'
+      detail="$note${SEP}still unresolved on the record, and $detail" ;;
+  esac
+  printf '%s\t%s\t%s' "$state" "$src" "$detail"
+}
 
 # --- remote secondmate: the true source is the remote endpoint ---------------
 # A remote mate's recorded worktree and backend target live on its own host, so
@@ -701,6 +771,9 @@ fi
 # --- run-step authoritative path -------------------------------------------
 
 if [ "$HAVE_RUN" = 1 ]; then
+  # From here on this read owns the line, so every verdict it prints - from any
+  # arm, present or future - answers to the durable record on its way out.
+  RECONCILE_RUN_VERDICT=1
   RUN_STATE=working
   RUN_DETAIL=""
   CI_STEP_STATUS=""
@@ -790,11 +863,6 @@ if [ "$HAVE_RUN" = 1 ]; then
   # log: only the first may hand the question to other evidence.
   RUN_VERDICTLESS=0
   case "$RUN_STATE" in unknown) RUN_VERDICTLESS=1 ;; esac
-  # And a third thing `unknown` can mean: the reading was never checked at all.
-  # It neither claims (so it may not contradict a record) nor hands the question
-  # on (so it still reports itself, with its reason) - the arbitration below sets
-  # it, and the reconcile needs to tell it from the other two.
-  RUN_UNARBITRATED=0
 
   # A verdict is only trustworthy when this branch's NEWEST run is the one it
   # came from. Measured 2026-08-29 on the real store (runs
@@ -915,13 +983,25 @@ if [ "$HAVE_RUN" = 1 ]; then
           EMIT_SOURCE=pane
           RUN_DETAIL="harness busy (${BUSY_VERDICT#* })${SEP}$UNARBITRATED"
         else
-          RUN_UNARBITRATED=1
           RUN_STATE=unknown
           RUN_DETAIL="cannot confirm $SUPERSEDED_SUBJECT is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH within budget"
         fi
       fi
       ;;
   esac
+
+  # "The RUN-STEP, arbitrated, says this run is live." The two blocks below refine
+  # a live run's reading, and both used to ask `RUN_STATE = working` - which is
+  # also true of the busy-pane reading above, whose whole content is "a pane is
+  # emitting, and the run verdict could not be arbitrated". Refining THAT promoted
+  # an unchecked reading into `state: done · source: pane · checks green`, a
+  # finished-work claim on evidence that never established one and with both the
+  # pane observation and the unarbitrated reason overwritten. The question those
+  # blocks actually ask is this one, so they ask it by name.
+  RUN_STEP_LIVE=0
+  if [ "$EMIT_SOURCE" = run-step ] && [ "$RUN_STATE" = working ]; then
+    RUN_STEP_LIVE=1
+  fi
 
   # While the active step is ci, `axi status` alone cannot tell "still waiting on
   # checks" from "checks green, waiting on merge" - both read `ci,running` - so
@@ -931,7 +1011,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   # DETAIL. A crew sits in the ci monitor phase for that whole phase, so letting
   # this call spend the budget first would routinely starve the very check that
   # exists to stop the measured false verdict - and buy a nicer wording with it.
-  if [ "$CI_LOG_MAY_REFINE" = 1 ] && [ "$RUN_STATE" = working ]; then
+  if [ "$CI_LOG_MAY_REFINE" = 1 ] && [ "$RUN_STEP_LIVE" = 1 ]; then
     CI_STEP_STATUS=$(nm_effective_ci_step_status)
     case "$CI_STEP_STATUS" in
       running)
@@ -947,7 +1027,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     esac
   fi
 
-  if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
+  if [ "$RUN_STEP_LIVE" = 1 ] && [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
       emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
     fi
@@ -1023,40 +1103,6 @@ if [ "$HAVE_RUN" = 1 ]; then
   # failure that a stale-looking record could mask is the one thing worse than a
   # contradiction left visible.
   #
-  # Only a reading that SAYS something about the work reconciles against the
-  # record at all. A gate (`parked`) and a verdictless abort assert nothing:
-  # neither may call the record superseded, and neither may claim to contradict
-  # it - the record answers plainly and the run's own account rides down as the
-  # aside below. An unverified finish is NOT in that group: it claimed the work
-  # landed, so it can and does contradict an unanswered blocker.
-  #
-  # Among the readings that do claim, the split is on whether the run FINISHED,
-  # not on the state it reports: the ci-green reading above reports `done` for a
-  # run that is still actively monitoring its pull request, and a still-running
-  # run leaves the record just as deterministically stale as any other active
-  # one. Only a genuinely terminal run lets the durable record win.
-  if [ "$RUN_STATE" != parked ] && [ "$RUN_VERDICTLESS" != 1 ]; then
-    case "$LOG_VERB" in
-      needs-decision|blocked)
-        if [ "$RUN_UNARBITRATED" = 1 ]; then
-          # Nothing about this reading was established, so it settles nothing
-          # about the record either. The record is durable, unanswered evidence
-          # and it answers - keeping its own words, and carrying why the run
-          # could not be checked, so neither fact is lost.
-          emit "$(map_log_state "$LOG_LINE")" status-log \
-            "$(status_line_note "$LOG_LINE")${SEP}still unresolved on the record, and $RUN_DETAIL"
-        elif [ "$RUN_IS_TERMINAL" != 1 ]; then
-          RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run"
-        elif [ "$RUN_STATE" = failed ]; then
-          RUN_DETAIL="$RUN_DETAIL${SEP}an unresolved $LOG_VERB is still on the record: $(status_line_note "$LOG_LINE")"
-        else
-          emit "$(map_log_state "$LOG_LINE")" status-log \
-            "$(status_line_note "$LOG_LINE")${SEP}still unresolved on the record, which the run's own verdict ($RUN_DETAIL) contradicts"
-        fi
-        ;;
-    esac
-  fi
-
   # A run word that answers nothing about the work - `cancelled` above all - is
   # not a state, and it must not stop the search either. Fall through to the
   # evidence that CAN answer, carrying the run's own account as an aside so the
@@ -1066,6 +1112,12 @@ if [ "$HAVE_RUN" = 1 ]; then
   # progress by a pane or a status line written before it ended.
   if [ "$RUN_VERDICTLESS" = 1 ]; then
     EMIT_ASIDE=$RUN_DETAIL
+    # This is the one path that deliberately does NOT reconcile, and the reason is
+    # the same one that sends it looking further: an abort makes no claim, so it
+    # has nothing to weigh against the record. It hands the question to whatever
+    # answers below - the record among them - and each of those sources speaks for
+    # itself rather than for a run.
+    RECONCILE_RUN_VERDICT=0
   else
     emit "$RUN_STATE" "$EMIT_SOURCE" "$RUN_DETAIL"
   fi
