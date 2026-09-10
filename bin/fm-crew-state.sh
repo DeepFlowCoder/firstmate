@@ -814,9 +814,12 @@ if [ "$HAVE_RUN" = 1 ]; then
   if [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_STATE" = "done" ] \
     && { [ -n "$RUN_PR" ] || [ "$RUN_WORD" = passed ]; }; then
     PR_ANSWER=$(fm_pr_state_resolve "$RUN_PR" "$NM_TIMEOUT")
-    PR_STATE=${PR_ANSWER%%	*}
-    PR_REASON=${PR_ANSWER#*	}
-    [ "$PR_REASON" = "$PR_ANSWER" ] && PR_REASON=""
+    # The reason rides on stdout beside the state, because this call is a
+    # command substitution and a variable the function set would die with its
+    # subshell. A resolved answer carries no reason and leaves PR_REASON empty.
+    PR_STATE=""
+    PR_REASON=""
+    IFS=$'\t' read -r PR_STATE PR_REASON <<< "$PR_ANSWER"
     case "$PR_STATE" in
       merged|closed)
         RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is $PR_STATE on the forge" ;;
