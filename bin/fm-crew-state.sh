@@ -265,21 +265,31 @@ LOG_VERB=$(status_line_verb "$LOG_LINE")
 # place. An unanswered needs-decision or blocker is the only record that has a
 # claim here; any other last line is not evidence about this question.
 #
-# It keys on WHAT THE VERDICT SAYS, never on which arm produced it, and that is
-# what makes one decision serve every emit path. A `working` verdict says work is
-# happening now - whether that comes from the reported run, from a live successor
-# row, or from a pane that is emitting - and a decision the crew has resumed past
-# is deterministically stale, so the record is marked superseded rather than
-# printed. `failed` outranks the record, because a failure a stale-looking record
-# could mask is worse than a contradiction left visible, but the open item is
-# still named. A terminal `done` is the 2026-08-30 case: a finished run answers no
-# decision, so the record keeps its own words and the contradiction is stated -
-# while the ci-green reading reports `done` for a run that is still monitoring its
-# pull request, and that one is active, so it takes the active path. Anything else
-# - `unknown` from a claim nobody could verify, from an unarbitrated reading, from
-# a successor whose outcome this read cannot name - established nothing, so it
-# settles nothing about the record either: the record answers and the verdict's
-# own account rides with it. A gate agrees with the record and leaves it alone.
+# It keys on WHAT THE VERDICT SAYS and on WHAT ESTABLISHED IT, never on which arm
+# produced it, and that is what makes one decision serve every emit path. There
+# are three answers it can give.
+#
+# The record is DETERMINISTICALLY STALE - the gate resolved and the crew ran past
+# it - when a RUN this read established as still running is what answers: the
+# reported active run, a live successor row, or the ci-green reading, which says
+# `done` for a run that is still monitoring its pull request. Only those may mark
+# it superseded, and the source is what proves it: a `working` read off a PANE
+# establishes no run at all, and a line that says in one breath that the run
+# verdict could not be arbitrated and that an active run superseded the record
+# cannot sustain the second half.
+#
+# The record ANSWERS when the run FINISHED. A finished run cannot be what the crew
+# is doing now, so an unanswered decision keeps its own words - stated as the
+# contradiction it is when the run claimed a verdict (the 2026-08-30 case), and
+# carrying the reading's own account when the run established nothing.
+#
+# Otherwise the record is SHOWN beside the verdict, with its own words. That is
+# every reading that neither established a live run nor finished: a failure, which
+# outranks the record because a failure a stale-looking record could mask is worse
+# than a contradiction left visible; a busy pane, which saw work happening but no
+# run; an unreadable or unarbitrated word, which saw a run still running and could
+# not say what it means. None of them may declare the record stale, and none may
+# be replaced by it. A gate agrees with the record and leaves it alone.
 reconcile_run_verdict() {  # <state> <source> <detail>
   local state=$1 src=$2 detail=$3 note
   case "$LOG_VERB" in
@@ -287,25 +297,22 @@ reconcile_run_verdict() {  # <state> <source> <detail>
     *) printf '%s\t%s\t%s' "$state" "$src" "$detail"; return 0 ;;
   esac
   note=$(status_line_note "$LOG_LINE")
-  case "$state" in
-    parked) ;;
-    working)
-      detail="$detail${SEP}status-log superseded by active run" ;;
-    failed)
-      detail="$detail${SEP}an unresolved $LOG_VERB is still on the record: $note" ;;
-    done)
-      if [ "$RUN_IS_TERMINAL" = 1 ]; then
-        state=$(map_log_state "$LOG_LINE")
-        src='status-log'
-        detail="$note${SEP}still unresolved on the record, which the run's own verdict ($detail) contradicts"
-      else
-        detail="$detail${SEP}status-log superseded by active run"
-      fi ;;
-    *)
+  if [ "$state" != parked ]; then
+    if [ "$src" = run-step ] && { [ "$state" = working ] \
+      || { [ "$state" = 'done' ] && [ "$RUN_IS_TERMINAL" != 1 ]; }; }; then
+      detail="$detail${SEP}status-log superseded by active run"
+    elif [ "$RUN_IS_TERMINAL" = 1 ] && [ "$state" = 'done' ]; then
       state=$(map_log_state "$LOG_LINE")
       src='status-log'
-      detail="$note${SEP}still unresolved on the record, and $detail" ;;
-  esac
+      detail="$note${SEP}still unresolved on the record, which the run's own verdict ($detail) contradicts"
+    elif [ "$RUN_IS_TERMINAL" = 1 ] && [ "$state" = unknown ]; then
+      state=$(map_log_state "$LOG_LINE")
+      src='status-log'
+      detail="$note${SEP}still unresolved on the record, and $detail"
+    else
+      detail="$detail${SEP}an unresolved $LOG_VERB is still on the record: $note"
+    fi
+  fi
   printf '%s\t%s\t%s' "$state" "$src" "$detail"
 }
 
@@ -855,14 +862,32 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
-  # Whether the run WORD carried a verdict about the work at all. This is not
-  # the same question as the state being `unknown`: an abort reports `unknown`
-  # because it says nothing, while a finished run whose merge claim could not be
-  # verified (below) also reports `unknown` - but it did finish, and it did
-  # claim. Conflating the two is what let a finished run be answered by a stale
-  # log: only the first may hand the question to other evidence.
+  # Whether the run WORD carried a verdict about the work at all - the one
+  # reading entitled to hand the question to other evidence. `unknown` is not
+  # that question: three different things report it, and only one of them is
+  # verdictless.
+  #
+  # An ABORT is: the run reached its end and said nothing about the work, so the
+  # durable record can answer better than it can, and the fall-through below is
+  # the whole of what a cancellation is owed.
+  #
+  # A finished run whose merge claim could not be verified is not: it finished,
+  # and it claimed.
+  #
+  # An UNMODELLED word is not either, and that is the distinction this used to
+  # miss. A word the owner does not model is UNREADABLE, not empty: the run is
+  # still running as far as anything here knows, so dropping such a crew into the
+  # pane and the status log let a stale `blocked:` line answer for a healthy
+  # working crew - a false blocker, the same class of lie this file exists to
+  # remove. The reading stays on the run-step path and reports `unknown` carrying
+  # the word it could not read, so a maintainer can model it.
+  #
+  # The two are told apart by terminality, which the owner already answers: an
+  # abort is terminal, an unmodelled word is not.
   RUN_VERDICTLESS=0
-  case "$RUN_STATE" in unknown) RUN_VERDICTLESS=1 ;; esac
+  case "$RUN_STATE" in
+    unknown) [ "$RUN_IS_TERMINAL" = 1 ] && RUN_VERDICTLESS=1 ;;
+  esac
 
   # A verdict is only trustworthy when this branch's NEWEST run is the one it
   # came from. Measured 2026-08-29 on the real store (runs

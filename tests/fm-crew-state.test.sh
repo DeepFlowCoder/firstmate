@@ -2298,7 +2298,7 @@ test_a_busy_pane_answers_over_a_silent_arbitrator() {
 # reading the pane proves is ACTIVE is deterministically stale - the same answer
 # any active run gets - but it must still be accounted for on the line rather than
 # dropped by an emit that exits before the reconcile ever runs.
-test_a_busy_pane_answer_still_passes_the_record_reconcile() {
+test_a_busy_pane_answer_shows_the_blocker_it_cannot_supersede() {
   reset_fakes
   local d out
   d=$(new_case busy-silent-blocked)
@@ -2315,10 +2315,17 @@ test_a_busy_pane_answer_still_passes_the_record_reconcile() {
   out=$(run_crew_state "$d" busyblocked)
   assert_contains "$out" "state: working" "the emitting harness still answers"
   assert_contains "$out" "source: pane" "and the line still names the pane"
-  assert_contains "$out" "status-log superseded by active run" \
-    "the record is accounted for, not dropped by an early emit"
   assert_contains "$out" "could not be arbitrated" "the unarbitrated verdict is still declared"
-  pass "a busy-pane answer still passes the durable-record reconcile"
+  # A pane saw work happening; it established no RUN. A line cannot say in one
+  # breath that the run verdict could not be arbitrated and that an active run
+  # superseded the record - so the blocker is shown, in its own words, which is
+  # what "the contradiction is made visible" asks for.
+  assert_not_contains "$out" "superseded by active run" \
+    "a pane establishes no run, so it may not declare the record stale"
+  assert_contains "$out" "an unresolved blocked is still on the record" \
+    "the open blocker reaches the line"
+  assert_contains "$out" "pick the base branch" "with the record's own words"
+  pass "a busy-pane answer shows the blocker instead of claiming an active run"
 }
 
 # The crossing that was unpinned in both directions: a FINISHED run whose currency
@@ -2756,7 +2763,7 @@ test_cancelled_run_does_not_claim_to_contradict_a_blocker() {
 # The defensive arm in the other direction: a run word that asserts nothing is not
 # an ACTIVE run either, so it may not declare the record superseded - least of all
 # the record that goes on to answer for the crew two steps later.
-test_unmodelled_status_does_not_supersede_the_record_that_answers_it() {
+test_unmodelled_status_keeps_its_own_unknown() {
   reset_fakes
   local d out
   d=$(new_case unmodelled-vs-blocker)
@@ -2769,11 +2776,20 @@ test_unmodelled_status_does_not_supersede_the_record_that_answers_it() {
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" unmodelled
   out=$(run_crew_state "$d" unmodelled)
-  assert_contains "$out" "state: blocked" "the record answers for a reading that asserts nothing"
-  assert_contains "$out" "source: status-log" "the record is the source that answered"
-  assert_contains "$out" "unrecognized run status: quiescing" "the unreadable word is still shown"
-  assert_not_contains "$out" "superseded" "a reading that asserts nothing supersedes nothing"
-  pass "an unmodelled run status does not supersede the record that answers it"
+  # The crew is RUNNING - a word this reader cannot translate is not a finished
+  # run and not an abort - so a status line written before it started must never
+  # become the answer. That would surface a blocker on a healthy working crew:
+  # the same false verdict this file exists to remove, in a fourth direction.
+  assert_not_contains "$out" "state: blocked" "a stale record must not answer for a running crew"
+  assert_not_contains "$out" "source: status-log" "the run-step keeps the question it cannot hand on"
+  assert_contains "$out" "state: unknown" "an unreadable word is honestly unknown"
+  assert_contains "$out" "source: run-step" "and the run-step answers for itself"
+  assert_contains "$out" "unrecognized run status: quiescing" \
+    "the line names the word it could not read, so it can be modelled"
+  assert_contains "$out" "an unresolved blocked is still on the record" \
+    "the open blocker is still shown beside it"
+  assert_not_contains "$out" "superseded" "a reading that established nothing supersedes nothing"
+  pass "an unmodelled run status keeps its own unknown instead of a stale record"
 }
 
 test_active_run_is_authoritative
@@ -2857,13 +2873,13 @@ test_ci_green_done_does_not_revive_a_stale_blocked_log
 test_cancelled_run_falls_through_to_the_pause_when_the_list_is_silent
 test_unknown_attribution_without_a_refusal_claims_none
 test_cancelled_run_does_not_claim_to_contradict_a_blocker
-test_unmodelled_status_does_not_supersede_the_record_that_answers_it
+test_unmodelled_status_keeps_its_own_unknown
 test_default_read_asks_no_forge_and_never_claims_the_merge
 test_open_forge_still_surfaces_a_contradicting_record
 test_checks_passed_reports_done_without_a_pull_request_claim
 test_active_reading_degrades_to_unknown_when_the_list_is_silent
 test_a_busy_pane_answers_over_a_silent_arbitrator
-test_a_busy_pane_answer_still_passes_the_record_reconcile
+test_a_busy_pane_answer_shows_the_blocker_it_cannot_supersede
 test_unarbitrated_terminal_run_lets_the_blocker_answer
 test_a_degraded_reading_is_never_refined_into_checks_green
 test_a_degraded_reading_is_never_promoted_by_a_stale_ready_log
