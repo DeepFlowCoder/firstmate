@@ -381,6 +381,175 @@ EOF
   pass "backlog normalization preserves strict roles and resolves every blocker compatibly"
 }
 
+# A captain hold is "waiting on the captain now" wherever its row sits. The row's
+# section used to be part of that definition, which made a captain hold on work
+# already In flight permanently invisible to Captain's Call - the failure that is
+# most urgent, since the captain is holding work that is already under way.
+# Only two things may hold such a row back, and both are proved here to still
+# close and then to reopen, so neither guard can go quietly vacuous: an
+# unresolved blocker, and a hold-until date that has not arrived. Done rows stay
+# out, and current_role keeps its own meaning throughout.
+test_in_flight_captain_hold_is_actionable_under_the_same_two_guards() {
+  local home fakebin out
+  home=$(make_home in-flight-captain-hold)
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] flight-call - Held under way (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] flight-blocked - Held under way behind work blocked-by: prep (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] flight-later - Held under way until a date (repo: alpha) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-09-01)
+- [ ] flight-external - Held under way on upstream (repo: alpha) (kind: ship) (hold: upstream release pending) (hold-kind: external)
+- [ ] flight-worker - Ordinary worker under way (repo: alpha) (kind: ship)
+
+## Queued
+- [ ] queued-call - Held in the queue (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] prep - Preparatory work (repo: alpha) (kind: ship)
+
+## Done
+- [x] done-call - Already answered (repo: alpha) (kind: ship) (done 2026-07-10) (hold: captain go needed) (hold-kind: captain)
+EOF
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-07-14T00:00:00Z "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "flight-call")
+      | .state == "in_flight" and .current_role == "held"
+        and .unresolved_blocker_ids == [] and .captain_actionable == true)
+    and (.backlog.records[] | select(.id == "queued-call")
+      | .current_role == "queued" and .captain_actionable == true)
+  ' >/dev/null || fail "an unblocked, due captain hold was not actionable in both sections: $out"
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "flight-blocked")
+      | .current_role == "held"
+        and .unresolved_blocker_ids == ["prep"]
+        and .captain_actionable == false)
+    and (.backlog.records[] | select(.id == "flight-later")
+      | .current_role == "held"
+        and .hold_until == "2026-09-01"
+        and .captain_actionable == false)
+  ' >/dev/null || fail "the blocker and date guards did not hold an in-flight captain hold back: $out"
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "flight-external")
+      | .current_role == "held" and .captain_actionable == false)
+    and (.backlog.records[] | select(.id == "flight-worker")
+      | .current_role == "worker" and .captain_actionable == false)
+    and (.backlog.records[] | select(.id == "done-call")
+      | .current_role == "done" and .hold_kind == "captain"
+        and .captain_actionable == false)
+  ' >/dev/null || fail "a non-captain hold, a plain worker, or a Done row became actionable: $out"
+
+  # Drive each guard to its other side, so a guard that never opens cannot pass
+  # as a guard that correctly closes.
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] flight-blocked - Held under way behind work blocked-by: prep (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] flight-later - Held under way until a date (repo: alpha) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-07-14)
+
+## Queued
+
+## Done
+- [x] prep - Preparatory work (repo: alpha) (kind: ship) (done 2026-07-13)
+EOF
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-07-14T00:00:00Z "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "flight-blocked")
+      | .unresolved_blocker_ids == [] and .captain_actionable == true)
+    and (.backlog.records[] | select(.id == "flight-later")
+      | .hold_until == "2026-07-14" and .captain_actionable == true)
+  ' >/dev/null || fail "a cleared blocker or an arrived hold-until date did not release an in-flight captain hold: $out"
+  pass "an in-flight captain hold is actionable, gated only by its blockers and its date"
+}
+
+# The home summary is the ONLY route a registered home's work takes into the
+# fleet roll-ups, and its candidate set used to drop an in-flight held row the
+# moment its child reported working. That reproduced the same blind spot one
+# home down: the summary resolved to active_child_work and the captain saw no
+# decision at all. A live worker under a captain hold is precisely the urgent
+# case, so the decision candidate set is the actionable holds themselves rather
+# than the liveness-filtered queued set; only the two real guards may park one,
+# and both are driven to their other side here so neither can go quietly vacuous.
+# The queued surface keeps its own liveness filter, so a parked hold stays queued
+# work only while nothing runs under it - otherwise it is its worker's own row,
+# which is exactly how the main home renders the same input.
+test_home_summary_captain_hold_survives_a_live_child_worker() {
+  local home fakebin out id gen
+  home=$(make_home in-flight-hold-live-worker)
+  mkdir -p "$home/projects/live-wt"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] live-call - Held under way with a live worker (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] live-blocked - Held under way behind work blocked-by: prep (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] live-later - Held under way until a date (repo: alpha) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-09-01)
+- [ ] idle-blocked - Held under way with nothing running blocked-by: prep (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] idle-later - Held under way with nothing running until a date (repo: alpha) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-09-01)
+
+## Queued
+- [ ] prep - Preparatory work (repo: alpha) (kind: ship)
+
+## Done
+EOF
+  for id in live-call live-blocked live-later; do
+    fm_write_meta "$home/state/$id.meta" \
+      "window=firstmate:fm-$id" \
+      "worktree=$home/projects/live-wt" \
+      "project=alpha" \
+      "harness=claude" \
+      "kind=ship" \
+      "mode=ship" \
+      "yolo=off"
+    gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" "$id")
+    "$ROOT/bin/fm-busy-event.sh" apply "$home/state" "$id" busy --gen "$gen" \
+      --source claude-hook --event user-prompt-submit
+    printf 'working: still building\n' > "$home/state/$id.status"
+  done
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-07-14T00:00:00Z "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    ([.endpoints[] | select(.state == "working") | .id] | sort)
+      == ["live-blocked","live-call","live-later"]
+  ' >/dev/null || fail "the fixture failed to put a live worker under every held row: $out"
+  printf '%s' "$out" | jq -e '
+    .state == "captain_decision"
+      and (.decisions_open | any(.[]; .id == "live-call" and .verb == "captain-hold"))
+      and (.decisions_open | any(.[]; .id == "live-blocked") | not)
+      and (.decisions_open | any(.[]; .id == "live-later") | not)
+  ' >/dev/null || fail "a live worker hid a captain hold from the home summary: $out"
+  printf '%s' "$out" | jq -e '
+    (.queued[] | select(.id == "idle-blocked")
+      | .unresolved_blocker_ids == ["prep"] and .captain_actionable == false)
+    and (.queued[] | select(.id == "idle-later")
+      | .hold_until == "2026-09-01" and .captain_actionable == false)
+  ' >/dev/null || fail "a parked captain hold with nothing running lost its queued metadata: $out"
+  printf '%s' "$out" | jq -e '
+    ([.queued[] | .id] | index("live-blocked") | not)
+      and ([.queued[] | .id] | index("live-later") | not)
+      and ([.active_children[] | .id] | index("live-blocked"))
+      and ([.active_children[] | .id] | index("live-later"))
+  ' >/dev/null || fail "a parked captain hold under a live worker doubled as queued work: $out"
+
+  # Drive each guard to its other side, with the same live workers still under
+  # every row, so a guard that never opens cannot pass as one that closes.
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] live-call - Held under way with a live worker (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] live-blocked - Held under way behind work blocked-by: prep (repo: alpha) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] live-later - Held under way until a date (repo: alpha) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-07-14)
+
+## Queued
+
+## Done
+- [x] prep - Preparatory work (repo: alpha) (kind: ship) (done 2026-07-13)
+EOF
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-07-14T00:00:00Z "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    ([.decisions_open[] | select(.verb == "captain-hold") | .id] | sort)
+      == ["live-blocked","live-call","live-later"]
+  ' >/dev/null || fail "a cleared blocker or an arrived date did not release a held row under a live worker: $out"
+  pass "a live child worker cannot hide a captain hold from its home summary"
+}
+
 test_event_hints_follow_reconciled_current_state() {
   local home fakebin out hint_gen
   home=$(make_home event-hints)
@@ -830,6 +999,8 @@ test_fixture_snapshot_json
 test_home_summary_landed_and_queued_carry_repo_and_since
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
+test_in_flight_captain_hold_is_actionable_under_the_same_two_guards
+test_home_summary_captain_hold_survives_a_live_child_worker
 test_event_hints_follow_reconciled_current_state
 test_open_decision_survives_later_unrelated_event
 test_secondmate_open_decision_survives_live_endpoint

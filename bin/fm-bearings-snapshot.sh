@@ -25,9 +25,19 @@
 # Captain's Call is captain actionability itself: every due, unblocked task held
 # for the captain, whatever its kind. A captain hold deferred by date
 # (hold-until in the future) is not actionable and renders as a Charted Next
-# gate with its date; a row the canonical snapshot marks prose-deferred
-# (deferred_marker) leaves the default decisions and gates views and is
-# disclosed in omitted[], revealed by --all-decisions / --all-queued.
+# gate with its date, or, when its row is already in flight, as its live
+# worker's Underway line while one is running under it; a row the canonical
+# snapshot marks prose-deferred (deferred_marker) leaves the default decisions
+# and gates views and is disclosed in omitted[], revealed by --all-decisions /
+# --all-queued, unless an in-flight live worker owns its Underway line instead.
+# That omitted[] count of marked holds reports what the default decisions view
+# withholds, and only a counted row with a live worker running under it is
+# guaranteed to render anywhere else: such an in-flight hold still renders
+# in_flight, while a marked hold with no live worker under it renders in no
+# default section at all.
+# --all-decisions is correspondingly not purely additive for this home: it widens
+# the main decision set itself, so each marked hold it reveals in decisions_open
+# also leaves the in_flight row it was occupying.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
@@ -141,6 +151,12 @@ For every registered secondmate, readable structured facts from its own home are
 Opt-in surfaces: --fields bodies|paths|actions|endpoints, --all-in-flight,
   --all-decisions, --all-secondmates, --all-landed, --all-reports, --all-queued, --all-recorded-prs,
   --all-unhealthy, --all-pr-repos, --include-prs (adds candidate_prs).
+--all-decisions widens this home's decision set rather than only unbounding it: a
+  prose-deferred captain hold it reveals in decisions_open also leaves in_flight when
+  a live worker was carrying that row. The omitted[] count of marked holds counts
+  such a row too, so it names what the default decisions view withholds, and only a
+  counted row with a live worker under it is guaranteed to render elsewhere; a marked
+  hold with none renders in no default section.
 Raise FM_BEARINGS_PR_LIMIT to expand per-repository open-PR results.
 EOF
 }
@@ -392,9 +408,15 @@ MODEL=$(printf '%s' "$SNAP" | jq \
           provenance:.provenance.selected,freshness:.freshness.status,
           age_seconds:.freshness.age_seconds,contradiction:(.contradiction // false),
           reason:(.current.reason // "-")} ]) as $secondmates_all
+  | ([ .backlog.records[]
+       | select(.structured and .captain_actionable == true)
+       | select(($all_decisions == 1) or (.deferred_marker != true)) ]) as $main_captain_decisions
+  | ((if $all_decisions == 1 then $main_captain_decisions
+      else $main_captain_decisions[:$decisions_n] end) | map(.id)) as $main_decision_ids
   | ([ .tasks[]
        | select(.kind != "secondmate")
        | select(.backlog.current_role != "program")
+       | select(.id as $tid | ($main_decision_ids | index($tid) | not))
        | select(.backlog.current_role != "held" or .current_state.state == "working")
        | {id, kind, repo:((.backlog.repo // null) | trunc(120)),
         state: .current_state.state,
@@ -405,9 +427,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | select(.bearings_state == "active_child_work")
          | {id,kind:"secondmate",repo:null,state:.bearings_state,
             doing:([.active_children[] | .id + ": " + (.doing // .state)] | join("; ") | trunc(90))} ]) as $in_flight_all
-  | ([ .backlog.records[]
-         | select(.structured and .captain_actionable == true)
-         | select(($all_decisions == 1) or (.deferred_marker != true))
+  | ([ $main_captain_decisions[]
          | {id,key:.id,verb:"captain-hold",
             summary:((.title + ": " + .hold_reason) | trunc(90)),owner:"(main)",
             repo:((.repo // null) | trunc(120))} ]
