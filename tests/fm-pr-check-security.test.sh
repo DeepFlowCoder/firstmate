@@ -2123,7 +2123,105 @@ test_gitlab_merged_poll_retires() {
   pass "GitHub and GitLab exact merged results share one retirement path"
 }
 
+# bin/fm-forge-pr-state-lib.sh is the one owner of a pull request's
+# forge-resolved state, so a caller can report "open" instead of deducing a
+# merge from how the pipeline ended. Every answer it can give is pinned here,
+# including the unresolved ones, because `unresolved` is a first-class answer
+# and its reason is what a caller prints instead of a guess.
+resolve_state() {  # <dir> <url> [extra env assignments as VAR=value...]
+  local dir=$1 url=$2
+  shift 2
+  # The inner script is deliberately unexpanded: its "$1" and "$2" are the
+  # inner shell's own arguments, passed after the _ placeholder below.
+  # shellcheck disable=SC2016
+  env "$@" PATH="$dir/fakebin:$BASE_PATH" \
+    FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
+    bash -c '. "$1"/bin/fm-forge-pr-state-lib.sh; fm_pr_state_resolve "$2" 10' \
+    _ "$ROOT" "$url"
+}
+
+test_forge_pr_state_resolution() {
+  local dir gh_url gl_url out
+  dir=$(make_case forge-pr-state)
+  gh_url=https://github.com/o/r/pull/13
+  gl_url=https://gitlab.example/group/subgroup/project/-/merge_requests/7
+
+  out=$(resolve_state "$dir" "$gh_url" FM_TEST_GH_STATE=OPEN)
+  [ "$out" = open ] || fail "an open GitHub pull request must resolve open, got: $out"
+  out=$(resolve_state "$dir" "$gh_url" FM_TEST_GH_STATE=MERGED)
+  [ "$out" = merged ] || fail "a merged GitHub pull request must resolve merged, got: $out"
+  out=$(resolve_state "$dir" "$gh_url" FM_TEST_GH_STATE=CLOSED)
+  [ "$out" = closed ] || fail "a closed GitHub pull request must resolve closed, got: $out"
+  grep -qF -- "pr view $gh_url --json state -q .state" "$dir/gh.log" \
+    || fail "the resolver did not address gh by the canonical pull request URL"
+
+  # A forge that does not answer is never filled in from anywhere else.
+  out=$(resolve_state "$dir" "$gh_url" FM_TEST_GH_FAIL=1)
+  case "$out" in
+    "unresolved	GitHub did not answer for $gh_url") ;;
+    *) fail "an unanswering GitHub must resolve unresolved with its reason, got: $out" ;;
+  esac
+  out=$(resolve_state "$dir" "$gh_url" FM_TEST_GH_STATE=SOMETHING_NEW)
+  case "$out" in
+    "unresolved	GitHub answered an unrecognized state"*) ;;
+    *) fail "an unrecognized GitHub state must resolve unresolved, got: $out" ;;
+  esac
+
+  out=$(resolve_state "$dir" "$gl_url" FM_TEST_GLAB_STATE=merged)
+  [ "$out" = merged ] || fail "a merged merge request must resolve merged, got: $out"
+  out=$(resolve_state "$dir" "$gl_url" FM_TEST_GLAB_STATE=opened)
+  [ "$out" = open ] || fail "an opened merge request must resolve open, got: $out"
+  # glab is addressed by project URL and merge request number, never by the
+  # merge request URL, which the real CLI resolves through the current git
+  # repository - and the resolver runs in no repository.
+  grep -qF -- "mr view 7 -R https://gitlab.example/group/subgroup/project" "$dir/glab.log" \
+    || fail "the resolver did not address glab by project URL and merge request number"
+  out=$(resolve_state "$dir" "$gl_url" FM_TEST_GLAB_FAIL=1)
+  case "$out" in
+    "unresolved	GitLab did not answer for $gl_url") ;;
+    *) fail "an unanswering GitLab must resolve unresolved with its reason, got: $out" ;;
+  esac
+
+  # A URL that is not a canonical pull request never reaches a CLI at all.
+  : > "$dir/gh.log"
+  : > "$dir/glab.log"
+  out=$(resolve_state "$dir" "https://example.invalid/not/a/pull/request")
+  case "$out" in
+    "unresolved	no readable pull request URL to resolve") ;;
+    *) fail "an unparseable URL must resolve unresolved with its reason, got: $out" ;;
+  esac
+  out=$(resolve_state "$dir" "")
+  case "$out" in
+    "unresolved	no readable pull request URL to resolve") ;;
+    *) fail "an absent URL must resolve unresolved with its reason, got: $out" ;;
+  esac
+
+  [ ! -s "$dir/gh.log" ] || fail "an unresolvable read still called gh"
+  [ ! -s "$dir/glab.log" ] || fail "an unresolvable read still called glab"
+
+  # No forge CLI on PATH is a reason to report, never a reason to assume. The
+  # PATH here is a dedicated directory holding only the ordinary tools the
+  # library itself needs, rather than the usual base set, because a host that
+  # ships gh in /usr/bin would otherwise turn this case into a real network call
+  # against the fixture URL.
+  local tool real
+  mkdir -p "$dir/nogh"
+  for tool in dirname sed head; do
+    real=$(command -v "$tool") || fail "missing tool for the no-gh case: $tool"
+    ln -sf "$real" "$dir/nogh/$tool"
+  done
+  # shellcheck disable=SC2016
+  out=$(env PATH="$dir/nogh" "$BASH" -c \
+    '. "$1"/bin/fm-forge-pr-state-lib.sh; fm_pr_state_resolve "$2" 10' _ "$ROOT" "$gh_url")
+  case "$out" in
+    "unresolved	gh is not installed"*) ;;
+    *) fail "a missing gh must resolve unresolved with its reason, got: $out" ;;
+  esac
+  pass "forge pull request state resolves, or says why it could not"
+}
+
 test_parser_matrix
+test_forge_pr_state_resolution
 test_gitlab_merge_watch
 test_merged_poll_retires_once
 test_merged_poll_reregistration_after_notification_is_absorbed

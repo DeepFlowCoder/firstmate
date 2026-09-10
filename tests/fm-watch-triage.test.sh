@@ -2445,9 +2445,9 @@ test_paused_authoritative_working_takes_the_pause_cadence() {
 # one can say `parked`: its coarse runs-list fallback carries just
 # pending/running/completed/failed/cancelled, so a run sitting at a gate is
 # reported as still running. The fixture carries the exact verdict shape that
-# coarse path emits - `validating (background run)`, where `validating (running)`
-# is the full path's - so the latency below is pinned against the configuration it
-# describes. The watcher classifies that verdict identically to any other `working`
+# coarse path emits - `validating (running) (background run)`, where the bare
+# `validating (running)` is the full path's - so the latency below is pinned
+# against the configuration it describes. The watcher classifies that verdict identically to any other `working`
 # one (absorb_class_of_state_line reads only the state and source fields), so this
 # test pins the latency but cannot catch drift in the coarse emitter that produces
 # the shape.
@@ -2472,7 +2472,7 @@ test_coarse_gated_run_read_takes_the_pause_cadence_not_the_wedge_timer() {
   pane_hash=$(hash_text "idle at the review gate")
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
-  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (background run)'
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running) (background run)'
 
   # Half one: the four-minute clock does NOT surface it. FM_STALE_ESCALATE_SECS as
   # low as it goes, so a wedge timer armed on any of these polls escalates on the

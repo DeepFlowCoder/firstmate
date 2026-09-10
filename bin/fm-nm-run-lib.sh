@@ -225,3 +225,72 @@ fm_nm_runs_parse_row() {  # <row>
   [ -n "$status" ] && [ -n "$branch" ] || return 1
   printf '%s\t%s\t%s' "$status" "$branch" "$sha"
 }
+
+# --- run-word translation ---------------------------------------------------
+#
+# THE one owner of "what state does this run word mean". It exists because that
+# translation used to live in three copies inside bin/fm-crew-state.sh - the
+# `outcome:` arm, the top-level `status:` arm, and the coarse runs-list arm.
+# They disagreed on every word none of them modelled: an unmodelled word read
+# `working` on the status arm and `unknown` on the other two, which is the wrong
+# way round for a helper whose job is not to invent work in progress. The three
+# measured false verdicts of issue 3306 all came through this translation - two
+# of them out of the `outcome:` arm's own words, and the third out of a
+# `status:` reading nothing ever checked. Every caller reads the mapping from
+# here, so a word cannot mean one thing on one surface and another on the next.
+#
+# One table serves all three surfaces because their vocabularies are disjoint
+# where it matters and never conflicting: `passed` and `checks-passed` appear
+# only as an outcome, `ci` only as an `axi status`, `pending` only as a status
+# or a list row, and no word maps to two different states depending on where it
+# was read. A per-surface parameter would only re-create the drift.
+#
+# `cancelled` is deliberately NOT a failure. A cancellation is an abort, so the
+# run produced no verdict about the work at all, and reporting one as `failed`
+# raises an alarm over healthy work: measured 2026-08-30, a task whose worker
+# stopped the ci monitor on purpose (that repository runs no CI) and then
+# declared a wait was reported "state: failed - run cancelled", which a session
+# can act on by relaunching or tearing down finished work. It maps to `unknown`
+# so the caller keeps looking at evidence that can actually answer.
+fm_nm_verdict_state() {  # <run-word>
+  case "${1:-}" in
+    passed|checks-passed|completed) printf 'done' ;;
+    failed)                         printf 'failed' ;;
+    cancelled)                      printf 'unknown' ;;
+    ci|running|fixing|pending|'')   printf 'working' ;;
+    *)                              printf 'unknown' ;;
+  esac
+}
+
+# 0 when the word says the run REACHED a terminal state, which is a different
+# question from what it translates to: `cancelled` is terminal and still reports
+# `unknown`. The terminal vocabulary is the one fm_nm_runs_word_for_terminal
+# already owns, so there is no second list to keep in step with it.
+fm_nm_verdict_is_terminal() {  # <run-word>
+  [ -n "$(fm_nm_runs_word_for_terminal "${1:-}")" ]
+}
+
+# The canonical human phrase for a run word: ONE phrase per word, unconditional.
+# WHERE a word was read is the caller's own fact and not the word's, so a caller
+# with something to say about its source appends its own qualifier to the phrase
+# it gets back - the coarse runs-list arm of bin/fm-crew-state.sh does exactly
+# that, marking its verdict a background run. Taking a surface mode here instead
+# would put back, inside the single owner, the per-surface split this owner was
+# introduced to remove, and the drift argument above would hold with an
+# exception. No phrase here asserts a fact about a pull request: what a forge
+# says about a pull request is resolved by bin/fm-forge-pr-state-lib.sh or
+# reported as unresolved, never inferred from a pipeline outcome.
+fm_nm_verdict_detail() {  # <run-word>
+  case "${1:-}" in
+    passed)         printf 'run passed' ;;
+    checks-passed)  printf 'checks green: PR ready for review' ;;
+    completed)      printf 'run completed' ;;
+    failed)         printf 'run failed' ;;
+    cancelled)      printf 'run cancelled (an abort is not a verdict on the work)' ;;
+    ci)             printf 'ci running' ;;
+    '')             printf 'run active' ;;
+    pending)        printf 'validating (pending)' ;;
+    running|fixing) printf 'validating (%s)' "$1" ;;
+    *)              printf 'unrecognized run status: %s' "$1" ;;
+  esac
+}

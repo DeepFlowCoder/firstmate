@@ -928,7 +928,8 @@ pause_state_class() {  # <window> <task>
   #     Its COARSE runs-list fallback carries only
   #     pending/running/completed/failed/cancelled (fm-nm-run-lib.sh's
   #     fm_nm_status_is_active) with no gate word, so a run parked at a gate still
-  #     carries `running` there and reads `working - validating (background run)`.
+  #     carries `running` there and reads
+  #     `working - validating (running) (background run)`.
   #     Surfacing it: even on the full path, a gated run surfaces promptly only when
   #     the stale hash CHANGES, so the first-sighting route runs and turns this
   #     function's `none` into surface_nonterminal_stale - the ordinary case, where

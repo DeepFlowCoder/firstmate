@@ -14,8 +14,10 @@
 # LOCAL-ONLY by default: a normal invocation makes ZERO GitHub/network/auth calls.
 # It MAY surface PR URLs already recorded locally in task meta (recorded_prs), but it
 # performs no live discovery or checks. Live PR discovery/checks happen ONLY under
-# --include-prs, which is the sole path that touches the network; all gh coupling
-# lives in that branch and never in the canonical snapshot. The default output states
+# --include-prs, which is the sole path that touches the network; this wrapper's own
+# gh coupling lives in that branch, and that branch is also what authorizes the
+# per-crew pull request read inside the canonical snapshot (see the note at the
+# option below), so nothing on the default path asks a forge. The default output states
 # explicitly (the prs: line and the omitted[] surfaces) what was not requested, so an
 # absence is never ambiguous.
 #
@@ -202,6 +204,31 @@ command -v jq >/dev/null 2>&1 || { echo "fm-bearings-snapshot: jq not found" >&2
 "$SCRIPT_DIR/fm-afk-return.sh" guard || exit $?
 
 NOW=${FM_BEARINGS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+# The canonical snapshot reads each crew's current state through
+# bin/fm-crew-state.sh, which asks no forge unless it is told to. --include-prs
+# is the one path that may, so it is the one path that tells it: this wrapper's
+# own live PR work and that per-crew pull request read are the same opt-in, and
+# the default read stays local-only without needing to ask for anything.
+if [ "$INCLUDE_PRS" = 1 ]; then
+  FM_CREW_STATE_RESOLVE_PR=1
+  export FM_CREW_STATE_RESOLVE_PR
+  # The slack belongs to the OPTION, not to this wrapper: --include-prs adds a
+  # forge call to a per-crew read whose whole budget was sized for local calls,
+  # and a bound that guarantees truncating the answer just requested protects
+  # nobody - it fails the requested feature and disguises the failure as
+  # `unknown`. So this option, and only this option, pays for the room it needs,
+  # at both bounds that apply to the same read: the deadline inside
+  # bin/fm-crew-state.sh and the one bin/fm-fleet-snapshot.sh puts around it. The
+  # two are set to the same number on purpose - the read reserves its own headroom
+  # out of that bound, so the inner answer always lands before the outer timer -
+  # and to the number this option ALREADY carries for its forge work, because one
+  # option is one decision: a second allowance to tune would only be a third
+  # spelling of "what --include-prs may spend".
+  # Every default path keeps the ordinary budget it runs on all day.
+  FM_CREW_STATE_NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-$FM_BEARINGS_PR_TIMEOUT}
+  FM_SNAPSHOT_CREW_STATE_TIMEOUT=${FM_SNAPSHOT_CREW_STATE_TIMEOUT:-$FM_BEARINGS_PR_TIMEOUT}
+  export FM_CREW_STATE_NM_TIMEOUT FM_SNAPSHOT_CREW_STATE_TIMEOUT
+fi
 if [ "$ALL_LANDED" = 1 ] || [ "$ALL_SECONDMATES" = 1 ]; then
   if [ "$ALL_LANDED" = 1 ]; then
     SNAP=$(FM_SNAPSHOT_NOW="$NOW" FM_SNAPSHOT_SECONDMATES=0 FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=0 "$FLEET" --json) || exit $?
