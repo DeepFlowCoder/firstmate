@@ -26,9 +26,12 @@
 # tooling to follow either forge. It reads the full state vocabulary rather than
 # only testing for a merge, because a caller here has to be able to say "open".
 #
-# Set FM_FORGE_PR_STATE_OFF=1 to skip the query entirely. That is for a caller
-# with its own zero-network contract, and it changes nothing about honesty: the
-# answer is still `unresolved`, with the reason saying the forge was not asked.
+# Reaching this library IS the decision to ask the forge: it holds no switch for
+# not asking. A caller with a zero-network contract keeps it by not calling, and
+# says so in its own words - bin/fm-crew-state.sh asks only under its explicit
+# FM_CREW_STATE_RESOLVE_PR opt-in. A skip switch here would be a second place to
+# get that decision wrong, and it is the caller, not this owner, that knows why
+# it is not asking.
 
 _fm_forge_pr_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-pr-lib.sh
@@ -47,10 +50,6 @@ fm_pr_state_resolve() {  # <url> [timeout-secs]
   local url=${1-} secs=${2:-10} raw state
   case "$secs" in ''|0|*[!0-9]*) secs=10 ;; esac
 
-  if [ -n "${FM_FORGE_PR_STATE_OFF:-}" ]; then
-    _fm_pr_state_unresolved "the forge was not consulted on this read"
-    return 0
-  fi
   # The URL is validated before it is handed to a CLI, so a malformed or
   # unexpected `pr:` field cannot become a lookup against something else.
   if ! fm_pr_url_parse "$url"; then

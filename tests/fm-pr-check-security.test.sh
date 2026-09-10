@@ -2196,15 +2196,8 @@ test_forge_pr_state_resolution() {
     *) fail "an absent URL must resolve unresolved with its reason, got: $out" ;;
   esac
 
-  # The zero-network opt-out is honest, not silent: it still answers unresolved
-  # and says the forge was not asked.
-  out=$(resolve_state "$dir" "$gh_url" FM_TEST_GH_STATE=MERGED FM_FORGE_PR_STATE_OFF=1)
-  case "$out" in
-    "unresolved	the forge was not consulted on this read") ;;
-    *) fail "the opt-out must resolve unresolved with its reason, got: $out" ;;
-  esac
-  [ ! -s "$dir/gh.log" ] || fail "an unresolvable or opted-out read still called gh"
-  [ ! -s "$dir/glab.log" ] || fail "an unresolvable or opted-out read still called glab"
+  [ ! -s "$dir/gh.log" ] || fail "an unresolvable read still called gh"
+  [ ! -s "$dir/glab.log" ] || fail "an unresolvable read still called glab"
 
   # No forge CLI on PATH is a reason to report, never a reason to assume. The
   # PATH here is a dedicated directory holding only the ordinary tools the

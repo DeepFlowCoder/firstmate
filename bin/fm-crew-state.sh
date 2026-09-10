@@ -53,10 +53,16 @@
 #      standing. A stale or unverifiable terminal verdict is never asserted as
 #      failed or done, and an active reading is never left standing over a run
 #      that has already failed.
-#   3. Resolve, never deduce, what a forge says. A pipeline outcome is not a
-#      forge fact: a finished run's pull request state is read through
-#      bin/fm-forge-pr-state-lib.sh, and an unreachable forge is reported as
-#      unresolved instead of guessed.
+#   3. Never deduce what a forge says. `outcome: passed` is no-mistakes' word for
+#      "the pull request merged or closed", which is a CLAIM about the forge and
+#      not a reading of it, so it is reported as landed work only where the forge
+#      itself confirms it. This read asks no forge by default: without the opt-in
+#      the merge is unverified, and an unverified merge reports `unknown` naming
+#      what could not be read - never `done`. FM_CREW_STATE_RESOLVE_PR=1 opts in
+#      to the one bounded read that can settle it (bin/fm-forge-pr-state-lib.sh),
+#      and only a caller a human invoked deliberately should set it. No other run
+#      word claims a merge: `checks-passed` and a coarse `completed` report `done`
+#      and say nothing about a pull request either way.
 #   4. Reconcile the status log: a needs-decision/blocked line under an ACTIVE
 #      run is deterministically stale (the gate resolved and the run resumed) and
 #      is flagged superseded. Under a finished run it is not stale - a finished
@@ -73,11 +79,11 @@
 #      than trusting a stale status log.
 #
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
-# of state; exit 2 only on a usage error (no id). The one network call it can
-# make is the bounded forge read in step 3, which happens only when a finished
-# run would otherwise have a pull request state asserted for it; a caller with
-# its own zero-network contract sets FM_FORGE_PR_STATE_OFF=1 and gets an explicit
-# "not resolved" instead.
+# of state; exit 2 only on a usage error (no id). It makes NO network call unless
+# FM_CREW_STATE_RESOLVE_PR=1 asks for the bounded forge read of step 3, so every
+# caller that runs on a timer - the fleet snapshot behind the published ledger,
+# the watcher, the inactive-crew scan - is local-only by construction rather than
+# by remembering to opt out of a default-on call.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -111,6 +117,13 @@ case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
 # history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
+# The opt-in for the single network call this read can make (step 3). Default
+# OFF, and deliberately in that direction: the callers that run every heartbeat
+# carry their own zero-network contracts, and a default-on forge read breaks
+# whichever of them nobody remembered to tell. Only a caller a human invoked
+# deliberately, which can afford the call, turns it on.
+RESOLVE_PR=0
+case "${FM_CREW_STATE_RESOLVE_PR:-}" in 1) RESOLVE_PR=1 ;; esac
 SEP=' · '
 
 # An aside every emission carries, whatever source finally answers. It exists
@@ -812,41 +825,47 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
-  # What a forge says about a pull request is RESOLVED from the forge, never
-  # deduced from how the pipeline ended. `outcome: passed` is no-mistakes' word
-  # for "the pull request merged or closed", and rendering it as that fact cost
-  # the worst of the three measured false verdicts (2026-08-30): the line said
-  # "run passed: PR merged/closed" while GitHub, asked at that same moment, had
-  # PR 13 of DeepFlowCoder/firstmate open, unmerged, and carrying a red check.
-  # An unreachable forge is stated as unresolved rather than filled in, because
-  # the guess is exactly what did the damage.
+  # `outcome: passed` is no-mistakes' word for "the pull request merged or
+  # closed" - a CLAIM about the forge, never a reading of it. Rendering that
+  # claim as the fact it merely asserts cost the worst of the three measured
+  # false verdicts (2026-08-30): the line said "run passed: PR merged/closed"
+  # while GitHub, asked at that same moment, had PR 13 of DeepFlowCoder/firstmate
+  # open, unmerged, and carrying a red check.
   #
-  # A finished run with no pull request recorded at all makes no claim to check,
-  # so it is left alone - except for `passed`, which IS the claim that something
-  # landed and therefore owes an answer either way.
-  if [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_STATE" = "done" ] \
-    && { [ -n "$RUN_PR" ] || [ "$RUN_WORD" = passed ]; }; then
-    PR_ANSWER=$(fm_pr_state_resolve "$RUN_PR" "$NM_TIMEOUT")
-    # The reason rides on stdout beside the state, because this call is a
-    # command substitution and a variable the function set would die with its
-    # subshell. A resolved answer carries no reason and leaves PR_REASON empty.
+  # So the claim stands as landed work in exactly one case: the forge confirms
+  # it. Every other case leaves the merge UNVERIFIED - the forge refuting it, a
+  # forge that did not answer, and the default read that asks no forge at all -
+  # and an unverified merge is not finished work. It reports `unknown` carrying
+  # the reason it could not be settled, and the search falls through to whatever
+  # evidence can still say where this crew is. That fall-through is why the
+  # reason is stated rather than the state guessed: a reader learns both what the
+  # run claimed and why nobody can confirm it.
+  #
+  # `passed` is the only word that reaches here, because it is the only one that
+  # claims a merge. `checks-passed` and a coarse `completed` report `done` and
+  # say nothing about a pull request either way, so they have nothing to verify.
+  if [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_WORD" = passed ]; then
     PR_STATE=""
     PR_REASON=""
-    IFS=$'\t' read -r PR_STATE PR_REASON <<< "$PR_ANSWER"
+    if [ "$RESOLVE_PR" != 1 ]; then
+      PR_REASON="this read asks no forge (set FM_CREW_STATE_RESOLVE_PR=1 to resolve it)"
+    elif [ -z "$RUN_PR" ]; then
+      PR_REASON="the run recorded no pull request to ask about"
+    else
+      # The reason rides on stdout beside the state, because this call is a
+      # command substitution and a variable the function set would die with its
+      # subshell. A resolved answer carries no reason and leaves PR_REASON empty.
+      IFS=$'\t' read -r PR_STATE PR_REASON <<< "$(fm_pr_state_resolve "$RUN_PR" "$NM_TIMEOUT")"
+    fi
     case "$PR_STATE" in
       merged|closed)
         RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is $PR_STATE on the forge" ;;
       open)
-        # The run claims the work landed and the forge says it did not. The forge
-        # owns that fact, so the claim does not stand; what is certain is only
-        # that this is not finished work.
-        if [ "$RUN_WORD" = passed ]; then
-          emit unknown run-step \
-            "the run reported passed, but $RUN_PR is still open on the forge${SEP}the work has not landed"
-        fi
-        RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is open on the forge" ;;
+        RUN_STATE=unknown
+        RUN_DETAIL="$RUN_DETAIL${SEP}but $RUN_PR is still open on the forge${SEP}the work has not landed" ;;
       *)
-        RUN_DETAIL="$RUN_DETAIL${SEP}pull request state not resolved (${PR_REASON:-the forge was not consulted})" ;;
+        RUN_STATE=unknown
+        RUN_DETAIL="$RUN_DETAIL${SEP}pull request state not resolved: $PR_REASON" ;;
     esac
   fi
 

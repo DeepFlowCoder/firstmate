@@ -192,9 +192,13 @@ reset_fakes() {
   FM_FAKE_NM_CALLS=""
   FM_FAKE_GH_PR_STATE=""
   FM_FAKE_GH_CALLS=""
+  # The forge read is opt-in, so it is OFF for every case that does not name it -
+  # which is what makes a case that forgets to name it read as the default,
+  # local-only path rather than silently reaching a stub.
+  FM_CREW_STATE_RESOLVE_PR=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_NM_CALLS
-  export FM_FAKE_GH_PR_STATE FM_FAKE_GH_CALLS
+  export FM_FAKE_GH_PR_STATE FM_FAKE_GH_CALLS FM_CREW_STATE_RESOLVE_PR
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -298,6 +302,22 @@ run:
   pr: "https://github.com/o/r/pull/1"
   findings: none
 outcome: passed
+EOF
+}
+
+# A run that finished green through the checks without claiming the pull request
+# went anywhere. It records a `pr:` like any other, which is the point: a recorded
+# pull request is not a merge claim, so nothing here needs verifying.
+run_checks_passed() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  findings: none
+outcome: checks-passed
 EOF
 }
 
@@ -747,6 +767,11 @@ test_terminal_passed() {
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-d)"
   # The runs list corroborates: this branch's newest run is the finished one.
   FM_FAKE_RUNS_LIST="  completed  fm/feat-d ${short}  2026-08-29 07:45"
+  # `passed` claims a merge, so `done` is only available once the forge confirms
+  # one. This case is about the run-step being authoritative, not about the
+  # claim, so it opts in and the forge answers.
+  FM_CREW_STATE_RESOLVE_PR=1
+  FM_FAKE_GH_PR_STATE=MERGED
   local out; out=$(run_crew_state "$d" feat-d)
   assert_contains "$out" "state: done" "passed run -> done"
   assert_contains "$out" "source: run-step" "passed -> run-step source"
@@ -1149,6 +1174,8 @@ test_dead_window_still_reports_terminal_run_step() {
   printf 'done: PR https://github.com/o/r/pull/3 checks green\n' > "$d/state/feat-dead-done.status"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-dead-done)"
   FM_FAKE_RUNS_LIST="  completed  fm/feat-dead-done ${short}  2026-08-29 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
+  FM_FAKE_GH_PR_STATE=MERGED
   FM_FAKE_TMUX_MISSING=1   # the crew's window has closed
   local out; out=$(run_crew_state "$d" feat-dead-done)
   assert_contains "$out" "state: done" "closed pane still reports terminal run-step done"
@@ -2050,6 +2077,7 @@ test_passed_outcome_never_claims_an_unresolved_merge() {
   fm_write_meta "$d/state/openpr.meta" "window=fm:fm-openpr" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-openpr)"
   FM_FAKE_RUNS_LIST="  completed  fm/feat-openpr ${short}  2026-08-30 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
   FM_FAKE_GH_PR_STATE=OPEN
   out=$(run_crew_state "$d" openpr)
   assert_not_contains "$out" "merged/closed" "a pull request state is never deduced from the run outcome"
@@ -2070,6 +2098,7 @@ test_passed_outcome_reports_a_forge_confirmed_merge() {
   fm_write_meta "$d/state/mergedpr.meta" "window=fm:fm-mergedpr" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-mergedpr)"
   FM_FAKE_RUNS_LIST="  completed  fm/feat-mergedpr ${short}  2026-08-30 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
   FM_FAKE_GH_PR_STATE=MERGED
   out=$(run_crew_state "$d" mergedpr)
   assert_contains "$out" "state: done" "a forge-confirmed merge is done"
@@ -2088,6 +2117,7 @@ test_unreachable_forge_is_stated_not_guessed() {
   fm_write_meta "$d/state/forgesilent.meta" "window=fm:fm-forgesilent" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-forgesilent)"
   FM_FAKE_RUNS_LIST="  completed  fm/feat-forgesilent ${short}  2026-08-30 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
   # FM_FAKE_GH_PR_STATE unset: the stub fails exactly as an unauthenticated or
   # offline host does.
   out=$(run_crew_state "$d" forgesilent)
@@ -2111,12 +2141,99 @@ test_terminal_run_does_not_bury_a_contradicting_record() {
   printf 'blocked: the captain must pick the base branch\n' > "$d/state/bury.status"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-bury)"
   FM_FAKE_RUNS_LIST="  completed  fm/feat-bury ${short}  2026-08-30 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
   FM_FAKE_GH_PR_STATE=MERGED
   out=$(run_crew_state "$d" bury)
   assert_contains "$out" "state: blocked" "an unanswered blocker outranks a finished run"
   assert_contains "$out" "pick the base branch" "the contradicting record keeps its own words"
   assert_contains "$out" "contradicts" "the contradiction is stated instead of covered up"
   pass "a terminal run does not bury a contradicting durable record"
+}
+
+# Instance 1 on the path that actually produced it: the periodic, non-interactive
+# read. Every timer-driven caller (the fleet snapshot behind the published ledger,
+# the watcher, the inactive-crew scan) gets this path, and it must neither reach
+# the network nor fill the gap in from the pipeline. An unverified merge claim is
+# not landed work, and the line has to say what could not be read - a bare
+# `unknown` would just be another way of saying nothing.
+test_default_read_asks_no_forge_and_never_claims_the_merge() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case passed-default-local)
+  make_repo_on_branch "$d/wt" fm/feat-defaultpr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/defaultpr.meta" "window=fm:fm-defaultpr" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-defaultpr)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-defaultpr ${short}  2026-08-30 07:45"
+  # A forge that WOULD answer, so the only reason no answer appears is that this
+  # read did not ask: without that, the case could not fail if the guard went.
+  FM_FAKE_GH_PR_STATE=MERGED
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" defaultpr
+  out=$(run_crew_state "$d" defaultpr)
+  [ ! -s "$calls" ] || fail "the default read called gh: $(cat "$calls")"
+  assert_not_contains "$out" "state: done" "an unverified merge claim is not landed work"
+  assert_contains "$out" "run passed" "the run's own claim is still shown"
+  assert_contains "$out" "not resolved" "the line says the pull request state could not be read"
+  assert_contains "$out" "FM_CREW_STATE_RESOLVE_PR" "the reason names what would resolve it"
+  pass "the default read asks no forge and never claims the merge"
+}
+
+# The other half of requirement 3, on the branch where the forge REFUTES the run:
+# a contradicting durable record must not be dropped just because the forge
+# already contradicted the run. Both contradictions end up on the one line.
+test_open_forge_still_surfaces_a_contradicting_record() {
+  reset_fakes
+  local d short out
+  d=$(new_case passed-open-vs-blocker)
+  make_repo_on_branch "$d/wt" fm/feat-openblocked
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/openblocked.meta" "window=fm:fm-openblocked" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/openblocked.status"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-openblocked)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-openblocked ${short}  2026-08-30 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
+  FM_FAKE_GH_PR_STATE=OPEN
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" openblocked
+  out=$(run_crew_state "$d" openblocked)
+  assert_contains "$out" "state: blocked" "the unanswered blocker still answers for the crew"
+  assert_contains "$out" "pick the base branch" "the contradicting record keeps its own words"
+  assert_contains "$out" "still open on the forge" "the forge's own contradiction stays on the line"
+  assert_contains "$out" "the work has not landed" "the refuted merge claim is spelled out"
+  pass "a forge-refuted merge claim does not drop a contradicting record"
+}
+
+# Only `passed` claims a merge, so only `passed` owes an answer about one. A run
+# that finished its checks says nothing about where the pull request went, so it
+# reports done, asks nobody, and adds no pull-request clause to a line that made
+# no pull-request claim.
+test_checks_passed_reports_done_without_a_pull_request_claim() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case checks-passed-no-claim)
+  make_repo_on_branch "$d/wt" fm/feat-checkspassed
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/checkspassed.meta" "window=fm:fm-checkspassed" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_checks_passed fm/feat-checkspassed)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-checkspassed ${short}  2026-08-30 07:45"
+  # Opted IN, so nothing but the run word itself keeps the forge out of this read.
+  FM_CREW_STATE_RESOLVE_PR=1
+  FM_FAKE_GH_PR_STATE=MERGED
+  out=$(run_crew_state "$d" checkspassed)
+  [ ! -s "$calls" ] || fail "a run that claims no merge still called gh: $(cat "$calls")"
+  assert_contains "$out" "state: done" "a finished checks run is done on its own word"
+  assert_contains "$out" "source: run-step" "the verdict is still run-step sourced"
+  assert_not_contains "$out" "on the forge" "a line that claims no merge gains no forge clause"
+  assert_not_contains "$out" "not resolved" "nothing was left unresolved, because nothing was claimed"
+  pass "a checks-passed run reports done without a pull request claim"
 }
 
 # INSTANCE 2 (measured 2026-08-30, later). On baby-menu-widget-cuota the line was
@@ -2410,5 +2527,8 @@ test_cancelled_run_falls_through_to_the_pause_when_the_list_is_silent
 test_unknown_attribution_without_a_refusal_claims_none
 test_cancelled_run_does_not_claim_to_contradict_a_blocker
 test_unmodelled_status_does_not_supersede_the_record_that_answers_it
+test_default_read_asks_no_forge_and_never_claims_the_merge
+test_open_forge_still_surfaces_a_contradicting_record
+test_checks_passed_reports_done_without_a_pull_request_claim
 
 echo "all fm-crew-state tests passed"

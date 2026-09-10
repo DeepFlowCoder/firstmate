@@ -788,6 +788,7 @@ FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in C
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-crew-state.sh
 FM_TEARDOWN_NM_TIMEOUT=10    # seconds allowed per no-mistakes query or abort inside fm-teardown.sh
 FM_CREW_STATE_RUNS_LIMIT=200  # recent no-mistakes run rows scanned when axi status cannot be attributed directly, and to check whether a newer run supersedes a terminal verdict
+FM_CREW_STATE_RESOLVE_PR=     # 1 lets fm-crew-state.sh ask the forge whether a `passed` run's pull request really merged; default off, so every timer-driven caller stays local-only and an unverified merge reads unknown with its reason instead of done
 FM_TEARDOWN_NM_RUNS_LIMIT=200  # recent no-mistakes run rows fm-teardown.sh scans to corroborate whether this branch's newest run is still live before removing the worker; raise it when teardown refuses because the listing carried no row for the branch
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by working/paused watcher triage
 FM_PROCEVENT_BIN=bin/fm-procevent.sh   # test override for the process-event runner the watcher reconciles through each cycle

@@ -202,15 +202,14 @@ command -v jq >/dev/null 2>&1 || { echo "fm-bearings-snapshot: jq not found" >&2
 "$SCRIPT_DIR/fm-afk-return.sh" guard || exit $?
 
 NOW=${FM_BEARINGS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
-# The zero-network default above is enforced, not just documented. The current
-# state of a finished task resolves its pull request from the forge
-# (bin/fm-forge-pr-state-lib.sh), so a default bearings read would otherwise
-# reach GitHub through the canonical snapshot. Off means the line says the state
-# was not resolved, never that it guesses one; --include-prs is the opt-in that
-# lets that read happen along with this wrapper's own live PR work.
-if [ "$INCLUDE_PRS" != 1 ]; then
-  FM_FORGE_PR_STATE_OFF=1
-  export FM_FORGE_PR_STATE_OFF
+# The canonical snapshot reads each crew's current state through
+# bin/fm-crew-state.sh, which asks no forge unless it is told to. --include-prs
+# is the one path that may, so it is the one path that tells it: this wrapper's
+# own live PR work and that per-crew pull request read are the same opt-in, and
+# the default read stays local-only without needing to ask for anything.
+if [ "$INCLUDE_PRS" = 1 ]; then
+  FM_CREW_STATE_RESOLVE_PR=1
+  export FM_CREW_STATE_RESOLVE_PR
 fi
 if [ "$ALL_LANDED" = 1 ] || [ "$ALL_SECONDMATES" = 1 ]; then
   if [ "$ALL_LANDED" = 1 ]; then
