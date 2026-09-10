@@ -168,6 +168,15 @@ new_case() {  # <name> -> echoes case dir with an empty state/
   printf '%s\n' "$d"
 }
 
+# The runs list is the arbitrator EVERY non-parked reading passes through, and a
+# reading it cannot corroborate degrades to unknown by design - so a case about
+# anything else still has to say what that list answers, or it is really a case
+# about a silent arbitrator. This is the ordinary answer: the branch's newest run
+# is the one being reported, still active, at this worktree's own head.
+corroborating_active_row() {  # <case-dir> <branch>
+  printf '  running  %s %s  2026-08-29 07:45\n' "$2" "$(git -C "$1/wt" rev-parse --short=8 HEAD)"
+}
+
 arm_idle_record() {  # <state-dir> <id>
   local state=$1 id=$2 gen
   gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
@@ -450,6 +459,8 @@ test_active_run_is_authoritative() {
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-a.meta" "window=fm:fm-feat-a" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-a)"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-a)
   local out; out=$(run_crew_state "$d" feat-a)
   assert_contains "$out" "state: working" "active run -> working"
   assert_contains "$out" "source: run-step" "active run -> run-step source"
@@ -466,6 +477,8 @@ test_stale_needs_decision_superseded() {
   fm_write_meta "$d/state/feat-b.meta" "window=fm:fm-feat-b" "worktree=$d/wt" "kind=ship"
   printf 'working: started\nneeds-decision: pick A or B\n' > "$d/state/feat-b.status"
   FM_FAKE_AXI_STATUS="$(run_fixing fm/feat-b)"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-b)
   local out; out=$(run_crew_state "$d" feat-b)
   assert_contains "$out" "state: working" "resumed run -> working despite needs-decision log"
   assert_contains "$out" "source: run-step" "resumed run -> run-step source"
@@ -482,6 +495,8 @@ test_stale_blocked_superseded() {
   fm_write_meta "$d/state/feat-bb.meta" "window=fm:fm-feat-bb" "worktree=$d/wt" "kind=ship"
   printf 'blocked: waiting on review answer\n' > "$d/state/feat-bb.status"
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-bb)"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-bb)
   local out; out=$(run_crew_state "$d" feat-bb)
   assert_contains "$out" "state: working" "resumed run -> working despite blocked log"
   assert_contains "$out" "superseded" "stale blocked log flagged superseded"
@@ -548,6 +563,8 @@ test_ci_ready_done_log_beats_monitoring_run() {
   fm_write_meta "$d/state/feat-ci.meta" "window=fm:fm-feat-ci" "worktree=$d/wt" "kind=ship"
   printf 'done: PR https://github.com/o/r/pull/2 checks green\n' > "$d/state/feat-ci.status"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-ci)"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-ci)
   local out; out=$(run_crew_state "$d" feat-ci)
   assert_contains "$out" "state: done" "ci-ready status log -> done"
   assert_contains "$out" "source: status-log" "ci-ready state comes from the status log"
@@ -574,6 +591,8 @@ CI checks running, waiting for results...
 all CI checks passed - still monitoring until merged or closed
 EOF
 )
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-cigreen)
   local out; out=$(run_crew_state "$d" feat-cigreen)
   assert_contains "$out" "state: done" "green ci-monitor run -> done"
   assert_contains "$out" "source: run-step" "green ci-monitor -> run-step source"
@@ -590,6 +609,8 @@ test_top_level_ci_checks_green_surfaces_done() {
   fm_write_meta "$d/state/feat-topcigreen.meta" "window=fm:fm-feat-topcigreen" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_top_level_ci fm/feat-topcigreen)"
   FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-topcigreen)
   local out; out=$(run_crew_state "$d" feat-topcigreen)
   assert_contains "$out" "state: done" "top-level ci with green log -> done"
   assert_contains "$out" "source: run-step" "top-level ci green -> run-step source"
@@ -606,6 +627,8 @@ test_ci_monitoring_no_checks_terminal_surfaces_done() {
   fm_write_meta "$d/state/feat-cinochecks.meta" "window=fm:fm-feat-cinochecks" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cinochecks)"
   FM_FAKE_CI_LOGS="no CI checks reported - still monitoring until merged or closed"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-cinochecks)
   local out; out=$(run_crew_state "$d" feat-cinochecks)
   assert_contains "$out" "state: done" "terminal no-checks ci-monitor run -> done"
   assert_contains "$out" "checks green" "terminal no-checks ci-monitor detail mentions checks green"
@@ -624,6 +647,8 @@ all CI checks passed - still monitoring until merged or closed
 base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
 EOF
 )
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-cirearm)
   local out; out=$(run_crew_state "$d" feat-cirearm)
   assert_contains "$out" "state: working" "base-advance rearm marker -> working"
   assert_not_contains "$out" "state: done" "base-advance rearm marker must not read as done"
@@ -644,6 +669,8 @@ base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
 no CI checks reported yet, waiting for checks to register...
 EOF
 )
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-cinochecksyet)
   local out; out=$(run_crew_state "$d" feat-cinochecksyet)
   assert_contains "$out" "state: working" "pending no-checks marker -> working"
   assert_not_contains "$out" "state: done" "pending no-checks marker must not read as done"
@@ -659,6 +686,8 @@ test_ci_monitoring_still_waiting_stays_working() {
   fm_write_meta "$d/state/feat-ciwait.meta" "window=fm:fm-feat-ciwait" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-ciwait)"
   FM_FAKE_CI_LOGS="CI checks running, waiting for results..."
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-ciwait)
   local out; out=$(run_crew_state "$d" feat-ciwait)
   assert_contains "$out" "state: working" "ci step still red -> working"
   assert_not_contains "$out" "checks green" "no green marker present -> no checks-green detail"
@@ -680,6 +709,8 @@ base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
 issues detected: merge conflict - auto-fixing (attempt 2/10)...
 EOF
 )
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-cirelapse)
   local out; out=$(run_crew_state "$d" feat-cirelapse)
   assert_contains "$out" "state: working" "a later relapse marker must win over an earlier green one"
   assert_not_contains "$out" "state: done" "relapsed ci run must not read as done"
@@ -700,6 +731,8 @@ base branch advanced (aaaaaaa..bbbbbbb), re-arming CI monitor timeout
 CI checks running, waiting for results...
 EOF
 )
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-cireadyrelapse)
   local out; out=$(run_crew_state "$d" feat-cireadyrelapse)
   assert_contains "$out" "state: working" "a stale ready status must not mask a later CI relapse"
   assert_contains "$out" "source: run-step" "relapsed ci run remains run-step sourced"
@@ -716,6 +749,8 @@ test_ci_fixing_after_green_stays_working() {
   printf 'done: PR https://github.com/o/r/pull/2 checks green\n' > "$d/state/feat-cifixing.status"
   FM_FAKE_AXI_STATUS="$(run_ci_fixing fm/feat-cifixing)"
   FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-cifixing)
   local out; out=$(run_crew_state "$d" feat-cifixing)
   assert_contains "$out" "state: working" "ci fixing step must stay working"
   assert_contains "$out" "source: run-step" "ci fixing remains run-step sourced"
@@ -731,6 +766,8 @@ test_top_level_fixing_ci_running_after_green_stays_working() {
   fm_write_meta "$d/state/feat-topfixingci.meta" "window=fm:fm-feat-topfixingci" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_fixing_ci_running fm/feat-topfixingci)"
   FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-topfixingci)
   local out; out=$(run_crew_state "$d" feat-topfixingci)
   assert_contains "$out" "state: working" "top-level fixing with ci running must stay working"
   assert_contains "$out" "source: run-step" "top-level fixing with ci running remains run-step sourced"
@@ -748,6 +785,8 @@ test_top_level_fixing_done_log_stays_working() {
   printf 'done: PR https://github.com/o/r/pull/2 checks green\n' > "$d/state/feat-topfixing.status"
   FM_FAKE_AXI_STATUS="$(run_fixing fm/feat-topfixing)"
   FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-topfixing)
   local out; out=$(run_crew_state "$d" feat-topfixing)
   assert_contains "$out" "state: working" "top-level fixing must stay working"
   assert_contains "$out" "source: run-step" "top-level fixing remains run-step sourced"
@@ -1194,6 +1233,8 @@ test_dead_window_still_reports_active_run_step() {
   fm_write_meta "$d/state/feat-dead-act.meta" "window=fm:fm-feat-dead-act" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-dead-act)"
   FM_FAKE_TMUX_MISSING=1
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-dead-act)
   local out; out=$(run_crew_state "$d" feat-dead-act)
   assert_contains "$out" "state: working" "closed pane still reports active run-step"
   assert_contains "$out" "source: run-step" "closed pane does not mask the active run-step"
@@ -1478,6 +1519,8 @@ test_active_run_descendant_fix_head_remains_current() {
   fm_write_meta "$d/state/pipe.meta" "window=fm:fm-pipe" "worktree=$d/wt" "kind=ship"
   FM_FAKE_RUN_HEAD="$fix_head"
   FM_FAKE_AXI_STATUS="$(run_fixing fm/feat-pipeline)"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-pipeline)
   out=$(run_crew_state "$d" pipe)
   assert_contains "$out" "source: run-step" "descendant pipeline fix head remains run-step"
   assert_contains "$out" "state: working" "active fixing run remains working"
@@ -2176,10 +2219,67 @@ test_default_read_asks_no_forge_and_never_claims_the_merge() {
   out=$(run_crew_state "$d" defaultpr)
   [ ! -s "$calls" ] || fail "the default read called gh: $(cat "$calls")"
   assert_not_contains "$out" "state: done" "an unverified merge claim is not landed work"
+  assert_contains "$out" "state: unknown" "an unverifiable claim reports unknown, not something else"
+  assert_contains "$out" "source: run-step" "the run-step reports its own unknown instead of delegating it"
   assert_contains "$out" "run passed" "the run's own claim is still shown"
   assert_contains "$out" "not resolved" "the line says the pull request state could not be read"
   assert_contains "$out" "FM_CREW_STATE_RESOLVE_PR" "the reason names what would resolve it"
   pass "the default read asks no forge and never claims the merge"
+}
+
+# Instance 3, closed. The measured 2026-09-09 reading: `axi status` keeps
+# answering `running` while this branch's own newest run has been failed for
+# hours, and the heavy list query that would refute it is the one likeliest to
+# time out under exactly that multi-crew load - so it returns EMPTY and nothing
+# is checked. An active reading nothing checked must not stand: firstmate acted
+# on that certainty twice, in opposite directions, where an honest uncertainty
+# would have made it look. The unknown carries its reason, so a reader knows the
+# arbitrator was not reached rather than guessing the worker died.
+test_active_reading_degrades_to_unknown_when_the_list_is_silent() {
+  reset_fakes
+  local d out
+  d=$(new_case active-silent-list)
+  make_repo_on_branch "$d/wt" fm/feat-silentactive
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/silentactive.meta" "window=fm:fm-silentactive" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/silentactive.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-silentactive)"
+  # The bounded, fail-open list query timed out: silence, not evidence.
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" silentactive
+  out=$(run_crew_state "$d" silentactive)
+  assert_not_contains "$out" "state: working" "an active reading nothing checked must not stand"
+  assert_contains "$out" "state: unknown" "an unchecked reading is honestly unknown"
+  assert_contains "$out" "source: run-step" "the run-step owns its own uncertainty"
+  assert_contains "$out" "validating (running)" "what the run reported is still shown"
+  assert_contains "$out" "the runs list did not answer for fm/feat-silentactive within budget" \
+    "the unknown carries the reason the arbitrator was not reached"
+  pass "an active reading degrades to unknown when the runs list is silent"
+}
+
+# The invariant this file states about itself: a finished-but-pane-closed crew
+# never reaches the no-run fallback. It held for a resolved merge and broke for
+# an unverified one, which is the case every timer-driven caller sees - and the
+# fallback would have reported the crew gone instead of finished-but-unverified.
+test_unverified_finish_reports_itself_even_with_the_pane_closed() {
+  reset_fakes
+  local d short out
+  d=$(new_case unverified-dead-window)
+  make_repo_on_branch "$d/wt" fm/feat-unverifieddead
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unverifieddead.meta" "window=fm:fm-unverifieddead" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-unverifieddead)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-unverifieddead ${short}  2026-08-30 07:45"
+  FM_FAKE_TMUX_MISSING=1   # the crew's window has closed
+  out=$(run_crew_state "$d" unverifieddead)
+  assert_contains "$out" "source: run-step" "a finished run answers for itself, pane or no pane"
+  assert_not_contains "$out" "source: none" "a finished run never falls to the no-run fallback"
+  assert_not_contains "$out" "backend target gone" "a closed pane is not the answer for a finished run"
+  assert_contains "$out" "run passed" "the run's own claim is still shown"
+  assert_contains "$out" "not resolved" "and why it could not be confirmed"
+  pass "an unverified finish reports itself even with the pane closed"
 }
 
 # The other half of requirement 3, on the branch where the forge REFUTES the run:
@@ -2333,6 +2433,8 @@ test_ci_green_done_does_not_revive_a_stale_blocked_log() {
   printf 'blocked: the captain must pick the base branch\n' > "$d/state/cigreenblocked.status"
   FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cigreenblocked)"
   FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  # Corroborated by the arbitrator, so this case tests what it is about.
+  FM_FAKE_RUNS_LIST=$(corroborating_active_row "$d" fm/feat-cigreenblocked)
   out=$(run_crew_state "$d" cigreenblocked)
   assert_not_contains "$out" "state: blocked" "a blocker under a still-running run is stale, not current"
   assert_contains "$out" "state: done" "the ci-green reading still answers"
@@ -2530,5 +2632,7 @@ test_unmodelled_status_does_not_supersede_the_record_that_answers_it
 test_default_read_asks_no_forge_and_never_claims_the_merge
 test_open_forge_still_surfaces_a_contradicting_record
 test_checks_passed_reports_done_without_a_pull_request_claim
+test_active_reading_degrades_to_unknown_when_the_list_is_silent
+test_unverified_finish_reports_itself_even_with_the_pane_closed
 
 echo "all fm-crew-state tests passed"

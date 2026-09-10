@@ -49,10 +49,11 @@
 #      verdict as read, `superseded` reports a bound running successor as
 #      working and a bound failed successor as failed - any other superseding row
 #      reports `unknown` - and `unestablished` (the runs list never answered)
-#      downgrades a terminal verdict to `unknown` while leaving an active reading
-#      standing. A stale or unverifiable terminal verdict is never asserted as
-#      failed or done, and an active reading is never left standing over a run
-#      that has already failed.
+#      degrades EVERY reading that claims something, active no less than
+#      terminal, to `unknown` carrying the reason the arbitrator was not reached.
+#      A verdict nothing checked is never asserted, in either direction: not a
+#      done or failed that may already be stale, and not an active reading over a
+#      run that has already failed.
 #   3. Never deduce what a forge says. `outcome: passed` is no-mistakes' word for
 #      "the pull request merged or closed", which is a CLAIM about the forge and
 #      not a reading of it, so it is reported as landed work only where the forge
@@ -510,10 +511,10 @@ nm_scan_runs_for_branch() {  # <branch>
 #                 bounded, fail-open `no-mistakes runs` returns empty on timeout,
 #                 and under the multi-crew load that produced the incident the
 #                 heavy list query is likelier to time out than the single `axi
-#                 status` that already answered. What silence licenses depends on
-#                 the direction of the claim, and the caller owns that: a
-#                 terminal verdict is a NEW claim and is downgraded to `unknown`,
-#                 while an active reading is the status quo and simply stands.
+#                 status` that already answered. Silence licenses NO claim, in
+#                 any direction: the caller degrades every reading that claims
+#                 something to `unknown` with the reason, and only a reading that
+#                 claims nothing has nothing to degrade.
 #
 # ACTIVE readings are arbitrated too, not only terminal ones. Skipping them is
 # the exact hole that produced the third measured false verdict (2026-09-09): a
@@ -720,6 +721,15 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
+  # Whether the run WORD carried a verdict about the work at all. This is not
+  # the same question as the state being `unknown`: an abort reports `unknown`
+  # because it says nothing, while a finished run whose merge claim could not be
+  # verified (below) also reports `unknown` - but it did finish, and it did
+  # claim. Conflating the two is what let a finished run be answered by a stale
+  # log: only the first may hand the question to other evidence.
+  RUN_VERDICTLESS=0
+  case "$RUN_STATE" in unknown) RUN_VERDICTLESS=1 ;; esac
+
   # A verdict is only trustworthy when this branch's NEWEST run is the one it
   # came from. Measured 2026-08-29 on the real store (runs
   # 01M166T3Z9WVJDV1V2JJM8F7HG cancelled and 01M16WA7F47FKSF3459NSH7E7K live,
@@ -790,21 +800,27 @@ if [ "$HAVE_RUN" = 1 ]; then
         "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL); its head does not bind to this worktree"
       ;;
     unestablished)
-      # Silence licenses nothing NEW. A terminal verdict that CLAIMS something
-      # about the work - it landed, or it failed - is a new claim, so it is
-      # downgraded; an active reading is the status quo this read arrived with,
-      # so it simply stands rather than turning every timed-out list query into a
-      # fleet of unknowns. A terminal run that asserts NOTHING (an abort, already
-      # `unknown`) has no claim to downgrade, and emitting one here would stop
-      # the fall-through to the evidence that can answer - which is the whole of
-      # what a cancellation is owed.
-      if [ "$RUN_IS_TERMINAL" = 1 ]; then
-        case "$RUN_STATE" in
-          done|failed)
-            emit unknown run-step \
-              "cannot confirm the reported terminal run is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH" ;;
-        esac
-      fi
+      # The arbitrator was not reached, so NOTHING about this reading was
+      # checked - and an unchecked active reading is precisely what the
+      # 2026-09-09 incident stood on: `axi status` kept answering `running` while
+      # this branch's own newest run had been failed for hours, and the heavy
+      # list query that would have refuted it is the one likeliest to time out
+      # under exactly that multi-crew load. Silence therefore licenses no claim
+      # in either direction: an active reading is degraded here just as a
+      # terminal one is. That wrong certainty made a supervisor act twice, in
+      # opposite directions; an honest uncertainty would only have made it look,
+      # and honest noise beats a confident lie.
+      #
+      # The degrade CARRIES ITS REASON, because a bare `unknown` is another way
+      # of saying nothing: the line says the arbitrator could not be read within
+      # budget, so a reader knows what was not reached instead of guessing
+      # whether the worker died.
+      #
+      # A reading that claims nothing (an abort) has no claim to degrade, and
+      # emitting here would stop its fall-through to the evidence that CAN
+      # answer - which is the whole of what a cancellation is owed.
+      [ "$RUN_VERDICTLESS" = 1 ] || emit unknown run-step \
+        "cannot confirm $SUPERSEDED_SUBJECT is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH within budget"
       ;;
   esac
 
@@ -836,10 +852,14 @@ if [ "$HAVE_RUN" = 1 ]; then
   # it. Every other case leaves the merge UNVERIFIED - the forge refuting it, a
   # forge that did not answer, and the default read that asks no forge at all -
   # and an unverified merge is not finished work. It reports `unknown` carrying
-  # the reason it could not be settled, and the search falls through to whatever
-  # evidence can still say where this crew is. That fall-through is why the
-  # reason is stated rather than the state guessed: a reader learns both what the
-  # run claimed and why nobody can confirm it.
+  # the reason it could not be settled.
+  #
+  # That `unknown` is REPORTED, not delegated: the run finished and made a claim
+  # nobody could check, which is a fact the reader needs, not a gap for the pane
+  # or a status line written before the run ended to fill in. Only a contradicting
+  # durable record still outranks it below, because an unanswered blocker is
+  # evidence and this reading is not. RUN_VERDICTLESS is what keeps that
+  # distinction: an abort hands the question on, an unverified finish does not.
   #
   # `passed` is the only word that reaches here, because it is the only one that
   # claims a merge. `checks-passed` and a coarse `completed` report `done` and
@@ -879,39 +899,40 @@ if [ "$HAVE_RUN" = 1 ]; then
   # contradiction left visible.
   #
   # Only a reading that SAYS something about the work reconciles against the
-  # record at all, which is why the three states that do are named here rather
-  # than defaulted into. A gate (`parked`) and a verdictless abort (`unknown`)
-  # each assert nothing: neither may call the record superseded, and neither may
-  # claim to contradict it - the record answers plainly and the run's own account
-  # rides down as the aside below.
+  # record at all. A gate (`parked`) and a verdictless abort assert nothing:
+  # neither may call the record superseded, and neither may claim to contradict
+  # it - the record answers plainly and the run's own account rides down as the
+  # aside below. An unverified finish is NOT in that group: it claimed the work
+  # landed, so it can and does contradict an unanswered blocker.
   #
-  # Among the three, the split is on whether the run FINISHED, not on the state it
-  # reports: the ci-green reading above reports `done` for a run that is still
-  # actively monitoring its pull request, and a still-running run leaves the
-  # record just as deterministically stale as any other active one. Only a
-  # genuinely terminal run lets the durable record win.
-  case "$LOG_VERB" in
-    needs-decision|blocked)
-      case "$RUN_STATE" in
-        working|done|failed)
-          if [ "$RUN_IS_TERMINAL" != 1 ]; then
-            RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run"
-          elif [ "$RUN_STATE" = failed ]; then
-            RUN_DETAIL="$RUN_DETAIL${SEP}an unresolved $LOG_VERB is still on the record: $(status_line_note "$LOG_LINE")"
-          else
-            emit "$(map_log_state "$LOG_LINE")" status-log \
-              "$(status_line_note "$LOG_LINE")${SEP}still unresolved on the record, which the run's own verdict ($RUN_DETAIL) contradicts"
-          fi
-          ;;
-      esac
-      ;;
-  esac
+  # Among the readings that do claim, the split is on whether the run FINISHED,
+  # not on the state it reports: the ci-green reading above reports `done` for a
+  # run that is still actively monitoring its pull request, and a still-running
+  # run leaves the record just as deterministically stale as any other active
+  # one. Only a genuinely terminal run lets the durable record win.
+  if [ "$RUN_STATE" != parked ] && [ "$RUN_VERDICTLESS" != 1 ]; then
+    case "$LOG_VERB" in
+      needs-decision|blocked)
+        if [ "$RUN_IS_TERMINAL" != 1 ]; then
+          RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run"
+        elif [ "$RUN_STATE" = failed ]; then
+          RUN_DETAIL="$RUN_DETAIL${SEP}an unresolved $LOG_VERB is still on the record: $(status_line_note "$LOG_LINE")"
+        else
+          emit "$(map_log_state "$LOG_LINE")" status-log \
+            "$(status_line_note "$LOG_LINE")${SEP}still unresolved on the record, which the run's own verdict ($RUN_DETAIL) contradicts"
+        fi
+        ;;
+    esac
+  fi
 
   # A run word that answers nothing about the work - `cancelled` above all - is
   # not a state, and it must not stop the search either. Fall through to the
   # evidence that CAN answer, carrying the run's own account as an aside so the
-  # reader still sees what the pipeline did.
-  if [ "$RUN_STATE" = unknown ]; then
+  # reader still sees what the pipeline did. Every other reading answers HERE,
+  # including one whose state is `unknown` because a claim could not be verified:
+  # letting that one fall through is how a finished run got reported as work in
+  # progress by a pane or a status line written before it ended.
+  if [ "$RUN_VERDICTLESS" = 1 ]; then
     EMIT_ASIDE=$RUN_DETAIL
   else
     emit "$RUN_STATE" run-step "$RUN_DETAIL"
