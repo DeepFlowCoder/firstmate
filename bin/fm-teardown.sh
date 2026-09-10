@@ -1586,15 +1586,15 @@ refuse_over_uninspected_live_run() {  # <worktree>
   echo "Do not abort without --run: the run-id-less form resolves repository-scoped, so under multi-crew load it can discard another branch's in-flight work." >&2
 }
 
+# The terminal vocabulary is read from the one owner in bin/fm-nm-run-lib.sh
+# rather than restated here, so this fourth reader of a run word cannot drift
+# from the three bin/fm-crew-state.sh reads it shares that vocabulary with.
 task_status_is_terminal_run() {  # <axi-status-output> <run-id>
   local out=$1 expected_id=$2 run_id outcome
   run_id=$(fm_nm_strip_quotes "$(fm_nm_field "$out" id)")
   [ "$run_id" = "$expected_id" ] || return 1
   outcome=$(fm_nm_strip_quotes "$(fm_nm_field "$out" outcome)")
-  case "$outcome" in
-    cancelled|failed|passed|checks-passed) return 0 ;;
-  esac
-  return 1
+  fm_nm_verdict_is_terminal "$outcome"
 }
 
 task_status_is_run_not_found() {  # <status-error> <run-id>

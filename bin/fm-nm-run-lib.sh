@@ -225,3 +225,73 @@ fm_nm_runs_parse_row() {  # <row>
   [ -n "$status" ] && [ -n "$branch" ] || return 1
   printf '%s\t%s\t%s' "$status" "$branch" "$sha"
 }
+
+# --- run-word translation ---------------------------------------------------
+#
+# THE one owner of "what state does this run word mean". It exists because that
+# translation used to live in three copies inside bin/fm-crew-state.sh - the
+# `outcome:` arm, the top-level `status:` arm, and the coarse runs-list arm -
+# which disagreed on every word none of them modelled, and each of the three
+# measured false verdicts of issue 3306 came out of a different one of them.
+# Every caller reads the mapping from here, so a word cannot mean one thing on
+# one surface and another thing on the next.
+#
+# One table serves all three surfaces because their vocabularies are disjoint
+# where it matters and never conflicting: `passed` and `checks-passed` appear
+# only as an outcome, `ci` only as an `axi status`, `pending` only as a status
+# or a list row, and no word maps to two different states depending on where it
+# was read. A per-surface parameter would only re-create the drift.
+#
+# `cancelled` is deliberately NOT a failure. A cancellation is an abort, so the
+# run produced no verdict about the work at all, and reporting one as `failed`
+# raises an alarm over healthy work: measured 2026-08-30, a task whose worker
+# stopped the ci monitor on purpose (that repository runs no CI) and then
+# declared a wait was reported "state: failed - run cancelled", which a session
+# can act on by relaunching or tearing down finished work. It maps to `unknown`
+# so the caller keeps looking at evidence that can actually answer.
+fm_nm_verdict_state() {  # <run-word>
+  case "${1:-}" in
+    passed|checks-passed|completed) printf 'done' ;;
+    failed)                         printf 'failed' ;;
+    cancelled)                      printf 'unknown' ;;
+    ci|running|fixing|pending|'')   printf 'working' ;;
+    *)                              printf 'unknown' ;;
+  esac
+}
+
+# 0 when the word says the run REACHED a terminal state, which is a different
+# question from what it translates to: `cancelled` is terminal and still reports
+# `unknown`. The terminal vocabulary is the one fm_nm_runs_word_for_terminal
+# already owns, so there is no second list to keep in step with it.
+fm_nm_verdict_is_terminal() {  # <run-word>
+  [ -n "$(fm_nm_runs_word_for_terminal "${1:-}")" ]
+}
+
+# The canonical human phrase for a run word. <surface> is `list` for a coarse
+# runs-list row and anything else for an `axi status` read; it changes only how
+# an in-flight run is phrased, never the state. No phrase here asserts a fact
+# about a pull request: what a forge says about a pull request is resolved by
+# bin/fm-forge-pr-state-lib.sh or reported as unresolved, never inferred from a
+# pipeline outcome.
+fm_nm_verdict_detail() {  # <run-word> [surface]
+  local word=${1:-} surface=${2:-status}
+  case "$word" in
+    passed)        printf 'run passed' ;;
+    checks-passed) printf 'checks green: PR ready for review' ;;
+    completed)     printf 'run completed' ;;
+    failed)        printf 'run failed' ;;
+    cancelled)     printf 'run cancelled (an abort is not a verdict on the work)' ;;
+    ci|running|fixing|pending|'')
+      if [ "$surface" = list ]; then
+        printf 'validating (background run)'
+        return 0
+      fi
+      case "$word" in
+        ci)      printf 'ci running' ;;
+        '')      printf 'run active' ;;
+        pending) printf 'validating (pending)' ;;
+        *)       printf 'validating (%s)' "$word" ;;
+      esac ;;
+    *) printf 'unrecognized run status: %s' "$word" ;;
+  esac
+}

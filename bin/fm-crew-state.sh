@@ -28,40 +28,56 @@
 #      gone/dead.
 #   2. Attribute an active or terminal no-mistakes run under the branch, head,
 #      pipeline-custody, and newest-first rules owned by bin/fm-nm-run-lib.sh.
-#      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
-#      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
-#      the active step is ci, `axi status` alone cannot tell "still waiting on
-#      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
-#      a ci-step log-tail check overrides working -> done once checks read
-#      green, so a green PR is never silently read as still-validating.
-#      AND EXCEPT: a terminal verdict is reported only while it can still be the
-#      current one. Branch+head identity cannot separate an aborted run from the
-#      live run that replaced it (both report the submitted head for the whole
-#      successor run - measured, see bin/fm-nm-run-lib.sh's runs-list
-#      primitives), so the runs list arbitrates. ONE predicate owns that whole
-#      question - nm_terminal_verdict_standing, below - and every terminal
-#      verdict reaches the captain only through it; the rule lives THERE, and
-#      this paragraph only describes it. Its three answers: `current` asserts
-#      failed/done as read, `superseded` reports the live successor as working
-#      only when its head binds here AND that successor is still running - any
-#      other superseding row reports `unknown` - and `unestablished` (the runs
-#      list never answered, so nothing was checked) reports `unknown`. A stale or
-#      unverifiable terminal verdict is never asserted as failed or done.
-#   3. Reconcile the status log: if its last line says needs-decision/blocked but
-#      the run-step shows the run moved on, the log is deterministically stale and
-#      is flagged superseded. A genuinely parked run plus a needs-decision log
+#      The run-step is AUTHORITATIVE, and what a run WORD means is translated in
+#      exactly ONE place - fm_nm_verdict_state in bin/fm-nm-run-lib.sh - shared
+#      by the `outcome:`, `status:` and coarse runs-list readings, so a word
+#      cannot mean one thing on one surface and another on the next. A gate
+#      (awaiting_approval/fix_review) is read here rather than from a word.
+#      EXCEPT: while the active step is ci, `axi status` alone cannot tell "still
+#      waiting on checks" from "checks green, waiting on merge" (see
+#      nm_ci_checks_state) - a ci-step log-tail check overrides working -> done
+#      once checks read green, so a green PR is never silently read as
+#      still-validating.
+#      AND EXCEPT: a verdict is reported only while it can still be the current
+#      one. Branch+head identity cannot separate an aborted run from the live run
+#      that replaced it (both report the submitted head for the whole successor
+#      run - measured, see bin/fm-nm-run-lib.sh's runs-list primitives), so the
+#      runs list arbitrates. ONE predicate owns that whole question -
+#      nm_verdict_standing, below - and every verdict except a parked gate
+#      reaches the captain only through it; the rule lives THERE, and this
+#      paragraph only describes it. Its three answers: `current` asserts the
+#      verdict as read, `superseded` reports a bound running successor as
+#      working and a bound failed successor as failed - any other superseding row
+#      reports `unknown` - and `unestablished` (the runs list never answered)
+#      downgrades a terminal verdict to `unknown` while leaving an active reading
+#      standing. A stale or unverifiable terminal verdict is never asserted as
+#      failed or done, and an active reading is never left standing over a run
+#      that has already failed.
+#   3. Resolve, never deduce, what a forge says. A pipeline outcome is not a
+#      forge fact: a finished run's pull request state is read through
+#      bin/fm-forge-pr-state-lib.sh, and an unreachable forge is reported as
+#      unresolved instead of guessed.
+#   4. Reconcile the status log: a needs-decision/blocked line under an ACTIVE
+#      run is deterministically stale (the gate resolved and the run resumed) and
+#      is flagged superseded. Under a finished run it is not stale - a finished
+#      run answers no decision - so the record keeps its own words and the
+#      contradiction is stated. A genuinely parked run plus a needs-decision log
 #      agree, and are reported as parked.
-#   4. No run for this crew (pre-validation, or kind=scout): fall back to the
-#      recorded backend's pane busy state, then the status log's last line only
-#      when its verb maps to a recognized run-state. Decision-only events such as
-#      `resolved` never become current state or detail.
-#   5. Missing meta or torn-down worktree: report unknown · none. If no run is
+#   5. No run for this crew (pre-validation, kind=scout, or a run word such as
+#      `cancelled` that answers nothing): fall back to the recorded backend's
+#      pane busy state, then the status log's last line only when its verb maps
+#      to a recognized run-state. Decision-only events such as `resolved` never
+#      become current state or detail.
+#   6. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
 #
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
-# of state; exit 2 only on a usage error (no id).
+# of state; exit 2 only on a usage error (no id). The one network call it can
+# make is the bounded forge read in step 3, which happens only when a finished
+# run would otherwise have a pull request state asserted for it; a caller with
+# its own zero-network contract sets FM_FORGE_PR_STATE_OFF=1 and gets an explicit
+# "not resolved" instead.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,6 +95,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-forge-pr-state-lib.sh
+. "$SCRIPT_DIR/fm-forge-pr-state-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -95,10 +113,17 @@ FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 SEP=' · '
 
+# An aside every emission carries, whatever source finally answers. It exists
+# for evidence this read has already gathered but that does not decide the
+# state: a run word that answers nothing (an abort) must still be visible to the
+# reader after the search falls through to the pane or the durable record.
+EMIT_ASIDE=""
+
 # Emit the one canonical line and exit 0. Detail is optional.
 emit() {  # <state> <source> [detail]
   local line="state: $1${SEP}source: $2"
   [ -n "${3:-}" ] && line="$line${SEP}$3"
+  [ -n "$EMIT_ASIDE" ] && line="$line${SEP}$EMIT_ASIDE"
   printf '%s\n' "$line"
   exit 0
 }
@@ -458,23 +483,29 @@ nm_scan_runs_for_branch() {  # <branch>
   return 0
 }
 
-# THE decision point for "may this terminal verdict be asserted?". Every path
-# that would report a terminal run-step verdict passes through here, and every
-# piece of evidence is an INPUT to it rather than a branch of its own, so the
-# invariant lives in this function and not in the prose describing it. Echoes
+# THE decision point for "may this verdict be asserted as this branch's current
+# one?". Every path that would report a run-step verdict passes through here, and
+# every piece of evidence is an INPUT to it rather than a branch of its own, so
+# the invariant lives in this function and not in the prose describing it. Echoes
 # exactly one of three answers:
 #
-#   current       the reported run is provably still this branch's outcome ->
-#                 assert failed/done as the run-step read it.
+#   current       the reported run is provably still this branch's picture ->
+#                 assert the verdict as the run-step read it.
 #   superseded    a strictly later run for this branch provably exists -> the
-#                 reported outcome is not the current one.
-#   unestablished the arbitrator did not answer, so nothing was checked ->
-#                 `unknown`, never failed and never done. A bounded, fail-open
-#                 `no-mistakes runs` returns empty on timeout, and under the
-#                 multi-crew load that produced the incident the heavy list query
-#                 is likelier to time out than the single `axi status` that
-#                 already answered; converting that silence into `failed` is the
-#                 exact inversion of what this helper owes the captain.
+#                 reported verdict is not the current one.
+#   unestablished the arbitrator did not answer, so nothing was checked. A
+#                 bounded, fail-open `no-mistakes runs` returns empty on timeout,
+#                 and under the multi-crew load that produced the incident the
+#                 heavy list query is likelier to time out than the single `axi
+#                 status` that already answered. What silence licenses depends on
+#                 the direction of the claim, and the caller owns that: a
+#                 terminal verdict is a NEW claim and is downgraded to `unknown`,
+#                 while an active reading is the status quo and simply stands.
+#
+# ACTIVE readings are arbitrated too, not only terminal ones. Skipping them is
+# the exact hole that produced the third measured false verdict (2026-09-09): a
+# run reported "validating (running)" for hours while this branch's own newest
+# run had been failed for a long time, because nothing ever compared the two.
 #
 # Evidence, in order of what it can prove:
 #   * The list answered at all (RUNS_ANSWERED).
@@ -486,20 +517,29 @@ nm_scan_runs_for_branch() {  # <branch>
 #   * Whether the answering row is the branch's NEWEST row (coarse path only -
 #     there the row that produced the verdict is known, so any newer row, active
 #     or terminal, proves a later run replaced it).
-#   * Whether the newest row is still active: one run has one status, and the
+#   * Whether the newest row is still active. One run has one status, and the
 #     list is read AFTER `axi status`, so an active newest row cannot be the run
-#     just reported terminal.
+#     just reported terminal - and, in the other direction, a TERMINAL newest row
+#     cannot be the run just reported active. That second reading covers both
+#     ways it can arise, a later run that replaced the reported one and the
+#     reported run finishing between the two reads, because the list is the
+#     later look either way.
 #   * The terminal words themselves: when the reported verdict's list word and
 #     the newest row's word DISAGREE they are provably different runs, which is
 #     how the full path detects a newer TERMINAL run despite the list carrying no
 #     run id. Identical words stay `current`: that case is genuinely ambiguous
 #     and a real terminal verdict must not be blanket-erased.
-nm_terminal_verdict_standing() {  # <reported-terminal-list-word>
-  local reported=${1:-}
+nm_verdict_standing() {  # <reported-terminal-list-word> <reported-is-terminal>
+  local reported=${1:-} is_terminal=${2:-0}
   [ "$RUNS_ANSWERED" = 1 ] || { printf 'unestablished'; return 0; }
   [ "$BRANCH_NEWEST_FOUND" = 1 ] || { printf 'unestablished'; return 0; }
   if [ "$RUN_SOURCE" = coarse ]; then
     [ "$COARSE_ROW_IS_NEWEST" = 1 ] && { printf 'current'; return 0; }
+    printf 'superseded'
+    return 0
+  fi
+  if [ "$is_terminal" != 1 ]; then
+    fm_nm_status_is_active "$BRANCH_NEWEST_STATUS" && { printf 'current'; return 0; }
     printf 'superseded'
     return 0
   fi
@@ -588,42 +628,43 @@ if [ "$HAVE_RUN" = 1 ]; then
   RUN_STATUS=""
   # Whether the RUN itself reached a terminal outcome, which is NOT the same as
   # RUN_STATE being done or failed: the ci-green override below reports done for
-  # a run that is still actively monitoring its PR. Only a genuinely terminal run
-  # is subject to the supersession check.
+  # a run that is still actively monitoring its PR, and a cancelled run is
+  # terminal while reporting nothing. Every verdict is arbitrated below; this
+  # flag decides how much a silent arbitrator is allowed to license.
   RUN_IS_TERMINAL=0
+  # The exact run word handed to the ONE translation owner, and the pull request
+  # the run reports, kept for the arbitration and the forge resolution below.
+  RUN_WORD=""
+  RUN_PR=""
   if [ "$RUN_SOURCE" = coarse ]; then
-    # No step/gate detail is available from the plain runs list - only ever
-    # true/working, done, or failed. A crew genuinely parked at a gate still
-    # gets full detail once `axi status` reports its own branch again (e.g.
+    # No step/gate detail is available from the plain runs list - it carries a
+    # bare status word, which the one translation owner turns into the same
+    # state it would give that word anywhere else. A crew genuinely parked at a
+    # gate still gets full detail once `axi status` reports its own branch again (e.g.
     # once its own step is the most-recently-touched one), and its own
     # needs-decision/blocked status-log append (a captain-relevant VERB) is
     # surfaced by each supervisor's span classification (fm-classify-lib.sh's
     # status_span_first_actionable) regardless of this coarse-vs-full
     # distinction, so a real gate is never silently missed.
-    case "$COARSE_STATUS" in
-      running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
-      completed) RUN_STATE="done";  RUN_DETAIL="run completed"; RUN_IS_TERMINAL=1 ;;
-      failed)    RUN_STATE=failed;  RUN_DETAIL="run failed"; RUN_IS_TERMINAL=1 ;;
-      cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled"; RUN_IS_TERMINAL=1 ;;
-      *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
-    esac
+    RUN_WORD=$COARSE_STATUS
+    RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
+    RUN_DETAIL=$(fm_nm_verdict_detail "$RUN_WORD" list)
+    fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
   else
     status=$(strip_quotes "$(nm_field status)")
     RUN_STATUS=$status
     outcome=$(strip_quotes "$(nm_field outcome)")
+    RUN_PR=$(strip_quotes "$(nm_field pr)")
     awaiting=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
     gate_status=$(nm_gate_status)
     has_gate=0
     nm_has_gate && has_gate=1
 
     if [ -n "$outcome" ]; then
-      case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed"; RUN_IS_TERMINAL=1 ;;
-        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review"; RUN_IS_TERMINAL=1 ;;
-        failed)        RUN_STATE=failed; RUN_DETAIL="run failed"; RUN_IS_TERMINAL=1 ;;
-        cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled"; RUN_IS_TERMINAL=1 ;;
-        *)             RUN_STATE=unknown; RUN_DETAIL="outcome: $outcome" ;;
-      esac
+      RUN_WORD=$outcome
+      RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
+      RUN_DETAIL=$(fm_nm_verdict_detail "$RUN_WORD")
+      fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
     elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
       if [ "$has_gate" = 1 ]; then
         gate=$(nm_gate_line_name)
@@ -640,15 +681,10 @@ if [ "$HAVE_RUN" = 1 ]; then
         RUN_DETAIL="$RUN_DETAIL (ask-user: authority decision)"
       fi
     else
-      case "$status" in
-        ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
-        running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
-        completed)      RUN_STATE="done"; RUN_DETAIL="run completed"; RUN_IS_TERMINAL=1 ;;
-        failed)         RUN_STATE=failed;  RUN_DETAIL="run failed"; RUN_IS_TERMINAL=1 ;;
-        cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled"; RUN_IS_TERMINAL=1 ;;
-        "")             RUN_STATE=working; RUN_DETAIL="run active" ;;
-        *)              RUN_STATE=working; RUN_DETAIL="run active ($status)" ;;
-      esac
+      RUN_WORD=$status
+      RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
+      RUN_DETAIL=$(fm_nm_verdict_detail "$RUN_WORD")
+      fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
       if [ "$RUN_STATE" = working ]; then
         CI_STEP_STATUS=$(nm_effective_ci_step_status)
         case "$CI_STEP_STATUS" in
@@ -667,8 +703,8 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
-  # A terminal verdict is only trustworthy when this branch's NEWEST run is the
-  # terminal one. Measured 2026-08-29 on the real store (runs
+  # A verdict is only trustworthy when this branch's NEWEST run is the one it
+  # came from. Measured 2026-08-29 on the real store (runs
   # 01M166T3Z9WVJDV1V2JJM8F7HG cancelled and 01M16WA7F47FKSF3459NSH7E7K live,
   # both on fm/fm-merge-puerta-aptitud): branch and head identity give ZERO
   # discrimination between an aborted run and the live run that replaced it,
@@ -680,47 +716,71 @@ if [ "$HAVE_RUN" = 1 ]; then
   # successor advanced through review, test and document, and the watcher was one
   # step from telling the captain the task had failed.
   #
+  # The arbitration covers ACTIVE readings too, not just terminal ones. Measured
+  # 2026-09-09 on fm-hold-en-vuelo-invisible: `axi status` kept answering with a
+  # still-`running` row for this branch while the branch's own newest run had
+  # been failed for a long time, and because only terminal verdicts were ever
+  # arbitrated, "validating (running)" stood for hours over a real failure.
+  #
   # The runs list is the arbitrator: it carries every run newest-first with its
   # own status, and it is read AFTER the `axi status` call, so it is never the
-  # staler view. nm_terminal_verdict_standing owns what it can and cannot prove;
-  # this block only acts on the three answers it returns. When a superseding
+  # staler view. nm_verdict_standing owns what it can and cannot prove; this
+  # block only acts on the three answers it returns. When a superseding
   # successor's head cannot be bound to this worktree (a branch name reused by a
   # later task, a rewritten tip), the honest answer is `unknown`: what is certain
-  # is only that the terminal verdict is NOT current.
-  RUN_TERMINAL_WORD=""
-  if [ "$RUN_IS_TERMINAL" = 1 ]; then
-    if [ "$RUN_SOURCE" = coarse ]; then
-      RUN_TERMINAL_WORD=$(fm_nm_runs_word_for_terminal "$COARSE_STATUS")
-    elif [ -n "${outcome:-}" ]; then
-      RUN_TERMINAL_WORD=$(fm_nm_runs_word_for_terminal "${outcome:-}")
-    else
-      RUN_TERMINAL_WORD=$(fm_nm_runs_word_for_terminal "$RUN_STATUS")
-    fi
+  # is only that the reported verdict is NOT current.
+  #
+  # A run parked at a gate is the one reading this arbitration never touches. A
+  # gate is a live step a human has to answer, and hiding one orphans it with
+  # nothing left to answer it, while showing a gate that has just closed costs a
+  # single poll and self-corrects. That asymmetry, not convenience, is why the
+  # parked reading keeps its own path.
+  RUN_TERMINAL_WORD=$(fm_nm_runs_word_for_terminal "$RUN_WORD")
+  SUPERSEDED_SUBJECT="the reported run"
+  [ "$RUN_IS_TERMINAL" = 1 ] && SUPERSEDED_SUBJECT="the reported terminal run"
+  VERDICT_STANDING=current
+  if [ "$RUN_STATE" != parked ]; then
     nm_scan_runs_for_branch "$CREW_BRANCH"
-    case "$(nm_terminal_verdict_standing "$RUN_TERMINAL_WORD")" in
-      superseded)
-        # A bound `running` successor is this crew validating right now. Any
-        # other newest status - `pending`, a terminal word belonging to a run
+    VERDICT_STANDING=$(nm_verdict_standing "$RUN_TERMINAL_WORD" "$RUN_IS_TERMINAL")
+  fi
+  case "$VERDICT_STANDING" in
+    superseded)
+      if nm_coarse_head_matches_worktree "$BRANCH_NEWEST_SHA"; then
+        # A bound `running` successor is this crew validating right now.
+        if [ "$BRANCH_NEWEST_STATUS" = running ]; then
+          emit working run-step \
+            "validating (background run)${SEP}newer run supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL)"
+        fi
+        # A bound FAILED newest row is this branch's own failure, and reporting
+        # it is the whole point of arbitrating an active reading: a run that has
+        # already failed must never keep reading as work in progress. Only this
+        # alarm direction is asserted from a row the read cannot fully
+        # re-attribute - a `completed` row is not turned into a claim that the
+        # work landed, because a positive claim needs the stronger evidence the
+        # list alone does not carry.
+        if [ "$BRANCH_NEWEST_STATUS" = failed ]; then
+          emit failed run-step \
+            "$(fm_nm_verdict_detail failed)${SEP}a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL)"
+        fi
+        # Any other newest status - `pending`, a terminal word belonging to a run
         # this read cannot re-attribute, a status this helper does not model -
         # says a later run owns this branch without saying what its outcome is
         # here.
-        if nm_coarse_head_matches_worktree "$BRANCH_NEWEST_SHA"; then
-          if [ "$BRANCH_NEWEST_STATUS" = running ]; then
-            emit working run-step \
-              "validating (background run)${SEP}newer run supersedes the reported terminal run ($RUN_DETAIL)"
-          fi
-          emit unknown run-step \
-            "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run ($RUN_DETAIL)"
-        fi
         emit unknown run-step \
-          "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes the reported terminal run ($RUN_DETAIL); its head does not bind to this worktree"
-        ;;
-      unestablished)
-        emit unknown run-step \
-          "cannot confirm the reported terminal run is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH"
-        ;;
-    esac
-  fi
+          "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL)"
+      fi
+      emit unknown run-step \
+        "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL); its head does not bind to this worktree"
+      ;;
+    unestablished)
+      # Silence licenses nothing NEW. A terminal verdict is a new claim, so it is
+      # downgraded; an active reading is the status quo this read arrived with,
+      # so it simply stands rather than turning every timed-out list query into a
+      # fleet of unknowns.
+      [ "$RUN_IS_TERMINAL" = 1 ] && emit unknown run-step \
+        "cannot confirm the reported terminal run is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH"
+      ;;
+  esac
 
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
@@ -739,29 +799,83 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
-  # Reconcile the status log. A needs-decision/blocked log line that the run-step
-  # has moved past (anything but a genuinely parked run) is deterministically
-  # stale: the gate resolved and the run resumed or finished.
+  # What a forge says about a pull request is RESOLVED from the forge, never
+  # deduced from how the pipeline ended. `outcome: passed` is no-mistakes' word
+  # for "the pull request merged or closed", and rendering it as that fact cost
+  # the worst of the three measured false verdicts (2026-08-30): the line said
+  # "run passed: PR merged/closed" while GitHub, asked at that same moment, had
+  # PR 13 of DeepFlowCoder/firstmate open, unmerged, and carrying a red check.
+  # An unreachable forge is stated as unresolved rather than filled in, because
+  # the guess is exactly what did the damage.
+  #
+  # A finished run with no pull request recorded at all makes no claim to check,
+  # so it is left alone - except for `passed`, which IS the claim that something
+  # landed and therefore owes an answer either way.
+  if [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_STATE" = "done" ] \
+    && { [ -n "$RUN_PR" ] || [ "$RUN_WORD" = passed ]; }; then
+    PR_ANSWER=$(fm_pr_state_resolve "$RUN_PR" "$NM_TIMEOUT")
+    PR_STATE=${PR_ANSWER%%	*}
+    PR_REASON=${PR_ANSWER#*	}
+    [ "$PR_REASON" = "$PR_ANSWER" ] && PR_REASON=""
+    case "$PR_STATE" in
+      merged|closed)
+        RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is $PR_STATE on the forge" ;;
+      open)
+        # The run claims the work landed and the forge says it did not. The forge
+        # owns that fact, so the claim does not stand; what is certain is only
+        # that this is not finished work.
+        if [ "$RUN_WORD" = passed ]; then
+          emit unknown run-step \
+            "the run reported passed, but $RUN_PR is still open on the forge${SEP}the work has not landed"
+        fi
+        RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is open on the forge" ;;
+      *)
+        RUN_DETAIL="$RUN_DETAIL${SEP}pull request state not resolved (${PR_REASON:-the forge was not consulted})" ;;
+    esac
+  fi
+
+  # Reconcile the status log. A needs-decision/blocked line under an ACTIVE run
+  # is deterministically stale: the gate resolved and the run resumed. Under a
+  # finished run it is not, and treating it as stale is how the same 2026-08-30
+  # line covered up the record that contradicted it. A finished run does not
+  # answer an open decision or blocker, so the record keeps its own words and the
+  # contradiction is stated. Only a real failure still outranks it, because a
+  # failure that a stale-looking record could mask is the one thing worse than a
+  # contradiction left visible.
   case "$LOG_VERB" in
     needs-decision|blocked)
-      if [ "$RUN_STATE" != parked ]; then
-        if [ "$RUN_STATE" = working ]; then
-          RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run"
-        else
-          RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded (run $RUN_STATE)"
-        fi
-      fi
+      case "$RUN_STATE" in
+        parked) ;;
+        working)
+          RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run" ;;
+        failed)
+          RUN_DETAIL="$RUN_DETAIL${SEP}an unresolved $LOG_VERB is still on the record: $(status_line_note "$LOG_LINE")" ;;
+        *)
+          emit "$(map_log_state "$LOG_LINE")" status-log \
+            "$(status_line_note "$LOG_LINE")${SEP}still unresolved on the record, which the run's own verdict ($RUN_DETAIL) contradicts" ;;
+      esac
       ;;
   esac
 
-  emit "$RUN_STATE" run-step "$RUN_DETAIL"
+  # A run word that answers nothing about the work - `cancelled` above all - is
+  # not a state, and it must not stop the search either. Fall through to the
+  # evidence that CAN answer, carrying the run's own account as an aside so the
+  # reader still sees what the pipeline did.
+  if [ "$RUN_STATE" = unknown ]; then
+    EMIT_ASIDE=$RUN_DETAIL
+  else
+    emit "$RUN_STATE" run-step "$RUN_DETAIL"
+  fi
 fi
 
-# --- fallback: no run attributed to this crew ------------------------------
-# The run-step path above already handled any crew with a run, regardless of pane
-# liveness, so a finished-but-pane-closed crew never reaches here. Down here there
-# is no run to consult, so a dead/unreadable target means the crew is gone: report
-# unknown rather than trusting a possibly-stale status log as the current state.
+# --- fallback: no run answered for this crew -------------------------------
+# The run-step path above already handled any crew whose run produced a verdict,
+# regardless of pane liveness, so a finished-but-pane-closed crew never reaches
+# here. What does reach here is a crew with no run at all, and a crew whose run
+# word answers nothing about the work (an abort, carried down as EMIT_ASIDE): in
+# neither case is there a run verdict to consult, so a dead/unreadable target
+# means the crew is gone - report unknown rather than trusting a possibly-stale
+# status log as the current state.
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
 pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
 

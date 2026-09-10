@@ -119,7 +119,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery |
 | `fm-notify-moshi.sh`     | Deliver one alert to the captain's phone through Moshi's push webhook, for a `command:` wedge-alarm channel ([wedge-alarm.md](wedge-alarm.md)) |
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
-| `fm-nm-run-lib.sh`       | Single owner of shared no-mistakes run-attribution primitives and rules: branch and code identity, runs-list row parsing, and run-status vocabulary |
+| `fm-nm-run-lib.sh`       | Single owner of shared no-mistakes run-attribution primitives and rules: branch and code identity, runs-list row parsing, run-status vocabulary, and the one run-word to reported-state translation |
 | `fm-disk-space-lib.sh`   | Shared free-disk-space guard: one measurement and one wording for the session-start report and the dispatch refusal |
 | `fm-line-cap-lib.sh`     | Shared per-line cap for agent-facing digest lines                                    |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification          |
@@ -153,6 +153,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-tool-update-check.sh` | Report watched tooling with an update available, and updates installed but left inert by PATH order |
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication, merge-notification identity, and retirement |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
+| `fm-forge-pr-state-lib.sh` | Single owner of a pull request's forge-resolved state, answering merged, closed, open, or an explicit unresolved with its reason |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
 | `fm-pr-fitness-lib.sh`   | Classify one forge reading into a merge-fitness verdict for the merge gate           |
 | `fm-nm-attestation-delta.sh` | Hand the `Require no-mistakes` check an attested ancestor when the only commits since it are the pipeline's own CI-fix commits |

@@ -82,6 +82,22 @@ case "${1:-}" in
 esac
 exit 0
 SH
+  # The forge read. A stub is mandatory rather than convenient: `gh` exists on
+  # every developer machine and on CI, so without it a fixture carrying a PR URL
+  # would reach github.com for real. It serves FM_FAKE_GH_PR_STATE and fails
+  # when that is unset, which is exactly how a host with no credentials behaves.
+  cat > "$fb/gh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "${FM_FAKE_GH_CALLS:-/dev/null}"
+case "$*" in
+  "pr view"*)
+    [ -n "${FM_FAKE_GH_PR_STATE:-}" ] || exit 1
+    printf '%s\n' "$FM_FAKE_GH_PR_STATE" ;;
+  *) exit 1 ;;
+esac
+exit 0
+SH
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -125,7 +141,7 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr"
+  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr" "$fb/gh"
   printf '%s\n' "$fb"
 }
 
@@ -174,8 +190,11 @@ reset_fakes() {
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
   FM_FAKE_NM_CALLS=""
+  FM_FAKE_GH_PR_STATE=""
+  FM_FAKE_GH_CALLS=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_NM_CALLS
+  export FM_FAKE_GH_PR_STATE FM_FAKE_GH_CALLS
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -292,6 +311,24 @@ run:
   pr: ""
   findings: none
 outcome: failed
+EOF
+}
+
+# A run whose ci step the worker deliberately aborted, so the run ends
+# `cancelled` while the work itself is finished. Transcribed from the record of
+# baby-menu-widget-cuota (2026-08-30): that repository runs no CI at all, so the
+# worker stopped the ci monitor on purpose after the pull request was open and
+# green through push.
+run_cancelled() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: cancelled
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/16"
+  findings: none
+outcome: cancelled
 EOF
 }
 
@@ -1965,6 +2002,179 @@ EOF
   pass "terminal run with no newer active run still reports failed"
 }
 
+# ---------------------------------------------------------------------------
+# The three measured false verdicts of issue 3306, one case per instance. All
+# three came from the same root: the run-word to reported-state translation
+# lived in three copies that disagreed, and none of them consulted the source
+# that would have refuted it.
+
+# INSTANCE 1 (measured 2026-08-30). The emitted line was
+# "state: done - run passed: PR merged/closed - status-log superseded (run done)".
+# Asked at that same moment, GitHub said PR 13 of DeepFlowCoder/firstmate was
+# OPEN, unmerged, with 16 green checks and one red. "Merged/closed" was deduced
+# from the pipeline outcome and never resolved against the forge. This is the
+# direction that loses work: a supervisor that believes it treats 69 commits of
+# unlanded work as landed.
+test_passed_outcome_never_claims_an_unresolved_merge() {
+  reset_fakes
+  local d short out
+  d=$(new_case passed-open-pr)
+  make_repo_on_branch "$d/wt" fm/feat-openpr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/openpr.meta" "window=fm:fm-openpr" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-openpr)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-openpr ${short}  2026-08-30 07:45"
+  FM_FAKE_GH_PR_STATE=OPEN
+  out=$(run_crew_state "$d" openpr)
+  assert_not_contains "$out" "merged/closed" "a pull request state is never deduced from the run outcome"
+  assert_not_contains "$out" "state: done" "an open pull request is not landed work"
+  assert_contains "$out" "still open" "the forge-resolved state is what the line reports"
+  pass "a passed outcome never claims a merge the forge did not confirm"
+}
+
+# The same path when the forge CONFIRMS the merge: the run's verdict stands and
+# the pull request state is stated as the resolved fact it now is.
+test_passed_outcome_reports_a_forge_confirmed_merge() {
+  reset_fakes
+  local d short out
+  d=$(new_case passed-merged-pr)
+  make_repo_on_branch "$d/wt" fm/feat-mergedpr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/mergedpr.meta" "window=fm:fm-mergedpr" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-mergedpr)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-mergedpr ${short}  2026-08-30 07:45"
+  FM_FAKE_GH_PR_STATE=MERGED
+  out=$(run_crew_state "$d" mergedpr)
+  assert_contains "$out" "state: done" "a forge-confirmed merge is done"
+  assert_contains "$out" "is merged on the forge" "the merge is reported as a resolved forge fact"
+  pass "a passed outcome reports a forge-confirmed merge as resolved"
+}
+
+# And when the forge cannot be reached at all, that is said rather than guessed.
+test_unreachable_forge_is_stated_not_guessed() {
+  reset_fakes
+  local d short out
+  d=$(new_case passed-forge-silent)
+  make_repo_on_branch "$d/wt" fm/feat-forgesilent
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/forgesilent.meta" "window=fm:fm-forgesilent" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-forgesilent)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-forgesilent ${short}  2026-08-30 07:45"
+  # FM_FAKE_GH_PR_STATE unset: the stub fails exactly as an unauthenticated or
+  # offline host does.
+  out=$(run_crew_state "$d" forgesilent)
+  assert_not_contains "$out" "merged/closed" "an unreachable forge is never filled in from the pipeline"
+  assert_contains "$out" "not resolved" "the line says the pull request state could not be read"
+  pass "an unreachable forge is stated, not guessed"
+}
+
+# Requirement 3, the other half of instance 1: the run's verdict was also used to
+# mark the durable record superseded, which covered up the very line that
+# contradicted it. A finished run does not answer an open blocker, so the record
+# wins and the contradiction is on the line.
+test_terminal_run_does_not_bury_a_contradicting_record() {
+  reset_fakes
+  local d short out
+  d=$(new_case terminal-buries-record)
+  make_repo_on_branch "$d/wt" fm/feat-bury
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/bury.meta" "window=fm:fm-bury" "worktree=$d/wt" "kind=ship"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/bury.status"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-bury)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-bury ${short}  2026-08-30 07:45"
+  FM_FAKE_GH_PR_STATE=MERGED
+  out=$(run_crew_state "$d" bury)
+  assert_contains "$out" "state: blocked" "an unanswered blocker outranks a finished run"
+  assert_contains "$out" "pick the base branch" "the contradicting record keeps its own words"
+  assert_contains "$out" "contradicts" "the contradiction is stated instead of covered up"
+  pass "a terminal run does not bury a contradicting durable record"
+}
+
+# INSTANCE 2 (measured 2026-08-30, later). On baby-menu-widget-cuota the line was
+# "state: failed - source: run-step - run cancelled", while that task's durable
+# record read "done: PR .../pull/16 pipeline green through pr, ci step aborted -
+# repo has no CI" followed by "paused: idle waiting for the dotfiles CI work to
+# land on main". The run really was cancelled - the worker aborted the ci step on
+# purpose because that repository has no CI - but the task is finished and in a
+# declared wait. An abort is not a verdict on the work, and a session that reads
+# "failed" can relaunch or tear down healthy work.
+test_cancelled_run_does_not_override_a_declared_pause() {
+  reset_fakes
+  local d short out
+  d=$(new_case cancelled-vs-pause)
+  make_repo_on_branch "$d/wt" fm/feat-cancelpause
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cancelpause.meta" "window=fm:fm-cancelpause" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf '%s\n%s\n' \
+    'done: PR https://github.com/o/r/pull/16 pipeline green through pr, ci step aborted - repo has no CI' \
+    'paused: idle waiting for the dotfiles CI work to land on main' \
+    > "$d/state/cancelpause.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancelpause)"
+  FM_FAKE_RUNS_LIST="  cancelled  fm/feat-cancelpause ${short}  2026-08-30 11:20"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" cancelpause
+  out=$(run_crew_state "$d" cancelpause)
+  assert_not_contains "$out" "state: failed" "a deliberate abort is not a failure"
+  assert_contains "$out" "state: paused" "the declared wait in the durable record wins"
+  assert_contains "$out" "dotfiles CI work" "the pause keeps its own reason"
+  assert_contains "$out" "cancelled" "the cancelled run is still visible on the line"
+  pass "a cancelled run does not override a declared pause"
+}
+
+# INSTANCE 3 (measured 2026-09-09). On fm-hold-en-vuelo-invisible the line read
+# "state: working - source: run-step - validating (running)" for hours, while the
+# branch's own newest run had been failed for a long time. The arbitration that
+# exists for terminal verdicts was never applied to an active one, so a run
+# reported as in flight was never checked against the list that would have
+# refuted it. Firstmate then acted on that reading twice, in opposite directions.
+test_active_run_superseded_by_a_failed_run_reports_failed() {
+  reset_fakes
+  local d short out
+  d=$(new_case active-vs-failed-newest)
+  make_repo_on_branch "$d/wt" fm/feat-activefailed
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/activefailed.meta" "window=fm:fm-activefailed" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/activefailed.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-activefailed)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  failed   fm/feat-activefailed ${short}  2026-09-09 12:10
+  running  fm/feat-activefailed ${short}  2026-09-09 09:05
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" activefailed
+  out=$(run_crew_state "$d" activefailed)
+  assert_not_contains "$out" "state: working" "a run that has already failed is not work in progress"
+  assert_contains "$out" "state: failed" "a failed run is reported as failed"
+  assert_contains "$out" "source: run-step" "the failure is still a run-step verdict"
+  pass "an active reading superseded by a failed run reports failed"
+}
+
+# The safety property in the other direction: an active reading whose branch has
+# no newer run at all keeps reading as work in progress, so the arbitration
+# cannot turn a healthy validating crew into a false alarm.
+test_active_run_with_active_newest_row_stays_working() {
+  reset_fakes
+  local d short out
+  d=$(new_case active-newest-active)
+  make_repo_on_branch "$d/wt" fm/feat-activeok
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/activeok.meta" "window=fm:fm-activeok" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-activeok)"
+  FM_FAKE_RUNS_LIST="  running  fm/feat-activeok ${short}  2026-09-09 12:10"
+  out=$(run_crew_state "$d" activeok)
+  assert_contains "$out" "state: working" "an active run with an active newest row stays working"
+  assert_contains "$out" "source: run-step" "the active verdict is still run-step sourced"
+  pass "an active run corroborated by the runs list stays working"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -2035,5 +2245,12 @@ test_runs_list_is_read_once_per_invocation
 test_full_path_terminal_successor_disagreement_is_not_failed
 test_runs_list_silence_is_unknown_not_failed
 test_terminal_run_with_no_newer_active_run_stays_failed
+test_passed_outcome_never_claims_an_unresolved_merge
+test_passed_outcome_reports_a_forge_confirmed_merge
+test_unreachable_forge_is_stated_not_guessed
+test_terminal_run_does_not_bury_a_contradicting_record
+test_cancelled_run_does_not_override_a_declared_pause
+test_active_run_superseded_by_a_failed_run_reports_failed
+test_active_run_with_active_newest_row_stays_working
 
 echo "all fm-crew-state tests passed"
