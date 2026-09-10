@@ -230,11 +230,14 @@ fm_nm_runs_parse_row() {  # <row>
 #
 # THE one owner of "what state does this run word mean". It exists because that
 # translation used to live in three copies inside bin/fm-crew-state.sh - the
-# `outcome:` arm, the top-level `status:` arm, and the coarse runs-list arm -
-# which disagreed on every word none of them modelled, and each of the three
-# measured false verdicts of issue 3306 came out of a different one of them.
-# Every caller reads the mapping from here, so a word cannot mean one thing on
-# one surface and another thing on the next.
+# `outcome:` arm, the top-level `status:` arm, and the coarse runs-list arm.
+# They disagreed on every word none of them modelled: an unmodelled word read
+# `working` on the status arm and `unknown` on the other two, which is the wrong
+# way round for a helper whose job is not to invent work in progress. The three
+# measured false verdicts of issue 3306 all came through this translation - two
+# of them out of the `outcome:` arm's own words, and the third out of a
+# `status:` reading nothing ever checked. Every caller reads the mapping from
+# here, so a word cannot mean one thing on one surface and another on the next.
 #
 # One table serves all three surfaces because their vocabularies are disjoint
 # where it matters and never conflicting: `passed` and `checks-passed` appear
