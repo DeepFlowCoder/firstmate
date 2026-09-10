@@ -94,6 +94,11 @@ FM_BEARINGS_PR_REPOS=${FM_BEARINGS_PR_REPOS:-10}
 FM_BEARINGS_PR_LIMIT=${FM_BEARINGS_PR_LIMIT:-20}
 FM_BEARINGS_PR_TIMEOUT=${FM_BEARINGS_PR_TIMEOUT:-20}
 case "$FM_BEARINGS_PR_TIMEOUT" in ''|*[!0-9]*|0) FM_BEARINGS_PR_TIMEOUT=20 ;; esac
+# What ONE per-crew current-state read may take while --include-prs has it asking
+# the forge as well. It buys room for that one extra call and nothing else, so it
+# never applies on a default read.
+FM_BEARINGS_PR_CREW_STATE_BUDGET=${FM_BEARINGS_PR_CREW_STATE_BUDGET:-20}
+case "$FM_BEARINGS_PR_CREW_STATE_BUDGET" in ''|*[!0-9]*|0) FM_BEARINGS_PR_CREW_STATE_BUDGET=20 ;; esac
 validate_bound() {  # <name> <value>
   case "$2" in ''|*[!0-9]*|0) echo "fm-bearings-snapshot: $1 must be a positive integer" >&2; exit 2 ;; esac
 }
@@ -210,6 +215,17 @@ NOW=${FM_BEARINGS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 if [ "$INCLUDE_PRS" = 1 ]; then
   FM_CREW_STATE_RESOLVE_PR=1
   export FM_CREW_STATE_RESOLVE_PR
+  # The slack belongs to the OPTION, not to this wrapper: --include-prs adds a
+  # forge call to a per-crew read whose whole budget was sized for local calls,
+  # and a bound that guarantees truncating the answer just requested protects
+  # nobody - it fails the requested feature and disguises the failure as
+  # `unknown`. So this option, and only this option, pays for the room it needs,
+  # at both bounds that apply to the same read: the deadline inside
+  # bin/fm-crew-state.sh and the one bin/fm-fleet-snapshot.sh puts around it.
+  # Every default path keeps the ordinary budget it runs on all day.
+  FM_CREW_STATE_NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-$FM_BEARINGS_PR_CREW_STATE_BUDGET}
+  FM_SNAPSHOT_CREW_STATE_TIMEOUT=${FM_SNAPSHOT_CREW_STATE_TIMEOUT:-$FM_BEARINGS_PR_CREW_STATE_BUDGET}
+  export FM_CREW_STATE_NM_TIMEOUT FM_SNAPSHOT_CREW_STATE_TIMEOUT
 fi
 if [ "$ALL_LANDED" = 1 ] || [ "$ALL_SECONDMATES" = 1 ]; then
   if [ "$ALL_LANDED" = 1 ]; then

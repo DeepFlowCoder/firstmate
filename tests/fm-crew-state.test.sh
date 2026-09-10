@@ -148,7 +148,7 @@ SH
 make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
   local dir=$1 tb="$1/notimeoutbin" tool real
   mkdir -p "$tb"
-  for tool in bash git grep sed head cut tail dirname perl; do
+  for tool in bash git grep sed head cut tail dirname perl date; do
     real=$(command -v "$tool" || true)
     [ -n "$real" ] || fail "missing tool for no-timeout path: $tool"
     ln -s "$real" "$tb/$tool"
@@ -1213,13 +1213,20 @@ test_dead_window_still_reports_terminal_run_step() {
   printf 'done: PR https://github.com/o/r/pull/3 checks green\n' > "$d/state/feat-dead-done.status"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-dead-done)"
   FM_FAKE_RUNS_LIST="  completed  fm/feat-dead-done ${short}  2026-08-29 07:45"
-  FM_CREW_STATE_RESOLVE_PR=1
-  FM_FAKE_GH_PR_STATE=MERGED
   FM_FAKE_TMUX_MISSING=1   # the crew's window has closed
   local out; out=$(run_crew_state "$d" feat-dead-done)
-  assert_contains "$out" "state: done" "closed pane still reports terminal run-step done"
-  assert_contains "$out" "source: run-step" "closed pane does not mask the run-step"
-  assert_not_contains "$out" "state: unknown" "closed pane with a run must never be unknown"
+  # The DEFAULT path, which every timer-driven caller takes: it asks no forge, so
+  # the merge this run claims is unverified and the state is honestly unknown.
+  # What the closed pane must not change is WHO answers - the finished run still
+  # reports itself here rather than falling through to the no-run fallback, where
+  # a dead target would have called the crew gone.
+  assert_contains "$out" "source: run-step" "a finished run answers for itself, pane or no pane"
+  assert_not_contains "$out" "source: none" "a finished run never falls to the no-run fallback"
+  assert_not_contains "$out" "backend target gone" "a closed pane is not the answer for a finished run"
+  assert_contains "$out" "state: unknown" "an unverified merge claim is not landed work"
+  assert_contains "$out" "run passed" "the run's own claim is still shown"
+  assert_contains "$out" "pull request state not resolved: this read asks no forge" \
+    "and the line says exactly why it could not be confirmed"
   pass "closed pane still reports a terminal run-step"
 }
 
@@ -2258,29 +2265,76 @@ test_active_reading_degrades_to_unknown_when_the_list_is_silent() {
   pass "an active reading degrades to unknown when the runs list is silent"
 }
 
-# The invariant this file states about itself: a finished-but-pane-closed crew
-# never reaches the no-run fallback. It held for a resolved merge and broke for
-# an unverified one, which is the case every timer-driven caller sees - and the
-# fallback would have reported the crew gone instead of finished-but-unverified.
-test_unverified_finish_reports_itself_even_with_the_pane_closed() {
+# The crossing the degrade must NOT swallow. Same silent arbitrator, but this
+# crew's harness is emitting right now - a direct observation of work happening,
+# not the absent evidence the degrade exists for, and the 2026-09-09 incident it
+# guards had an IDLE worker. Discarding a live reading to print `unknown` also
+# folds the whole fleet snapshot into an anomaly. It must answer from the pane,
+# say so, and still declare that the run verdict went unarbitrated.
+test_a_busy_pane_answers_over_a_silent_arbitrator() {
   reset_fakes
-  local d short out
-  d=$(new_case unverified-dead-window)
-  make_repo_on_branch "$d/wt" fm/feat-unverifieddead
-  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  local d out
+  d=$(new_case busy-silent-list)
+  make_repo_on_branch "$d/wt" fm/feat-busysilent
   make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/unverifieddead.meta" "window=fm:fm-unverifieddead" "worktree=$d/wt" "kind=ship"
-  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-unverifieddead)"
-  FM_FAKE_RUNS_LIST="  completed  fm/feat-unverifieddead ${short}  2026-08-30 07:45"
-  FM_FAKE_TMUX_MISSING=1   # the crew's window has closed
-  out=$(run_crew_state "$d" unverifieddead)
-  assert_contains "$out" "source: run-step" "a finished run answers for itself, pane or no pane"
-  assert_not_contains "$out" "source: none" "a finished run never falls to the no-run fallback"
-  assert_not_contains "$out" "backend target gone" "a closed pane is not the answer for a finished run"
-  assert_contains "$out" "run passed" "the run's own claim is still shown"
-  assert_contains "$out" "not resolved" "and why it could not be confirmed"
-  pass "an unverified finish reports itself even with the pane closed"
+  fm_write_meta "$d/state/busysilent.meta" "window=fm:fm-busysilent" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-busysilent)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" busysilent)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" busysilent busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  out=$(run_crew_state "$d" busysilent)
+  assert_contains "$out" "state: working" "a harness that is emitting is working"
+  assert_contains "$out" "source: pane" "the line names the pane, never the unarbitrated run"
+  assert_not_contains "$out" "source: run-step" "a busy-pane answer must not read as a run verdict"
+  assert_contains "$out" "could not be arbitrated" "the uncertainty is declared beside the answer"
+  assert_contains "$out" "the runs list did not answer for fm/feat-busysilent within budget" \
+    "and it names what was not reached"
+  pass "a provably busy pane answers over a silent arbitrator"
 }
+
+# Per-call bounds do not compose. Every caller bounds this script as a UNIT -
+# the fleet snapshot folds a read that overruns to `unknown` - so a read that
+# spends its full bound once per call overruns the caller that is timing it and
+# a healthy crew is truncated from outside. The deadline is therefore shared: a
+# slow first call leaves less for the second, not the same again. Measured
+# rather than inspected, because only elapsed time can tell the two apart -
+# here a 3s `axi status` under a 4s deadline leaves ~1s for a runs list that
+# never answers, so the whole read lands near 4s instead of 3+4.
+test_one_deadline_covers_the_whole_read_not_each_call() {
+  reset_fakes
+  local d out start elapsed
+  d=$(new_case shared-deadline)
+  make_repo_on_branch "$d/wt" fm/feat-deadline
+  make_fakebin "$d" >/dev/null
+  cat > "$d/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  "axi status")
+    sleep 3
+    printf '%s\n' "$FM_FAKE_AXI_STATUS" ;;
+  runs*)
+    while :; do :; done ;;
+esac
+exit 0
+SH
+  chmod +x "$d/fakebin/no-mistakes"
+  fm_write_meta "$d/state/deadline.meta" "window=fm:fm-deadline" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-deadline)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" deadline
+  start=$SECONDS
+  out=$(FM_CREW_STATE_NM_TIMEOUT=4 run_crew_state "$d" deadline)
+  elapsed=$((SECONDS - start))
+  [ "$elapsed" -lt 6 ] \
+    || fail "the read spent its whole bound per call instead of sharing one deadline (elapsed ${elapsed}s)"
+  assert_contains "$out" "state: unknown" "a runs list that never answered leaves the reading unchecked"
+  assert_contains "$out" "within budget" "and the line says the budget is what ran out"
+  pass "one deadline covers the whole read, not each call"
+}
+
 
 # The other half of requirement 3, on the branch where the forge REFUTES the run:
 # a contradicting durable record must not be dropped just because the forge
@@ -2633,6 +2687,7 @@ test_default_read_asks_no_forge_and_never_claims_the_merge
 test_open_forge_still_surfaces_a_contradicting_record
 test_checks_passed_reports_done_without_a_pull_request_claim
 test_active_reading_degrades_to_unknown_when_the_list_is_silent
-test_unverified_finish_reports_itself_even_with_the_pane_closed
+test_a_busy_pane_answers_over_a_silent_arbitrator
+test_one_deadline_covers_the_whole_read_not_each_call
 
 echo "all fm-crew-state tests passed"

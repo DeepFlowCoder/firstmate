@@ -50,10 +50,12 @@
 #      working and a bound failed successor as failed - any other superseding row
 #      reports `unknown` - and `unestablished` (the runs list never answered)
 #      degrades EVERY reading that claims something, active no less than
-#      terminal, to `unknown` carrying the reason the arbitrator was not reached.
-#      A verdict nothing checked is never asserted, in either direction: not a
-#      done or failed that may already be stale, and not an active reading over a
-#      run that has already failed.
+#      terminal, to `unknown` carrying the reason the arbitrator was not reached
+#      - unless the pane is provably busy, in which case that direct observation
+#      answers as `pane` and the unarbitrated verdict is declared beside it. A
+#      verdict nothing checked is never asserted, in either direction: not a done
+#      or failed that may already be stale, and not an active reading over a run
+#      that has already failed.
 #   3. Never deduce what a forge says. `outcome: passed` is no-mistakes' word for
 #      "the pull request merged or closed", which is a CLAIM about the forge and
 #      not a reading of it, so it is reported as landed work only where the forge
@@ -85,6 +87,12 @@
 # caller that runs on a timer - the fleet snapshot behind the published ledger,
 # the watcher, the inactive-crew scan - is local-only by construction rather than
 # by remembering to opt out of a default-on call.
+#
+# EVERY bounded call shares ONE deadline of FM_CREW_STATE_NM_TIMEOUT seconds for
+# the whole read, so the read fits inside the bound its caller already applies to
+# it instead of spending that bound once per call. A caller that deliberately
+# asks for more work - the forge read above - is the one that raises the deadline
+# to pay for it; the periodic paths keep the default and their two local calls.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -112,6 +120,24 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
+# ONE deadline for the WHOLE read, and every bounded call takes what is LEFT of
+# it. Per-call bounds do not compose: callers bound this script as a unit -
+# bin/fm-fleet-snapshot.sh at FM_SNAPSHOT_CREW_STATE_TIMEOUT, folding a read that
+# hits the bound to `unknown`, and bin/fm-inactive-reconcile.sh at its own scan
+# budget - so two calls of NM_TIMEOUT each could spend twice what the caller
+# allows and get a healthy crew truncated to `unknown` from outside, under
+# exactly the multi-crew load these bounds exist for.
+#
+# A call with no budget left simply does not run. That is not a silent skip: it
+# lands on the same honest answer a timed-out call lands on, `unknown` carrying
+# the reason it could not be settled within budget. A caller that needs more room
+# raises the deadline deliberately.
+READ_DEADLINE=$(( $(date +%s) + NM_TIMEOUT ))
+read_budget_left() {
+  local left=$(( READ_DEADLINE - $(date +%s) ))
+  [ "$left" -gt 0 ] || { printf '0'; return 0; }
+  printf '%s' "$left"
+}
 # How many of the most recent `no-mistakes runs` rows the cross-branch fallback
 # (nm_scan_runs_for_branch, below) scans. Generous enough to still find a
 # branch's own run on a busy multi-crew fleet without listing the entire
@@ -261,6 +287,20 @@ crew_busy_verdict() {  # <target>
   esac
   fm_busy_classify "$TASK_BACKEND" "$1" "$HARNESS" "$ID" "$STATE" "$tail40"
 }
+# 0 when the recorded backend gives POSITIVE evidence the crew is working right
+# now, publishing that verdict in BUSY_VERDICT for the caller's detail. Anything
+# short of an exact busy answer - a secondmate, whose idle pane is healthy and
+# whose busy state is therefore meaningless; no target; an unreadable one; an
+# idle or unverified verdict - is not evidence and answers 1.
+BUSY_VERDICT=""
+pane_is_provably_busy() {
+  [ "$KIND" != secondmate ] || return 1
+  [ -n "$BACKEND_TARGET" ] || return 1
+  pane_readable "$BACKEND_TARGET" || return 1
+  BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
+  case "${BUSY_VERDICT%% *}" in busy) return 0 ;; esac
+  return 1
+}
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
 # trim, strip_quotes, the bounded nm_run call, nm_field's TOON parse, and the
@@ -270,7 +310,10 @@ crew_busy_verdict() {  # <target>
 trim() { fm_nm_trim "$@"; }
 strip_quotes() { fm_nm_strip_quotes "$@"; }
 nm_run() {  # <args...>
-  fm_nm_run "$WT" "$NM_TIMEOUT" "$@"
+  local left
+  left=$(read_budget_left)
+  [ "$left" -gt 0 ] || return 0
+  fm_nm_run "$WT" "$left" "$@"
 }
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
@@ -816,11 +859,29 @@ if [ "$HAVE_RUN" = 1 ]; then
       # budget, so a reader knows what was not reached instead of guessing
       # whether the worker died.
       #
+      # But "better honest noise than a confident lie" covers the ABSENCE of
+      # evidence, not the DISCARDING of evidence this read already has. A pane
+      # that is actively emitting is a direct observation of the crew working
+      # now, and throwing it away to print `unknown` is not honesty - it also
+      # invalidates the whole fleet snapshot, which folds any `unknown` child
+      # into an anomaly. The incident this degrade exists for had an IDLE worker,
+      # so answering from a pane that IS emitting cannot reopen it. Two things
+      # keep that from becoming the old lie: the line names the PANE as its
+      # source, so it can never be mistaken for the run-step reading that cost a
+      # day, and it still declares that the run verdict went unarbitrated -
+      # another source answering does not make the uncertainty disappear.
+      #
       # A reading that claims nothing (an abort) has no claim to degrade, and
       # emitting here would stop its fall-through to the evidence that CAN
       # answer - which is the whole of what a cancellation is owed.
-      [ "$RUN_VERDICTLESS" = 1 ] || emit unknown run-step \
-        "cannot confirm $SUPERSEDED_SUBJECT is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH within budget"
+      if [ "$RUN_VERDICTLESS" != 1 ]; then
+        UNARBITRATED="the run verdict ($RUN_DETAIL) could not be arbitrated: the runs list did not answer for $CREW_BRANCH within budget"
+        if pane_is_provably_busy; then
+          emit working pane "harness busy (${BUSY_VERDICT#* })${SEP}$UNARBITRATED"
+        fi
+        emit unknown run-step \
+          "cannot confirm $SUPERSEDED_SUBJECT is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH within budget"
+      fi
       ;;
   esac
 
@@ -871,11 +932,13 @@ if [ "$HAVE_RUN" = 1 ]; then
       PR_REASON="this read asks no forge (set FM_CREW_STATE_RESOLVE_PR=1 to resolve it)"
     elif [ -z "$RUN_PR" ]; then
       PR_REASON="the run recorded no pull request to ask about"
+    elif [ "$(read_budget_left)" = 0 ]; then
+      PR_REASON="this read's budget was spent before the forge could be asked"
     else
       # The reason rides on stdout beside the state, because this call is a
       # command substitution and a variable the function set would die with its
       # subshell. A resolved answer carries no reason and leaves PR_REASON empty.
-      IFS=$'\t' read -r PR_STATE PR_REASON <<< "$(fm_pr_state_resolve "$RUN_PR" "$NM_TIMEOUT")"
+      IFS=$'\t' read -r PR_STATE PR_REASON <<< "$(fm_pr_state_resolve "$RUN_PR" "$(read_budget_left)")"
     fi
     case "$PR_STATE" in
       merged|closed)
