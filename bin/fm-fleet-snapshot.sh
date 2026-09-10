@@ -21,9 +21,13 @@
 #     unresolved_blocker_ids, captain_actionable, and deferred_marker fields.
 #     Repeated blocker tokens remain ordered; a blocker resolves only when its
 #     structured record is Done, and missing ids stay open.
-#     captain_actionable means "waiting on the captain now": queued, held for
-#     the captain, unblocked, and due (no hold_until, or hold_until at or
+#     captain_actionable means "waiting on the captain now": not yet done, held
+#     for the captain, unblocked, and due (no hold_until, or hold_until at or
 #     before the observation date, matching tasks-axi's own date-gate rule).
+#     The row's section is not part of that definition beyond excluding Done: a
+#     captain hold on work already In flight is waiting on the captain exactly
+#     as a Queued one is, and is usually the more urgent of the two.
+#     current_role is unaffected: an in-flight captain hold stays "held".
 #     There is no separate decision type: any captain-held task is the same
 #     primitive, whatever kind its row carries.
 #     deferred_marker is a presentation hint only: the row's hold reason or
@@ -59,6 +63,10 @@
 #     home also carries reconcile_inventory independently of projection trust.
 #     Actionable captain holds
 #     appear in decisions_open; blocked captain holds remain queued with metadata.
+#     decisions_open is drawn from the actionable holds themselves, so a live
+#     child worker under one cannot hide the decision. queued keeps its own
+#     liveness filter, so a parked in-flight hold with a live worker under it
+#     stays that worker's active_children row instead of doubling as queued work.
 #   secondmate_landed: {records[],truncated[],unreadable[],partial[]} - the
 #     compatibility landed-work roll-up derived from secondmate_current. Readable
 #     structured homes are partial, not unreadable, when an unavailable child state
@@ -176,10 +184,14 @@ validated registered-home handoff. It is local-only, skips nested secondmate
 aggregation, includes generated_epoch for freshness arithmetic, and marks
 inventory contradictions or unavailable child state invalid.
 Its invalidity object names the normalized failure kind and affected ids.
-Actionable tasks-axi captain holds appear as decisions_open and stay visible in
-queued with hold_reason, hold_kind, hold_until, deferred_marker, and plural
-blocker fields for downstream projections. A captain hold is actionable only
-when every blocker is Done and any hold-until date has arrived.
+Actionable tasks-axi captain holds appear as decisions_open, and a parked one
+stays visible in queued with hold_reason, hold_kind, hold_until,
+deferred_marker, and plural blocker fields for downstream projections. A captain
+hold is actionable only when every blocker is Done and any hold-until date has
+arrived. The decision candidate set is those actionable holds themselves, so a
+home with a live worker under one still resolves to captain_decision; queued
+keeps its liveness filter, so a parked in-flight hold under a live worker stays
+that worker's own row.
 Cross-home reads use FM_SNAPSHOT_SECONDMATES (default 20, 0 lifts the count
 bound), FM_SNAPSHOT_SECONDMATE_TIMEOUT, and FM_SNAPSHOT_SECONDMATE_MAX_BYTES.
 Each per-task current-state read is bounded by FM_SNAPSHOT_CREW_STATE_TIMEOUT
@@ -432,7 +444,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
                else "done" end)
           | .requires_child_metadata = (.current_role == "worker")
           | .captain_actionable =
-              (.state == "queued" and .hold_kind == "captain"
+              ((.state == "queued" or .state == "in_flight") and .hold_kind == "captain"
                and .hold_reason != null and (.unresolved_blocker_ids | length) == 0
                and (.hold_until == null or .hold_until <= $today))
           | .deferred_marker =
@@ -703,9 +715,10 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
              (.state == "queued" or
               (.state == "in_flight" and .current_role == "held"
                and (.id as $id
-                    | any($tasks[]; .id == $id and .current_state.state == "working") | not)))) ]) as $queued_all
-    | ([ $queued_all[]
-         | select(.captain_actionable == true)
+                    | any($tasks[]; .id == $id and .current_state.state == "working")
+                    | not)))) ]) as $queued_all
+    | ([ $backlog.records[]?
+         | select(.structured and .captain_actionable == true)
          | {id,key:.id,verb:"captain-hold",summary:(.title | trunc(160)),
             reason:(.hold_reason | trunc(160)),
             hold_until:(.hold_until // null),

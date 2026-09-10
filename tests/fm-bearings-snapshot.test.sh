@@ -1025,6 +1025,221 @@ EOF
   pass "captain-held tasks of any kind reach Captain's Call, deferral is honored, and landed excludes answered calls"
 }
 
+# The captain holding work that is ALREADY UNDER WAY is the most urgent call
+# there is, and it used to be the only class Captain's Call could not see: the
+# row landed in Charted Next among ordinary queued work and the digest reported
+# nothing waiting on the captain. It now reaches decisions_open and leaves gates,
+# while the two real guards still park an in-flight hold in Charted Next: an
+# unresolved blocker, and a hold-until date that has not arrived, the latter
+# rendered with its date exactly as a queued dated hold is.
+test_in_flight_captain_hold_reaches_captains_call() {
+  local home fakebin json
+  home=$(make_home in-flight-call)
+  mkdir -p "$home/data"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] flight-call - Captain holds work under way (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] flight-blocked - Held under way behind work blocked-by: prep (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] flight-later - Held under way until a date (repo: firstmate) (kind: ship) (hold: captain revisits) (hold-kind: captain) (hold-until: 2026-08-01)
+- [ ] flight-external - Held under way on upstream (repo: firstmate) (kind: ship) (hold: upstream release pending) (hold-kind: external)
+
+## Queued
+- [ ] prep - Preparatory work (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "flight-call" and .verb == "captain-hold"))
+      and (.gates | any(.[]; .id == "flight-call") | not)
+      and (.decisions_open | any(.[]; .id == "flight-blocked") | not)
+      and (.gates | any(.[]; .id == "flight-blocked" and .blocked_by == "prep"))
+      and (.decisions_open | any(.[]; .id == "flight-later") | not)
+      and (.gates | any(.[]; .id == "flight-later" and (.reason | startswith("until 2026-08-01"))))
+      and (.decisions_open | any(.[]; .id == "flight-external") | not)
+      and (.gates | any(.[]; .id == "flight-external"))
+  ' >/dev/null || fail "an in-flight captain hold did not reach Captain's Call under the same two guards: $json"
+  pass "a captain hold on work already under way reaches Captain's Call, and only its blocker or its date parks it"
+}
+
+# The four digest sections are mutually exclusive, so an in-flight captain hold
+# whose worker is still live must land in exactly one of them. It is the captain
+# the fleet is waiting on, so the tie resolves to Captain's Call and the row
+# leaves Underway - otherwise the renderer is told to demote the decision back
+# into Underway and the blind spot returns for the very case that motivated the
+# fix. A held row the captain cannot act on yet keeps its live worker's Underway
+# line instead, so the exclusion is exactly as wide as Captain's Call itself.
+test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call() {
+  local home fakebin json id
+  home=$(make_home in-flight-call-live)
+  mkdir -p "$home/projects/live-wt"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] live-call - Captain holds work with a live worker (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] live-call-capped - A second in-flight captain hold with a live worker (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] live-blocked - Held with a live worker behind work blocked-by: prep (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+
+## Queued
+- [ ] prep - Preparatory work (repo: firstmate) (kind: ship)
+- [ ] queued-call - Queued captain hold whose worker never stopped (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+
+## Done
+EOF
+  for id in live-call live-call-capped live-blocked queued-call; do
+    fm_write_meta "$home/state/$id.meta" \
+      "window=firstmate:fm-$id" \
+      "worktree=$home/projects/live-wt" \
+      "project=firstmate" \
+      "harness=claude" \
+      "kind=ship" \
+      "mode=no-mistakes"
+    record_claude_state "$home/state" "$id" busy
+    printf 'working: still building\n' > "$home/state/$id.status"
+  done
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "live-call" and .verb == "captain-hold"))
+      and (.in_flight | any(.[]; .id == "live-call") | not)
+      and (.gates | any(.[]; .id == "live-call") | not)
+  ' >/dev/null || fail "a captain hold under a live worker did not land in Captain's Call alone: $json"
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "live-blocked") | not)
+      and (.in_flight | any(.[]; .id == "live-blocked" and .state == "working"))
+      and (.gates | any(.[]; .id == "live-blocked") | not)
+  ' >/dev/null || fail "a blocked captain hold lost its live worker's Underway line: $json"
+  # A queued row and live child metadata can disagree, and the row is held for
+  # the captain either way. Anchoring the Underway exclusion on the rendered
+  # decision list rather than on the held role is what keeps this subcase in one
+  # bucket; a role test would let a queued-role task through into both.
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "queued-call" and .verb == "captain-hold"))
+      and (.in_flight | any(.[]; .id == "queued-call") | not)
+      and (.gates | any(.[]; .id == "queued-call") | not)
+  ' >/dev/null || fail "a queued captain hold with live child metadata reached two buckets: $json"
+  # Captain's Call is bounded, and it is the RENDERED slice that withholds a row
+  # from Underway. A decision truncated out of that slice must fall back to its
+  # live worker's Underway line, or the cap would empty all four buckets for it.
+  # The truncated row asserted on is an In flight one, whose role is "held": a
+  # queued row survives the Underway filter on its role alone, so pinning the
+  # fallback there would pass even with the live-worker escape removed.
+  json=$(FM_BEARINGS_DECISIONS=1 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    ([.decisions_open[].id] == ["live-call"])
+      and (.in_flight | any(.[]; .id == "live-call-capped" and .state == "working"))
+      and (.gates | any(.[]; .id == "live-call-capped") | not)
+      and (.in_flight | any(.[]; .id == "queued-call" and .state == "working"))
+      and ([.omitted[].surface] | any(. == "decisions_open showing 1 of 3"))
+  ' >/dev/null || fail "a truncated captain decision reached no section at all: $json"
+  pass "a captain hold under a live worker renders in Captain's Call and nowhere else"
+}
+
+# The same held row must render the same way whichever home owns it. The main
+# home reads its backlog directly; a secondmate home reaches Bearings only
+# through its own bounded summary, and the two used to disagree for a parked
+# hold under a live worker - one home called it queued work while the other
+# called it live work, so a single id occupied two of four mutually exclusive
+# sections. Both cases are pinned here against one fixture carrying the
+# identical two rows in both homes.
+test_main_and_secondmate_render_a_held_row_identically() {
+  local home mate fakebin json id
+  home=$(make_home held-row-parity)
+  mate=$(fixture_mate_home "$home")
+  mkdir -p "$home/projects/live-wt" "$mate/data" "$mate/state" "$mate/config" \
+    "$mate/projects/live-wt" "$mate/bin"
+  printf '# Firstmate fixture\n' > "$mate/AGENTS.md"
+  printf 'mate\n' > "$mate/.fm-secondmate-home"
+  printf -- '- mate - parity domain (home: %s; scope: parity fixture; projects: firstmate; added 2026-07-11)\n' \
+    "$mate" > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] main-call - Actionable hold under a live worker (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+- [ ] main-parked - Parked hold under a live worker blocked-by: main-prep (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+
+## Queued
+- [ ] main-prep - Preparatory work (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+- [ ] mate-parked - Parked hold under a live worker blocked-by: mate-prep (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+
+## Queued
+- [ ] mate-prep - Preparatory work (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  for id in main-call main-parked; do
+    fm_write_meta "$home/state/$id.meta" \
+      "window=firstmate:fm-$id" "worktree=$home/projects/live-wt" \
+      "project=firstmate" "harness=claude" "kind=ship" "mode=no-mistakes"
+    record_claude_state "$home/state" "$id" busy
+    printf 'working: still building\n' > "$home/state/$id.status"
+  done
+  mate_live_child() {  # <id> - the sole live child the mate backlog owns this phase
+    rm -f "$mate"/state/mate-call.* "$mate"/state/mate-parked.*
+    fm_write_meta "$mate/state/$1.meta" \
+      "window=firstmate:fm-$1" "worktree=$mate/projects/live-wt" \
+      "project=firstmate" "harness=claude" "kind=ship" "mode=no-mistakes"
+    record_claude_state "$mate/state" "$1" busy
+    printf 'working: still building\n' > "$mate/state/$1.status"
+  }
+  mate_live_child mate-parked
+  fm_write_secondmate_meta "$home/state/mate.meta" "$mate" "firstmate:fm-mate" firstmate
+  fakebin=$(make_fakebin "$home")
+
+  # A parked hold is action-free, so in BOTH homes it is its live worker's own
+  # Underway line and Charted Next never claims it. The secondmate carries only
+  # the parked row here so its aggregated home row is comparable: a home holding
+  # a decision renders that decision instead, which is a home-row rule and would
+  # mask the per-row comparison this phase makes.
+  json=$(run "$home" "$fakebin" --json)
+  # Both homes must be clean structured homes, or the parity claim below would
+  # rest on the parent's tolerance for an invalid summary instead of on the
+  # projection rule under test.
+  printf '%s' "$json" | jq -e '
+    (.secondmates | any(.[]; .id == "mate" and .provenance == "structured-home" and .reason == "-"))
+      and ([.omitted[].surface] | any(test("main in-flight|main unstructured")) | not)
+  ' >/dev/null || fail "the parity fixture did not build two valid structured homes: $json"
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.[]; .id == "main-parked") | not)
+      and (.gates | any(.[]; .id == "mate-parked") | not)
+      and (.decisions_open | any(.[]; .id | test("parked")) | not)
+  ' >/dev/null || fail "a parked hold under a live worker left Underway in one of the two homes: $json"
+  printf '%s' "$json" | jq -e '
+    (.in_flight | any(.[]; .id == "main-parked" and .state == "working"))
+      and (.in_flight | any(.[]; .id == "mate" and (.doing | test("mate-parked"))))
+  ' >/dev/null || fail "a parked hold under a live worker lost its Underway line in one of the two homes: $json"
+
+  # An actionable hold is Captain's Call in BOTH homes, and leaves Underway and
+  # Charted Next in both, with the same live worker still running under it.
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+- [ ] mate-call - Actionable hold under a live worker (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
+
+## Queued
+- [ ] mate-prep - Preparatory work (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  mate_live_child mate-call
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    .secondmates | any(.[]; .id == "mate" and .provenance == "structured-home" and .reason == "-")
+  ' >/dev/null || fail "the parity fixture left an invalid mate home in its second phase: $json"
+  printf '%s' "$json" | jq -e '
+    (.decisions_open | any(.[]; .id == "main-call" and .verb == "captain-hold"))
+      and (.decisions_open | any(.[]; .id == "mate/mate-call" and .verb == "captain-hold"))
+  ' >/dev/null || fail "an actionable hold under a live worker missed Captain's Call in one of the two homes: $json"
+  printf '%s' "$json" | jq -e '
+    (.in_flight | any(.[]; .id | test("main-call|mate-call")) | not)
+      and (.gates | any(.[]; .id | test("main-call|mate-call")) | not)
+  ' >/dev/null || fail "an actionable hold under a live worker also reached Underway or Charted Next: $json"
+  pass "main and secondmate homes render an actionable and a parked held row identically"
+}
+
 test_include_prs_is_the_only_fetch_path() {
   local home fakebin json
   home=$(make_home prs); write_fixture "$home"
@@ -2019,6 +2234,9 @@ test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
 test_collapsed_captain_call_deferral_and_landed
+test_in_flight_captain_hold_reaches_captains_call
+test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call
+test_main_and_secondmate_render_a_held_row_identically
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
