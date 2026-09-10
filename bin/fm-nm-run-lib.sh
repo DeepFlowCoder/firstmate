@@ -270,31 +270,27 @@ fm_nm_verdict_is_terminal() {  # <run-word>
   [ -n "$(fm_nm_runs_word_for_terminal "${1:-}")" ]
 }
 
-# The canonical human phrase for a run word. <surface> is `list` for a coarse
-# runs-list row and anything else for an `axi status` read; it changes only how
-# an in-flight run is phrased, never the state. No phrase here asserts a fact
-# about a pull request: what a forge says about a pull request is resolved by
-# bin/fm-forge-pr-state-lib.sh or reported as unresolved, never inferred from a
-# pipeline outcome.
-fm_nm_verdict_detail() {  # <run-word> [surface]
-  local word=${1:-} surface=${2:-status}
-  case "$word" in
-    passed)        printf 'run passed' ;;
-    checks-passed) printf 'checks green: PR ready for review' ;;
-    completed)     printf 'run completed' ;;
-    failed)        printf 'run failed' ;;
-    cancelled)     printf 'run cancelled (an abort is not a verdict on the work)' ;;
-    ci|running|fixing|pending|'')
-      if [ "$surface" = list ]; then
-        printf 'validating (background run)'
-        return 0
-      fi
-      case "$word" in
-        ci)      printf 'ci running' ;;
-        '')      printf 'run active' ;;
-        pending) printf 'validating (pending)' ;;
-        *)       printf 'validating (%s)' "$word" ;;
-      esac ;;
-    *) printf 'unrecognized run status: %s' "$word" ;;
+# The canonical human phrase for a run word: ONE phrase per word, unconditional.
+# WHERE a word was read is the caller's own fact and not the word's, so a caller
+# with something to say about its source appends its own qualifier to the phrase
+# it gets back - the coarse runs-list arm of bin/fm-crew-state.sh does exactly
+# that, marking its verdict a background run. Taking a surface mode here instead
+# would put back, inside the single owner, the per-surface split this owner was
+# introduced to remove, and the drift argument above would hold with an
+# exception. No phrase here asserts a fact about a pull request: what a forge
+# says about a pull request is resolved by bin/fm-forge-pr-state-lib.sh or
+# reported as unresolved, never inferred from a pipeline outcome.
+fm_nm_verdict_detail() {  # <run-word>
+  case "${1:-}" in
+    passed)         printf 'run passed' ;;
+    checks-passed)  printf 'checks green: PR ready for review' ;;
+    completed)      printf 'run completed' ;;
+    failed)         printf 'run failed' ;;
+    cancelled)      printf 'run cancelled (an abort is not a verdict on the work)' ;;
+    ci)             printf 'ci running' ;;
+    '')             printf 'run active' ;;
+    pending)        printf 'validating (pending)' ;;
+    running|fixing) printf 'validating (%s)' "$1" ;;
+    *)              printf 'unrecognized run status: %s' "$1" ;;
   esac
 }

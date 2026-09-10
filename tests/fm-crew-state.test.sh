@@ -354,6 +354,22 @@ error: "cancelled: superseded by new push"
 EOF
 }
 
+# A `status:` word the translation owner does not model. no-mistakes emits none
+# of these today (the modelled set covers pending/running/completed/failed/
+# cancelled/ci/fixing, with awaiting_approval/fix_review parking earlier), so this
+# drives the defensive arm: an unrecognized word asserts nothing about the work.
+run_unmodelled_status() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: quiescing
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+EOF
+}
+
 run_ci_monitoring() {  # <branch>
   cat <<EOF
 run:
@@ -781,6 +797,10 @@ EOF
   local out; out=$(run_crew_state "$d" feat-f)
   assert_contains "$out" "state: working" "this branch's own run attributed via the runs list"
   assert_contains "$out" "source: run-step" "runs-list-resolved run -> run-step source"
+  # The coarse arm's own qualifier: this verdict came from a bare runs-list row,
+  # so it carries no step or gate word and a reader must be able to see that.
+  assert_contains "$out" "validating (running) (background run)" \
+    "a runs-list-resolved verdict says both the word it read and where it read it"
   pass "cross-branch run is attributed via the real runs list"
 }
 
@@ -2259,6 +2279,55 @@ test_unknown_attribution_without_a_refusal_claims_none() {
   pass "the unknown-attribution line claims no refusal when none was recorded"
 }
 
+# An abort produces no verdict about the work, so it cannot contradict the
+# blocker on the record either. The state is the record's and was already right;
+# what must not appear is the claim that the run's own verdict contradicts it,
+# because the model holds there is no such verdict to do the contradicting.
+test_cancelled_run_does_not_claim_to_contradict_a_blocker() {
+  reset_fakes
+  local d short out
+  d=$(new_case cancelled-vs-blocker)
+  make_repo_on_branch "$d/wt" fm/feat-cancelblocked
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cancelblocked.meta" "window=fm:fm-cancelblocked" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/cancelblocked.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancelblocked)"
+  FM_FAKE_RUNS_LIST="  cancelled  fm/feat-cancelblocked ${short}  2026-08-30 11:20"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" cancelblocked
+  out=$(run_crew_state "$d" cancelblocked)
+  assert_contains "$out" "state: blocked" "the unanswered blocker still answers for the crew"
+  assert_contains "$out" "source: status-log" "the record is the source that answered"
+  assert_contains "$out" "pick the base branch" "the blocker keeps its own words"
+  assert_contains "$out" "run cancelled" "the abort is still visible as the run's own account"
+  assert_not_contains "$out" "contradicts" "an abort makes no verdict that could contradict the record"
+  pass "a cancelled run does not claim to contradict a blocker"
+}
+
+# The defensive arm in the other direction: a run word that asserts nothing is not
+# an ACTIVE run either, so it may not declare the record superseded - least of all
+# the record that goes on to answer for the crew two steps later.
+test_unmodelled_status_does_not_supersede_the_record_that_answers_it() {
+  reset_fakes
+  local d out
+  d=$(new_case unmodelled-vs-blocker)
+  make_repo_on_branch "$d/wt" fm/feat-unmodelled
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unmodelled.meta" "window=fm:fm-unmodelled" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/unmodelled.status"
+  FM_FAKE_AXI_STATUS="$(run_unmodelled_status fm/feat-unmodelled)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" unmodelled
+  out=$(run_crew_state "$d" unmodelled)
+  assert_contains "$out" "state: blocked" "the record answers for a reading that asserts nothing"
+  assert_contains "$out" "source: status-log" "the record is the source that answered"
+  assert_contains "$out" "unrecognized run status: quiescing" "the unreadable word is still shown"
+  assert_not_contains "$out" "superseded" "a reading that asserts nothing supersedes nothing"
+  pass "an unmodelled run status does not supersede the record that answers it"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -2339,5 +2408,7 @@ test_active_run_with_active_newest_row_stays_working
 test_ci_green_done_does_not_revive_a_stale_blocked_log
 test_cancelled_run_falls_through_to_the_pause_when_the_list_is_silent
 test_unknown_attribution_without_a_refusal_claims_none
+test_cancelled_run_does_not_claim_to_contradict_a_blocker
+test_unmodelled_status_does_not_supersede_the_record_that_answers_it
 
 echo "all fm-crew-state tests passed"

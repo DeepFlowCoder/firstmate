@@ -639,7 +639,11 @@ if [ "$HAVE_RUN" = 1 ]; then
   if [ "$RUN_SOURCE" = coarse ]; then
     # No step/gate detail is available from the plain runs list - it carries a
     # bare status word, which the one translation owner turns into the same
-    # state it would give that word anywhere else. A crew genuinely parked at a
+    # state it would give that word anywhere else, and the `(background run)`
+    # qualifier is this arm's own: that the verdict came from the runs-list
+    # fallback, with no step or gate word behind it, is a fact about where the
+    # word was READ, so it is added here rather than asked of the owner. A crew
+    # genuinely parked at a
     # gate still gets full detail once `axi status` reports its own branch again (e.g.
     # once its own step is the most-recently-touched one), and its own
     # needs-decision/blocked status-log append (a captain-relevant VERB) is
@@ -648,7 +652,7 @@ if [ "$HAVE_RUN" = 1 ]; then
     # distinction, so a real gate is never silently missed.
     RUN_WORD=$COARSE_STATUS
     RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
-    RUN_DETAIL=$(fm_nm_verdict_detail "$RUN_WORD" list)
+    RUN_DETAIL="$(fm_nm_verdict_detail "$RUN_WORD") (background run)"
     fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
   else
     status=$(strip_quotes "$(nm_field status)")
@@ -855,16 +859,22 @@ if [ "$HAVE_RUN" = 1 ]; then
   # failure that a stale-looking record could mask is the one thing worse than a
   # contradiction left visible.
   #
-  # The split is on whether the run FINISHED, not on the state it reports: the
-  # ci-green reading above reports `done` for a run that is still actively
-  # monitoring its pull request, and a still-running run leaves the record just
-  # as deterministically stale as any other active one. Only a genuinely terminal
-  # run lets the durable record win.
+  # Only a reading that SAYS something about the work reconciles against the
+  # record at all, which is why the three states that do are named here rather
+  # than defaulted into. A gate (`parked`) and a verdictless abort (`unknown`)
+  # each assert nothing: neither may call the record superseded, and neither may
+  # claim to contradict it - the record answers plainly and the run's own account
+  # rides down as the aside below.
+  #
+  # Among the three, the split is on whether the run FINISHED, not on the state it
+  # reports: the ci-green reading above reports `done` for a run that is still
+  # actively monitoring its pull request, and a still-running run leaves the
+  # record just as deterministically stale as any other active one. Only a
+  # genuinely terminal run lets the durable record win.
   case "$LOG_VERB" in
     needs-decision|blocked)
       case "$RUN_STATE" in
-        parked) ;;
-        *)
+        working|done|failed)
           if [ "$RUN_IS_TERMINAL" != 1 ]; then
             RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run"
           elif [ "$RUN_STATE" = failed ]; then
