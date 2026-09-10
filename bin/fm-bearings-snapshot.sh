@@ -94,11 +94,6 @@ FM_BEARINGS_PR_REPOS=${FM_BEARINGS_PR_REPOS:-10}
 FM_BEARINGS_PR_LIMIT=${FM_BEARINGS_PR_LIMIT:-20}
 FM_BEARINGS_PR_TIMEOUT=${FM_BEARINGS_PR_TIMEOUT:-20}
 case "$FM_BEARINGS_PR_TIMEOUT" in ''|*[!0-9]*|0) FM_BEARINGS_PR_TIMEOUT=20 ;; esac
-# What ONE per-crew current-state read may take while --include-prs has it asking
-# the forge as well. It buys room for that one extra call and nothing else, so it
-# never applies on a default read.
-FM_BEARINGS_PR_CREW_STATE_BUDGET=${FM_BEARINGS_PR_CREW_STATE_BUDGET:-20}
-case "$FM_BEARINGS_PR_CREW_STATE_BUDGET" in ''|*[!0-9]*|0) FM_BEARINGS_PR_CREW_STATE_BUDGET=20 ;; esac
 validate_bound() {  # <name> <value>
   case "$2" in ''|*[!0-9]*|0) echo "fm-bearings-snapshot: $1 must be a positive integer" >&2; exit 2 ;; esac
 }
@@ -223,10 +218,13 @@ if [ "$INCLUDE_PRS" = 1 ]; then
   # at both bounds that apply to the same read: the deadline inside
   # bin/fm-crew-state.sh and the one bin/fm-fleet-snapshot.sh puts around it. The
   # two are set to the same number on purpose - the read reserves its own headroom
-  # out of that bound, so the inner answer always lands before the outer timer.
+  # out of that bound, so the inner answer always lands before the outer timer -
+  # and to the number this option ALREADY carries for its forge work, because one
+  # option is one decision: a second allowance to tune would only be a third
+  # spelling of "what --include-prs may spend".
   # Every default path keeps the ordinary budget it runs on all day.
-  FM_CREW_STATE_NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-$FM_BEARINGS_PR_CREW_STATE_BUDGET}
-  FM_SNAPSHOT_CREW_STATE_TIMEOUT=${FM_SNAPSHOT_CREW_STATE_TIMEOUT:-$FM_BEARINGS_PR_CREW_STATE_BUDGET}
+  FM_CREW_STATE_NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-$FM_BEARINGS_PR_TIMEOUT}
+  FM_SNAPSHOT_CREW_STATE_TIMEOUT=${FM_SNAPSHOT_CREW_STATE_TIMEOUT:-$FM_BEARINGS_PR_TIMEOUT}
   export FM_CREW_STATE_NM_TIMEOUT FM_SNAPSHOT_CREW_STATE_TIMEOUT
 fi
 if [ "$ALL_LANDED" = 1 ] || [ "$ALL_SECONDMATES" = 1 ]; then

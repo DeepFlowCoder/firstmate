@@ -1215,18 +1215,19 @@ test_dead_window_still_reports_terminal_run_step() {
   FM_FAKE_RUNS_LIST="  completed  fm/feat-dead-done ${short}  2026-08-29 07:45"
   FM_FAKE_TMUX_MISSING=1   # the crew's window has closed
   local out; out=$(run_crew_state "$d" feat-dead-done)
-  # The DEFAULT path, which every timer-driven caller takes: it asks no forge, so
-  # the merge this run claims is unverified and the state is honestly unknown.
-  # What the closed pane must not change is WHO answers - the finished run still
-  # reports itself here rather than falling through to the no-run fallback, where
-  # a dead target would have called the crew gone.
+  # The DEFAULT path, which every timer-driven caller takes: the run's own verdict
+  # is established and reported, and the merge it claims is left unresolved with
+  # its reason. What the closed pane must not change is WHO answers - the finished
+  # run still reports itself here rather than falling through to the no-run
+  # fallback, where a dead target would have called the crew gone.
   assert_contains "$out" "source: run-step" "a finished run answers for itself, pane or no pane"
   assert_not_contains "$out" "source: none" "a finished run never falls to the no-run fallback"
   assert_not_contains "$out" "backend target gone" "a closed pane is not the answer for a finished run"
-  assert_contains "$out" "state: unknown" "an unverified merge claim is not landed work"
+  assert_contains "$out" "state: done" "the established run verdict is reported"
+  assert_not_contains "$out" "merged/closed" "and no merge is inferred from it"
   assert_contains "$out" "run passed" "the run's own claim is still shown"
   assert_contains "$out" "pull request state not resolved: this read asks no forge" \
-    "and the line says exactly why it could not be confirmed"
+    "with the merge declined and the reason named"
   pass "closed pane still reports a terminal run-step"
 }
 
@@ -2225,13 +2226,18 @@ test_default_read_asks_no_forge_and_never_claims_the_merge() {
   arm_idle_record "$d/state" defaultpr
   out=$(run_crew_state "$d" defaultpr)
   [ ! -s "$calls" ] || fail "the default read called gh: $(cat "$calls")"
-  assert_not_contains "$out" "state: done" "an unverified merge claim is not landed work"
-  assert_contains "$out" "state: unknown" "an unverifiable claim reports unknown, not something else"
-  assert_contains "$out" "source: run-step" "the run-step reports its own unknown instead of delegating it"
-  assert_contains "$out" "run passed" "the run's own claim is still shown"
-  assert_contains "$out" "not resolved" "the line says the pull request state could not be read"
-  assert_contains "$out" "FM_CREW_STATE_RESOLVE_PR" "the reason names what would resolve it"
-  pass "the default read asks no forge and never claims the merge"
+  # Only the unresolved PART degrades. The run finished and the runs list
+  # corroborates it, so that verdict is established and is reported; what nobody
+  # asked about is the merge, and that is what the line declines to state. The
+  # fleet snapshot and the inactive-crew scan both key on this `done`, so
+  # discarding it over an adjacent unknown loses a landed crew twice over.
+  assert_not_contains "$out" "merged/closed" "a merge is still never inferred from the outcome"
+  assert_contains "$out" "state: done" "an established run verdict is still reported"
+  assert_contains "$out" "source: run-step" "and it is the run-step that reports it"
+  assert_contains "$out" "run passed" "the run's own claim is shown"
+  assert_contains "$out" "pull request state not resolved" "the merge is declined, not guessed"
+  assert_contains "$out" "FM_CREW_STATE_RESOLVE_PR" "and the reason names what would resolve it"
+  pass "the default read asks no forge and reports the run without the merge"
 }
 
 # Instance 3, closed. The measured 2026-09-09 reading: `axi status` keeps
@@ -2263,6 +2269,61 @@ test_active_reading_degrades_to_unknown_when_the_list_is_silent() {
   assert_contains "$out" "the runs list did not answer for fm/feat-silentactive within budget" \
     "the unknown carries the reason the arbitrator was not reached"
   pass "an active reading degrades to unknown when the runs list is silent"
+}
+
+# The OTHER silence, which calls for the opposite repair. The list answered at
+# once - it simply carried no row for this branch, because the branch's runs fell
+# past the row limit this read scans, or a change in the listing's shape stopped
+# every row parsing. Telling the reader the arbitrator was starved by load sends
+# them to investigate timeouts that never happened.
+test_an_answered_list_with_no_row_names_the_row_limit_not_the_budget() {
+  reset_fakes
+  local d out
+  d=$(new_case answered-no-row)
+  make_repo_on_branch "$d/wt" fm/feat-norow
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/norow.meta" "window=fm:fm-norow" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/norow.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-norow)"
+  # Answers instantly, and every row belongs to another branch.
+  FM_FAKE_RUNS_LIST="  running  fm/other-crew aaaaaaa  2026-09-09 12:10"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" norow
+  out=$(run_crew_state "$d" norow)
+  assert_contains "$out" "state: unknown" "an unarbitrated reading is still honestly unknown"
+  assert_contains "$out" "source: run-step" "and the run-step still owns it"
+  assert_not_contains "$out" "did not answer" "the arbitrator answered, so the line must not say it did not"
+  assert_not_contains "$out" "within budget" "nothing was starved here"
+  assert_contains "$out" "answered with no row for fm/feat-norow" "the line names the silence that applied"
+  assert_contains "$out" "rows may fall past" "and points at the row limit, which is the actual repair"
+  pass "an answered list with no row names the row limit, not the budget"
+}
+
+# A reading the arbitration could not stand behind has no merge question left to
+# ask: its state is `unknown` for a reason the forge cannot settle. Asking anyway
+# spends a bounded network call - inside a deadline the other calls still need -
+# to append a positive forge fact to a verdict this read already discarded.
+test_a_degraded_reading_never_spends_a_forge_call() {
+  reset_fakes
+  local d out calls
+  d=$(new_case degraded-no-forge-call)
+  make_repo_on_branch "$d/wt" fm/feat-degradedforge
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/degradedforge.meta" "window=fm:fm-degradedforge" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-degradedforge)"
+  FM_FAKE_RUNS_LIST="  running  fm/other-crew aaaaaaa  2026-09-09 12:10"
+  FM_CREW_STATE_RESOLVE_PR=1
+  FM_FAKE_GH_PR_STATE=MERGED
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" degradedforge
+  out=$(run_crew_state "$d" degradedforge)
+  [ ! -s "$calls" ] || fail "a discarded verdict still spent a forge call: $(cat "$calls")"
+  assert_contains "$out" "state: unknown" "the degrade stands - the forge cannot settle currency"
+  assert_contains "$out" "cannot confirm the reported terminal run is current" "with its own reason"
+  assert_not_contains "$out" "on the forge" "and no forge fact is appended to a discarded verdict"
+  pass "a degraded reading never spends a forge call"
 }
 
 # The crossing the degrade must NOT swallow. Same silent arbitrator, but this
@@ -2495,7 +2556,9 @@ case "$*" in
     sleep 1
     printf '%s\n' "$FM_FAKE_AXI_STATUS" ;;
   runs*)
-    while :; do :; done ;;
+    # Sleeps rather than spins: a busy loop competes for the same cores the
+    # elapsed-time assertion below measures against.
+    sleep 600 ;;
 esac
 exit 0
 SH
@@ -2878,6 +2941,8 @@ test_default_read_asks_no_forge_and_never_claims_the_merge
 test_open_forge_still_surfaces_a_contradicting_record
 test_checks_passed_reports_done_without_a_pull_request_claim
 test_active_reading_degrades_to_unknown_when_the_list_is_silent
+test_an_answered_list_with_no_row_names_the_row_limit_not_the_budget
+test_a_degraded_reading_never_spends_a_forge_call
 test_a_busy_pane_answers_over_a_silent_arbitrator
 test_a_busy_pane_answer_shows_the_blocker_it_cannot_supersede
 test_unarbitrated_terminal_run_lets_the_blocker_answer

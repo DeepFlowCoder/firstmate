@@ -1001,15 +1001,29 @@ if [ "$HAVE_RUN" = 1 ]; then
       # pass the durable-record reconcile below: an unanswered decision or blocker
       # is evidence, and a reading that could not even be arbitrated is the last
       # one entitled to bury it.
+      #
+      # Two different silences reach here and they call for opposite repairs, so
+      # the line names the one that actually applied. A list that never answered
+      # was starved - by its own budget, under the load this whole arm exists
+      # for. A list that answered but carried no row for this branch was not
+      # starved at all: the branch's rows fell past the row limit this read
+      # scans, or a change in the listing's shape stopped every row parsing. A
+      # reader told to look at load when the fix is the row limit investigates
+      # the wrong thing.
       if [ "$RUN_VERDICTLESS" != 1 ]; then
-        UNARBITRATED="the run verdict ($RUN_DETAIL) could not be arbitrated: the runs list did not answer for $CREW_BRANCH within budget"
+        if [ "$RUNS_ANSWERED" = 1 ]; then
+          ARBITRATOR_SILENCE="the runs list answered with no row for $CREW_BRANCH (its rows may fall past the $FM_CREW_STATE_RUNS_LIMIT this read scans)"
+        else
+          ARBITRATOR_SILENCE="the runs list did not answer for $CREW_BRANCH within budget"
+        fi
+        UNARBITRATED="the run verdict ($RUN_DETAIL) could not be arbitrated: $ARBITRATOR_SILENCE"
         if [ "$RUN_IS_TERMINAL" != 1 ] && pane_is_provably_busy; then
           RUN_STATE=working
           EMIT_SOURCE=pane
           RUN_DETAIL="harness busy (${BUSY_VERDICT#* })${SEP}$UNARBITRATED"
         else
           RUN_STATE=unknown
-          RUN_DETAIL="cannot confirm $SUPERSEDED_SUBJECT is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH within budget"
+          RUN_DETAIL="cannot confirm $SUPERSEDED_SUBJECT is current ($RUN_DETAIL); $ARBITRATOR_SILENCE"
         fi
       fi
       ;;
@@ -1082,17 +1096,26 @@ if [ "$HAVE_RUN" = 1 ]; then
   # and an unverified merge is not finished work. It reports `unknown` carrying
   # the reason it could not be settled.
   #
-  # That `unknown` is REPORTED, not delegated: the run finished and made a claim
-  # nobody could check, which is a fact the reader needs, not a gap for the pane
-  # or a status line written before the run ended to fill in. Only a contradicting
-  # durable record still outranks it below, because an unanswered blocker is
-  # evidence and this reading is not. RUN_VERDICTLESS is what keeps that
-  # distinction: an abort hands the question on, an unverified finish does not.
+  # Only the unresolved PART is degraded. A run whose outcome is known and whose
+  # arbitration answered `current` HAS an established verdict, and an adjacent
+  # fact nobody could check is no reason to throw it away: the state stays the
+  # verdict's, and the pull request clause says it was not resolved and why.
+  # Requirement 2 forbids INFERRING a merge from the pipeline outcome, which this
+  # line does not do - it reports the run and declines to report the merge.
+  # Discarding the verdict too cost the fleet snapshot its validity and the
+  # inactive-crew scan its terminal record, for a crew whose work had landed.
+  #
+  # The forge REFUTING the claim is the other thing entirely: there the merge is
+  # established, as not having happened, and the run's own `done` does not stand.
   #
   # `passed` is the only word that reaches here, because it is the only one that
   # claims a merge. `checks-passed` and a coarse `completed` report `done` and
   # say nothing about a pull request either way, so they have nothing to verify.
-  if [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_WORD" = passed ]; then
+  # A reading the arbitration could not stand behind has nothing to verify either:
+  # its state is already `unknown` for a reason the forge cannot settle, so asking
+  # would spend a bounded call to append a fact about a verdict this read has
+  # already discarded.
+  if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_WORD" = passed ]; then
     PR_STATE=""
     PR_REASON=""
     if [ "$RESOLVE_PR" != 1 ]; then
@@ -1114,7 +1137,6 @@ if [ "$HAVE_RUN" = 1 ]; then
         RUN_STATE=unknown
         RUN_DETAIL="$RUN_DETAIL${SEP}but $RUN_PR is still open on the forge${SEP}the work has not landed" ;;
       *)
-        RUN_STATE=unknown
         RUN_DETAIL="$RUN_DETAIL${SEP}pull request state not resolved: $PR_REASON" ;;
     esac
   fi
