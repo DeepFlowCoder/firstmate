@@ -14,8 +14,10 @@
 # LOCAL-ONLY by default: a normal invocation makes ZERO GitHub/network/auth calls.
 # It MAY surface PR URLs already recorded locally in task meta (recorded_prs), but it
 # performs no live discovery or checks. Live PR discovery/checks happen ONLY under
-# --include-prs, which is the sole path that touches the network; all gh coupling
-# lives in that branch and never in the canonical snapshot. The default output states
+# --include-prs, which is the sole path that touches the network; this wrapper's own
+# gh coupling lives in that branch, and that branch is also what authorizes the
+# per-crew pull request read inside the canonical snapshot (see the note at the
+# option below), so nothing on the default path asks a forge. The default output states
 # explicitly (the prs: line and the omitted[] surfaces) what was not requested, so an
 # absence is never ambiguous.
 #
