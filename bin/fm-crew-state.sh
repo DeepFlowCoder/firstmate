@@ -58,14 +58,17 @@
 #      that has already failed.
 #   3. Never deduce what a forge says. `outcome: passed` is no-mistakes' word for
 #      "the pull request merged or closed", which is a CLAIM about the forge and
-#      not a reading of it, so it is reported as landed work only where the forge
-#      itself confirms it. This read asks no forge by default: without the opt-in
-#      the merge is unverified, and an unverified merge reports `unknown` naming
-#      what could not be read - never `done`. FM_CREW_STATE_RESOLVE_PR=1 opts in
-#      to the one bounded read that can settle it (bin/fm-forge-pr-state-lib.sh),
-#      and only a caller a human invoked deliberately should set it. No other run
-#      word claims a merge: `checks-passed` and a coarse `completed` report `done`
-#      and say nothing about a pull request either way.
+#      not a reading of it. This read asks NO forge by default: without the opt-in
+#      the run's own established verdict still stands, and only the pull request
+#      clause degrades, saying that no forge was asked and how to ask. With
+#      FM_CREW_STATE_RESOLVE_PR=1 - the one bounded read that can settle it
+#      (bin/fm-forge-pr-state-lib.sh), for a caller a human invoked deliberately -
+#      a merged pull request reports `done` and one closed WITHOUT merging reports
+#      `failed`, each naming the forge as what said so, because `done` means the
+#      work landed rather than that the task is over. A merge is never inferred
+#      from the pipeline outcome in any of those cases. No other run word claims
+#      a merge: `checks-passed` and a coarse `completed` report `done` and say
+#      nothing about a pull request either way.
 #   4. Reconcile the status log: a needs-decision/blocked line under an ACTIVE
 #      run is deterministically stale (the gate resolved and the run resumed) and
 #      is flagged superseded. Under a finished run it is not stale - a finished
@@ -1130,9 +1133,21 @@ if [ "$HAVE_RUN" = 1 ]; then
       # subshell. A resolved answer carries no reason and leaves PR_REASON empty.
       IFS=$'\t' read -r PR_STATE PR_REASON <<< "$(fm_pr_state_resolve "$RUN_PR" "$(read_budget_left)")"
     fi
+    # `merged` and `closed` are NOT the same answer, however alike they look next
+    # to each other in a `case`. `done` does not mean "this task is over", it
+    # means the work LANDED: it is what bin/fm-inactive-reconcile.sh writes as a
+    # terminal outcome and what a supervisor reads before tearing a crew down, so
+    # reporting it over a pull request that was closed unmerged authorises
+    # cleanup of work that never arrived. `failed` is the existing word for that
+    # and needs no new vocabulary - it describes the TASK's outcome, not the
+    # run's. The run did pass; the delivery did not happen. It also carries the
+    # consequences that are wanted here: cleanup stops and a supervisor looks.
     case "$PR_STATE" in
-      merged|closed)
-        RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is $PR_STATE on the forge" ;;
+      merged)
+        RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is merged on the forge" ;;
+      closed)
+        RUN_STATE=failed
+        RUN_DETAIL="$RUN_DETAIL${SEP}but $RUN_PR was closed on the forge without merging${SEP}the work did not land" ;;
       open)
         RUN_STATE=unknown
         RUN_DETAIL="$RUN_DETAIL${SEP}but $RUN_PR is still open on the forge${SEP}the work has not landed" ;;

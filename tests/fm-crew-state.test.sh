@@ -2154,7 +2154,58 @@ test_passed_outcome_reports_a_forge_confirmed_merge() {
   out=$(run_crew_state "$d" mergedpr)
   assert_contains "$out" "state: done" "a forge-confirmed merge is done"
   assert_contains "$out" "is merged on the forge" "the merge is reported as a resolved forge fact"
+  assert_not_contains "$out" "closed" "a merged pull request is not reported as closed"
   pass "a passed outcome reports a forge-confirmed merge as resolved"
+}
+
+# The other half of that answer, and the direction that costs work: the captain
+# closed the pull request without merging. The RUN passed; the delivery never
+# arrived. `done` is what authorises teardown, so reporting it here would clear
+# away work that never landed - the same harm as claiming a merge, reached
+# through the closed door instead of the open one.
+test_a_closed_unmerged_pull_request_reports_failed() {
+  reset_fakes
+  local d short out
+  d=$(new_case passed-closed-pr)
+  make_repo_on_branch "$d/wt" fm/feat-closedpr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/closedpr.meta" "window=fm:fm-closedpr" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-closedpr)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-closedpr ${short}  2026-08-30 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
+  FM_FAKE_GH_PR_STATE=CLOSED
+  out=$(run_crew_state "$d" closedpr)
+  assert_not_contains "$out" "state: done" "work that never landed is not done"
+  assert_contains "$out" "state: failed" "a pull request closed unmerged is a failed delivery"
+  assert_contains "$out" "source: run-step" "the verdict is still the run-step's own line"
+  assert_contains "$out" "was closed on the forge without merging" \
+    "and the line names the forge as what said so"
+  assert_contains "$out" "the work did not land" "in the same terms the open case uses"
+  pass "a closed unmerged pull request reports failed"
+}
+
+# The same closed answer with an unanswered blocker on the record: `failed`
+# outranks the record, but requirement 3 still holds - the open item reaches the
+# line in its own words rather than being buried by the failure.
+test_a_closed_unmerged_pull_request_still_names_an_open_blocker() {
+  reset_fakes
+  local d short out
+  d=$(new_case closed-pr-vs-blocker)
+  make_repo_on_branch "$d/wt" fm/feat-closedblocked
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/closedblocked.meta" "window=fm:fm-closedblocked" "worktree=$d/wt" "kind=ship"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/closedblocked.status"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-closedblocked)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-closedblocked ${short}  2026-08-30 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
+  FM_FAKE_GH_PR_STATE=CLOSED
+  out=$(run_crew_state "$d" closedblocked)
+  assert_contains "$out" "state: failed" "the failed delivery still outranks the record"
+  assert_contains "$out" "an unresolved blocked is still on the record" "and the open item is named"
+  assert_contains "$out" "pick the base branch" "in the record's own words"
+  pass "a closed unmerged pull request still names an open blocker"
 }
 
 # And when the forge cannot be reached at all, that is said rather than guessed.
@@ -2568,13 +2619,18 @@ SH
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" deadline
   start=$SECONDS
-  out=$(FM_CREW_STATE_NM_TIMEOUT=6 run_crew_state "$d" deadline)
+  out=$(FM_CREW_STATE_NM_TIMEOUT=20 run_crew_state "$d" deadline)
   elapsed=$((SECONDS - start))
-  # `$SECONDS` is whole-second, so this allows one second of measurement error on
-  # a read that lands near four: what it rejects is a read that runs to its bound
-  # or past it, which is every configuration this case exists to catch.
-  [ "$elapsed" -lt 6 ] \
-    || fail "the read did not finish inside its own bound with headroom (elapsed ${elapsed}s of 6s)"
+  # The separation between the passing band and the nearest failing one is the
+  # reserve itself (a fifth of the bound, so 4s at 20), and this suite shares
+  # cores with the rest of the portable shard - so the bound is sized to buy that
+  # margin in ABSOLUTE seconds rather than to sit close to a four-second read.
+  # Expected here: ~16s (a 1s `axi status`, then the hung runs query killed with
+  # the remaining budget). Spending the bound once per call would take ~21s and
+  # keeping no reserve ~20s; the threshold sits 2s clear of both directions,
+  # which whole-second `$SECONDS` and a loaded runner can absorb.
+  [ "$elapsed" -lt 18 ] \
+    || fail "the read did not finish inside its own bound with headroom (elapsed ${elapsed}s of 20s)"
   assert_contains "$out" "state: unknown" "a runs list that never answered leaves the reading unchecked"
   assert_contains "$out" "within budget" "and the line says the budget is what ran out"
   pass "the whole read lands inside its bound, with its reason"
@@ -2927,6 +2983,8 @@ test_runs_list_silence_is_unknown_not_failed
 test_terminal_run_with_no_newer_active_run_stays_failed
 test_passed_outcome_never_claims_an_unresolved_merge
 test_passed_outcome_reports_a_forge_confirmed_merge
+test_a_closed_unmerged_pull_request_reports_failed
+test_a_closed_unmerged_pull_request_still_names_an_open_blocker
 test_unreachable_forge_is_stated_not_guessed
 test_terminal_run_does_not_bury_a_contradicting_record
 test_cancelled_run_does_not_override_a_declared_pause
