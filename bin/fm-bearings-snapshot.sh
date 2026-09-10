@@ -221,7 +221,9 @@ if [ "$INCLUDE_PRS" = 1 ]; then
   # nobody - it fails the requested feature and disguises the failure as
   # `unknown`. So this option, and only this option, pays for the room it needs,
   # at both bounds that apply to the same read: the deadline inside
-  # bin/fm-crew-state.sh and the one bin/fm-fleet-snapshot.sh puts around it.
+  # bin/fm-crew-state.sh and the one bin/fm-fleet-snapshot.sh puts around it. The
+  # two are set to the same number on purpose - the read reserves its own headroom
+  # out of that bound, so the inner answer always lands before the outer timer.
   # Every default path keeps the ordinary budget it runs on all day.
   FM_CREW_STATE_NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-$FM_BEARINGS_PR_CREW_STATE_BUDGET}
   FM_SNAPSHOT_CREW_STATE_TIMEOUT=${FM_SNAPSHOT_CREW_STATE_TIMEOUT:-$FM_BEARINGS_PR_CREW_STATE_BUDGET}

@@ -2294,15 +2294,76 @@ test_a_busy_pane_answers_over_a_silent_arbitrator() {
   pass "a provably busy pane answers over a silent arbitrator"
 }
 
-# Per-call bounds do not compose. Every caller bounds this script as a UNIT -
-# the fleet snapshot folds a read that overruns to `unknown` - so a read that
-# spends its full bound once per call overruns the caller that is timing it and
-# a healthy crew is truncated from outside. The deadline is therefore shared: a
-# slow first call leaves less for the second, not the same again. Measured
-# rather than inspected, because only elapsed time can tell the two apart -
-# here a 3s `axi status` under a 4s deadline leaves ~1s for a runs list that
-# never answers, so the whole read lands near 4s instead of 3+4.
-test_one_deadline_covers_the_whole_read_not_each_call() {
+# A busy pane does not license burying the durable record. A blocked line under a
+# reading the pane proves is ACTIVE is deterministically stale - the same answer
+# any active run gets - but it must still be accounted for on the line rather than
+# dropped by an emit that exits before the reconcile ever runs.
+test_a_busy_pane_answer_still_passes_the_record_reconcile() {
+  reset_fakes
+  local d out
+  d=$(new_case busy-silent-blocked)
+  make_repo_on_branch "$d/wt" fm/feat-busyblocked
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/busyblocked.meta" "window=fm:fm-busyblocked" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/busyblocked.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-busyblocked)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" busyblocked)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" busyblocked busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  out=$(run_crew_state "$d" busyblocked)
+  assert_contains "$out" "state: working" "the emitting harness still answers"
+  assert_contains "$out" "source: pane" "and the line still names the pane"
+  assert_contains "$out" "status-log superseded by active run" \
+    "the record is accounted for, not dropped by an early emit"
+  assert_contains "$out" "could not be arbitrated" "the unarbitrated verdict is still declared"
+  pass "a busy-pane answer still passes the durable-record reconcile"
+}
+
+# The crossing that was unpinned in both directions: a FINISHED run whose currency
+# could not be checked, over an unanswered blocker, with the pane busy - the
+# ordinary moment right after a run hands control back. The pane says nothing
+# about whether a finished verdict is current, so it must not answer here at all,
+# and the blocker - durable, unanswered evidence - must reach the line with its
+# own words rather than being buried by a reading that established nothing.
+test_unarbitrated_terminal_run_lets_the_blocker_answer() {
+  reset_fakes
+  local d out
+  d=$(new_case unarbitrated-vs-blocker)
+  make_repo_on_branch "$d/wt" fm/feat-unarbblocked
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unarbblocked.meta" "window=fm:fm-unarbblocked" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/unarbblocked.status"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-unarbblocked)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" unarbblocked)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" unarbblocked busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  out=$(run_crew_state "$d" unarbblocked)
+  assert_contains "$out" "state: blocked" "the unanswered blocker answers for the crew"
+  assert_contains "$out" "source: status-log" "the durable record is the source that answered"
+  assert_contains "$out" "pick the base branch" "the blocker keeps its own words"
+  assert_contains "$out" "cannot confirm the reported terminal run is current" \
+    "and the line carries why the run could not be checked"
+  assert_not_contains "$out" "source: pane" "a busy pane cannot corroborate a finished verdict"
+  assert_not_contains "$out" "contradicts" "a reading that established nothing contradicts nothing"
+  pass "an unarbitrated terminal run lets the blocker answer"
+}
+
+# FM_CREW_STATE_NM_TIMEOUT bounds the WHOLE read, and the read has to finish
+# inside it with room to spare. Two things fail otherwise, and only elapsed time
+# can tell them apart from a healthy read. Spending the bound once per call
+# overruns the caller that is timing this script as a unit - the fleet snapshot
+# then folds a healthy crew to `unknown` from outside. Spending it right down to
+# the last second fails the same way for a subtler reason: the caller's clock
+# started at exec, this one after six library sources, so the caller's timer
+# fires first, kills the read, and discards the very reason the budget exists to
+# deliver. Here a 1s `axi status` under a 6s bound leaves a few seconds for a
+# runs list that never answers, and the whole read must still land - reason and
+# all - comfortably before that 6s is up.
+test_the_whole_read_lands_inside_its_bound_with_its_reason() {
   reset_fakes
   local d out start elapsed
   d=$(new_case shared-deadline)
@@ -2313,7 +2374,7 @@ test_one_deadline_covers_the_whole_read_not_each_call() {
 set -u
 case "$*" in
   "axi status")
-    sleep 3
+    sleep 1
     printf '%s\n' "$FM_FAKE_AXI_STATUS" ;;
   runs*)
     while :; do :; done ;;
@@ -2326,13 +2387,16 @@ SH
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" deadline
   start=$SECONDS
-  out=$(FM_CREW_STATE_NM_TIMEOUT=4 run_crew_state "$d" deadline)
+  out=$(FM_CREW_STATE_NM_TIMEOUT=6 run_crew_state "$d" deadline)
   elapsed=$((SECONDS - start))
+  # `$SECONDS` is whole-second, so this allows one second of measurement error on
+  # a read that lands near four: what it rejects is a read that runs to its bound
+  # or past it, which is every configuration this case exists to catch.
   [ "$elapsed" -lt 6 ] \
-    || fail "the read spent its whole bound per call instead of sharing one deadline (elapsed ${elapsed}s)"
+    || fail "the read did not finish inside its own bound with headroom (elapsed ${elapsed}s of 6s)"
   assert_contains "$out" "state: unknown" "a runs list that never answered leaves the reading unchecked"
   assert_contains "$out" "within budget" "and the line says the budget is what ran out"
-  pass "one deadline covers the whole read, not each call"
+  pass "the whole read lands inside its bound, with its reason"
 }
 
 
@@ -2688,6 +2752,8 @@ test_open_forge_still_surfaces_a_contradicting_record
 test_checks_passed_reports_done_without_a_pull_request_claim
 test_active_reading_degrades_to_unknown_when_the_list_is_silent
 test_a_busy_pane_answers_over_a_silent_arbitrator
-test_one_deadline_covers_the_whole_read_not_each_call
+test_a_busy_pane_answer_still_passes_the_record_reconcile
+test_unarbitrated_terminal_run_lets_the_blocker_answer
+test_the_whole_read_lands_inside_its_bound_with_its_reason
 
 echo "all fm-crew-state tests passed"

@@ -88,11 +88,16 @@
 # the watcher, the inactive-crew scan - is local-only by construction rather than
 # by remembering to opt out of a default-on call.
 #
-# EVERY bounded call shares ONE deadline of FM_CREW_STATE_NM_TIMEOUT seconds for
-# the whole read, so the read fits inside the bound its caller already applies to
-# it instead of spending that bound once per call. A caller that deliberately
-# asks for more work - the forge read above - is the one that raises the deadline
-# to pay for it; the periodic paths keep the default and their two local calls.
+# EVERY bounded call shares ONE deadline: FM_CREW_STATE_NM_TIMEOUT is the bound
+# for the WHOLE read, not for each call, and the read keeps a reserve of it so it
+# can still report WHY it could not answer before its caller's own timer fires.
+# A caller that deliberately asks for more work - the forge read above - is the
+# one that raises the bound to pay for it. The periodic paths keep the default,
+# and spend it on at most three local calls: `axi status`, the runs list that
+# arbitrates the verdict, and, for a crew in the ci monitor phase, the ci step
+# log tail that refines the detail. That last one runs last on purpose - under
+# one shared deadline the order decides which call starves, and the call that
+# decides the STATE must never starve for one that only improves the wording.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -132,7 +137,22 @@ case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
 # lands on the same honest answer a timed-out call lands on, `unknown` carrying
 # the reason it could not be settled within budget. A caller that needs more room
 # raises the deadline deliberately.
-READ_DEADLINE=$(( $(date +%s) + NM_TIMEOUT ))
+#
+# The read reserves a slice of that bound for ITSELF, because fitting inside the
+# caller's bound is only worth anything if this read still gets to SAY why it
+# could not answer. Spend the bound down to its last second and the caller's own
+# timer fires first: bin/fm-fleet-snapshot.sh kills the read and folds it to a
+# bare `unknown` with no reason at all - discarding the very reason strings this
+# budget exists to deliver - and bin/fm-inactive-reconcile.sh abandons its whole
+# scan. The caller's clock also starts at exec while this one starts after bash
+# has sourced six libraries, so equal numbers are never equal in practice. The
+# reserve keeps the headroom for whatever bound is configured, rather than
+# leaving it to each caller to remember to leave room.
+READ_RESERVE=$(( NM_TIMEOUT / 5 ))
+[ "$READ_RESERVE" -ge 2 ] || READ_RESERVE=2
+READ_BUDGET=$(( NM_TIMEOUT - READ_RESERVE ))
+[ "$READ_BUDGET" -ge 1 ] || READ_BUDGET=1
+READ_DEADLINE=$(( $(date +%s) + READ_BUDGET ))
 read_budget_left() {
   local left=$(( READ_DEADLINE - $(date +%s) ))
   [ "$left" -gt 0 ] || { printf '0'; return 0; }
@@ -258,10 +278,13 @@ if [ -n "$REMOTE_HOST" ]; then
   esac
 fi
 
-# pane_readable is consulted ONLY in the no-run fallback below. The run-step path
-# stays authoritative regardless of pane liveness - judge by the run-step, not the
-# shell - so a finished crew whose endpoint has closed still reports its run-step
-# state (e.g. done) instead of being masked as unknown. Backend-aware
+# pane_readable answers whether the recorded endpoint can be read at all. A run
+# that produced a verdict is authoritative regardless of pane liveness - judge by
+# the run-step, not the shell - so a finished crew whose endpoint has closed still
+# reports its run-step state instead of being masked as unknown. The one place the
+# run-step path consults the pane is pane_is_provably_busy below, and only in the
+# other direction: when the arbitrator could not be reached, a harness that is
+# emitting is positive evidence, never a reason to overrule a verdict. Backend-aware
 # (fm_backend_of_meta defaults absent backend= to tmux, the P1 contract): a
 # herdr task is read through fm_backend_capture instead of a bare tmux probe.
 TASK_BACKEND=$(fm_backend_of_meta "$META")
@@ -693,6 +716,15 @@ if [ "$HAVE_RUN" = 1 ]; then
   # the run reports, kept for the arbitration and the forge resolution below.
   RUN_WORD=""
   RUN_PR=""
+  # Which source finally answers. Every reading in this block reports as the
+  # run-step that produced it, except the one place a pane's direct observation
+  # answers instead - and that line has to say so, or it is indistinguishable
+  # from the run-step reading that cost a day.
+  EMIT_SOURCE=run-step
+  # Whether the ci step log tail has anything to say about this reading: only a
+  # `status:` reading still in flight can be refined by it. Read AFTER the
+  # arbitration, so the scarce budget buys the verdict before the wording.
+  CI_LOG_MAY_REFINE=0
   if [ "$RUN_SOURCE" = coarse ]; then
     # No step/gate detail is available from the plain runs list - it carries a
     # bare status word, which the one translation owner turns into the same
@@ -746,21 +778,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
       RUN_DETAIL=$(fm_nm_verdict_detail "$RUN_WORD")
       fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
-      if [ "$RUN_STATE" = working ]; then
-        CI_STEP_STATUS=$(nm_effective_ci_step_status)
-        case "$CI_STEP_STATUS" in
-          running)
-            CI_LOG_STATE=$(nm_ci_checks_state)
-            if [ "$CI_LOG_STATE" = green ]; then
-              RUN_STATE="done"
-              RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
-            fi
-            ;;
-          fixing)
-            CI_LOG_STATE=not-ready
-            ;;
-        esac
-      fi
+      CI_LOG_MAY_REFINE=1
     fi
   fi
 
@@ -772,6 +790,11 @@ if [ "$HAVE_RUN" = 1 ]; then
   # log: only the first may hand the question to other evidence.
   RUN_VERDICTLESS=0
   case "$RUN_STATE" in unknown) RUN_VERDICTLESS=1 ;; esac
+  # And a third thing `unknown` can mean: the reading was never checked at all.
+  # It neither claims (so it may not contradict a record) nor hands the question
+  # on (so it still reports itself, with its reason) - the arbitration below sets
+  # it, and the reconcile needs to tell it from the other two.
+  RUN_UNARBITRATED=0
 
   # A verdict is only trustworthy when this branch's NEWEST run is the one it
   # came from. Measured 2026-08-29 on the real store (runs
@@ -871,19 +894,58 @@ if [ "$HAVE_RUN" = 1 ]; then
       # day, and it still declares that the run verdict went unarbitrated -
       # another source answering does not make the uncertainty disappear.
       #
+      # A pane speaks only to whether work is happening NOW, which is the question
+      # an ACTIVE reading asks - so that is the only reading it may answer for. A
+      # finished run's pane is typically busy at the ordinary moment it hands
+      # control back, so reading `working` off it there would hide the finish
+      # rather than corroborate anything.
+      #
       # A reading that claims nothing (an abort) has no claim to degrade, and
-      # emitting here would stop its fall-through to the evidence that CAN
+      # answering here would stop its fall-through to the evidence that CAN
       # answer - which is the whole of what a cancellation is owed.
+      #
+      # NEITHER branch emits from here. Whatever this arm decides, it still has to
+      # pass the durable-record reconcile below: an unanswered decision or blocker
+      # is evidence, and a reading that could not even be arbitrated is the last
+      # one entitled to bury it.
       if [ "$RUN_VERDICTLESS" != 1 ]; then
         UNARBITRATED="the run verdict ($RUN_DETAIL) could not be arbitrated: the runs list did not answer for $CREW_BRANCH within budget"
-        if pane_is_provably_busy; then
-          emit working pane "harness busy (${BUSY_VERDICT#* })${SEP}$UNARBITRATED"
+        if [ "$RUN_IS_TERMINAL" != 1 ] && pane_is_provably_busy; then
+          RUN_STATE=working
+          EMIT_SOURCE=pane
+          RUN_DETAIL="harness busy (${BUSY_VERDICT#* })${SEP}$UNARBITRATED"
+        else
+          RUN_UNARBITRATED=1
+          RUN_STATE=unknown
+          RUN_DETAIL="cannot confirm $SUPERSEDED_SUBJECT is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH within budget"
         fi
-        emit unknown run-step \
-          "cannot confirm $SUPERSEDED_SUBJECT is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH within budget"
       fi
       ;;
   esac
+
+  # While the active step is ci, `axi status` alone cannot tell "still waiting on
+  # checks" from "checks green, waiting on merge" - both read `ci,running` - so
+  # the ci step log tail settles it and a green pull request is never reported as
+  # still validating. It runs HERE, after the arbitration, because the two share
+  # one deadline and the arbitration decides the STATE while this only refines the
+  # DETAIL. A crew sits in the ci monitor phase for that whole phase, so letting
+  # this call spend the budget first would routinely starve the very check that
+  # exists to stop the measured false verdict - and buy a nicer wording with it.
+  if [ "$CI_LOG_MAY_REFINE" = 1 ] && [ "$RUN_STATE" = working ]; then
+    CI_STEP_STATUS=$(nm_effective_ci_step_status)
+    case "$CI_STEP_STATUS" in
+      running)
+        CI_LOG_STATE=$(nm_ci_checks_state)
+        if [ "$CI_LOG_STATE" = green ]; then
+          RUN_STATE="done"
+          RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
+        fi
+        ;;
+      fixing)
+        CI_LOG_STATE=not-ready
+        ;;
+    esac
+  fi
 
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
@@ -976,7 +1038,14 @@ if [ "$HAVE_RUN" = 1 ]; then
   if [ "$RUN_STATE" != parked ] && [ "$RUN_VERDICTLESS" != 1 ]; then
     case "$LOG_VERB" in
       needs-decision|blocked)
-        if [ "$RUN_IS_TERMINAL" != 1 ]; then
+        if [ "$RUN_UNARBITRATED" = 1 ]; then
+          # Nothing about this reading was established, so it settles nothing
+          # about the record either. The record is durable, unanswered evidence
+          # and it answers - keeping its own words, and carrying why the run
+          # could not be checked, so neither fact is lost.
+          emit "$(map_log_state "$LOG_LINE")" status-log \
+            "$(status_line_note "$LOG_LINE")${SEP}still unresolved on the record, and $RUN_DETAIL"
+        elif [ "$RUN_IS_TERMINAL" != 1 ]; then
           RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run"
         elif [ "$RUN_STATE" = failed ]; then
           RUN_DETAIL="$RUN_DETAIL${SEP}an unresolved $LOG_VERB is still on the record: $(status_line_note "$LOG_LINE")"
@@ -998,7 +1067,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   if [ "$RUN_VERDICTLESS" = 1 ]; then
     EMIT_ASIDE=$RUN_DETAIL
   else
-    emit "$RUN_STATE" run-step "$RUN_DETAIL"
+    emit "$RUN_STATE" "$EMIT_SOURCE" "$RUN_DETAIL"
   fi
 fi
 
