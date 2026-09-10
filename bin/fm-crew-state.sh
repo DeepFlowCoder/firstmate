@@ -773,12 +773,21 @@ if [ "$HAVE_RUN" = 1 ]; then
         "a $BRANCH_NEWEST_STATUS run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL); its head does not bind to this worktree"
       ;;
     unestablished)
-      # Silence licenses nothing NEW. A terminal verdict is a new claim, so it is
+      # Silence licenses nothing NEW. A terminal verdict that CLAIMS something
+      # about the work - it landed, or it failed - is a new claim, so it is
       # downgraded; an active reading is the status quo this read arrived with,
       # so it simply stands rather than turning every timed-out list query into a
-      # fleet of unknowns.
-      [ "$RUN_IS_TERMINAL" = 1 ] && emit unknown run-step \
-        "cannot confirm the reported terminal run is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH"
+      # fleet of unknowns. A terminal run that asserts NOTHING (an abort, already
+      # `unknown`) has no claim to downgrade, and emitting one here would stop
+      # the fall-through to the evidence that can answer - which is the whole of
+      # what a cancellation is owed.
+      if [ "$RUN_IS_TERMINAL" = 1 ]; then
+        case "$RUN_STATE" in
+          done|failed)
+            emit unknown run-step \
+              "cannot confirm the reported terminal run is current ($RUN_DETAIL); the runs list did not answer for $CREW_BRANCH" ;;
+        esac
+      fi
       ;;
   esac
 
@@ -845,17 +854,26 @@ if [ "$HAVE_RUN" = 1 ]; then
   # contradiction is stated. Only a real failure still outranks it, because a
   # failure that a stale-looking record could mask is the one thing worse than a
   # contradiction left visible.
+  #
+  # The split is on whether the run FINISHED, not on the state it reports: the
+  # ci-green reading above reports `done` for a run that is still actively
+  # monitoring its pull request, and a still-running run leaves the record just
+  # as deterministically stale as any other active one. Only a genuinely terminal
+  # run lets the durable record win.
   case "$LOG_VERB" in
     needs-decision|blocked)
       case "$RUN_STATE" in
         parked) ;;
-        working)
-          RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run" ;;
-        failed)
-          RUN_DETAIL="$RUN_DETAIL${SEP}an unresolved $LOG_VERB is still on the record: $(status_line_note "$LOG_LINE")" ;;
         *)
-          emit "$(map_log_state "$LOG_LINE")" status-log \
-            "$(status_line_note "$LOG_LINE")${SEP}still unresolved on the record, which the run's own verdict ($RUN_DETAIL) contradicts" ;;
+          if [ "$RUN_IS_TERMINAL" != 1 ]; then
+            RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run"
+          elif [ "$RUN_STATE" = failed ]; then
+            RUN_DETAIL="$RUN_DETAIL${SEP}an unresolved $LOG_VERB is still on the record: $(status_line_note "$LOG_LINE")"
+          else
+            emit "$(map_log_state "$LOG_LINE")" status-log \
+              "$(status_line_note "$LOG_LINE")${SEP}still unresolved on the record, which the run's own verdict ($RUN_DETAIL) contradicts"
+          fi
+          ;;
       esac
       ;;
   esac
@@ -906,11 +924,19 @@ fi
 # NOTHING was reported for this crew on this path, so the detail must not borrow
 # the supersession wording the arbitrated path above uses: there is no reported
 # terminal run here to be superseded, and claiming one sends the reader hunting
-# for a run that does not exist. It states what is actually true instead -
-# attribution could not be determined, and WHICH refusal caused that - so the
-# reader knows whether to look further.
-[ "$RUNS_UNKNOWN_ATTRIBUTION" != 1 ] || emit unknown run-step \
-  "run attribution for $CREW_BRANCH could not be determined ($ATTRIBUTION_MISS); its newest runs-list row is a $BRANCH_NEWEST_STATUS run whose head does not bind to this worktree, so no run may answer for this crew"
+# for a run that does not exist. It states what is actually true instead - the
+# row that stopped the scan - so the reader knows whether to look further.
+#
+# The stop is reached two ways, and the line says only what holds on the one it
+# came through. When `axi status` refused to attribute a run at all, the refusal
+# it recorded is named. When it DID attribute one and the scan stopped anyway,
+# there is no refusal to name, and claiming attribution could not be determined
+# would be false - so that clause is left off entirely rather than printed empty.
+if [ "$RUNS_UNKNOWN_ATTRIBUTION" = 1 ]; then
+  UNKNOWN_ATTRIBUTION="the newest runs-list row for $CREW_BRANCH is a $BRANCH_NEWEST_STATUS run whose head does not bind to this worktree, so no run may answer for this crew"
+  [ -z "$ATTRIBUTION_MISS" ] || UNKNOWN_ATTRIBUTION="run attribution for $CREW_BRANCH could not be determined ($ATTRIBUTION_MISS); $UNKNOWN_ATTRIBUTION"
+  emit unknown run-step "$UNKNOWN_ATTRIBUTION"
+fi
 
 # Fall back to the status log's last line, but ONLY when its verb maps to a real
 # run-state. A decision-closing event - resolved: (fm-classify-lib.sh's

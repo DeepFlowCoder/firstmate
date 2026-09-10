@@ -1959,6 +1959,11 @@ EOF
 # arbitrator is not evidence that nothing newer exists: `axi status` proved this
 # branch HAS a run, so an empty list means the list failed, not that the branch
 # is quiet. Reporting `failed` there asserts a verdict that was never checked.
+#
+# The reported run is one that CLAIMS something about the work, because that is
+# what silence may not license: an abort claims nothing, so there is nothing to
+# downgrade and it falls through instead (pinned by
+# test_cancelled_run_falls_through_to_the_pause_when_the_list_is_silent).
 test_runs_list_silence_is_unknown_not_failed() {
   reset_fakes
   local d out
@@ -1967,7 +1972,7 @@ test_runs_list_silence_is_unknown_not_failed() {
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/silent.meta" "window=fm:fm-silent" "worktree=$d/wt" "kind=ship" "harness=claude"
   printf 'working: re-validating after the abort\n' > "$d/state/silent.status"
-  FM_FAKE_AXI_STATUS="$(run_cancelled_superseded fm/feat-silent)"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-silent)"
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" silent
@@ -2175,6 +2180,85 @@ test_active_run_with_active_newest_row_stays_working() {
   pass "an active run corroborated by the runs list stays working"
 }
 
+# The ci-green reading crossed with a stale blocker: the run is STILL RUNNING
+# (it is monitoring its pull request), and the override only reports `done` so a
+# green PR is not absorbed as in-progress. A needs-decision/blocked line under a
+# run that has not finished is deterministically stale, so it must keep taking
+# the superseded path - reporting `blocked` here would invent a false verdict of
+# exactly the class this change exists to remove.
+test_ci_green_done_does_not_revive_a_stale_blocked_log() {
+  reset_fakes
+  local d out
+  d=$(new_case ci-green-stale-blocked)
+  make_repo_on_branch "$d/wt" fm/feat-cigreenblocked
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cigreenblocked.meta" "window=fm:fm-cigreenblocked" "worktree=$d/wt" "kind=ship"
+  printf 'blocked: the captain must pick the base branch\n' > "$d/state/cigreenblocked.status"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cigreenblocked)"
+  FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  out=$(run_crew_state "$d" cigreenblocked)
+  assert_not_contains "$out" "state: blocked" "a blocker under a still-running run is stale, not current"
+  assert_contains "$out" "state: done" "the ci-green reading still answers"
+  assert_contains "$out" "source: run-step" "the ci-green verdict is still run-step sourced"
+  assert_contains "$out" "status-log superseded by active run" "the stale record is named as superseded"
+  pass "a ci-green run still monitoring its PR does not revive a stale blocked log"
+}
+
+# Instance 2 under the load that produced the incident: the runs list is the
+# heavy query and returns EMPTY on timeout. A cancelled run asserts nothing about
+# the work, so there is no claim for that silence to downgrade - the search must
+# still fall through to the declared pause and keep its reason.
+test_cancelled_run_falls_through_to_the_pause_when_the_list_is_silent() {
+  reset_fakes
+  local d out
+  d=$(new_case cancelled-pause-silent-list)
+  make_repo_on_branch "$d/wt" fm/feat-cancelsilent
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cancelsilent.meta" "window=fm:fm-cancelsilent" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'paused: idle waiting for the dotfiles CI work to land on main\n' \
+    > "$d/state/cancelsilent.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancelsilent)"
+  # The bounded, fail-open list query timed out: silence, not evidence.
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" cancelsilent
+  out=$(run_crew_state "$d" cancelsilent)
+  assert_contains "$out" "state: paused" "the declared wait still answers when the arbitrator is silent"
+  assert_contains "$out" "dotfiles CI work" "the pause keeps its own reason"
+  assert_contains "$out" "cancelled" "the cancelled run is still visible on the line"
+  assert_not_contains "$out" "state: unknown" "an abort carries no claim for silence to downgrade"
+  pass "a silent runs list does not turn a cancelled run into unknown over a declared pause"
+}
+
+# The unknown-attribution stop reached from the FULL path: `axi status` did
+# attribute a run to this crew, and the scan stopped on a newest row it cannot
+# bind. There is no attribution refusal on this path, so the line must not claim
+# one - and must certainly not print an empty parenthetical where the reason goes.
+test_unknown_attribution_without_a_refusal_claims_none() {
+  reset_fakes
+  local d out
+  d=$(new_case attrib-full-path)
+  make_repo_on_branch "$d/wt" fm/feat-attrib-full
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/attrib-full.meta" "window=fm:fm-attrib-full" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/attrib-full.status"
+  # Attributed to this crew at this worktree's own head, so attribution SUCCEEDED.
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-attrib-full)"
+  # Its newest row carries a sha this worktree cannot resolve (a rewritten or
+  # pruned tip), which is what stops the scan.
+  FM_FAKE_RUNS_LIST="  cancelled  fm/feat-attrib-full 9999999  2026-09-09 07:45"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" attrib-full
+  out=$(run_crew_state "$d" attrib-full)
+  assert_contains "$out" "state: unknown" "an unbindable newest row leaves the state unknown"
+  assert_contains "$out" "source: run-step" "the unknown-attribution verdict is run-step sourced"
+  assert_contains "$out" "whose head does not bind to this worktree" "the line names the row that stopped the scan"
+  assert_not_contains "$out" "could not be determined" \
+    "attribution succeeded on this path, so no attribution failure may be claimed"
+  assert_not_contains "$out" "()" "no empty parenthetical is printed where a reason would go"
+  pass "the unknown-attribution line claims no refusal when none was recorded"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -2252,5 +2336,8 @@ test_terminal_run_does_not_bury_a_contradicting_record
 test_cancelled_run_does_not_override_a_declared_pause
 test_active_run_superseded_by_a_failed_run_reports_failed
 test_active_run_with_active_newest_row_stays_working
+test_ci_green_done_does_not_revive_a_stale_blocked_log
+test_cancelled_run_falls_through_to_the_pause_when_the_list_is_silent
+test_unknown_attribution_without_a_refusal_claims_none
 
 echo "all fm-crew-state tests passed"
