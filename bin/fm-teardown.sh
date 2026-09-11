@@ -21,6 +21,12 @@
 # by itself causes a false refusal of landed work.
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
+# Both of those readings ask the FORGE - the remote bin/fm-forge-remote-lib.sh
+# resolves - and never assume origin is it: a clone whose origin is somebody's
+# working copy carries no refs/pull/* and a default branch only as current as that
+# copy, which has already produced a false "not landed" refusal on work the forge's
+# main already held. When no forge can be resolved or reached, teardown REFUSES and
+# names what it could not consult; it never falls back to a source it cannot trust.
 # Uncommitted changes are never landed.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
@@ -210,6 +216,9 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# The single owner of which remote is the forge; see its header.
+# shellcheck source=bin/fm-forge-remote-lib.sh
+. "$SCRIPT_DIR/fm-forge-remote-lib.sh"
 # shellcheck source=bin/fm-public-followup-lib.sh
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
@@ -883,13 +892,18 @@ elif [ "$FORCE" != "--force" ] && fm_pf_relay_active "$FM_HOME"; then
   PUBLIC_FOLLOWUP_RELAY_ACTIVE=1
 fi
 
-default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
+# The default branch name. The forge's own published HEAD is preferred when the
+# caller knows which remote the forge is; origin's is the fallback, and it stays
+# correct for the ordinary clone whose origin IS the forge.
+default_branch() {  # [<forge-remote>]
+  local ref branch remote
+  for remote in ${1:+"$1"} origin; do
+    ref=$(git -C "$PROJ" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
+    if [ -n "$ref" ]; then
+      echo "${ref#"$remote"/}"
+      return 0
+    fi
+  done
   for branch in main master; do
     if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
       echo "$branch"
@@ -1006,6 +1020,30 @@ remove_pr_poll_artifacts() {
     "$state_dir/$id.check-trust" || return 1
 }
 
+# Which remote is the forge for this task's repository, and why there is no answer
+# when there is none. bin/fm-forge-remote-lib.sh owns the rule; this wrapper keeps
+# BOTH results in the caller's shell, because every landing test below needs the
+# remote to read and the reason to quote in its refusal, and a `$(...)` call would
+# lose the reason in the subshell.
+FORGE_REMOTE=
+LANDED_FORGE_UNCONFIRMED=
+resolve_forge_remote() {  # <repo-dir>
+  local answer
+  FORGE_REMOTE=
+  answer=$(fm_forge_remote_resolve "$1")
+  case "$answer" in
+    unresolved$'\t'*)
+      LANDED_FORGE_UNCONFIRMED=${answer#unresolved$'\t'}
+      return 1
+      ;;
+    '')
+      LANDED_FORGE_UNCONFIRMED="the forge remote could not be resolved for $1"
+      return 1
+      ;;
+  esac
+  FORGE_REMOTE=$answer
+}
+
 # Resolve the PR number for a worktree branch via gh-axi. Echoes the number on a
 # single match and returns 0; returns non-zero on no match or any lookup failure,
 # so the caller treats it as "no PR found" (fail-safe).
@@ -1035,12 +1073,16 @@ pr_number_from_target() {
   printf '%s' "$n"
 }
 
+# A pull request's head ref lives on the FORGE, so it is fetched from the remote
+# that is the forge rather than from origin, which may be a working copy that has
+# no refs/pull/* at all.
 ensure_commit_object() {
-  local target=$1 commit=$2 n
+  local target=$1 commit=$2 n forge
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null && return 0
   n=$(pr_number_from_target "$target") || return 1
-  git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
+  resolve_forge_remote "$WT" || return 1
+  forge=$FORGE_REMOTE
+  git -C "$WT" fetch --quiet "$forge" "refs/pull/$n/head" >/dev/null 2>&1 || return 1
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null
 }
 
@@ -1104,24 +1146,29 @@ pr_is_merged() {
   unpushed_patches_are_in_pr_head "$head"
 }
 
-# Is the branch's content already present in the up-to-date default branch? Fetches
-# first, then 3-way merges the default branch with HEAD: when HEAD introduces nothing
-# the default branch does not already contain (e.g. its change landed via squash) the
-# merged tree equals the default branch's tree. This isolates branch-only changes, so
-# unrelated commits the default branch gained past the merge-base do not count as
-# "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
-# so the caller refuses rather than guesses.
+# Is the branch's content already present in the up-to-date default branch AS THE
+# FORGE HOLDS IT? Fetches the default branch from the forge remote first, then
+# 3-way merges it with HEAD: when HEAD introduces nothing that branch does not
+# already contain (e.g. its change landed via squash) the merged tree equals the
+# default branch's tree. This isolates branch-only changes, so unrelated commits
+# the default branch gained past the merge-base do not count as "added".
+#
+# The forge is asked rather than origin because this reading is what says work is
+# safe to discard: measured against a stale copy it can call landed work unlanded
+# (a harmless refusal) but it can equally call unlanded work landed, which is not.
+# Returns non-zero when inconclusive - no forge to ask, no default ref, a fetch
+# that failed, or a merge conflict - so the caller refuses rather than guesses,
+# and LANDED_FORGE_UNCONFIRMED carries what could not be consulted.
 content_in_default() {
-  local name ref default_tree merged_tree
-  name=$(default_branch) || return 1
-  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
-    ref="refs/remotes/origin/$name"
-  elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
-    ref="refs/heads/$name"
-  else
+  local name ref default_tree merged_tree forge
+  resolve_forge_remote "$WT" || return 1
+  forge=$FORGE_REMOTE
+  name=$(default_branch "$forge") || return 1
+  if ! git -C "$WT" fetch --quiet "$forge" "+refs/heads/$name:refs/remotes/$forge/$name" >/dev/null 2>&1; then
+    LANDED_FORGE_UNCONFIRMED="the forge remote $forge did not answer for $name"
     return 1
   fi
+  ref="refs/remotes/$forge/$name"
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
   merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
@@ -1442,6 +1489,9 @@ validate_worktree_teardown_safety() {
     if ! work_is_landed "$branch"; then
       echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
       printf 'unpushed commits:\n%s\n' "$unpushed" >&2
+      if [ -n "$LANDED_FORGE_UNCONFIRMED" ]; then
+        echo "The forge could not be consulted, so nothing here proves this work landed: $LANDED_FORGE_UNCONFIRMED" >&2
+      fi
       echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi

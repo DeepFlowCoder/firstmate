@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
+# the FORGE's <default> when safe, and prune local branches whose upstream tracking
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
+# Which remote is the forge is resolved by bin/fm-forge-remote-lib.sh, not assumed
+# to be origin: a clone whose origin is somebody's working copy is only as current
+# as that copy, so measuring against it once reported "already current" on a clone
+# four commits behind the forge. When origin IS the forge (the ordinary case) every
+# reading, outcome and message here is exactly as before. When the forge is a
+# different remote, that remote is fetched too and the up-to-date comparison and
+# fast-forward use it. When the forge cannot be resolved or cannot be fetched,
+# NOTHING here claims the clone is current: the outcome line becomes
+# "UNCONFIRMED: ... the forge was not consulted: <reason>", which bootstrap relays.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
-# no unique commits (it is an ancestor of origin/<default>) and whose <default>
+# no unique commits (it is an ancestor of the forge's <default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
 # Every other off-default state - a non-default named branch, a detached HEAD with
 # unique commits, a dirty tree, or a diverged default - may hold real work, so it
@@ -40,10 +49,16 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# The single owner of which remote is the forge; see its header.
+# shellcheck source=bin/fm-forge-remote-lib.sh
+. "$SCRIPT_DIR/fm-forge-remote-lib.sh"
 # Inert unless FM_TIMING_LOG names a file; only the deferred network stage sets it.
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
 FM_LOCK_LOG_PREFIX=fleet-sync
+# Per-project forge resolution, reset by sync_project before it measures anything.
+FORGE_REMOTE=
+FORGE_UNCONFIRMED=
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 # Bounded recovery for an orphaned .git/packed-refs.lock. A git ref rewrite
@@ -115,13 +130,18 @@ resolve_project_arg() {
   printf '%s\n' "$arg"
 }
 
+# The default branch name. The forge's own published HEAD is preferred when it is
+# known here; origin's is the fallback, and it stays correct for the ordinary
+# clone whose origin IS the forge.
 default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
+  local ref branch remote
+  for remote in ${FORGE_REMOTE:+"$FORGE_REMOTE"} origin; do
+    ref=$(git -C "$PROJ" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
+    if [ -n "$ref" ]; then
+      echo "${ref#"$remote"/}"
+      return 0
+    fi
+  done
   for branch in main master; do
     if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
       echo "$branch"
@@ -133,6 +153,14 @@ default_branch() {
 
 first_line() {
   printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'
+}
+
+# Names the forge on an outcome line only when it is NOT origin, so the ordinary
+# clone - the one whose origin is the forge - reports exactly the same text as
+# before, and the unusual clone says out loud what it was measured against.
+forge_note() {
+  [ -n "$FORGE_REMOTE" ] && [ "$FORGE_REMOTE" != origin ] || return 0
+  printf ' (checked against the forge remote %s)' "$FORGE_REMOTE"
 }
 
 # True when git stderr shows the packed-refs.lock "File exists" race. The lock
@@ -156,7 +184,7 @@ packed_refs_lock_path() {
   esac
 }
 
-# Run `git -C "$PROJ" fetch origin --prune --quiet`, tolerating an orphaned
+# Run `git -C "$PROJ" fetch <remote> --prune --quiet` (default origin), tolerating an orphaned
 # packed-refs.lock left by a killed ref rewrite. Sets FETCH_OUTPUT to the git
 # command's combined output and returns its exit status. On the packed-refs.lock
 # signature ONLY: retry up to FLEET_SYNC_PACKED_REFS_LOCK_RETRIES times (a
@@ -167,9 +195,9 @@ packed_refs_lock_path() {
 # today's behavior. Every wait, retry, and removal prints to stderr, and a
 # successful recovery also prints one "$label: recovered: ..." summary to stdout so
 # a session-start refresh (which discards fleet-sync stderr) still surfaces it.
-fetch_with_packed_refs_lock_guard() {
-  local rc attempt=0 lock lock_desc
-  FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+fetch_with_packed_refs_lock_guard() {  # [<remote>]
+  local remote=${1:-origin} rc attempt=0 lock lock_desc
+  FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
   [ "$rc" -eq 0 ] && return 0
   is_packed_refs_lock_error "$FETCH_OUTPUT" || return "$rc"
 
@@ -179,7 +207,7 @@ fetch_with_packed_refs_lock_guard() {
     attempt=$(( attempt + 1 ))
     echo "$label: fetch blocked by packed-refs lock ($lock_desc); waiting ${FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${FLEET_SYNC_PACKED_REFS_LOCK_RETRIES}) (owning process may be exiting)" >&2
     sleep "$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS"
-    FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+    FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       echo "$label: fetch succeeded on retry; packed-refs lock cleared on its own" >&2
       # One stdout summary so a session-start refresh (which discards fleet-sync
@@ -203,7 +231,7 @@ fetch_with_packed_refs_lock_guard() {
         return "$rc"
       fi
       echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2
-      FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+      FETCH_OUTPUT=$(git -C "$PROJ" fetch "$remote" --prune --quiet 2>&1); rc=$?
       if [ "$rc" -eq 0 ]; then
         echo "$label: fetch succeeded after stale packed-refs lock cleanup" >&2
         echo "$label: recovered: removed a stale packed-refs lock (no live holder)"
@@ -335,7 +363,19 @@ sync_project() {
     return 0
   fi
 
-  if ! fetch_with_packed_refs_lock_guard; then
+  # Which remote is the forge, before anything is measured. FORGE_REMOTE empty
+  # with FORGE_UNCONFIRMED set means no outcome below may claim this clone is
+  # current: it says what it could not consult instead.
+  FORGE_REMOTE=
+  FORGE_UNCONFIRMED=
+  forge_answer=$(fm_forge_remote_resolve "$PROJ")
+  case "$forge_answer" in
+    unresolved$'\t'*) FORGE_UNCONFIRMED=${forge_answer#unresolved$'\t'} ;;
+    '') FORGE_UNCONFIRMED="the forge remote could not be resolved" ;;
+    *) FORGE_REMOTE=$forge_answer ;;
+  esac
+
+  if ! fetch_with_packed_refs_lock_guard origin; then
     reason="fetch failed"
     if [ -n "$FETCH_OUTPUT" ]; then
       reason="$reason: $(first_line "$FETCH_OUTPUT")"
@@ -344,16 +384,38 @@ sync_project() {
     return 0
   fi
 
+  # The forge is a different remote: fetch it too, because every comparison below
+  # has to run against what the forge actually holds. A fetch failure is reported
+  # as an unconfirmed forge rather than silently measured against origin.
+  if [ -n "$FORGE_REMOTE" ] && [ "$FORGE_REMOTE" != origin ]; then
+    if ! fetch_with_packed_refs_lock_guard "$FORGE_REMOTE"; then
+      FORGE_UNCONFIRMED="could not fetch $FORGE_REMOTE"
+      if [ -n "$FETCH_OUTPUT" ]; then
+        FORGE_UNCONFIRMED="$FORGE_UNCONFIRMED: $(first_line "$FETCH_OUTPUT")"
+      fi
+      FORGE_REMOTE=
+    fi
+  fi
+
   prune_gone_branches || true
 
   DEFAULT=$(default_branch) || {
     echo "$label: skipped: cannot determine default branch"
     return 0
   }
-  BASE="origin/$DEFAULT"
+  BASE="${FORGE_REMOTE:-origin}/$DEFAULT"
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
-    echo "$label: skipped: $BASE does not exist"
-    return 0
+    # A forge remote with no tracking ref for the default branch cannot be the
+    # measuring stick, and it must not be swapped for origin in silence.
+    if [ -n "$FORGE_REMOTE" ] && [ "$FORGE_REMOTE" != origin ]; then
+      FORGE_UNCONFIRMED="$BASE does not exist after fetching $FORGE_REMOTE"
+      FORGE_REMOTE=
+      BASE="origin/$DEFAULT"
+    fi
+    if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
+      echo "$label: skipped: $BASE does not exist"
+      return 0
+    fi
   fi
 
   cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")
@@ -404,10 +466,15 @@ sync_project() {
     return 0
   }
   if [ "$local_rev" = "$remote_rev" ]; then
+    if [ -n "$FORGE_UNCONFIRMED" ]; then
+      [ "$recovered" = no ] || echo "$label: recovered: re-attached $DEFAULT"
+      echo "$label: UNCONFIRMED: local $DEFAULT matches $BASE, but the forge was not consulted: $FORGE_UNCONFIRMED"
+      return 0
+    fi
     if [ "$recovered" = yes ]; then
-      echo "$label: recovered: re-attached $DEFAULT (already current)"
+      echo "$label: recovered: re-attached $DEFAULT (already current)$(forge_note)"
     else
-      echo "$label: already current"
+      echo "$label: already current$(forge_note)"
     fi
     return 0
   fi
@@ -433,9 +500,12 @@ sync_project() {
     return 0
   }
   if [ "$recovered" = yes ]; then
-    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
+    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after$(forge_note)"
   else
-    echo "$label: synced $before..$after"
+    echo "$label: synced $before..$after$(forge_note)"
+  fi
+  if [ -n "$FORGE_UNCONFIRMED" ]; then
+    echo "$label: UNCONFIRMED: synced from $BASE, but the forge was not consulted: $FORGE_UNCONFIRMED"
   fi
   return 0
 }

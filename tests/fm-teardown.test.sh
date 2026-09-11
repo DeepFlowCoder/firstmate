@@ -268,6 +268,28 @@ land_on_origin_main() {
   rm -rf "$tmp"
 }
 
+# Rebuild the case's remote topology into the shape that produced a false "not
+# landed" refusal: `origin` becomes the captain's own WORKING COPY - a clone of
+# the real forge that is then left behind - and a second remote "gh" is the only
+# one that still reaches the forge (the case's origin.git). Anything landed on the
+# forge after this is invisible from origin. Args: case_dir
+repoint_origin_to_a_working_copy() {
+  local case_dir=$1
+  git clone -q "$case_dir/origin.git" "$case_dir/laptop"
+  git -C "$case_dir/project" remote set-url origin "$case_dir/laptop"
+  git -C "$case_dir/project" remote add gh "$case_dir/origin.git"
+  git -C "$case_dir/project" fetch -q origin
+  git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
+}
+
+# Drop every remote that reaches the forge, leaving only the captain's working
+# copy - so no remote here can answer what the forge holds. Args: case_dir
+strip_every_forge_remote() {
+  local case_dir=$1
+  repoint_origin_to_a_working_copy "$case_dir"
+  git -C "$case_dir/project" remote remove gh
+}
+
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
 add_gh_pr_merged_for_head() {
   local case_dir=$1 head=$2
@@ -903,6 +925,51 @@ test_content_in_default_fallback_allows() {
   expect_code 0 "$rc" "content-landed: teardown should succeed when content is already in the default branch"
   ! grep -q REFUSED "$case_dir/stderr" || fail "content-landed: teardown printed a REFUSED line"
   pass "worktree whose content already landed in the default branch is torn down (content fallback)"
+}
+
+test_landed_check_reads_the_forge_not_origin() {
+  local case_dir rc
+  case_dir=$(make_case content-landed-on-forge)
+  write_meta "$case_dir" no-mistakes ship
+  # The branch adds feature.txt, and the same net change lands on the FORGE's main
+  # via a squash commit. origin is the captain's working copy, which never pulled
+  # it, so a check that measures against origin calls landed work unlanded.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  repoint_origin_to_a_working_copy "$case_dir"
+  land_on_origin_main "$case_dir" feature.txt hello
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "forge-landed: teardown should succeed when the FORGE's default branch already carries the content"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "forge-landed: teardown refused work the forge already carries (it measured against origin)"
+  pass "the landed-work check reads the forge, not a stale origin"
+}
+
+test_landed_check_refuses_when_no_forge_can_be_asked() {
+  local case_dir rc
+  case_dir=$(make_case content-no-forge)
+  write_meta "$case_dir" no-mistakes ship
+  # The content IS in the working copy's main, which is the only remote left. That
+  # is not evidence about the forge, so teardown must refuse and say so rather than
+  # accept the nearest available answer.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_on_origin_main "$case_dir" feature.txt hello
+  strip_every_forge_remote "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "no-forge: teardown must refuse when no forge can be consulted"
+  grep -q "REFUSED" "$case_dir/stderr" || fail "no-forge: teardown did not refuse"
+  grep -q "forge could not be consulted" "$case_dir/stderr" \
+    || fail "no-forge: the refusal did not say the forge could not be consulted"
+  pass "an unconsultable forge is reported as unproven, never assumed landed"
 }
 
 test_content_fallback_refreshes_stale_origin_ref() {
@@ -3045,6 +3112,8 @@ test_merged_pr_with_later_local_commit_refuses
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
+test_landed_check_reads_the_forge_not_origin
+test_landed_check_refuses_when_no_forge_can_be_asked
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses

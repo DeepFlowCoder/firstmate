@@ -87,6 +87,65 @@ advance_origin() {
   git -C "$work" push -q origin main
 }
 
+# build_forge_triangle <home> <name>: the topology that produced a false "already
+# current" - a forge everyone pushes to, the captain's own WORKING COPY cloned
+# from it, and this home's clone whose `origin` is that working copy plus a second
+# remote "gh" that reaches the forge. The clone can then be arbitrarily far behind
+# the forge while matching origin exactly. Echoes the clone path.
+build_forge_triangle() {
+  local home=$1 name=$2 work forge laptop clone forge_abs laptop_abs
+  work="$home/work-$name"
+  forge="$home/remotes/$name.git"
+  laptop="$home/laptop-$name"
+  clone="$home/projects/$name"
+  mkdir -p "$home/remotes"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  commit_file "$work" file.txt v0 C0
+
+  git clone --quiet --bare "$work" "$forge"
+  forge_abs=$(cd "$forge" && pwd)
+  git -C "$work" remote add origin "file://$forge_abs"
+  git -C "$work" push -q -u origin main
+
+  # The captain's working copy, cloned from the forge and then left behind.
+  git clone --quiet "file://$forge_abs" "$laptop"
+  laptop_abs=$(cd "$laptop" && pwd)
+
+  # This home's clone: origin is that working copy, and only the second remote
+  # reaches the forge.
+  git clone --quiet "$laptop_abs" "$clone"
+  git -C "$clone" remote add gh "file://$forge_abs"
+  printf '%s\n' "$clone"
+}
+
+# build_working_copy_origin <home> <name>: a clone whose ONLY remote is somebody's
+# working copy, so no remote here reaches a forge at all. Echoes the clone path.
+build_working_copy_origin() {
+  local home=$1 name=$2 work clone work_abs
+  work="$home/work-$name"
+  clone="$home/projects/$name"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  commit_file "$work" file.txt v0 C0
+  work_abs=$(cd "$work" && pwd)
+
+  git clone --quiet "$work_abs" "$clone"
+  printf '%s\n' "$clone"
+}
+
+# advance_forge <home> <name> <msg>: publish one more commit to the forge in a
+# build_forge_triangle world, WITHOUT touching the captain's working copy - which
+# is exactly how the clone ends up behind the forge while matching its origin.
+advance_forge() {
+  local home=$1 name=$2 msg=$3 work
+  work="$home/work-$name"
+  commit_file "$work" file.txt "$msg" "$msg"
+  git -C "$work" push -q origin main
+}
+
 head_sha() { git -C "$1" rev-parse HEAD; }
 
 # run_sync <home> [args...]: run fleet-sync against an isolated home, stdout only.
@@ -378,6 +437,59 @@ test_already_current_unchanged() {
   assert_not_contains "$out" "recovered" "already-current is not labelled recovered"
   [ "$(head_sha "$clone")" = "$before" ] || fail "already-current clone was moved"
   pass "already-current clone is reported unchanged"
+}
+
+test_clone_behind_the_forge_is_never_reported_current() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" finanzas)
+  # Four commits published to the forge that the captain's working copy - this
+  # clone's origin - has never pulled.
+  advance_forge "$home" finanzas C1
+  advance_forge "$home" finanzas C2
+  advance_forge "$home" finanzas C3
+  advance_forge "$home" finanzas C4
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "already current" \
+    "a clone four commits behind the forge must never be reported current"
+  assert_contains "$out" "finanzas: synced" "the clone must be brought up to the forge"
+  assert_contains "$out" "checked against the forge remote gh" \
+    "the outcome must name what it was measured against"
+  [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
+    || fail "clone was not fast-forwarded to the forge's main"
+  pass "a clone behind the forge is synced to it, not called current because origin agrees"
+}
+
+test_forge_that_cannot_be_resolved_is_reported_not_assumed() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_working_copy_origin "$home" solo)
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "already current" \
+    "matching a working copy is not evidence the clone is current with the forge"
+  assert_contains "$out" "solo: UNCONFIRMED:" "an unconsultable forge must be said out loud"
+  assert_contains "$out" "points at a local working copy" \
+    "the UNCONFIRMED line must name why the forge could not be consulted"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "an unconfirmed clone was moved"
+  pass "a clone whose forge cannot be resolved is reported unconfirmed, never assumed current"
+}
+
+test_bootstrap_relays_unconfirmed() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_working_copy_origin "$home" relay-unconfirmed)
+
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+
+  assert_contains "$out" "FLEET_SYNC: relay-unconfirmed: UNCONFIRMED:" \
+    "bootstrap must relay an unconfirmed clone so the session sees it"
+  : "$clone"
+  pass "bootstrap relays the UNCONFIRMED fleet-sync outcome"
 }
 
 test_no_origin_skipped() {
@@ -702,6 +814,9 @@ test_non_default_branch_is_stuck_untouched
 test_diverged_is_stuck_untouched
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
+test_clone_behind_the_forge_is_never_reported_current
+test_forge_that_cannot_be_resolved_is_reported_not_assumed
+test_bootstrap_relays_unconfirmed
 test_no_origin_skipped
 test_local_only_skipped
 test_single_project_by_bare_name_resolves
