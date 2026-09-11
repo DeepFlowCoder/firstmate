@@ -455,8 +455,6 @@ test_clone_behind_the_forge_is_never_reported_current() {
   assert_not_contains "$out" "already current" \
     "a clone four commits behind the forge must never be reported current"
   assert_contains "$out" "finanzas: synced" "the clone must be brought up to the forge"
-  assert_contains "$out" "checked against the forge remote gh" \
-    "the outcome must name what it was measured against"
   [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
     || fail "clone was not fast-forwarded to the forge's main"
   pass "a clone behind the forge is synced to it, not called current because origin agrees"
@@ -491,12 +489,18 @@ test_forge_that_cannot_be_resolved_is_reported_not_assumed() {
   local home clone out before
   home=$(new_home)
   clone=$(build_working_copy_origin "$home" solo)
+  # A commit that exists ONLY in the captain's working copy, never published to
+  # any forge. Measuring the clone against that copy would find a fast-forward
+  # available and hand the clone code no forge has ever seen.
+  commit_file "$home/work-solo" file.txt v1 L1
   before=$(head_sha "$clone")
 
   out=$(run_sync "$home" "$clone")
 
   assert_not_contains "$out" "already current" \
     "matching a working copy is not evidence the clone is current with the forge"
+  assert_not_contains "$out" "solo: synced" \
+    "a fast-forward onto a working copy is a verdict answered from the wrong source"
   assert_contains "$out" "solo: UNCONFIRMED:" "an unconsultable forge must be said out loud"
   assert_contains "$out" "points at a local working copy" \
     "the UNCONFIRMED line must name why the forge could not be consulted"

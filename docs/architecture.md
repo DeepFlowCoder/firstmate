@@ -331,7 +331,7 @@ Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committe
 A ship task whose branch still has a live validation run that teardown cannot identify as one it already inspected refuses on the same principle, because removing the worker could strand that run waiting at a gate nothing is left to answer.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 Those proofs, and the clone refresh's up-to-date claim, are measured against the FORGE - the remote [`bin/fm-forge-remote-lib.sh`](../bin/fm-forge-remote-lib.sh) resolves, which is not always `origin`, because a clone whose origin is somebody's working copy is only ever as current as that copy.
-When no forge can be resolved or reached, neither guard substitutes the nearest available answer: teardown refuses and names what it could not consult, and the refresh reports `UNCONFIRMED:` with the reason instead of claiming the clone is current.
+When no forge can be resolved or reached, neither guard substitutes the nearest available answer: teardown refuses and names what it could not consult, and the refresh reports `UNCONFIRMED:` with the reason instead of comparing or moving the clone against a remote that cannot speak for the forge.
 
 ## Optional Relay
 

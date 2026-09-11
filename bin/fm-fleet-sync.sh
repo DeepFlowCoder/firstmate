@@ -10,8 +10,9 @@
 # reading, outcome and message here is exactly as before. When the forge is a
 # different remote, that remote is fetched too and the up-to-date comparison and
 # fast-forward use it. When the forge cannot be resolved or cannot be fetched,
-# NOTHING here claims the clone is current: the outcome line becomes
-# "UNCONFIRMED: ... the forge was not consulted: <reason>", which bootstrap relays.
+# NOTHING here is compared or moved: there is no origin to fall back to, and the
+# outcome line becomes "UNCONFIRMED: ... the forge was not consulted: <reason>",
+# which bootstrap relays.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of the forge's <default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -151,14 +152,6 @@ default_branch() {
 
 first_line() {
   printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'
-}
-
-# Names the forge on an outcome line only when it is NOT origin, so the ordinary
-# clone - the one whose origin is the forge - reports exactly the same text as
-# before, and the unusual clone says out loud what it was measured against.
-forge_note() {
-  [ -n "$FORGE_REMOTE" ] && [ "$FORGE_REMOTE" != origin ] || return 0
-  printf ' (checked against the forge remote %s)' "$FORGE_REMOTE"
 }
 
 # True when git stderr shows the packed-refs.lock "File exists" race. The lock
@@ -304,12 +297,12 @@ stuck_state() {
     s="branch $cur"
   elif [ "$dirty" = yes ]; then
     s="detached HEAD"
+  elif default_checked_out_elsewhere; then
+    s="detached HEAD ($DEFAULT checked out in another worktree)"
   elif [ -n "$FORGE_UNCONFIRMED" ]; then
     s="detached HEAD"
   elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
     s="detached HEAD with unique commits"
-  elif default_checked_out_elsewhere; then
-    s="detached HEAD ($DEFAULT checked out in another worktree)"
   elif ! local_default_safe_for_recovery; then
     s="detached HEAD (local $DEFAULT diverged from $BASE)"
   else
@@ -421,18 +414,21 @@ sync_project() {
     echo "$label: skipped: cannot determine default branch"
     return 0
   }
-  BASE="${FORGE_REMOTE:-origin}/$DEFAULT"
-  if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
-    # A forge remote with no tracking ref for the default branch cannot be the
-    # measuring stick, and it must not be swapped for origin in silence.
-    if [ -n "$FORGE_REMOTE" ] && [ "$FORGE_REMOTE" != origin ]; then
+  # There is no BASE at all without a forge: origin is precisely the source that
+  # proves nothing about it, so nothing below compares or moves anything.
+  BASE=
+  if [ -z "$FORGE_UNCONFIRMED" ]; then
+    BASE="$FORGE_REMOTE/$DEFAULT"
+    if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
+      # A forge remote with no tracking ref for the default branch cannot be the
+      # measuring stick, and it must not be swapped for origin in silence.
+      if [ "$FORGE_REMOTE" = origin ]; then
+        echo "$label: skipped: $BASE does not exist"
+        return 0
+      fi
       FORGE_UNCONFIRMED="$BASE does not exist after fetching $FORGE_REMOTE"
       FORGE_REMOTE=
-      BASE="origin/$DEFAULT"
-    fi
-    if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
-      echo "$label: skipped: $BASE does not exist"
-      return 0
+      BASE=
     fi
   fi
 
@@ -444,13 +440,14 @@ sync_project() {
   if [ "$cur" != "$DEFAULT" ]; then
     # Off the default branch. Auto-recover only the one unambiguously safe drift:
     # a clean, detached HEAD that holds no unique commits (it is an ancestor of
-    # origin/<default>) and whose <default> branch is free to check out here.
+    # the forge's <default>) and whose <default> branch is free to check out here.
     # Re-attaching to an already-published commit strands nothing, and the
     # fast-forward path below then catches the clone up. Anything else - a
     # non-default named branch, a detached HEAD with unique commits, a dirty tree,
-    # or <default> already checked out elsewhere - may hold real work, so it is
-    # reported loudly and left untouched.
-    if [ -z "$cur" ] && [ "$dirty" = no ] \
+    # <default> already checked out elsewhere, or no forge to prove the HEAD was
+    # published at all - may hold real work, so it is reported loudly and left
+    # untouched.
+    if [ -z "$FORGE_UNCONFIRMED" ] && [ -z "$cur" ] && [ "$dirty" = no ] \
         && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
         && ! default_checked_out_elsewhere \
         && local_default_safe_for_recovery; then
@@ -475,6 +472,15 @@ sync_project() {
     return 0
   fi
 
+  # The clone is on a clean <default>, which is the only state from here on. With
+  # no forge, that is the whole of what can honestly be said: the comparison and
+  # the fast-forward below would both read origin, and acting on that reading is
+  # what pulls a clone up to somebody's unpublished working copy.
+  if [ -n "$FORGE_UNCONFIRMED" ]; then
+    report_unconfirmed "local $DEFAULT is checked out and clean"
+    return 0
+  fi
+
   local_rev=$(git -C "$PROJ" rev-parse "$DEFAULT") || {
     echo "$label: skipped: cannot read local $DEFAULT"
     return 0
@@ -484,27 +490,14 @@ sync_project() {
     return 0
   }
   if [ "$local_rev" = "$remote_rev" ]; then
-    if [ -n "$FORGE_UNCONFIRMED" ]; then
-      [ "$recovered" = no ] || echo "$label: recovered: re-attached $DEFAULT"
-      echo "$label: UNCONFIRMED: local $DEFAULT matches $BASE, but the forge was not consulted: $FORGE_UNCONFIRMED"
-      return 0
-    fi
     if [ "$recovered" = yes ]; then
-      echo "$label: recovered: re-attached $DEFAULT (already current)$(forge_note)"
+      echo "$label: recovered: re-attached $DEFAULT (already current)"
     else
-      echo "$label: already current$(forge_note)"
+      echo "$label: already current"
     fi
     return 0
   fi
   if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
-    # Being outside a remote that does not speak for the forge is not divergence:
-    # a clone an earlier run caught up to the forge sits ahead of a lagging
-    # origin, and calling that STUCK would be a false alarm on exactly the
-    # project this measures for.
-    if [ -n "$FORGE_UNCONFIRMED" ]; then
-      report_unconfirmed "local $DEFAULT is not contained in $BASE"
-      return 0
-    fi
     report_stuck "diverged $DEFAULT"
     return 0
   fi
@@ -526,12 +519,9 @@ sync_project() {
     return 0
   }
   if [ "$recovered" = yes ]; then
-    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after$(forge_note)"
+    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
   else
-    echo "$label: synced $before..$after$(forge_note)"
-  fi
-  if [ -n "$FORGE_UNCONFIRMED" ]; then
-    echo "$label: UNCONFIRMED: synced from $BASE, but the forge was not consulted: $FORGE_UNCONFIRMED"
+    echo "$label: synced $before..$after"
   fi
   return 0
 }
