@@ -130,18 +130,16 @@ resolve_project_arg() {
   printf '%s\n' "$arg"
 }
 
-# The default branch name. The forge's own published HEAD is preferred when it is
-# known here; origin's is the fallback, and it stays correct for the ordinary
-# clone whose origin IS the forge.
+# The default branch NAME, which was never the wrong-source problem: a clone and
+# its forge agree on what the default branch is called, so origin's published
+# HEAD answers it for every topology here.
 default_branch() {
-  local ref branch remote
-  for remote in ${FORGE_REMOTE:+"$FORGE_REMOTE"} origin; do
-    ref=$(git -C "$PROJ" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
-    if [ -n "$ref" ]; then
-      echo "${ref#"$remote"/}"
-      return 0
-    fi
-  done
+  local ref branch
+  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$ref" ]; then
+    echo "${ref#origin/}"
+    return 0
+  fi
   for branch in main master; do
     if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
       echo "$branch"
@@ -297,11 +295,16 @@ local_default_safe_for_recovery() {
 # Human-readable name for the unsafe state the clone is in, used in the STUCK
 # warning. Reads $cur (current branch, empty when detached), $dirty, and the
 # HEAD-vs-$BASE ancestry to pick the most informative description.
+# With the forge unconsulted, every remaining distinction - unique commits, a
+# diverged local default - is a comparison against a remote that does not speak
+# for the forge, so the description stops at what needs no remote at all.
 stuck_state() {
   local s
   if [ -n "$cur" ]; then
     s="branch $cur"
   elif [ "$dirty" = yes ]; then
+    s="detached HEAD"
+  elif [ -n "$FORGE_UNCONFIRMED" ]; then
     s="detached HEAD"
   elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
     s="detached HEAD with unique commits"
@@ -316,11 +319,26 @@ stuck_state() {
   printf '%s\n' "$s"
 }
 
+# One report for a clone whose state could not be measured against the forge.
+# An origin-derived comparison proves nothing once the forge is out of reach, so
+# what cannot be measured is reported as unmeasured rather than restated as some
+# other verdict: claiming "diverged" off a lagging remote is the same defect as
+# claiming "already current" off it, and a clone an earlier run pulled up to the
+# forge is legitimately AHEAD of a working-copy origin, which is not divergence.
+report_unconfirmed() {  # <observation>
+  echo "$label: UNCONFIRMED: $1, and the forge was not consulted: $FORGE_UNCONFIRMED"
+}
+
 # Loud, quantified report for a clone we deliberately leave untouched. Includes
-# how far behind origin/<default> it is, so a chronically-stuck clone is visibly
-# distinct from a benign one-off skip.
+# how far behind the forge's <default> it is, so a chronically-stuck clone is
+# visibly distinct from a benign one-off skip. With no forge to measure against,
+# the clone still needs attention and says so, without the distance it cannot know.
 report_stuck() {
   local state=$1 behind
+  if [ -n "$FORGE_UNCONFIRMED" ]; then
+    report_unconfirmed "on $state - needs attention, and its distance from the forge could not be measured"
+    return 0
+  fi
   behind=$(git -C "$PROJ" rev-list --count "HEAD..$BASE" 2>/dev/null) || behind="?"
   echo "$label: STUCK: on $state, $behind commits behind $BASE - needs attention"
 }
@@ -479,6 +497,14 @@ sync_project() {
     return 0
   fi
   if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
+    # Being outside a remote that does not speak for the forge is not divergence:
+    # a clone an earlier run caught up to the forge sits ahead of a lagging
+    # origin, and calling that STUCK would be a false alarm on exactly the
+    # project this measures for.
+    if [ -n "$FORGE_UNCONFIRMED" ]; then
+      report_unconfirmed "local $DEFAULT is not contained in $BASE"
+      return 0
+    fi
     report_stuck "diverged $DEFAULT"
     return 0
   fi

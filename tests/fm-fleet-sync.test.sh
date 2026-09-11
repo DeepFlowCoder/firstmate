@@ -462,6 +462,31 @@ test_clone_behind_the_forge_is_never_reported_current() {
   pass "a clone behind the forge is synced to it, not called current because origin agrees"
 }
 
+test_unreachable_forge_never_produces_a_divergence_verdict() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" offline)
+  advance_forge "$home" offline C1
+
+  # First pass catches the clone up to the forge, leaving it AHEAD of the
+  # captain's working copy, which is where origin still points.
+  run_sync "$home" "$clone" >/dev/null
+  before=$(head_sha "$clone")
+
+  # The forge goes out of reach - an offline laptop, a forge blip. Nothing about
+  # the clone changed, so nothing here may be reported as a problem with it.
+  rm -rf "$home/remotes/offline.git"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "STUCK" \
+    "a clone ahead of a lagging origin is not diverged, and an unreachable forge cannot prove it is"
+  assert_not_contains "$out" "diverged" "no divergence may be asserted without the forge"
+  assert_contains "$out" "offline: UNCONFIRMED:" "an unreachable forge must be reported as unmeasured"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "the clone was moved while the forge was unreachable"
+  pass "an unreachable forge yields an unmeasured report, never a divergence verdict"
+}
+
 test_forge_that_cannot_be_resolved_is_reported_not_assumed() {
   local home clone out before
   home=$(new_home)
@@ -815,6 +840,7 @@ test_diverged_is_stuck_untouched
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_clone_behind_the_forge_is_never_reported_current
+test_unreachable_forge_never_produces_a_divergence_verdict
 test_forge_that_cannot_be_resolved_is_reported_not_assumed
 test_bootstrap_relays_unconfirmed
 test_no_origin_skipped

@@ -892,18 +892,17 @@ elif [ "$FORCE" != "--force" ] && fm_pf_relay_active "$FM_HOME"; then
   PUBLIC_FOLLOWUP_RELAY_ACTIVE=1
 fi
 
-# The default branch name. The forge's own published HEAD is preferred when the
-# caller knows which remote the forge is; origin's is the fallback, and it stays
-# correct for the ordinary clone whose origin IS the forge.
-default_branch() {  # [<forge-remote>]
-  local ref branch remote
-  for remote in ${1:+"$1"} origin; do
-    ref=$(git -C "$PROJ" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
-    if [ -n "$ref" ]; then
-      echo "${ref#"$remote"/}"
-      return 0
-    fi
-  done
+# The default branch NAME, which was never the wrong-source problem: a clone and
+# its forge agree on what the default branch is called, so origin's published
+# HEAD answers it for every topology here. What the forge HOLDS on that branch is
+# the reading that had to move, and content_in_default fetches it from the forge.
+default_branch() {
+  local ref branch
+  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$ref" ]; then
+    echo "${ref#origin/}"
+    return 0
+  fi
   for branch in main master; do
     if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
       echo "$branch"
@@ -1163,7 +1162,7 @@ content_in_default() {
   local name ref default_tree merged_tree forge
   resolve_forge_remote "$WT" || return 1
   forge=$FORGE_REMOTE
-  name=$(default_branch "$forge") || return 1
+  name=$(default_branch) || return 1
   if ! git -C "$WT" fetch --quiet "$forge" "+refs/heads/$name:refs/remotes/$forge/$name" >/dev/null 2>&1; then
     LANDED_FORGE_UNCONFIRMED="the forge remote $forge did not answer for $name"
     return 1
