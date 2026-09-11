@@ -402,7 +402,7 @@ Dirty clones, non-default branches, detached HEADs with unique commits, diverged
 With no forge to measure against, those same states report `UNCONFIRMED:` without the behind count they cannot know, and nothing is compared, fast-forwarded, or pruned.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
-The refresh also prunes local branches whose remote is gone and that no worktree still needs, on the same confirmed forge every other mutation there requires.
+The refresh also prunes local branches that no worktree still needs and whose gone upstream is the forge's own, so a branch tracking a working-copy origin is never deleted on that copy's say-so.
 
 ## Self-updates stay safe
 

@@ -30,8 +30,8 @@
 # Anything else is reported as "skipped: not a clone root" naming the repository
 # that would have been touched.
 # Pruning never deletes the checked-out branch or a branch that still has a
-# worktree, so it cannot discard unlanded work, and it needs the same confirmed
-# forge every other mutation here does; set FM_FLEET_PRUNE=0 to disable it.
+# worktree, so it cannot discard unlanded work, and it deletes only branches whose
+# "[gone]" upstream is the forge's own; set FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
@@ -256,21 +256,24 @@ prune_gone_branches() {
   # this fleet are squash-merged, so a merged branch is never an ancestor and
   # such a check would prune nothing. The no-worktree guard is the real safety
   # net. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
-  # Deleting a branch is as much a mutation as the fast-forward below, so it is
-  # gated on the same confirmed forge: a "[gone]" upstream read from a remote that
-  # cannot speak for the forge is not evidence anything landed.
+  # Deleting a branch is as much a mutation as the fast-forward below, so the
+  # "[gone]" reading that decides it has to come from the FORGE. "[gone]" is
+  # per-branch - it reports on whichever remote that branch tracks - so a clone
+  # whose branches track a working-copy origin would otherwise delete them the
+  # moment their owner deleted their own copy, while the forge still carries them
+  # with an open PR. Only a branch tracking the forge remote is prunable here;
+  # when origin IS the forge, that is every branch and nothing changes.
   [ "${FM_FLEET_PRUNE:-1}" != "0" ] || return 0
-  [ -z "$FORGE_UNCONFIRMED" ] || return 0
+  [ -n "$FORGE_REMOTE" ] || return 0
 
-  local worktree_branches current refline branch track
+  local worktree_branches current branch upstream_remote track
   worktree_branches=$(git -C "$PROJ" worktree list --porcelain 2>/dev/null \
     | sed -n 's#^branch refs/heads/##p')
   current=$(git -C "$PROJ" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-  while IFS= read -r refline; do
-    branch=${refline%% *}
-    track=${refline#* }
+  while read -r branch upstream_remote track; do
     [ "$track" = "[gone]" ] || continue
+    [ "$upstream_remote" = "$FORGE_REMOTE" ] || continue
     [ -n "$branch" ] || continue
     [ "$branch" != "$current" ] || continue
     if printf '%s\n' "$worktree_branches" | grep -Fxq -- "$branch"; then
@@ -280,7 +283,7 @@ prune_gone_branches() {
       echo "$label: pruned $branch"
     fi
   done < <(git -C "$PROJ" for-each-ref \
-    --format='%(refname:short) %(upstream:track)' refs/heads 2>/dev/null)
+    --format='%(refname:short) %(upstream:remotename) %(upstream:track)' refs/heads 2>/dev/null)
 }
 
 # True when some worktree of $PROJ has $DEFAULT checked out (so we cannot attach
@@ -397,7 +400,6 @@ sync_project() {
   forge_answer=$(fm_forge_remote_resolve "$PROJ")
   case "$forge_answer" in
     unresolved$'\t'*) FORGE_UNCONFIRMED=${forge_answer#unresolved$'\t'} ;;
-    '') FORGE_UNCONFIRMED="the forge remote could not be resolved" ;;
     *) FORGE_REMOTE=$forge_answer ;;
   esac
 

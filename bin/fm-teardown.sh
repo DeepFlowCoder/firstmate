@@ -899,8 +899,12 @@ fi
 # to read a name from; only clone or an explicit `remote set-head` writes one.
 # That leaves a known limit rather than a proof: refs/remotes/origin/HEAD mirrors
 # its SOURCE repository's HEAD, so a working-copy origin names whatever branch its
-# owner currently has checked out. Naming the wrong branch makes the landed-work
-# proof fail closed - teardown refuses - never pass on an unmeasured reading.
+# owner currently has checked out. Nothing here re-checks that name, so when it
+# names a branch the forge also holds, content_in_default measures against THAT
+# branch and is wrong in both directions: it can refuse work the default branch
+# already carries, and it can accept work that landed only on the other branch.
+# This is a limit of the NAME, not of the source - what the forge holds is still
+# read from the forge - and closing it means resolving the name from the forge too.
 default_branch() {
   local ref branch
   ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
@@ -1038,10 +1042,6 @@ resolve_forge_remote() {  # <repo-dir>
   case "$answer" in
     unresolved$'\t'*)
       LANDED_FORGE_UNCONFIRMED=${answer#unresolved$'\t'}
-      return 1
-      ;;
-    '')
-      LANDED_FORGE_UNCONFIRMED="the forge remote could not be resolved for $1"
       return 1
       ;;
   esac

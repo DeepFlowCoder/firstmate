@@ -557,6 +557,50 @@ test_confirmed_forge_still_prunes_gone_branches() {
   pass "a clone whose origin IS the forge prunes gone branches unchanged"
 }
 
+test_working_copy_origin_cannot_prune_a_branch_the_forge_still_holds() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" triprune)
+  # A task branch the FORGE carries, with an open PR nobody has merged.
+  git -C "$home/work-triprune" branch -q fm/task-x
+  git -C "$home/work-triprune" push -q origin fm/task-x
+  # The captain's working copy - this clone's origin - picks it up, the clone
+  # tracks it from there, and then the captain deletes their own copy of it.
+  git -C "$home/laptop-triprune" fetch -q origin
+  git -C "$home/laptop-triprune" branch -q --track fm/task-x origin/fm/task-x
+  git -C "$clone" fetch -q origin
+  git -C "$clone" branch -q --track fm/task-x origin/fm/task-x
+  git -C "$home/laptop-triprune" branch -q -D fm/task-x
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "pruned fm/task-x" \
+    "a branch the captain deleted in their own copy did not land on the forge"
+  git -C "$clone" show-ref --verify --quiet refs/heads/fm/task-x \
+    || fail "a branch the forge still holds was deleted on the working copy's say-so"
+  pass "a gone upstream on a working-copy origin never prunes while the forge holds the branch"
+}
+
+test_forge_tracked_branch_is_pruned_when_the_forge_drops_it() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" triprune2)
+  git -C "$home/work-triprune2" branch -q fm/task-y
+  git -C "$home/work-triprune2" push -q origin fm/task-y
+  # The clone tracks it from the FORGE remote, which is where it then disappears.
+  git -C "$clone" fetch -q gh
+  git -C "$clone" branch -q --track fm/task-y gh/fm/task-y
+  git -C "$home/work-triprune2" push -q origin --delete fm/task-y
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "triprune2: pruned fm/task-y" \
+    "a branch the forge itself dropped is the one reading that proves it landed"
+  ! git -C "$clone" show-ref --verify --quiet refs/heads/fm/task-y \
+    || fail "expected a forge-tracked gone branch to be pruned"
+  pass "a gone upstream on the forge remote still prunes"
+}
+
 test_bootstrap_relays_unconfirmed() {
   local home clone out
   home=$(new_home)
@@ -897,6 +941,8 @@ test_unreachable_forge_never_produces_a_divergence_verdict
 test_forge_that_cannot_be_resolved_is_reported_not_assumed
 test_unconfirmed_forge_prunes_no_branch
 test_confirmed_forge_still_prunes_gone_branches
+test_working_copy_origin_cannot_prune_a_branch_the_forge_still_holds
+test_forge_tracked_branch_is_pruned_when_the_forge_drops_it
 test_bootstrap_relays_unconfirmed
 test_no_origin_skipped
 test_local_only_skipped
