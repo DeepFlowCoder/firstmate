@@ -8,12 +8,13 @@
 # as that copy, so measuring against it once reported "already current" on a clone
 # four commits behind the forge. When origin IS the forge (the ordinary case) every
 # reading, outcome and message here is exactly as before. When the forge is a
-# different remote, that remote is fetched too and the up-to-date comparison and
-# fast-forward use it. When the forge cannot be resolved or cannot be fetched,
-# NOTHING here is compared, moved, or deleted - not the comparison, not the
-# fast-forward, not the branch pruning: there is no origin to fall back to, and
-# the outcome line becomes "UNCONFIRMED: ... the forge was not consulted:
-# <reason>", which bootstrap relays.
+# different remote, THAT remote is the one fetched - origin feeds no reading here,
+# so it is neither fetched nor allowed to abort the run - the up-to-date comparison
+# and fast-forward use it, and the success line names it.
+# When the forge cannot be resolved or cannot be fetched, NOTHING here is compared,
+# moved, or deleted - not the comparison, not the fast-forward, not the branch
+# pruning: there is no origin to fall back to, and the outcome line becomes
+# "UNCONFIRMED: ... the forge was not consulted: <reason>", which bootstrap relays.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of the forge's <default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -160,6 +161,18 @@ default_branch() {
 
 first_line() {
   printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'
+}
+
+# Names the measured source on a success line, and ONLY when the forge is not
+# origin. A failure outcome already carries it - report_stuck quantifies against
+# $BASE and report_unconfirmed names what it could not consult - but "synced" and
+# "already current" otherwise leave a session unable to tell which repository
+# answered, which is the ambiguity that let a clone sit four commits behind the
+# forge while reporting itself current. An ordinary clone, where origin IS the
+# forge, emits no suffix at all and its lines stay byte-identical.
+forge_note() {
+  [ -n "$FORGE_REMOTE" ] && [ "$FORGE_REMOTE" != origin ] || return 0
+  printf ' (checked against the forge remote %s)' "$FORGE_REMOTE"
 }
 
 # True when git stderr shows the packed-refs.lock "File exists" race. The lock
@@ -403,19 +416,22 @@ sync_project() {
     *) FORGE_REMOTE=$forge_answer ;;
   esac
 
-  if ! fetch_with_packed_refs_lock_guard origin; then
-    reason="fetch failed"
-    if [ -n "$FETCH_OUTPUT" ]; then
-      reason="$reason: $(first_line "$FETCH_OUTPUT")"
+  # The forge is the only remote fetched, because it is the only one anything
+  # below reads: BASE comes from it, and the "[gone]" states pruning acts on have
+  # to come from its own --prune. When origin IS the forge this is the same fetch,
+  # the same failure handling and the same lock recovery as before. When the forge
+  # is elsewhere, origin feeds no reading here, so its answer - including a refusal
+  # to answer - can neither confirm nor abort a measurement against the forge.
+  if [ "$FORGE_REMOTE" = origin ]; then
+    if ! fetch_with_packed_refs_lock_guard origin; then
+      reason="fetch failed"
+      if [ -n "$FETCH_OUTPUT" ]; then
+        reason="$reason: $(first_line "$FETCH_OUTPUT")"
+      fi
+      echo "$label: skipped: $reason"
+      return 0
     fi
-    echo "$label: skipped: $reason"
-    return 0
-  fi
-
-  # The forge is a different remote: fetch it too, because every comparison below
-  # has to run against what the forge actually holds. A fetch failure is reported
-  # as an unconfirmed forge rather than silently measured against origin.
-  if [ -n "$FORGE_REMOTE" ] && [ "$FORGE_REMOTE" != origin ]; then
+  elif [ -n "$FORGE_REMOTE" ]; then
     if ! fetch_with_packed_refs_lock_guard "$FORGE_REMOTE"; then
       FORGE_UNCONFIRMED="could not fetch $FORGE_REMOTE"
       if [ -n "$FETCH_OUTPUT" ]; then
@@ -508,9 +524,9 @@ sync_project() {
   }
   if [ "$local_rev" = "$remote_rev" ]; then
     if [ "$recovered" = yes ]; then
-      echo "$label: recovered: re-attached $DEFAULT (already current)"
+      echo "$label: recovered: re-attached $DEFAULT (already current)$(forge_note)"
     else
-      echo "$label: already current"
+      echo "$label: already current$(forge_note)"
     fi
     return 0
   fi
@@ -536,9 +552,9 @@ sync_project() {
     return 0
   }
   if [ "$recovered" = yes ]; then
-    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
+    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after$(forge_note)"
   else
-    echo "$label: synced $before..$after"
+    echo "$label: synced $before..$after$(forge_note)"
   fi
   return 0
 }

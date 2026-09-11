@@ -435,6 +435,8 @@ test_already_current_unchanged() {
   assert_contains "$out" "eta: already current" "already-current clone reports unchanged"
   assert_not_contains "$out" "STUCK" "already-current is not flagged STUCK"
   assert_not_contains "$out" "recovered" "already-current is not labelled recovered"
+  assert_not_contains "$out" "checked against" \
+    "a clone whose origin IS the forge names no source, so its text is unchanged"
   [ "$(head_sha "$clone")" = "$before" ] || fail "already-current clone was moved"
   pass "already-current clone is reported unchanged"
 }
@@ -455,9 +457,35 @@ test_clone_behind_the_forge_is_never_reported_current() {
   assert_not_contains "$out" "already current" \
     "a clone four commits behind the forge must never be reported current"
   assert_contains "$out" "finanzas: synced" "the clone must be brought up to the forge"
+  assert_contains "$out" "checked against the forge remote gh" \
+    "a success line must name which repository answered when it is not origin"
   [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
     || fail "clone was not fast-forwarded to the forge's main"
   pass "a clone behind the forge is synced to it, not called current because origin agrees"
+}
+
+test_unreachable_origin_does_not_stop_a_reachable_forge() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" offlineorigin)
+  advance_forge "$home" offlineorigin C1
+  # The captain's working copy - this clone's origin - stops answering: a ref
+  # pointing at an object it no longer has, which is what a concurrent gc or a
+  # half-finished rewrite leaves behind. It is still provably a working copy, so
+  # it still speaks for no forge, and must not decide whether the clone is measured.
+  mkdir -p "$home/laptop-offlineorigin/.git/refs/heads"
+  printf '%s\n' 0000000000000000000000000000000000000000 \
+    > "$home/laptop-offlineorigin/.git/refs/heads/main"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "skipped: fetch failed" \
+    "a remote that feeds no reading here must not abort the measurement"
+  assert_contains "$out" "offlineorigin: synced" \
+    "the forge was reachable and had the answer, so it must have been asked"
+  [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
+    || fail "clone was not fast-forwarded to the forge's main"
+  pass "an origin that cannot answer never blocks a sync measured against the forge"
 }
 
 test_unreachable_forge_never_produces_a_divergence_verdict() {
@@ -525,6 +553,9 @@ strand_gone_branch() {
     git -C "$source_repo" push -q origin --delete "$branch"
   fi
   git -C "$source_repo" branch -q -D "$branch"
+  # Leave the "[gone]" upstream already recorded here rather than relying on the
+  # sync to produce it, so the fixture holds whichever remote the sync fetches.
+  git -C "$clone" fetch -q origin --prune
 }
 
 test_unconfirmed_forge_prunes_no_branch() {
@@ -571,6 +602,7 @@ test_working_copy_origin_cannot_prune_a_branch_the_forge_still_holds() {
   git -C "$clone" fetch -q origin
   git -C "$clone" branch -q --track fm/task-x origin/fm/task-x
   git -C "$home/laptop-triprune" branch -q -D fm/task-x
+  git -C "$clone" fetch -q origin --prune
 
   out=$(run_sync "$home" "$clone")
 
@@ -937,6 +969,7 @@ test_diverged_is_stuck_untouched
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_clone_behind_the_forge_is_never_reported_current
+test_unreachable_origin_does_not_stop_a_reachable_forge
 test_unreachable_forge_never_produces_a_divergence_verdict
 test_forge_that_cannot_be_resolved_is_reported_not_assumed
 test_unconfirmed_forge_prunes_no_branch
