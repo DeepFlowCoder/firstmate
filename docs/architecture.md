@@ -400,9 +400,9 @@ Wake-time refreshes can target a single clone by project name, so the primary ho
 Clean default-branch clones fast-forward to the forge's `<default>` resolved above, and a clean detached HEAD that holds no unique commits is re-attached to the default branch before the same fast-forward path runs.
 Dirty clones, non-default branches, detached HEADs with unique commits, diverged defaults, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
 With no forge to measure against, the clone reports `UNCONFIRMED:` describing only what needs no remote - which branch is checked out and whether the tree is dirty - and nothing is compared, judged, or fast-forwarded; the default branch NAME is a forge reading too, so no clone is called off-default or behind on a name origin supplied.
-Pruning is skipped on that same reading whenever the forge could not be resolved or fetched; when the forge answered but holds no `<default>` ref, the pruning its own fetch already justified has run, so a `pruned` line can accompany the `UNCONFIRMED:` one.
+Pruning is skipped on that same reading whenever the forge could not be resolved or fetched; when its fetch succeeded but it then could not name its default branch or holds no `<default>` ref, the pruning that fetch already justified has run, so a `pruned` line can accompany the `UNCONFIRMED:` one.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
-Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
+Local-only projects, clones without an origin remote, and a failed fetch of an origin that is itself the forge remain benign skips, while a failed fetch of a separate forge remote reports `UNCONFIRMED:` instead.
 The refresh also prunes local branches that no worktree still needs and whose gone upstream is the forge's own, so a branch tracking a working-copy origin is never deleted on that copy's say-so.
 
 ## Self-updates stay safe

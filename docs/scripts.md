@@ -128,7 +128,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-supervision-lib.sh`  | Shared in-flight-work-without-fresh-watcher-beacon predicate                         |
 | `fm-ff-lib.sh`           | Shared guarded fast-forward helper for update-source pulls and local secondmate syncs |
 | `fm-lock-lib.sh`         | Shared "is this git lock provably abandoned?" proof used by teardown and fleet-sync   |
-| `fm-forge-remote-lib.sh` | Single owner of which remote is the forge, so landing and up-to-date guards never measure against a clone of somebody's working copy |
+| `fm-forge-remote-lib.sh` | Single owner of which remote is the forge and which branch that forge itself calls default, so landing and up-to-date guards never measure against a clone of somebody's working copy |
 | `fm-config-inherit-lib.sh` | Shared primary-to-secondmate inherited local-material propagation and config-reread delivery |
 | `fm-trace-context-lib.sh` | Native W3C trace-context propagation for firstmate spawns (default-off)              |
 | `fm-tasks-axi-lib.sh`    | Shared backlog-backend selector and `tasks-axi` compatibility probe                  |
