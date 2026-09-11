@@ -201,6 +201,10 @@ reset_fakes() {
   FM_FAKE_NM_CALLS=""
   FM_FAKE_GH_PR_STATE=""
   FM_FAKE_GH_CALLS=""
+  # Only the budget case installs the `timeout` and `date` stubs these drive, so
+  # every other case leaves them empty and reaches the real binaries.
+  FM_FAKE_TIMEOUT_CALLS=""
+  FM_FAKE_CLOCK_TICKS=""
   # The forge read is opt-in, so it is OFF for every case that does not name it -
   # which is what makes a case that forgets to name it read as the default,
   # local-only path rather than silently reaching a stub.
@@ -208,6 +212,7 @@ reset_fakes() {
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_NM_CALLS
   export FM_FAKE_GH_PR_STATE FM_FAKE_GH_CALLS FM_CREW_STATE_RESOLVE_PR
+  export FM_FAKE_TIMEOUT_CALLS FM_FAKE_CLOCK_TICKS
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -2670,6 +2675,128 @@ SH
   pass "the whole read lands inside its caller's bound, with its reason"
 }
 
+# The remaining budget is ONE reading, and the forge is asked for exactly the
+# seconds that reading approved. It used to be read TWICE at the forge
+# resolution - once as the zero guard, once as the bound handed to the call -
+# and two readings are different numbers whenever a whole second ticks between
+# them. The guard then passes on its last second while the bound evaluates to 0,
+# and 0 is the one value bin/fm-forge-pr-state-lib.sh normalises to its own 10s
+# default: a ten-second forge call let out with nothing left to spend, on a read
+# bin/fm-fleet-snapshot.sh bounds at 20s and folds to a reasonless `unknown` when
+# it overruns - the exact overrun the reserve above exists to prevent.
+#
+# The window is about a millisecond of real time, so the clock is what this case
+# controls rather than races: a `date` stub that advances one whole second per
+# reading puts a tick between every two consecutive readings. The budget sweep
+# finds the run that lands on the guard's last second without the case having to
+# know how many readings precede it - it is the run right after the last one that
+# reported the budget spent - so a new bounded call added ahead of the forge does
+# not silently move this case off the boundary it tests. The seconds the forge is
+# really asked for are read off a `timeout` stub, the boundary the bounded call
+# actually crosses.
+test_the_forge_is_asked_for_the_seconds_the_guard_approved() {
+  reset_fakes
+  local d fb short real_date t res bud out bound i last_spent race
+  local -a sweep_bud=() sweep_bound=() sweep_spent=()
+  d=$(new_case forge-bound-one-reading)
+  make_repo_on_branch "$d/wt" fm/feat-forgebound
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  fb=$(make_fakebin "$d")
+  real_date=$(command -v date) || fail "no date on PATH to fall back to"
+  # A virtual clock, one whole second per reading of it. Only `+%s` is served -
+  # the reading the budget is computed from - so every other use of date is the
+  # real one.
+  cat > "$fb/date" <<SH
+#!/usr/bin/env bash
+set -u
+if [ "\${1:-}" = "+%s" ]; then
+  n=\$(( \$(cat "\$FM_FAKE_CLOCK_TICKS" 2>/dev/null || echo 0) + 1 ))
+  printf '%s\n' "\$n" > "\$FM_FAKE_CLOCK_TICKS"
+  printf '%s\n' "\$(( 1700000000 + n - 1 ))"
+  exit 0
+fi
+exec $real_date "\$@"
+SH
+  # Records the bound every bounded call is really given, then runs it. It parses
+  # `timeout`'s own published CLI shape - options, then DURATION, then the
+  # command - so it reads both shapes this repo bounds with, and being first on
+  # PATH it is also the mechanism bin/fm-timeout-lib.sh selects on every host.
+  # The command is flattened onto one line because the bounded wrapper carries a
+  # multi-line script.
+  cat > "$fb/timeout" <<'SH'
+#!/usr/bin/env bash
+set -u
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  case "${args[$i]}" in
+    -k|--kill-after|-s|--signal) i=$(( i + 2 )) ;;
+    -*) i=$(( i + 1 )) ;;
+    *) break ;;
+  esac
+done
+rest=( "${args[@]:$(( i + 1 ))}" )
+printf '%s\t%s\n' "${args[$i]}" "$(printf '%s' "${rest[*]}" | tr '\n\t' '  ')" \
+  >> "${FM_FAKE_TIMEOUT_CALLS:-/dev/null}"
+exec "${rest[@]}"
+SH
+  chmod +x "$fb/date" "$fb/timeout"
+  fm_write_meta "$d/state/forgebound.meta" "window=fm:fm-forgebound" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-forgebound)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-forgebound ${short}  2026-08-30 07:45"
+  FM_CREW_STATE_RESOLVE_PR=1
+  FM_FAKE_GH_PR_STATE=MERGED
+  FM_FAKE_TIMEOUT_CALLS="$d/timeout.calls"
+  FM_FAKE_CLOCK_TICKS="$d/clock.ticks"
+
+  for (( t = 3; t <= 14; t++ )); do
+    : > "$FM_FAKE_TIMEOUT_CALLS"
+    : > "$FM_FAKE_CLOCK_TICKS"
+    out=$(PATH="$fb:$PATH" FM_STATE_OVERRIDE="$d/state" \
+      FM_CREW_STATE_NM_TIMEOUT="$t" "$CREW_STATE" forgebound)
+    # The read's own budget, derived the way its header states it: a reserve of a
+    # fifth, never under two seconds, and at least one second left to spend.
+    res=$(( t / 5 )); [ "$res" -ge 2 ] || res=2
+    bud=$(( t - res )); [ "$bud" -ge 1 ] || bud=1
+    bound=$(grep -F 'gh pr view' "$FM_FAKE_TIMEOUT_CALLS" | head -1 | cut -f1)
+    sweep_bud+=( "$bud" )
+    sweep_bound+=( "${bound:-none}" )
+    case "$out" in
+      *"budget was spent before the forge could be asked"*)
+        sweep_spent+=( 1 )
+        [ -z "$bound" ] \
+          || fail "the guard reported the budget spent and the forge was asked anyway, for ${bound}s" ;;
+      *) sweep_spent+=( 0 ) ;;
+    esac
+  done
+
+  # The boundary run: the first one whose budget survives the guard, immediately
+  # after the last one the guard turned away. Its guard passed on one second, so
+  # one second is what the forge may be asked for.
+  last_spent=-1
+  for i in "${!sweep_spent[@]}"; do
+    if [ "${sweep_spent[$i]}" = 1 ]; then last_spent=$i; fi
+  done
+  [ "$last_spent" -ge 0 ] \
+    || fail "no run in the sweep reached the forge guard with a spent budget, so nothing tested the boundary"
+  race=$(( last_spent + 1 ))
+  [ "$race" -lt "${#sweep_bud[@]}" ] \
+    || fail "the sweep ended on the spent-budget run, so the boundary run was never exercised"
+  [ "${sweep_bound[$race]}" != none ] \
+    || fail "the guard approved the last second of a ${sweep_bud[$race]}s budget and the forge was never asked"
+  [ "${sweep_bound[$race]}" = 1 ] \
+    || fail "the forge was asked for ${sweep_bound[$race]}s on the last second of a ${sweep_bud[$race]}s budget"
+
+  # And no reading anywhere in the sweep buys the forge more than the whole read
+  # was given, which is the same property stated without reference to a boundary.
+  for i in "${!sweep_bud[@]}"; do
+    [ "${sweep_bound[$i]}" != none ] || continue
+    [ "${sweep_bound[$i]}" -le "${sweep_bud[$i]}" ] \
+      || fail "a ${sweep_bud[$i]}s budget bought a ${sweep_bound[$i]}s forge call"
+  done
+  pass "the forge is asked for the seconds the guard approved, never a default"
+}
+
 
 # The other half of requirement 3, on the branch where the forge REFUTES the run:
 # a contradicting durable record must not be dropped just because the forge
@@ -3044,5 +3171,6 @@ test_a_degraded_reading_is_never_promoted_by_a_stale_ready_log
 test_a_failed_successor_still_names_the_open_blocker
 test_an_unnameable_successor_lets_the_blocker_answer
 test_the_whole_read_lands_inside_its_bound_with_its_reason
+test_the_forge_is_asked_for_the_seconds_the_guard_approved
 
 echo "all fm-crew-state tests passed"

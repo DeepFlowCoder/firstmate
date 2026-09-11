@@ -1133,17 +1133,27 @@ if [ "$HAVE_RUN" = 1 ]; then
   if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_WORD" = passed ]; then
     PR_STATE=""
     PR_REASON=""
+    # ONE reading of the budget for the guard AND for the bound the guard
+    # licenses, the same single-capture shape nm_run uses above. Read twice,
+    # they are two different numbers whenever the clock crosses a whole second
+    # between them: the guard passes on 1 and the argument evaluates to 0, and 0
+    # is the one value fm_pr_state_resolve normalises to its own 10s default.
+    # The guard that exists to keep this read inside its caller's bound would
+    # then be what overshoots it - a 10s forge call let through with nothing
+    # left to spend, past the bound bin/fm-fleet-snapshot.sh kills the read at,
+    # folding a crew to a reasonless `unknown`.
+    PR_BUDGET_LEFT=$(read_budget_left)
     if [ "$RESOLVE_PR" != 1 ]; then
       PR_REASON="this read asks no forge (set FM_CREW_STATE_RESOLVE_PR=1 to resolve it)"
     elif [ -z "$RUN_PR" ]; then
       PR_REASON="the run recorded no pull request to ask about"
-    elif [ "$(read_budget_left)" = 0 ]; then
+    elif [ "$PR_BUDGET_LEFT" = 0 ]; then
       PR_REASON="this read's budget was spent before the forge could be asked"
     else
       # The reason rides on stdout beside the state, because this call is a
       # command substitution and a variable the function set would die with its
       # subshell. A resolved answer carries no reason and leaves PR_REASON empty.
-      IFS=$'\t' read -r PR_STATE PR_REASON <<< "$(fm_pr_state_resolve "$RUN_PR" "$(read_budget_left)")"
+      IFS=$'\t' read -r PR_STATE PR_REASON <<< "$(fm_pr_state_resolve "$RUN_PR" "$PR_BUDGET_LEFT")"
     fi
     # `merged` and `closed` are NOT the same answer, however alike they look next
     # to each other in a `case`. `done` does not mean "this task is over", it
