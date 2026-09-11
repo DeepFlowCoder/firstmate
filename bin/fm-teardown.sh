@@ -892,19 +892,16 @@ elif [ "$FORCE" != "--force" ] && fm_pf_relay_active "$FM_HOME"; then
   PUBLIC_FOLLOWUP_RELAY_ACTIVE=1
 fi
 
-# The default branch NAME, which was never the wrong-source problem: what the
-# forge HOLDS on that branch is the reading that had to move, and
-# content_in_default fetches it from the forge. The name still comes from origin,
-# because a remote that was only added and fetched has no refs/remotes/<remote>/HEAD
-# to read a name from; only clone or an explicit `remote set-head` writes one.
-# That leaves a known limit rather than a proof: refs/remotes/origin/HEAD mirrors
-# its SOURCE repository's HEAD, so a working-copy origin names whatever branch its
-# owner currently has checked out. Nothing here re-checks that name, so when it
-# names a branch the forge also holds, content_in_default measures against THAT
-# branch and is wrong in both directions: it can refuse work the default branch
-# already carries, and it can accept work that landed only on the other branch.
-# This is a limit of the NAME, not of the source - what the forge holds is still
-# read from the forge - and closing it means resolving the name from the forge too.
+# The default branch NAME as ORIGIN names it. Used when origin IS the forge, where
+# it is the forge's own answer, and by the local-only path below, which compares
+# against a local branch and claims nothing of any forge. The landed-work proof
+# does NOT use it for any other clone: refs/remotes/origin/HEAD mirrors its SOURCE
+# repository's HEAD, so a working-copy origin names whatever branch its owner has
+# checked out, and bin/fm-spawn.sh's `git remote set-head origin --auto` writes
+# exactly that into the clone on every spawn - which would let content_in_default
+# accept work that landed only on the captain's current branch. It asks the forge
+# for its own name instead; see fm_forge_remote_default_branch in
+# bin/fm-forge-remote-lib.sh.
 default_branch() {
   local ref branch
   ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
@@ -1160,14 +1157,28 @@ pr_is_merged() {
 # The forge is asked rather than origin because this reading is what says work is
 # safe to discard: measured against a stale copy it can call landed work unlanded
 # (a harmless refusal) but it can equally call unlanded work landed, which is not.
-# Returns non-zero when inconclusive - no forge to ask, no default ref, a fetch
-# that failed, or a merge conflict - so the caller refuses rather than guesses,
-# and LANDED_FORGE_UNCONFIRMED carries what could not be consulted.
+# Both the branch NAME and its content come from the forge, because naming the
+# wrong branch measures the right repository against the wrong reference.
+# Returns non-zero when inconclusive - no forge to ask, a forge that cannot name
+# its default branch, no default ref, a fetch that failed, or a merge conflict -
+# so the caller refuses rather than guesses, and LANDED_FORGE_UNCONFIRMED carries
+# what could not be consulted.
 content_in_default() {
-  local name ref default_tree merged_tree forge
+  local name ref default_tree merged_tree forge answer
   resolve_forge_remote "$WT" || return 1
   forge=$FORGE_REMOTE
-  name=$(default_branch) || return 1
+  if [ "$forge" = origin ]; then
+    name=$(default_branch) || return 1
+  else
+    answer=$(fm_forge_remote_default_branch "$WT" "$forge")
+    case "$answer" in
+      unresolved$'\t'*)
+        LANDED_FORGE_UNCONFIRMED=${answer#unresolved$'\t'}
+        return 1
+        ;;
+    esac
+    name=$answer
+  fi
   if ! git -C "$WT" fetch --quiet "$forge" "+refs/heads/$name:refs/remotes/$forge/$name" >/dev/null 2>&1; then
     LANDED_FORGE_UNCONFIRMED="the forge remote $forge did not answer for $name"
     return 1

@@ -27,6 +27,19 @@
 #       offline - it inspects configured remote URLs and local repositories, and
 #       never contacts a network.
 #
+#   fm_forge_remote_default_branch <repo-dir> <remote>
+#       Echoes the branch name THE FORGE itself calls default, or
+#       "unresolved<TAB><reason>" on the same first-class terms as above. Callers
+#       need it because `refs/remotes/origin/HEAD` answers for origin's SOURCE
+#       repository, and when that source is somebody's working copy the name is
+#       whatever branch its owner has checked out - which bin/fm-spawn.sh's
+#       `git remote set-head origin --auto` then writes into the clone on every
+#       spawn. Reads `refs/remotes/<remote>/HEAD` first, which git >= 2.49 writes
+#       on a plain fetch and which costs nothing; when that ref is absent it asks
+#       the remote directly with `git ls-remote --symref`, one bounded call over
+#       git's own remote protocol. Unlike fm_forge_remote_resolve this one MAY
+#       contact the network, and only on that second path.
+#
 # Resolution rule, in order:
 #   1. `origin`, whenever origin is not provably a working copy. This is the
 #      ordinary case - origin is the forge, or a bare repository that serves as
@@ -128,4 +141,25 @@ EOF
     1) printf '%s' "$single" ;;
     *) _fm_forge_remote_unresolved "origin of $dir points at a local working copy and more than one other remote could be the forge (${candidates# })" ;;
   esac
+}
+
+fm_forge_remote_default_branch() {  # <repo-dir> <remote>
+  local dir=${1-} remote=${2-} ref name
+  if [ -z "$dir" ] || [ -z "$remote" ]; then
+    _fm_forge_remote_unresolved "no repository and remote given to resolve a default branch for"
+    return 0
+  fi
+  ref=$(git -C "$dir" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
+  if [ -n "$ref" ]; then
+    printf '%s' "${ref#"$remote/"}"
+    return 0
+  fi
+  name=$(git -C "$dir" ls-remote --symref "$remote" HEAD 2>/dev/null \
+    | sed -n 's|^ref:[[:space:]]*refs/heads/\([^[:space:]]*\)[[:space:]].*|\1|p' \
+    | head -1)
+  if [ -n "$name" ]; then
+    printf '%s' "$name"
+    return 0
+  fi
+  _fm_forge_remote_unresolved "$remote did not name a default branch: it has no refs/remotes/$remote/HEAD in $dir and answered no HEAD symref"
 }

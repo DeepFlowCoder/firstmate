@@ -8,9 +8,11 @@
 # as that copy, so measuring against it once reported "already current" on a clone
 # four commits behind the forge. When origin IS the forge (the ordinary case) every
 # reading, outcome and message here is exactly as before. When the forge is a
-# different remote, THAT remote is the one fetched - origin feeds no reading here,
-# so it is neither fetched nor allowed to abort the run - the up-to-date comparison
-# and fast-forward use it, and the success line names it.
+# different remote, THAT remote is the one fetched, the one that names the default
+# branch, and the one the comparison and fast-forward run against, and the success
+# line names it. origin is then neither fetched nor allowed to abort the run: none
+# of its refs feed a reading here, and its published HEAD is read only to describe
+# local state under a report that claims nothing of the forge.
 # When the forge cannot be resolved or cannot be fetched, NOTHING here is compared,
 # moved, or deleted - not the comparison, not the fast-forward, not the branch
 # pruning: there is no origin to fall back to, and the outcome line becomes
@@ -134,15 +136,14 @@ resolve_project_arg() {
   printf '%s\n' "$arg"
 }
 
-# The default branch NAME, which was never the wrong-source problem - what the
-# forge HOLDS on that branch is the reading this instrument had to move. The name
-# still comes from origin, because a remote that was only added and fetched has no
-# refs/remotes/<remote>/HEAD to read a name from; only clone or an explicit
-# `remote set-head` writes one. That leaves a known limit rather than a proof:
-# refs/remotes/origin/HEAD mirrors its SOURCE repository's HEAD, so a working-copy
-# origin names whatever branch its owner currently has checked out. A wrong name
-# fails loudly below - a STUCK report against a branch this clone is not on, or an
-# UNCONFIRMED one when the forge holds no such ref - never as a quiet verdict.
+# The default branch NAME as ORIGIN names it. Used when origin IS the forge, where
+# it is the forge's own answer, and to describe local state under an UNCONFIRMED
+# report, where nothing is claimed of the forge anyway. It is not a forge reading
+# for any other clone: refs/remotes/origin/HEAD mirrors its SOURCE repository's
+# HEAD, so a working-copy origin names whatever branch its owner has checked out,
+# and bin/fm-spawn.sh's `git remote set-head origin --auto` writes exactly that
+# into the clone on every spawn. The forge is asked for its own name instead; see
+# fm_forge_remote_default_branch in bin/fm-forge-remote-lib.sh.
 default_branch() {
   local ref branch
   ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
@@ -417,11 +418,12 @@ sync_project() {
   esac
 
   # The forge is the only remote fetched, because it is the only one anything
-  # below reads: BASE comes from it, and the "[gone]" states pruning acts on have
-  # to come from its own --prune. When origin IS the forge this is the same fetch,
-  # the same failure handling and the same lock recovery as before. When the forge
-  # is elsewhere, origin feeds no reading here, so its answer - including a refusal
-  # to answer - can neither confirm nor abort a measurement against the forge.
+  # below reads: the default branch name and BASE come from it, and the "[gone]"
+  # states pruning acts on have to come from its own --prune. When origin IS the
+  # forge this is the same fetch, the same failure handling and the same lock
+  # recovery as before. When the forge is elsewhere, no fetched origin ref feeds a
+  # reading here, so origin's answer - including a refusal to answer - can neither
+  # confirm nor abort a measurement against the forge.
   if [ "$FORGE_REMOTE" = origin ]; then
     if ! fetch_with_packed_refs_lock_guard origin; then
       reason="fetch failed"
@@ -443,10 +445,27 @@ sync_project() {
 
   prune_gone_branches || true
 
-  DEFAULT=$(default_branch) || {
-    echo "$label: skipped: cannot determine default branch"
-    return 0
-  }
+  # Which branch, as the FORGE names it. origin's HEAD answers for origin's source
+  # repository, which in this topology is the captain's working copy and names
+  # whatever branch they have checked out; measuring the right repository on the
+  # wrong branch is the same class of error as measuring the wrong repository.
+  DEFAULT=
+  if [ -n "$FORGE_REMOTE" ] && [ "$FORGE_REMOTE" != origin ]; then
+    forge_answer=$(fm_forge_remote_default_branch "$PROJ" "$FORGE_REMOTE")
+    case "$forge_answer" in
+      unresolved$'\t'*)
+        FORGE_UNCONFIRMED=${forge_answer#unresolved$'\t'}
+        FORGE_REMOTE=
+        ;;
+      *) DEFAULT=$forge_answer ;;
+    esac
+  fi
+  if [ -z "$DEFAULT" ]; then
+    DEFAULT=$(default_branch) || {
+      echo "$label: skipped: cannot determine default branch"
+      return 0
+    }
+  fi
   # There is no BASE at all without a forge: origin is precisely the source that
   # proves nothing about it, so nothing below compares or moves anything.
   BASE=

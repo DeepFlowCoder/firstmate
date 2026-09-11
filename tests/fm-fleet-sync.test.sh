@@ -464,6 +464,30 @@ test_clone_behind_the_forge_is_never_reported_current() {
   pass "a clone behind the forge is synced to it, not called current because origin agrees"
 }
 
+test_repointed_origin_head_does_not_name_the_measured_branch() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" headdrift)
+  advance_forge "$home" headdrift C1
+  # The captain checks out a branch of their own, and the next spawn's
+  # `git fetch origin` + `git remote set-head origin --auto` - what
+  # bin/fm-spawn.sh runs before every launch - repoints this clone's origin/HEAD
+  # at it. The forge's default branch never changed.
+  git -C "$home/laptop-headdrift" checkout -q -b captains-branch
+  git -C "$clone" fetch -q origin
+  git -C "$clone" remote set-head origin --auto >/dev/null 2>&1
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "captains-branch" \
+    "the branch the captain has checked out is not the branch the forge is measured on"
+  assert_contains "$out" "headdrift: synced" \
+    "a clone current with everything but the forge's newest main must still be caught up"
+  [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
+    || fail "clone was not fast-forwarded to the forge's main"
+  pass "a repointed origin/HEAD never names the branch measured against the forge"
+}
+
 test_unreachable_origin_does_not_stop_a_reachable_forge() {
   local home clone out
   home=$(new_home)
@@ -969,6 +993,7 @@ test_diverged_is_stuck_untouched
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_clone_behind_the_forge_is_never_reported_current
+test_repointed_origin_head_does_not_name_the_measured_branch
 test_unreachable_origin_does_not_stop_a_reachable_forge
 test_unreachable_forge_never_produces_a_divergence_verdict
 test_forge_that_cannot_be_resolved_is_reported_not_assumed

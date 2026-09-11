@@ -949,6 +949,34 @@ test_landed_check_reads_the_forge_not_origin() {
   pass "the landed-work check reads the forge, not a stale origin"
 }
 
+test_landed_check_names_the_default_branch_from_the_forge() {
+  local case_dir rc
+  case_dir=$(make_case content-landed-head-drift)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  repoint_origin_to_a_working_copy "$case_dir"
+  land_on_origin_main "$case_dir" feature.txt hello
+  # The captain checks out a branch of their own, and the next spawn's
+  # `git remote set-head origin --auto` repoints this clone's origin/HEAD at it -
+  # a branch the forge has never heard of. The forge's default is still main, and
+  # main is where the content landed.
+  git -C "$case_dir/laptop" checkout -q -b captains-branch
+  git -C "$case_dir/project" fetch -q origin
+  git -C "$case_dir/project" remote set-head origin --auto >/dev/null 2>&1
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "head-drift: teardown should succeed when the FORGE's default branch carries the content"
+  ! grep -q "captains-branch" "$case_dir/stderr" \
+    || fail "head-drift: the landed-work proof was measured on the captain's branch, not the forge's default"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "head-drift: teardown refused work the forge's default branch already carries"
+  pass "the landed-work check takes the default branch NAME from the forge too"
+}
+
 test_landed_check_refuses_when_no_forge_can_be_asked() {
   local case_dir rc
   case_dir=$(make_case content-no-forge)
@@ -3113,6 +3141,7 @@ test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
 test_landed_check_reads_the_forge_not_origin
+test_landed_check_names_the_default_branch_from_the_forge
 test_landed_check_refuses_when_no_forge_can_be_asked
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
