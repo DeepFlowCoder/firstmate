@@ -11,12 +11,15 @@
 # different remote, THAT remote is the one fetched, the one that names the default
 # branch, and the one the comparison and fast-forward run against, and the success
 # line names it. origin is then neither fetched nor allowed to abort the run: none
-# of its refs feed a reading here, and its published HEAD is read only to describe
-# local state under a report that claims nothing of the forge.
-# When the forge cannot be resolved or cannot be fetched, NOTHING here is compared,
-# moved, or deleted - not the comparison, not the fast-forward, not the branch
-# pruning: there is no origin to fall back to, and the outcome line becomes
-# "UNCONFIRMED: ... the forge was not consulted: <reason>", which bootstrap relays.
+# of its refs feed a reading here, and neither does its published HEAD.
+# When the forge cannot be resolved, fetched, or made to name its default branch,
+# NOTHING here is compared, judged, moved, or deleted - not the up-to-date
+# comparison, not the off-default test, not the fast-forward, not the branch
+# pruning: there is no origin to fall back to for the branch NAME either, so the
+# outcome line states only what needs no remote at all (which branch is checked
+# out, whether the tree is dirty) as "UNCONFIRMED: on <state>, and the forge was
+# not consulted: <reason>", which bootstrap relays. In particular no clone is told
+# it "needs attention" on a reading the forge could not back.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of the forge's <default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -314,28 +317,38 @@ local_default_safe_for_recovery() {
     || git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE" 2>/dev/null
 }
 
+# What the clone is doing, said without consulting any remote: which branch is
+# checked out (or that HEAD is detached), and whether the tree is dirty. This is
+# the whole of what can be stated when the forge could not be consulted, because
+# every sharper description below needs a branch name or a ref that only the forge
+# can vouch for.
+local_state() {
+  local s
+  if [ -n "$cur" ]; then
+    s="branch $cur"
+  else
+    s="detached HEAD"
+  fi
+  [ "$dirty" = no ] || s="$s with uncommitted changes"
+  printf '%s\n' "$s"
+}
+
 # Human-readable name for the unsafe state the clone is in, used in the STUCK
 # warning. Reads $cur (current branch, empty when detached), $dirty, and the
 # HEAD-vs-$BASE ancestry to pick the most informative description, in that
-# priority order.
-# Only the two $BASE-derived descriptions - unique commits, a diverged local
-# default - need the forge: with it unconsulted they are comparisons against a
-# remote that does not speak for it, so each is skipped individually and the
-# description falls through to what needs no remote at all. The priority between
-# the arms is the same either way, so a clone whose origin IS the forge reports
-# exactly the description it always did.
+# priority order. Reached only with a confirmed forge, so $DEFAULT and $BASE are
+# both the forge's own answers and every arm here is measured against it.
 stuck_state() {
   local s
   if [ -n "$cur" ]; then
     s="branch $cur"
   elif [ "$dirty" = yes ]; then
     s="detached HEAD"
-  elif [ -z "$FORGE_UNCONFIRMED" ] \
-      && ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
+  elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
     s="detached HEAD with unique commits"
   elif default_checked_out_elsewhere; then
     s="detached HEAD ($DEFAULT checked out in another worktree)"
-  elif [ -z "$FORGE_UNCONFIRMED" ] && ! local_default_safe_for_recovery; then
+  elif ! local_default_safe_for_recovery; then
     s="detached HEAD (local $DEFAULT diverged from $BASE)"
   else
     s="detached HEAD"
@@ -356,14 +369,11 @@ report_unconfirmed() {  # <observation>
 
 # Loud, quantified report for a clone we deliberately leave untouched. Includes
 # how far behind the forge's <default> it is, so a chronically-stuck clone is
-# visibly distinct from a benign one-off skip. With no forge to measure against,
-# the clone still needs attention and says so, without the distance it cannot know.
+# visibly distinct from a benign one-off skip. Reached only with a confirmed
+# forge: "needs attention" is itself a verdict, and one no unmeasured reading of
+# origin may produce.
 report_stuck() {
   local state=$1 behind
-  if [ -n "$FORGE_UNCONFIRMED" ]; then
-    report_unconfirmed "on $state - needs attention, and its distance from the forge could not be measured"
-    return 0
-  fi
   behind=$(git -C "$PROJ" rev-list --count "HEAD..$BASE" 2>/dev/null) || behind="?"
   echo "$label: STUCK: on $state, $behind commits behind $BASE - needs attention"
 }
@@ -459,8 +469,7 @@ sync_project() {
         ;;
       *) DEFAULT=$forge_answer ;;
     esac
-  fi
-  if [ -z "$DEFAULT" ]; then
+  elif [ "$FORGE_REMOTE" = origin ]; then
     DEFAULT=$(default_branch) || {
       echo "$label: skipped: cannot determine default branch"
       return 0
@@ -469,7 +478,7 @@ sync_project() {
   # There is no BASE at all without a forge: origin is precisely the source that
   # proves nothing about it, so nothing below compares or moves anything.
   BASE=
-  if [ -z "$FORGE_UNCONFIRMED" ]; then
+  if [ -n "$FORGE_REMOTE" ]; then
     BASE="$FORGE_REMOTE/$DEFAULT"
     if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
       # A forge remote with no tracking ref for the default branch cannot be the
@@ -489,6 +498,17 @@ sync_project() {
   [ -z "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ] || dirty=yes
   recovered=no
 
+  # Without a forge there is no trustworthy branch NAME either, so every test
+  # below - starting with "is this clone off its default branch" - would be a
+  # verdict read off origin's HEAD, which names whatever branch the captain has
+  # checked out in their own copy. A clone sitting exactly on the forge's default
+  # would be called "off-default, needs attention". So the state is reported as
+  # unmeasured, described only by what needs no remote at all.
+  if [ -n "$FORGE_UNCONFIRMED" ]; then
+    report_unconfirmed "on $(local_state)"
+    return 0
+  fi
+
   if [ "$cur" != "$DEFAULT" ]; then
     # Off the default branch. Auto-recover only the one unambiguously safe drift:
     # a clean, detached HEAD that holds no unique commits (it is an ancestor of
@@ -496,10 +516,9 @@ sync_project() {
     # Re-attaching to an already-published commit strands nothing, and the
     # fast-forward path below then catches the clone up. Anything else - a
     # non-default named branch, a detached HEAD with unique commits, a dirty tree,
-    # <default> already checked out elsewhere, or no forge to prove the HEAD was
-    # published at all - may hold real work, so it is reported loudly and left
-    # untouched.
-    if [ -z "$FORGE_UNCONFIRMED" ] && [ -z "$cur" ] && [ "$dirty" = no ] \
+    # or <default> already checked out elsewhere - may hold real work, so it is
+    # reported loudly and left untouched.
+    if [ -z "$cur" ] && [ "$dirty" = no ] \
         && git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null \
         && ! default_checked_out_elsewhere \
         && local_default_safe_for_recovery; then
@@ -521,15 +540,6 @@ sync_project() {
 
   if ! git -C "$PROJ" rev-parse --verify --quiet "$DEFAULT^{commit}" >/dev/null; then
     echo "$label: skipped: local $DEFAULT does not exist"
-    return 0
-  fi
-
-  # The clone is on a clean <default>, which is the only state from here on. With
-  # no forge, that is the whole of what can honestly be said: the comparison and
-  # the fast-forward below would both read origin, and acting on that reading is
-  # what pulls a clone up to somebody's unpublished working copy.
-  if [ -n "$FORGE_UNCONFIRMED" ]; then
-    report_unconfirmed "local $DEFAULT is checked out and clean"
     return 0
   fi
 

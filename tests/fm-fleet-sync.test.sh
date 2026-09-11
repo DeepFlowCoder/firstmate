@@ -465,7 +465,7 @@ test_clone_behind_the_forge_is_never_reported_current() {
 }
 
 test_repointed_origin_head_does_not_name_the_measured_branch() {
-  local home clone out
+  local home clone out set_head_err
   home=$(new_home)
   clone=$(build_forge_triangle "$home" headdrift)
   advance_forge "$home" headdrift C1
@@ -475,7 +475,13 @@ test_repointed_origin_head_does_not_name_the_measured_branch() {
   # at it. The forge's default branch never changed.
   git -C "$home/laptop-headdrift" checkout -q -b captains-branch
   git -C "$clone" fetch -q origin
-  git -C "$clone" remote set-head origin --auto >/dev/null 2>&1
+  set_head_err=$(git -C "$clone" remote set-head origin --auto 2>&1) \
+    || fail "fixture: could not repoint origin/HEAD: $set_head_err"
+  # Without this the test would still pass against the unfixed code, having
+  # measured nothing: origin/HEAD would simply keep the "main" that git clone
+  # left, which is also the forge's answer.
+  [ "$(git -C "$clone" symbolic-ref --short refs/remotes/origin/HEAD)" = origin/captains-branch ] \
+    || fail "fixture: origin/HEAD was not repointed at the captain's branch"
 
   out=$(run_sync "$home" "$clone")
 
@@ -486,6 +492,38 @@ test_repointed_origin_head_does_not_name_the_measured_branch() {
   [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
     || fail "clone was not fast-forwarded to the forge's main"
   pass "a repointed origin/HEAD never names the branch measured against the forge"
+}
+
+test_unreachable_forge_never_calls_a_healthy_clone_stuck() {
+  local home clone out before set_head_err
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" nofalsealarm)
+  advance_forge "$home" nofalsealarm C1
+  # A first pass catches the clone up, so it now sits exactly on the forge's main.
+  run_sync "$home" "$clone" >/dev/null
+  before=$(head_sha "$clone")
+
+  # The captain checks out a branch of their own and the next spawn repoints this
+  # clone's origin/HEAD at it; then the forge goes out of reach. The only source
+  # left for a branch name is that repointed HEAD, which names a branch this clone
+  # was never supposed to be on.
+  git -C "$home/laptop-nofalsealarm" checkout -q -b captains-branch
+  git -C "$clone" fetch -q origin
+  set_head_err=$(git -C "$clone" remote set-head origin --auto 2>&1) \
+    || fail "fixture: could not repoint origin/HEAD: $set_head_err"
+  [ "$(git -C "$clone" symbolic-ref --short refs/remotes/origin/HEAD)" = origin/captains-branch ] \
+    || fail "fixture: origin/HEAD was not repointed at the captain's branch"
+  rm -rf "$home/remotes/nofalsealarm.git"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "nofalsealarm: UNCONFIRMED:" "an unconsultable forge must be said out loud"
+  assert_not_contains "$out" "needs attention" \
+    "a clone sitting on the forge's default branch needs nothing, and an origin-named branch cannot say otherwise"
+  assert_not_contains "$out" "captains-branch" \
+    "a branch name the forge never vouched for may not appear in any verdict"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "the clone was moved while the forge was unreachable"
+  pass "an unreachable forge never turns a repointed origin/HEAD into a needs-attention verdict"
 }
 
 test_unreachable_origin_does_not_stop_a_reachable_forge() {
@@ -994,6 +1032,7 @@ test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_clone_behind_the_forge_is_never_reported_current
 test_repointed_origin_head_does_not_name_the_measured_branch
+test_unreachable_forge_never_calls_a_healthy_clone_stuck
 test_unreachable_origin_does_not_stop_a_reachable_forge
 test_unreachable_forge_never_produces_a_divergence_verdict
 test_forge_that_cannot_be_resolved_is_reported_not_assumed

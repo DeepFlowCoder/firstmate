@@ -950,7 +950,7 @@ test_landed_check_reads_the_forge_not_origin() {
 }
 
 test_landed_check_names_the_default_branch_from_the_forge() {
-  local case_dir rc
+  local case_dir rc set_head_err
   case_dir=$(make_case content-landed-head-drift)
   write_meta "$case_dir" no-mistakes ship
   wt_commit_file "$case_dir" feature.txt hello "add feature"
@@ -962,7 +962,13 @@ test_landed_check_names_the_default_branch_from_the_forge() {
   # main is where the content landed.
   git -C "$case_dir/laptop" checkout -q -b captains-branch
   git -C "$case_dir/project" fetch -q origin
-  git -C "$case_dir/project" remote set-head origin --auto >/dev/null 2>&1
+  set_head_err=$(git -C "$case_dir/project" remote set-head origin --auto 2>&1) \
+    || fail "fixture: could not repoint origin/HEAD: $set_head_err"
+  # Without this the test would still pass against the unfixed code, having
+  # measured nothing: origin/HEAD would simply keep the "main" that
+  # repoint_origin_to_a_working_copy set, which is also the forge's answer.
+  [ "$(git -C "$case_dir/project" symbolic-ref --short refs/remotes/origin/HEAD)" = origin/captains-branch ] \
+    || fail "fixture: origin/HEAD was not repointed at the captain's branch"
 
   set +e
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
