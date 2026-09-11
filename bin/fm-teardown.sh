@@ -892,10 +892,15 @@ elif [ "$FORCE" != "--force" ] && fm_pf_relay_active "$FM_HOME"; then
   PUBLIC_FOLLOWUP_RELAY_ACTIVE=1
 fi
 
-# The default branch NAME, which was never the wrong-source problem: a clone and
-# its forge agree on what the default branch is called, so origin's published
-# HEAD answers it for every topology here. What the forge HOLDS on that branch is
-# the reading that had to move, and content_in_default fetches it from the forge.
+# The default branch NAME, which was never the wrong-source problem: what the
+# forge HOLDS on that branch is the reading that had to move, and
+# content_in_default fetches it from the forge. The name still comes from origin,
+# because a remote that was only added and fetched has no refs/remotes/<remote>/HEAD
+# to read a name from; only clone or an explicit `remote set-head` writes one.
+# That leaves a known limit rather than a proof: refs/remotes/origin/HEAD mirrors
+# its SOURCE repository's HEAD, so a working-copy origin names whatever branch its
+# owner currently has checked out. Naming the wrong branch makes the landed-work
+# proof fail closed - teardown refuses - never pass on an unmeasured reading.
 default_branch() {
   local ref branch
   ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)

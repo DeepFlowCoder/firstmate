@@ -10,9 +10,10 @@
 # reading, outcome and message here is exactly as before. When the forge is a
 # different remote, that remote is fetched too and the up-to-date comparison and
 # fast-forward use it. When the forge cannot be resolved or cannot be fetched,
-# NOTHING here is compared or moved: there is no origin to fall back to, and the
-# outcome line becomes "UNCONFIRMED: ... the forge was not consulted: <reason>",
-# which bootstrap relays.
+# NOTHING here is compared, moved, or deleted - not the comparison, not the
+# fast-forward, not the branch pruning: there is no origin to fall back to, and
+# the outcome line becomes "UNCONFIRMED: ... the forge was not consulted:
+# <reason>", which bootstrap relays.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of the forge's <default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -29,7 +30,8 @@
 # Anything else is reported as "skipped: not a clone root" naming the repository
 # that would have been touched.
 # Pruning never deletes the checked-out branch or a branch that still has a
-# worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
+# worktree, so it cannot discard unlanded work, and it needs the same confirmed
+# forge every other mutation here does; set FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
@@ -131,9 +133,15 @@ resolve_project_arg() {
   printf '%s\n' "$arg"
 }
 
-# The default branch NAME, which was never the wrong-source problem: a clone and
-# its forge agree on what the default branch is called, so origin's published
-# HEAD answers it for every topology here.
+# The default branch NAME, which was never the wrong-source problem - what the
+# forge HOLDS on that branch is the reading this instrument had to move. The name
+# still comes from origin, because a remote that was only added and fetched has no
+# refs/remotes/<remote>/HEAD to read a name from; only clone or an explicit
+# `remote set-head` writes one. That leaves a known limit rather than a proof:
+# refs/remotes/origin/HEAD mirrors its SOURCE repository's HEAD, so a working-copy
+# origin names whatever branch its owner currently has checked out. A wrong name
+# fails loudly below - a STUCK report against a branch this clone is not on, or an
+# UNCONFIRMED one when the forge holds no such ref - never as a quiet verdict.
 default_branch() {
   local ref branch
   ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
@@ -248,7 +256,11 @@ prune_gone_branches() {
   # this fleet are squash-merged, so a merged branch is never an ancestor and
   # such a check would prune nothing. The no-worktree guard is the real safety
   # net. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
+  # Deleting a branch is as much a mutation as the fast-forward below, so it is
+  # gated on the same confirmed forge: a "[gone]" upstream read from a remote that
+  # cannot speak for the forge is not evidence anything landed.
   [ "${FM_FLEET_PRUNE:-1}" != "0" ] || return 0
+  [ -z "$FORGE_UNCONFIRMED" ] || return 0
 
   local worktree_branches current refline branch track
   worktree_branches=$(git -C "$PROJ" worktree list --porcelain 2>/dev/null \
@@ -287,23 +299,26 @@ local_default_safe_for_recovery() {
 
 # Human-readable name for the unsafe state the clone is in, used in the STUCK
 # warning. Reads $cur (current branch, empty when detached), $dirty, and the
-# HEAD-vs-$BASE ancestry to pick the most informative description.
-# With the forge unconsulted, every remaining distinction - unique commits, a
-# diverged local default - is a comparison against a remote that does not speak
-# for the forge, so the description stops at what needs no remote at all.
+# HEAD-vs-$BASE ancestry to pick the most informative description, in that
+# priority order.
+# Only the two $BASE-derived descriptions - unique commits, a diverged local
+# default - need the forge: with it unconsulted they are comparisons against a
+# remote that does not speak for it, so each is skipped individually and the
+# description falls through to what needs no remote at all. The priority between
+# the arms is the same either way, so a clone whose origin IS the forge reports
+# exactly the description it always did.
 stuck_state() {
   local s
   if [ -n "$cur" ]; then
     s="branch $cur"
   elif [ "$dirty" = yes ]; then
     s="detached HEAD"
+  elif [ -z "$FORGE_UNCONFIRMED" ] \
+      && ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
+    s="detached HEAD with unique commits"
   elif default_checked_out_elsewhere; then
     s="detached HEAD ($DEFAULT checked out in another worktree)"
-  elif [ -n "$FORGE_UNCONFIRMED" ]; then
-    s="detached HEAD"
-  elif ! git -C "$PROJ" merge-base --is-ancestor HEAD "$BASE" 2>/dev/null; then
-    s="detached HEAD with unique commits"
-  elif ! local_default_safe_for_recovery; then
+  elif [ -z "$FORGE_UNCONFIRMED" ] && ! local_default_safe_for_recovery; then
     s="detached HEAD (local $DEFAULT diverged from $BASE)"
   else
     s="detached HEAD"

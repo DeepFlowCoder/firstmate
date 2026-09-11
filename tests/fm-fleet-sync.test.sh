@@ -508,6 +508,55 @@ test_forge_that_cannot_be_resolved_is_reported_not_assumed() {
   pass "a clone whose forge cannot be resolved is reported unconfirmed, never assumed current"
 }
 
+# strand_gone_branch <home> <name> <clone> <branch>: leave <branch> in the clone
+# tracking a remote branch that no longer exists, which is the "[gone]" upstream
+# reading prune_gone_branches acts on. Publishing and deleting the branch happens
+# in the source repo the clone's origin points at, whatever that repo is.
+strand_gone_branch() {
+  local home=$1 name=$2 clone=$3 branch=$4 source_repo
+  source_repo="$home/work-$name"
+  git -C "$source_repo" branch -q "$branch"
+  if git -C "$source_repo" remote get-url origin >/dev/null 2>&1; then
+    git -C "$source_repo" push -q origin "$branch"
+  fi
+  git -C "$clone" fetch -q origin
+  git -C "$clone" branch -q --track "$branch" "origin/$branch"
+  if git -C "$source_repo" remote get-url origin >/dev/null 2>&1; then
+    git -C "$source_repo" push -q origin --delete "$branch"
+  fi
+  git -C "$source_repo" branch -q -D "$branch"
+}
+
+test_unconfirmed_forge_prunes_no_branch() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_working_copy_origin "$home" noprune)
+  strand_gone_branch "$home" noprune "$clone" feature
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "noprune: UNCONFIRMED:" "an unconsultable forge must be said out loud"
+  assert_not_contains "$out" "pruned feature" \
+    "a branch deleted on a working copy is no evidence its work landed on the forge"
+  git -C "$clone" show-ref --verify --quiet refs/heads/feature \
+    || fail "a local branch was deleted on a reading no forge backed"
+  pass "an unconfirmed forge deletes no branch, exactly as it moves none"
+}
+
+test_confirmed_forge_still_prunes_gone_branches() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" pruner)
+  strand_gone_branch "$home" pruner "$clone" feature
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "pruner: pruned feature" "a confirmed forge still prunes as before"
+  ! git -C "$clone" show-ref --verify --quiet refs/heads/feature \
+    || fail "expected the gone branch to be pruned when the forge is confirmed"
+  pass "a clone whose origin IS the forge prunes gone branches unchanged"
+}
+
 test_bootstrap_relays_unconfirmed() {
   local home clone out
   home=$(new_home)
@@ -846,6 +895,8 @@ test_already_current_unchanged
 test_clone_behind_the_forge_is_never_reported_current
 test_unreachable_forge_never_produces_a_divergence_verdict
 test_forge_that_cannot_be_resolved_is_reported_not_assumed
+test_unconfirmed_forge_prunes_no_branch
+test_confirmed_forge_still_prunes_gone_branches
 test_bootstrap_relays_unconfirmed
 test_no_origin_skipped
 test_local_only_skipped
