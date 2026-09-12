@@ -478,20 +478,48 @@ test_kimi_missing_binary_refuses_before_pane_creation() {
   pass "fm-spawn: missing Kimi executable refuses before pane creation"
 }
 
-test_kimi_unconfirmed_delivery_fails_loudly() {
-  local id rec out rc
+# The brief was submitted and only its acknowledgement went unseen, so the
+# record must say that and nothing more: not a consummated failure (which is
+# terminal in the shared vocabulary and would close the task on a guess), not a
+# success, and not silence. Asserted through the classifier the watcher, the
+# away-mode daemon, and the wake drain all read, because the verb's meaning is
+# what this fixes - the prose already said "not confirmed".
+test_kimi_unconfirmed_delivery_is_recorded_as_unconfirmed_not_failed() {
+  local id rec out rc status_file line open
   id=kimi-drop-z2
   rec=$(make_spawn_case drop "$id")
   read_spawn_record "$rec"
   rc=0
   out=$(FM_FAKE_KIMI_DELIVERY=no run_spawn \
     "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
-  [ "$rc" -ne 0 ] || fail "an unconfirmed kimi delivery should fail"
-  assert_contains "$out" "kimi brief pointer delivery was not confirmed" \
-    "unconfirmed kimi delivery lacked a loud diagnostic"
-  assert_grep 'failed: kimi brief pointer delivery was not confirmed' "$HOME_DIR/state/$id.status" \
-    "unconfirmed kimi delivery did not leave a supervisor-visible failure"
-  pass "fm-spawn: kimi treats a silent pointer drop as a failed spawn"
+  # The pointer reached the endpoint; only the arrival surface never showed it.
+  # Without this the case would be an ordinary send failure, not the one the
+  # separate verb exists for.
+  [ -s "$CASE_DIR/pointer.log" ] \
+    || fail "fixture never submitted the pointer, so it exercises a send failure rather than an unseen acknowledgement"
+
+  status_file="$HOME_DIR/state/$id.status"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-classify-lib.sh"
+  line=$(last_status_line "$status_file")
+  [ "$(status_line_verb "$line")" != failed ] \
+    || fail "an unseen acknowledgement was still recorded as a consummated failure: $line"
+  [ "$(status_line_verb "$line")" = blocked ] \
+    || fail "an unconfirmed kimi delivery did not use the vocabulary's existing needs-a-look verb: $line"
+  status_is_captain_relevant "$line" \
+    || fail "an unconfirmed kimi delivery would not reach firstmate at all: $line"
+  assert_contains "$line" "the worker may already be reading the brief" \
+    "the record did not say the brief may have arrived"
+  open=$(status_open_decisions "$status_file")
+  assert_contains "$open" "kimi-delivery" \
+    "an unconfirmed kimi delivery left no open decision, so nobody is obliged to check the window"
+
+  expect_code 3 "$rc" "an unconfirmed kimi delivery should exit on the unconfirmed contract, not the failure one"
+  assert_contains "$out" "arrival was not confirmed" \
+    "unconfirmed kimi delivery lacked a diagnostic naming what went unconfirmed"
+  assert_not_contains "$out" "spawned $id" \
+    "an unconfirmed kimi delivery was reported as a completed spawn"
+  pass "fm-spawn: an unseen kimi acknowledgement is recorded as needing a look, not as a failed delivery"
 }
 
 test_kimi_readiness_gate_precedes_pointer() {
@@ -502,10 +530,14 @@ test_kimi_readiness_gate_precedes_pointer() {
   rc=0
   out=$(FM_FAKE_KIMI_READY=no run_spawn \
     "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
-  [ "$rc" -ne 0 ] || fail "kimi spawn without a ready signal should fail"
+  expect_code 1 "$rc" "kimi spawn without a ready signal should fail on the failure contract"
   assert_contains "$out" "kimi did not show a verified ready signal" \
     "kimi readiness failure lacked a loud diagnostic"
   [ ! -s "$CASE_DIR/pointer.log" ] || fail "kimi pointer was sent before readiness"
+  # Nothing was ever submitted, so this failure is proven, and separating the
+  # unconfirmed case must not soften it into one more thing to go and check.
+  assert_grep 'failed: kimi did not show a verified ready signal' "$HOME_DIR/state/$id.status" \
+    "a proven kimi non-delivery stopped being recorded as a failure"
   jq -e --arg id "$id" 'any(.endpoints[]; .id == $id)' \
     "$HOME_DIR/state/home-summary.json" >/dev/null \
     || fail "kimi readiness failure omitted its durable endpoint from the home summary"
@@ -678,7 +710,7 @@ test_kimi_spawn_refuses_unsafe_global_config_before_pane_creation
 test_kimi_teardown_removes_pointer_and_registry_token
 test_kimi_falls_back_to_expanded_home_binary
 test_kimi_missing_binary_refuses_before_pane_creation
-test_kimi_unconfirmed_delivery_fails_loudly
+test_kimi_unconfirmed_delivery_is_recorded_as_unconfirmed_not_failed
 test_kimi_readiness_gate_precedes_pointer
 test_kimi_detection_uses_ancestry_after_markers
 test_kimi_session_lock_identity

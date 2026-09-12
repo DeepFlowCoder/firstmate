@@ -185,6 +185,14 @@
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
+# A kimi spawn separates a proven delivery failure from an unproven one, and exit
+# status carries the difference the same way bin/fm-send.sh's typed plane does:
+# exit 1 means the brief demonstrably never arrived (no ready signal, so no
+# pointer was sent, or the send itself failed) and the task's record says
+# `failed`; exit 3 means the pointer was submitted and only its arrival went
+# unconfirmed, so the record says `blocked` under the key kimi-delivery and the
+# endpoint is preserved for inspection. Never treat exit 3 as a failed dispatch:
+# check the window, then close that decision with the answer it deserves.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -2367,9 +2375,31 @@ kimi_wait_for_delivery() {
   return 1
 }
 
+# The durable record of a kimi spawn this script PROVED did not deliver: the
+# ready gate never opened, so no pointer was ever sent, or the submit core
+# reported the send itself failed. `failed` is a terminal verb in
+# bin/fm-classify-lib.sh - it closes an open decision and opens none - which is
+# the truth only when the brief demonstrably never arrived.
 kimi_spawn_fail() {  # <detail>
   printf 'failed: %s\n' "$1" >> "$STATE/$ID.status"
   echo "error: $1; inspect window $T" >&2
+}
+
+# The durable record of a kimi spawn whose delivery VERIFICATION was
+# inconclusive: the pointer was submitted, the send reported no failure, and
+# only the arrival surface (a cleared composer plus the echoed submission or
+# nonzero context) went unobserved inside its window. The brief may be in front
+# of a worker already reading it, so writing `failed` here reported an unseen
+# acknowledgement as a consummated failure and closed the task on the record.
+# `blocked` is this vocabulary's existing verb for "firstmate must look", so
+# reusing it leaves no consumer with an unhandled state: it is captain-relevant,
+# it maps to a `blocked` crew state, and it OPENS a keyed decision that only an
+# explicit resolution closes, which keeps an unconfirmed delivery surfacing in
+# the wake drain's open decisions until someone checks the window.
+KIMI_DELIVERY_DECISION_KEY=kimi-delivery
+kimi_spawn_unconfirmed() {  # <detail>
+  printf 'blocked [key=%s]: %s\n' "$KIMI_DELIVERY_DECISION_KEY" "$1" >> "$STATE/$ID.status"
+  echo "unconfirmed: $1; inspect window $T" >&2
 }
 
 if [ "$RELAUNCH" -eq 1 ]; then
@@ -3070,8 +3100,8 @@ if [ "$HARNESS" = kimi ]; then
     exit 1
   fi
   if ! kimi_wait_for_delivery; then
-    kimi_spawn_fail "kimi brief pointer delivery was not confirmed"
-    exit 1
+    kimi_spawn_unconfirmed "kimi brief pointer was submitted but its arrival was not confirmed; the worker may already be reading the brief, so check the window before assuming it never arrived"
+    exit 3
   fi
 fi
 if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
