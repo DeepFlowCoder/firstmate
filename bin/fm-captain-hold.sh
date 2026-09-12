@@ -20,7 +20,8 @@
 #
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
-#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
+#     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD] \
+#     [--reopen]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh bind <source-id> [<legacy-origin> | --any-origin]
@@ -38,6 +39,28 @@
 # idempotent; a task already closed is refused rather than reopened. `--until`
 # records the captain's own deferral date through `tasks-axi hold --until`, so
 # a "revisit later" answer is stored as a date instead of a live card.
+#
+# `--reopen` is the one repair for a call CLOSED OUTSIDE this owner in the shape
+# that strands it. tasks-axi keeps the hold annotations through a plain close,
+# so an ordinary out-of-band close still proves it was the captain's item and
+# `answer` below records his words retroactively. Lifting the hold first
+# (`tasks-axi unhold`, or any hand edit that drops those annotations) erases
+# exactly that proof: the task is then closed, carries no captain provenance and
+# no recorded answer, and nothing can repair it - `answer` reads it as ordinary
+# finished work and `hold` refuses it as closed - while the origin's attested
+# inventory still names it, so the completion gate below fails on it forever and
+# the investigation can never be completed. `--reopen` reopens that task and
+# re-places the captain hold, restoring the state the record was in before the
+# close. It records NO answer, because reconciling the record is not the same as
+# deciding for the captain: it puts the question back in front of him, and from
+# there `answer` closes it with his real words as it always did. It refuses a
+# task that already carries a resolution record, which is not stranded but
+# answered, and reopening would resurface a call the captain has already closed.
+# It equally refuses a closed task whose captain hold survived, which `answer`
+# still repairs retroactively, and names `answer` as that shape's repair; so
+# reopening stays the exit for the one shape whose provenance was erased, and
+# never a way past a gate on a call the captain already settled. On a task that
+# is not closed it does nothing and the hold is the ordinary idempotent one.
 #
 # `answer` records the captain's exact words and closes the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes,
@@ -495,7 +518,8 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
 }
 
 command_hold() {
-  local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind
+  local id=${1:-} title='' reason='' repo='' origin='' until='' reopen=0
+  local show state existing_title body='' hold_kind
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -505,6 +529,7 @@ command_hold() {
       --repo) shift; repo=${1:-} ;;
       --origin) shift; origin=${1:-} ;;
       --until) shift; until=${1:-} ;;
+      --reopen) reopen=1 ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -524,11 +549,27 @@ command_hold() {
   require_tasks_axi
   if show=$(task_show "$id"); then
     state=$(show_field "$show" state)
-    [ "$state" != "done" ] \
-      || fail "task $id is already closed; a new captain call needs its own task"
     if [ -n "$title" ]; then
       existing_title=$(show_field_value "$show" title)
       [ "$existing_title" = "$title" ] || fail "existing task $id has a different title"
+    fi
+    if [ "$state" = "done" ]; then
+      [ "$reopen" = 1 ] \
+        || fail "task $id is already closed; a new captain call needs its own task, or --reopen to put a wrongly closed call back in front of the captain"
+      if body_has_resolution_record "$(show_field "$show" body)"; then
+        fail "task $id already records a captain answer; reopening would resurface a call the captain has already closed"
+      fi
+      [ "$(show_field_value "$show" hold_kind)" != captain ] \
+        || fail "closed task $id still carries its captain hold, so it is not stranded; record the captain's words with answer instead of reopening the call"
+      # Probed only on this path, so an ordinary hold pays nothing for a repair
+      # it never runs, and a build that advertises the floor without the command
+      # names what it is missing instead of failing as an unexplained reopen.
+      tasks-axi reopen --help >/dev/null 2>&1 \
+        || fail "tasks-axi does not expose reopen, which --reopen needs to lift the close"
+      tasks_axi reopen "$id" >/dev/null || fail "could not reopen closed task $id"
+      show=$(task_show "$id") || fail "task $id disappeared while reopening it"
+      [ "$(show_field "$show" state)" != "done" ] || fail "task $id stayed closed after reopening it"
+      printf 'reopened: %s\n' "$id"
     fi
   else
     [ -n "$title" ] || fail "--title is required to create task $id"
