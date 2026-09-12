@@ -440,7 +440,7 @@ Observed output:
 ```text
 fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 fm-doc-audience-check: ok surfaces=91 local_links=312
-FM_TEST_SUMMARY total=6 failed=0 skipped_gate=0 duration_ms=231351
+FM_TEST_SUMMARY total=6 failed=0 skipped_gate=0 duration_ms=146228
 ```
 
 The actionable-close ordering correction was reverified on 2026-08-02 against an identity-matched live successor.
