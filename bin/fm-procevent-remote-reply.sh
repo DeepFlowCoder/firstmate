@@ -480,7 +480,8 @@ retirement_capture_scan() {
   inbox="$STATE/procevent-inbox"
   [ -e "$inbox" ] || return 1
   [ -d "$inbox" ] && [ ! -L "$inbox" ] || die "remote reply inbox is unsafe"
-  for path in "$inbox/$sid".*.result "$inbox/$sid".*.adapter "$inbox/$sid".*.handled; do
+  for path in "$inbox/$sid".*.result "$inbox/$sid".*.adapter "$inbox/$sid".*.truncated \
+    "$inbox/$sid".*.handled; do
     [ -e "$path" ] || [ -L "$path" ] || continue
     [ -f "$path" ] && [ ! -L "$path" ] || die "remote reply capture is unsafe: $path"
   done
@@ -522,7 +523,8 @@ cmd_retire_finalize_locked() {
       die "remote reply retirement refused with $RETIREMENT_PENDING unhandled captured result(s)"
     fi
     if [ "$force" = --force ]; then
-      for path in "$RETIREMENT_INBOX/$sid".*.result "$RETIREMENT_INBOX/$sid".*.adapter "$RETIREMENT_INBOX/$sid".*.handled; do
+      for path in "$RETIREMENT_INBOX/$sid".*.result "$RETIREMENT_INBOX/$sid".*.adapter \
+        "$RETIREMENT_INBOX/$sid".*.truncated "$RETIREMENT_INBOX/$sid".*.handled; do
         [ -e "$path" ] || continue
         rm -f -- "$path" || die "cannot discard remote reply capture: $path"
       done

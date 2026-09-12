@@ -109,7 +109,7 @@ Supported by tests:
 - registration and ownership transitions share one per-source boundary, release is generation-bound, and uncertain process identity preserves the source for retry;
 - ownership moves only once a whole generation is gone, so a crashed runner leader whose owned process group is still running never reads as stale: that surviving group is stopped before any replacement starts, and the claim is kept for retry when it cannot be;
 - stored argv is executed directly, so an argument containing spaces or shell metacharacters is never re-split or interpreted;
-- oversized output is bounded rather than published whole or silently dropped.
+- oversized output is bounded rather than published whole or silently dropped, and the drop is committed with the capture, so a cut result is never eligible for the silence verdict and its captain-prose note says content was discarded instead of reporting nothing said.
 
 The `when` adapter's guarantees are part of the operating contract in [`docs/configuration.md`](../../../docs/configuration.md#process-to-event-sources-stateprocevent).
 

@@ -28,6 +28,19 @@
 # acknowledgement can still repeat the effect on replay. Never describe this
 # runner as at-least-once, no-loss, or lossless, and never claim generic
 # exactly-once effects from the handled acknowledgement alone.
+#
+# WHAT ONE CAPTURE IS, owned here. A committed generation is `<id>.<seq>.result`
+# holding the source output verbatim and its immutable `<id>.<seq>.adapter`
+# identity, plus an `<id>.<seq>.truncated` presence marker when - and only when -
+# the runner's output bound dropped bytes from it. Every sidecar is committed
+# BEFORE the result's own rename, which is the commit point, so a committed
+# result never lacks one and a reader never has to guess.
+# The marker exists because a bound that keeps the head of an oversized result
+# leaves a reader unable to tell dropped content from content that was never
+# there. A stderr notice cannot carry that fact: the production runner detaches
+# with stdout and stderr on /dev/null, so the loss would reach nobody and the
+# next reader would report absence it cannot prove. Anything deciding what a
+# capture carries - or does not - must read this marker first.
 
 # Machine-wide claim root. Homes can share one underlying source store, so the
 # "one owner per canonical source" rule cannot live inside a single home.
@@ -308,28 +321,71 @@ fm_procevent_claim_release_locked() {
 
 # --- durable capture and publication ----------------------------------------
 
-# fm_procevent_capture <state> <source-id> <adapter> <output-file>
+# fm_procevent_capture <state> <source-id> <adapter> <output-file> <truncated>
 # Atomically store the completed output at 0600 and print its durable path. The
 # rename is the commit point; nothing referencing this result may be published
 # before it returns successfully.
+#
+# <truncated> is 1 when the caller's output bound dropped bytes from this result
+# and 0 when the stored output is everything the source produced. It is required
+# rather than defaulted, because a caller that says nothing about completeness
+# would silently commit a cut result as a whole one - the loss this marker
+# exists to keep visible.
 fm_procevent_capture() {
-  local state=$1 id=$2 adapter=$3 src=$4 inbox seq dest tmp adapter_dest adapter_tmp
+  local state=$1 id=$2 adapter=$3 src=$4 truncated=${5-} inbox seq dest tmp
+  local adapter_dest adapter_tmp truncated_dest truncated_tmp
   fm_procevent_source_id_valid "$id" || return 1
   fm_procevent_adapter_valid "$adapter" || return 1
+  case "$truncated" in 0|1) ;; *) return 1 ;; esac
   inbox=$(fm_procevent_inbox_dir "$state")
   (umask 077; mkdir -p "$inbox") || return 1
   seq=1
   while [ -e "$inbox/$id.$seq.result" ]; do seq=$((seq + 1)); done
   dest="$inbox/$id.$seq.result"
   adapter_dest="$inbox/$id.$seq.adapter"
+  truncated_dest="$inbox/$id.$seq.truncated"
   tmp=$(umask 077; mktemp "$inbox/.capture.XXXXXX") || return 1
   adapter_tmp=$(umask 077; mktemp "$inbox/.adapter.XXXXXX") || { rm -f -- "$tmp"; return 1; }
   if ! cat "$src" > "$tmp"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
   if ! printf '%s\n' "$adapter" > "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
   if ! chmod 0600 "$tmp" "$adapter_tmp"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
-  if ! mv -f -- "$adapter_tmp" "$adapter_dest"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
-  if ! mv -f -- "$tmp" "$dest"; then rm -f -- "$tmp" "$adapter_dest"; return 1; fi
+  # Both sidecars land before the result's rename, so a committed result can
+  # never be read as complete when it is not. A complete capture clears the path
+  # instead, because a marker left at this generation by an earlier rolled-back
+  # capture would otherwise make whole output read as cut.
+  if [ "$truncated" = 0 ]; then
+    if ! rm -f -- "$truncated_dest"; then rm -f -- "$tmp" "$adapter_tmp"; return 1; fi
+  else
+    truncated_tmp=$(umask 077; mktemp "$inbox/.truncated.XXXXXX") \
+      || { rm -f -- "$tmp" "$adapter_tmp"; return 1; }
+    if ! chmod 0600 "$truncated_tmp"; then
+      rm -f -- "$tmp" "$adapter_tmp" "$truncated_tmp"
+      return 1
+    fi
+    if ! mv -f -- "$truncated_tmp" "$truncated_dest"; then
+      rm -f -- "$tmp" "$adapter_tmp" "$truncated_tmp"
+      return 1
+    fi
+  fi
+  if ! mv -f -- "$adapter_tmp" "$adapter_dest"; then
+    rm -f -- "$tmp" "$adapter_tmp" "$truncated_dest"
+    return 1
+  fi
+  if ! mv -f -- "$tmp" "$dest"; then
+    rm -f -- "$tmp" "$adapter_dest" "$truncated_dest"
+    return 1
+  fi
   printf '%s\n' "$dest"
+}
+
+# fm_procevent_result_truncated <result-path>
+# Exit 0 when this capture's output bound dropped bytes, 1 when the stored
+# output is complete. Any entry at the marker path counts, including an unsafe
+# one, because the only cost of reading a complete result as cut is one extra
+# announcement while the reverse is the silent loss this marker exists to stop.
+fm_procevent_result_truncated() {
+  local marker="${1%.result}.truncated"
+  [ -e "$marker" ] || [ -L "$marker" ]
 }
 
 # fm_procevent_pending <state>
