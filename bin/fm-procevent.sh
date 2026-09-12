@@ -66,6 +66,24 @@
 # capture for every adapter: suppressing an announcement never suppresses the
 # captain's own answer.
 #
+# OWN LOSS IS NEVER THE SOURCE'S ABSENCE, and this is the one rule that governs
+# every seam below. FM_PROCEVENT_MAX_OUTPUT_BYTES keeps the head of an oversized
+# result and drops the rest, which is the right trade and is not the defect: the
+# defect was that nothing downstream could tell a dropped tail from a tail that
+# never existed, so a cut capture was read as an empty one and the captain's own
+# typed words left no trace anywhere. Completeness is therefore committed with
+# the capture as a durable marker owned by bin/fm-procevent-lib.sh, and exactly
+# two seams read it: a cut capture is never eligible for the silence verdict,
+# and its captain-prose note states that content was discarded rather than
+# reporting the shortfall as nothing said. The marker's reach currently stops
+# there. feed_keyed_answers below does NOT read it, so a cut capture's surviving
+# rows still reach the keyed-answer intake with no completeness caveat, and the
+# adapter's last-submission-wins rule applied over a partial row set can record
+# a superseded answer as the captain's. Extending the read into that seam would
+# change what the decision intake accepts, which is an authority boundary over
+# the captain's own word and is not settled here. Adding to what a result says
+# about itself is allowed; claiming an absence this runner caused is not.
+#
 # Applying a result is adapter-owned through the same kind of seam. Some results
 # carry no judgement at all - they must simply be applied idempotently to the
 # home's own durable state - and leaving that to an agent that has to remember
@@ -168,7 +186,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,152p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,170p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -188,10 +206,18 @@ adapter_result_is_terminal() {  # <adapter> <result-file>
 # the only silence verdict, and everything else - including a missing adapter
 # command - publishes the wake. See the routine-no-op note in the header: no
 # adapter-specific condition may appear in this runner.
+#
+# A capture this runner's own bound cut is never eligible for that verdict, and
+# the adapter is not even asked. Silence is a claim that nothing was said, and no
+# adapter can make it about output whose tail is gone: it would be reading this
+# runner's loss as the source's absence. Read durably rather than from the
+# capturing turn, because reconcile re-evaluates silence cold on every unhandled
+# result and would otherwise silence the same cut capture a moment later.
 adapter_result_is_silent() {  # <adapter> <result-file>
   local script
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  fm_procevent_result_truncated "$2" && return 1
   "$script" silent "$2" >/dev/null 2>&1
 }
 
@@ -249,6 +275,16 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
 }
 
+# What a cut capture has to say about itself, worded once so every note below
+# says it the same way. It states the loss and stops: it never guesses how much
+# went or whether the captain wrote in it, because the dropped bytes are gone and
+# a guess dressed as a finding is the same failure in a new coat.
+truncation_caveat() {
+  printf 'Part of this result was discarded for running past the captured-output bound,\n'
+  printf 'so anything written past that point is not here and cannot be recovered.\n'
+  printf 'Treat what is above as incomplete rather than as all there was.'
+}
+
 # Pass a captured result's freeform captain prose to the one durable captain-note
 # intake (see the captain-prose note in the header). Unlike the keyed-answer feed
 # above this is NOT gated on a captain-hold binding: a binding declares that a
@@ -282,11 +318,23 @@ queue_captain_note() {  # <source-id> <sequence> <body> <fallback-summary>
 # no adapter opted into is not a loss; a read that ran and failed IS one, so it
 # takes the same durable channel the prose would have taken - what the captain
 # may have said is unknown, which is the news.
+#
+# For an adapter that implements the command, a capture this runner's bound cut
+# is the same news for the same reason. The adapter read only the head it was
+# left, so what it printed - including nothing at all - is a report about
+# surviving bytes and not about what the captain wrote. The note therefore says
+# content was discarded instead of letting the shortfall read as an empty board,
+# and says it whether or not any record survived, because a message the bound cut
+# in half is as lost as one it cut out entirely. The caveat's reach stops at that
+# adapter: one with no `messages` command is outcome 1 for a cut capture exactly
+# as it is for a whole one, so it still routes nothing and no discarded-content
+# record is produced for it.
 feed_captain_messages() {  # <adapter> <source-id> <result-file>
-  local adapter=$1 id=$2 result=$3 script seq records body rc
+  local adapter=$1 id=$2 result=$3 script seq records body rc truncated=0
   script=$(adapter_script "$adapter")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
+  fm_procevent_result_truncated "$result" && truncated=1
   # Silenced like the seams above, so an adapter with no `messages` command stays
   # a quiet no-op; the adapter's own read-failure exit is what separates that
   # from a read that ran and failed.
@@ -299,6 +347,7 @@ feed_captain_messages() {  # <adapter> <source-id> <result-file>
         printf 'The captured result %s sequence %s could not be read for captain messages,\n' "$id" "$seq"
         printf 'so whether it carries words of yours is unknown. Read it yourself:\n\n'
         printf '  %s messages %s\n' "$script" "$result"
+        [ "$truncated" = 1 ] && printf '\n%s\n' "$(truncation_caveat)"
       )
       queue_captain_note "$id" "$seq" "$body" \
         "captain messages unreadable in the captured result $id sequence $seq"
@@ -306,7 +355,18 @@ feed_captain_messages() {  # <adapter> <source-id> <result-file>
       ;;
     *) return 1 ;;
   esac
-  [ -n "$records" ] || return 1
+  if [ -z "$records" ]; then
+    [ "$truncated" = 1 ] || return 1
+    body=$(
+      printf 'Nothing readable as your words survived in the captured result %s sequence %s,\n' "$id" "$seq"
+      printf 'and that result is not the whole one. Read what was kept:\n\n'
+      printf '  %s\n\n' "$result"
+      printf '%s\n' "$(truncation_caveat)"
+    )
+    queue_captain_note "$id" "$seq" "$body" \
+      "content was discarded from the captured result $id sequence $seq, so words of yours may be missing"
+    return $?
+  fi
   # The captain's words lead, so the note's own one-line summary carries what he
   # said rather than where it came from; provenance closes the record. The
   # adapter guarantees one record per line with control characters flattened, so
@@ -317,6 +377,7 @@ feed_captain_messages() {  # <adapter> <source-id> <result-file>
       [ -n "$context" ] && printf '  (%s)\n' "$context"
       printf '\n'
     done
+    [ "$truncated" = 1 ] && printf '%s\n\n' "$(truncation_caveat)"
     printf -- '-- captured result %s sequence %s\n' "$id" "$seq"
   )
   queue_captain_note "$id" "$seq" "$body" \
@@ -556,8 +617,12 @@ cmd_start() {
     exit 0
   fi
 
+  # Completeness is committed with the output, not reported alongside it: the
+  # stderr notice below is a courtesy to a foreground caller, while the seams that
+  # decide what this result carries read the durable marker instead.
   local durable
-  durable=$(fm_procevent_capture "$STATE" "$id" "$adapter" "$out") || { rm -f -- "$out"; die "cannot durably capture the result"; }
+  durable=$(fm_procevent_capture "$STATE" "$id" "$adapter" "$out" "$truncated") \
+    || { rm -f -- "$out"; die "cannot durably capture the result"; }
   rm -f -- "$out"
   STAGED_OUTPUT=
   [ "$truncated" -eq 1 ] && printf 'truncated: %s at %s bytes\n' "$id" "$MAX_OUTPUT_BYTES" >&2

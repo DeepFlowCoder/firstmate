@@ -900,6 +900,114 @@ pass "a choice row the keyed-answer intake cannot take still reaches firstmate a
   || fail "a structured choice was re-routed into the captain-note intake"
 pass "only freeform captain prose reaches the captain-note intake"
 
+# --- end-user-aligned regression: a cut result is not an empty one ------------
+# The loss: a review board whose queued rows ran past the output bound. Bounding
+# the result is correct and stays correct - what was wrong is that the head it
+# kept looked exactly like a board closed with nothing on it. The captain's
+# `prompts` block is published after the `session:` block, so it is always in the
+# dropped tail; every reader then found no content and said so, the silence
+# verdict recorded the capture handled, and the words the captain typed by hand
+# existed nowhere. The stderr notice could not stand in for any of that: the
+# production runner detaches with stdout and stderr on /dev/null.
+#
+# Delivered as `ended` because that is where the loss was total - that shape is
+# the one the silence verdict can claim - and driven through the adapter's own arm
+# command and the real runner, so the bound, capture, silence seam, and prose
+# routing all run for real.
+HCUT="$TMP_ROOT/hcut"; new_home "$HCUT"
+CUT_BIN=$(fm_fakebin "$TMP_ROOT/lavish-cut-stub")
+cat > "$CUT_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+# Stand-in for `lavish-axi poll <file>` on a board carrying more queued rows than
+# the bound admits, closed with the captain's own typed words last.
+printf 'session:\n  file: /cut.html\n  status: ended\n  ended_by: user\n'
+printf 'notes:\n'
+awk 'BEGIN { for (i = 0; i < 200; i++) print "  a queued row ahead of the captain block" }'
+printf 'prompts[1]{uid,prompt,selector,tag,text}:\n'
+printf '  "",do not ship this until I see the numbers,"",message,Freeform message\n'
+SH
+chmod +x "$CUT_BIN/lavish-axi"
+CUT_ART="$TMP_ROOT/cut-board.html"
+printf '<h1>cut</h1>\n' > "$CUT_ART"
+cut_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$CUT_ART")
+PE_TRACKED+=("$HCUT|$cut_id")
+PATH="$CUT_BIN:$PATH" FM_HOME="$HCUT" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$CUT_ART" >/dev/null
+PATH="$CUT_BIN:$PATH" FM_PROCEVENT_MAX_OUTPUT_BYTES=4096 \
+  FM_HOME="$HCUT" "$ROOT/bin/fm-procevent.sh" start "$cut_id" >/dev/null 2>&1
+CUT_RESULT=$(first_result "$HCUT" "$cut_id" || true)
+[ -n "$CUT_RESULT" ] || fail "an oversized board close was not captured at all"
+# The bound is not the defect and must still hold: the words really are gone from
+# the stored result, which is exactly why the record has to say so.
+[ "$(wc -c < "$CUT_RESULT" | tr -d ' ')" -le 4096 ] \
+  || fail "the output bound stopped holding on an oversized board close"
+assert_no_grep 'do not ship this' "$CUT_RESULT" \
+  "the premise no longer holds: the captain's words survived the bound"
+[ ! -f "$HCUT/state/procevent-inbox/$cut_id.1.handled" ] \
+  || fail "a cut capture was recorded handled as a board closed with nothing said"
+assert_contains "$(wake_payloads "$HCUT")" "procevent lavish $cut_id 1" \
+  "a cut capture was never announced at all"
+wait_for_notes "$HCUT" 1 \
+  || fail "a cut capture reported no discarded content to any durable intake"
+assert_contains "$(note_bodies "$HCUT")" "Part of this result was discarded" \
+  "the record does not say content was discarded"
+assert_contains "$(note_bodies "$HCUT")" "cannot be recovered" \
+  "the record leaves the loss sounding recoverable"
+assert_present "$HCUT/state/procevent-inbox/$cut_id.1.truncated" \
+  "a cut capture left no durable record that content was discarded"
+pass "a capture the bound cut says content was discarded instead of reporting nothing said"
+
+# Durability is the whole point: the silence verdict is re-evaluated cold on
+# every reconcile, so a fact held only by the capturing turn would silence the
+# same cut capture a moment later.
+PATH="$CUT_BIN:$PATH" pe "$HCUT" reconcile >/dev/null
+sleep 0.3
+[ ! -f "$HCUT/state/procevent-inbox/$cut_id.1.handled" ] \
+  || fail "a later reconcile silenced a cut capture the first pass refused to silence"
+[ "$(count_notes "$HCUT")" -eq 1 ] \
+  || fail "reconcile re-noted a cut capture: $(count_notes "$HCUT") notes"
+pass "refusing to read a cut capture as empty survives reconcile and adds no repeat note"
+
+# The other direction, which this must not be traded for. A board the captain
+# really did close with nothing on it carries no marker, so it is still silenced
+# exactly as before - the distinction under test is dropped content versus absent
+# content, never oversized versus small.
+assert_absent "$HEMPTY/state/procevent-inbox/$quiet_id.1.truncated" \
+  "a complete capture was marked as though the bound had cut it"
+assert_present "$HEMPTY/state/procevent-inbox/$quiet_id.1.handled" \
+  "an empty board close stopped being silenced"
+
+# A cut capture whose surviving head still holds words must deliver them AND say
+# what went: a message the bound cut in half is as lost as one it cut out whole.
+HCUT2="$TMP_ROOT/hcut2"; new_home "$HCUT2"
+CUT2_BIN=$(fm_fakebin "$TMP_ROOT/lavish-cut2-stub")
+cat > "$CUT2_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+# Stand-in for `lavish-axi poll <file>` on a board whose first row is the
+# captain's message and whose later rows run past the bound.
+printf 'session:\n  file: /cut2.html\n  status: feedback\n  session_ended: true\n  ended_by: user\n'
+printf 'prompts[1]{uid,prompt,selector,tag,text}:\n'
+printf '  "",hold the release until Thursday,"",message,Freeform message\n'
+printf 'notes:\n'
+awk 'BEGIN { for (i = 0; i < 200; i++) print "  a queued row past the captain block" }'
+SH
+chmod +x "$CUT2_BIN/lavish-axi"
+CUT2_ART="$TMP_ROOT/cut2-board.html"
+printf '<h1>cut2</h1>\n' > "$CUT2_ART"
+cut2_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$CUT2_ART")
+PE_TRACKED+=("$HCUT2|$cut2_id")
+PATH="$CUT2_BIN:$PATH" FM_HOME="$HCUT2" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$CUT2_ART" >/dev/null
+PATH="$CUT2_BIN:$PATH" FM_PROCEVENT_MAX_OUTPUT_BYTES=4096 \
+  FM_HOME="$HCUT2" "$ROOT/bin/fm-procevent.sh" start "$cut2_id" >/dev/null 2>&1
+wait_for_notes "$HCUT2" 1 \
+  || fail "a cut capture carrying surviving words routed no note at all"
+assert_contains "$(note_bodies "$HCUT2")" "hold the release until Thursday" \
+  "the words that survived the bound were dropped along with the ones that did not"
+assert_contains "$(note_bodies "$HCUT2")" "Part of this result was discarded" \
+  "surviving words were presented as the whole of what the captain said"
+pass "a cut capture delivers the words that survived and still says content was discarded"
+
 # --- end-user-aligned regression: a transient poll interruption is not news ---
 # The dogfood defect: a live board listener can answer with exactly
 #     error: Lavish Editor poll response was interrupted
@@ -1547,7 +1655,50 @@ FM_PROCEVENT_MAX_OUTPUT_BYTES=100 FM_HOME="$HF" "$ROOT/bin/fm-procevent.sh" star
 RB=$(first_result "$HF" big-src || true)
 [ -n "$RB" ] || fail "bounded output was not captured at all"
 [ "$(wc -c < "$RB" | tr -d ' ')" -le 100 ] || fail "output bound was not enforced"
-pass "oversized output is bounded rather than published whole or dropped"
+# Bounding is only honest if the shortfall is committed with the capture: the
+# stderr notice goes to /dev/null on the detached production path, so a reader
+# that trusted the stored bytes alone would report the drop as absence.
+assert_present "${RB%.result}.truncated" \
+  "a bounded capture kept no durable record of what the bound dropped"
+pass "oversized output is bounded, and the capture records that content was dropped"
+
+HFW="$TMP_ROOT/hfw"; new_home "$HFW"
+pe_register "$HFW" lavish small-src -- /bin/sh -c 'printf whole' >/dev/null
+FM_PROCEVENT_MAX_OUTPUT_BYTES=100 FM_HOME="$HFW" "$ROOT/bin/fm-procevent.sh" start small-src >/dev/null 2>&1
+RW=$(first_result "$HFW" small-src || true)
+[ -n "$RW" ] || fail "output that fits the bound was not captured at all"
+assert_absent "${RW%.result}.truncated" \
+  "output that fits the bound was recorded as though it had been cut"
+pass "a capture the bound left whole is recorded as whole"
+
+# A generation can already carry a marker before this capture writes anything:
+# sequence selection only skips generations whose result exists, so a capture
+# killed between its marker and the result's rename hands its orphan to the next
+# capture at the same sequence. Left in place, it turns whole output into a cut
+# one - the captain is told content was discarded from a result nothing was
+# discarded from, and a silence verdict that was correct is suppressed.
+HFSTALE="$TMP_ROOT/hfstale"; new_home "$HFSTALE"
+pe_register "$HFSTALE" lavish bound-stale-src -- /bin/sh -c \
+  'printf "session:\n  file: /stale.html\n  status: ended\n  ended_by: user\n"' >/dev/null
+mkdir -p "$HFSTALE/state/procevent-inbox"
+: > "$HFSTALE/state/procevent-inbox/bound-stale-src.1.truncated"
+FM_PROCEVENT_MAX_OUTPUT_BYTES=4096 pe "$HFSTALE" start bound-stale-src >/dev/null 2>&1
+RSTALE=$(first_result "$HFSTALE" bound-stale-src || true)
+[ -n "$RSTALE" ] || fail "a capture at a generation carrying a stale marker was not captured at all"
+assert_absent "$HFSTALE/state/procevent-inbox/bound-stale-src.1.truncated" \
+  "a whole capture inherited an earlier rolled-back capture's marker and now reads as cut"
+STALE_HANDLED="$HFSTALE/state/procevent-inbox/bound-stale-src.1.handled"
+for _ in $(seq 1 100); do
+  [ -f "$STALE_HANDLED" ] && break
+  sleep 0.1
+done
+[ -f "$STALE_HANDLED" ] \
+  || fail "an inherited marker suppressed the silence verdict for a capture nothing was cut from"
+[ -z "$(wake_payloads "$HFSTALE")" ] \
+  || fail "an inherited marker woke the captain over whole output: $(wake_payloads "$HFSTALE")"
+[ "$(count_notes "$HFSTALE")" -eq 0 ] \
+  || fail "an inherited marker reported discarded content from a result that lost none"
+pass "a capture that fits the bound clears a marker left at its generation"
 
 HG="$TMP_ROOT/hg-live"; new_home "$HG"
 NOISY="$TMP_ROOT/noisy.sh"

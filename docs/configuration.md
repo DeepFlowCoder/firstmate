@@ -630,6 +630,8 @@ The adapter automates only the exact deterministic subset: anything needing judg
 
 This section is the single owner of the runner's operating contract.
 Registration writes one private record under `state/procevent/`, and a completed result plus its immutable adapter identity are captured under `state/procevent-inbox/` before any announcement or event can reference it.
+A capture the output bound below cut also commits a marker recording that content was dropped, and the two seams that read it - the silence verdict and the captain-prose note - therefore cannot mistake the runner's own loss for output the source never produced.
+The marker's reach currently stops at those two seams: the keyed-answer feed below does not read it, so a cut capture's surviving rows still reach the decision intake with no completeness caveat, and the last-submission-wins rule applied over a partial row set can record a superseded answer as the captain's.
 By default, results are published as ordinary `check` wakes carrying the source id and committed result sequence through the existing durable wake queue, so the runner adds no second notification control plane.
 The self-announcing adapter exception and its fail-safe ordering are defined below.
 The watcher delivers a queued result on its ordinary cycle by reporting it as an actionable `check` wake, so a default or fallback publication reaches firstmate through the same rewake path every other wake uses and never waits for a manual drain.
@@ -643,6 +645,7 @@ In supported steady state, a home with no registered source runs nothing, genera
 Whether a captured result is a routine no-op is adapter knowledge too, and the runner names no adapter-specific condition for it either.
 Before publishing, the runner calls `bin/fm-procevent-<adapter>.sh silent <result-file>` and treats exit 0 as the only silence verdict: the result is recorded as durably handled and never announced, so it neither wakes a handler now nor returns on a later reconcile.
 A missing command, an error, any other exit, or a silence the runner cannot durably record all publish the `check` wake exactly as before, so an adapter with no notion of a no-op needs no change and an unknown or degraded result always reaches its handler.
+A capture the output bound cut is never eligible for that verdict and its adapter is not asked, because silence is a claim that nothing was said and no adapter can make it about output whose tail is gone.
 Silence is independent of the keyed-answer feed below, which still runs once per capture for every adapter: suppressing an announcement never suppresses the captain's own answer.
 For Lavish that verdict covers exactly one shape - a session the adapter classifies `ended` that carries no queued content block at all, which is a review surface closed with nothing said.
 Any recognized top-level `prompts` or `feedback` block counts as content regardless of its declared count, and a malformed header makes the result indeterminate rather than empty.
@@ -676,6 +679,8 @@ After capture, the runner therefore passes the result to `bin/fm-procevent-<adap
 This seam is not gated on a captain-hold binding, because a binding says the source feeds the decision intake and says nothing about whether the captain also typed words.
 It runs once per capture and never on re-announcement, so a reconcile republishing an unhandled result cannot turn one message into a second note, and an adapter with no `messages` command routes nothing.
 An adapter that has the command and could not read the result is a different answer and is kept apart from that silence: it reports the seam's read-failure exit, and the runner queues that report through the same captain inbox, because what the captain may have said is itself the news.
+For an adapter that has the command, a capture the output bound cut is that same news for the same reason: it read only the surviving head, so the runner queues a note stating that content was discarded, whether or not any record survived, rather than letting the shortfall read as a surface closed with nothing said.
+That note's reach stops at such an adapter: one with no `messages` command routes nothing for a cut capture just as it does for a whole one, so no discarded-content note is produced for it.
 Neither report goes to stdout or stderr alone - a runner reconcile detaches with both on `/dev/null`, so a warning printed there would be the very silence this seam closes - and when the intake itself cannot take a body, a `check` wake keyed to the capture is the last durable resort.
 
 A source's final result is delivered on its content, never on its lifecycle: ending a source stops the polling, and never retires what the source said.
@@ -700,7 +705,8 @@ Teardown refuses with the home, lease, routing evidence, registrations, claims, 
 Raw manual deletion of a Firstmate home is unsupported because it can orphan a blocking child.
 To recover, restore that home's tracked `bin/fm-procevent.sh`, run `FM_HOME=<home> <home>/bin/fm-procevent.sh sweep-home`, then rerun the supported teardown.
 
-`FM_PROCEVENT_MAX_OUTPUT_BYTES` (default 1048576) bounds a single captured result while the source runs; oversized output is drained but truncated with a stderr notice rather than staged or published whole or dropped.
+`FM_PROCEVENT_MAX_OUTPUT_BYTES` (default 1048576) bounds a single captured result while the source runs; oversized output is drained but truncated rather than staged or published whole or dropped.
+The bound keeps the head, so anything the source published after that point is gone; the drop is committed with the capture as described above, and the stderr notice is only a courtesy to a foreground caller.
 
 The runner proves exactly one durability boundary: output that reached the runner is stored at mode `0600` before any event referencing it is published, and a captured result with no durable handled acknowledgement remains eligible for bounded re-announcement across any number of drains and restarts, not only the crash window right after capture.
 `bin/fm-procevent.sh handled <source-id> <sequence>` is the only thing that stops re-announcement: a generation-keyed, private, path-safe, durable, and idempotent acknowledgement that atomically checks and deduplicates by the exact source and sequence, so a paired effect gated on its first-time-vs-repeat report is never authorized twice.
