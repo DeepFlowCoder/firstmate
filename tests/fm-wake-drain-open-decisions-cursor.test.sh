@@ -7,7 +7,10 @@
 # that keeps growing, and assert both the printed output and a bounded-cost
 # property, not the fold's own source text. tests/fm-wake-drain-open-decisions.test.sh
 # already covers the fold's single-drain correctness; this file covers the
-# cursor's cross-drain persistence and cost bound.
+# cursor's cross-drain persistence and cost bound, and it also owns the
+# contract other suites point here for: a drain that could not read the durable
+# status refuses loudly instead of presenting an empty section, and names which
+# read failed and whether the host or the status file broke it.
 set -u
 
 # shellcheck source=tests/wake-helpers.sh

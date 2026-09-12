@@ -683,9 +683,12 @@ _fm_classify_resolve_platform || true
 # Portable device:inode identity for the rotation/recreation check below.
 #
 # The two birth-time reads here are the reads that decide whether this identity
-# carries the file's birth time, and they are the only place in this library
-# where a reader's death used to read as an answer. Every stat that supports
-# these directives reports "this filesystem records no birth time" through a
+# carries the file's birth time. Other reads in this library also absorb a
+# failed read, but each absorbs it into a value the next call re-derives - the
+# fold cursor's read falls back to a full re-fold of the authoritative status
+# bytes, per its own owner comment above - while the answer these two produce
+# is one a caller writes down and keeps. Every stat that supports these
+# directives reports "this filesystem records no birth time" through a
 # SUCCESSFUL read - BSD `%B` and GNU `%W` print 0 - so that legitimate answer
 # always arrives with status 0. A reader that died said nothing about birth
 # times at all, and discarding its status turned that silence into the same
