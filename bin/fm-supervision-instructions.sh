@@ -117,7 +117,7 @@ render_snippet() {
 
 repair_line() {
   if [ "$READ_ONLY" -eq 1 ]; then
-    printf '%s\n' 'Watcher repair belongs to the session holding the fleet lock; do not drain, arm, or repair this home without it.'
+    printf '%s\n' 'Watcher repair belongs to the session holding the fleet lock; do not drain, arm, or repair from this read-only session.'
     return 0
   fi
   if [ "$AFK" -eq 1 ]; then

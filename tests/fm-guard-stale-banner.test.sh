@@ -156,15 +156,18 @@ stop_harness_session() {
 
 # Run the guard from INSIDE a live stand-in harness session, the way a firstmate
 # session runs its guarded commands. With <claim-lock> = self that session first
-# records its own pid in state/.lock, exactly as session start does.
+# records its own pid in state/.lock, exactly as session start does. With
+# <read-only> = 1 it runs the way fm-session-start.sh runs it when it could not
+# verify fleet-lock ownership.
 run_guard_in_session() {
-  local dir=$1 claim=$2 model=${3:-persistent}
+  local dir=$1 claim=$2 model=${3:-persistent} read_only=${4:-0}
   # shellcheck disable=SC2016 # deliberate: $$ and the positional args expand inside the stand-in session, not here
   "$HARNESS_BIN" -c '
     [ "$4" != self ] || printf "%s\n" "$$" > "$1/state/.lock"
     FM_ROOT_OVERRIDE="$2" FM_HOME="$1" FM_GUARD_GRACE=999 FM_SUPERVISION_MODEL="$3" \
+      FM_GUARD_READ_ONLY="$6" \
       "$5/bin/fm-guard.sh" 2>&1
-    :' _ "$(case_home "$dir")" "$(case_root "$dir")" "$model" "$claim" "$ROOT"
+    :' _ "$(case_home "$dir")" "$(case_root "$dir")" "$model" "$claim" "$ROOT" "$read_only"
 }
 
 count_text() {
@@ -793,6 +796,36 @@ EOF
   pass "fm-guard stale banner: the foreign-lock notice repeats as one line, never as a banner"
 }
 
+# The single line answers repetition, and session start has none: it prints the
+# guard's output once, so there the bordered banner's diagnosis is information
+# rather than noise. Both shapes are pinned against the SAME foreign-held home so
+# the distinction is what is proved, not either shape on its own.
+test_read_only_session_start_keeps_the_banner_on_a_foreign_home() {
+  local dir home out_read_only out_command other
+  dir=$(make_guard_case foreign-lock-read-only)
+  home=$(case_home "$dir")
+  start_harness_session || fail "could not start the competing session"
+  other=$HARNESS_SESSION_PID
+  printf '%s\n' "$other" > "$home/state/.lock"
+  out_read_only=$(run_guard_in_session "$dir" no persistent 1)
+  out_command=$(run_guard_in_session "$dir" no)
+  stop_harness_session "$other"
+
+  assert_contains "$out_read_only" "●  WATCHER DOWN - SUPERVISION IS OFF" \
+    "a read-only session start must keep the bordered banner on a home another session holds"
+  assert_contains "$out_read_only" "task(s) in flight" \
+    "the read-only banner must keep the diagnosis the single line drops"
+  assert_contains "$out_read_only" "This read-only session should report the lapse, not repair it." \
+    "the read-only banner must keep its own non-mutating instruction"
+  assert_not_contains "$out_command" "●" \
+    "an ordinary guarded command on that same home must still get the single line"
+  assert_contains "$out_command" "(pid $other)" \
+    "the single line must still name the session that holds the home"
+  assert_absent "$home/state/.guard-watcher-stale-banner" \
+    "neither shape may claim the episode of a home this session has no authority over"
+  pass "fm-guard stale banner: read-only session start keeps the banner where a guarded command gets one line"
+}
+
 test_foreign_session_lock_drops_the_drain_instruction() {
   local dir home out other
   dir=$(make_guard_case foreign-lock-queue)
@@ -860,6 +893,7 @@ test_first_stale_call_prints_full_banner
 test_repeated_same_episode_prints_reminder_only
 test_foreign_session_lock_prints_one_informational_line
 test_foreign_session_lock_repeats_the_same_single_line
+test_read_only_session_start_keeps_the_banner_on_a_foreign_home
 test_foreign_session_lock_drops_the_drain_instruction
 test_own_session_lock_keeps_the_repair_instruction
 test_unproven_lock_owners_keep_the_repair_instruction

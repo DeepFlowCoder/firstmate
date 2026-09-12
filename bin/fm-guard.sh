@@ -29,8 +29,13 @@
 # home and the session holding it and carries no repair, drain, or arm
 # instruction, because repairing a home another session holds is the one thing
 # not to do. That line is not deduplicated and claims no episode marker - a
-# session without authority over a home does not write that home's state - which
-# is why it is one line and not a box repeated at the foot of every command.
+# session without authority over a home does not write that home's state, so it
+# also can no longer consume the owning session's down-episode and leave that
+# session with the one-line reminder instead of its full banner - which is why it
+# is one line and not a box repeated at the foot of every command.
+# The FM_GUARD_READ_ONLY session-start caller is exempt and keeps the full
+# banner: it prints the guard's output once, so there is no repetition for the
+# single line to save, and its read-only text already commands no mutation.
 # fm_session_lock_held_by_other (bin/fm-session-lock-lib.sh) owns that decision.
 # Episode state lives only under state/.guard-watcher-stale-banner (volatile,
 # bounded). Independent alarms (queued wakes, worktree tangle) are never
@@ -227,13 +232,17 @@ fi
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
 # calls in the same episode get a one-line reminder only.
 if [ "$watcher_healthy" = false ]; then
-  if fm_guard_foreign_lock; then
+  if [ "$READ_ONLY" -ne 1 ] && fm_guard_foreign_lock; then
     # A home another live session holds is not this session's to repair, so the
     # notice is one informational line: it identifies the home and the session
     # that holds it, and carries no repair, arm, or drain instruction. It is not
     # deduplicated and never claims the episode marker, because that episode and
     # that state belong to the owning session; one line is what makes repeating
     # it at the foot of every guarded command readable rather than a wall.
+    # READ_ONLY is checked first because the single line exists to survive that
+    # repetition: the read-only session-start caller prints the guard's output
+    # once, where the bordered banner's diagnosis is information rather than
+    # noise, and it already carries no mutation command.
     printf "WATCHER DOWN - SUPERVISION IS OFF (ANOTHER SESSION HOLDS THIS HOME): %s is held by another live firstmate session (pid %s), so supervision there is that session's to restore.\n" \
       "$FM_HOME" "$FOREIGN_LOCK_PID" >&2
   else

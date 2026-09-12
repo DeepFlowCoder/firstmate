@@ -426,6 +426,7 @@ FM_TEST_SUMMARY total=8 failed=0 skipped_gate=0 duration_ms=617507
 
 The pull-guard session-ownership separation was verified on 2026-09-12 with the installed ShellCheck 0.11.0 and the isolated behavior suites below.
 For a home whose session lock is provably held by another live session, `bin/fm-guard.sh` prints one informational line naming that home and the pid holding it, in place of the bordered banner, with no repair, arm, or drain instruction; the suites pin that it stays one line when the next guarded command repeats it, and that it never writes the owning home's episode marker.
+The `FM_GUARD_READ_ONLY` session-start caller keeps the bordered banner on that same home, which the suites pin against the two shapes side by side, and no path there claims the episode marker, so a session without authority over a home can no longer consume the down-episode the owning session should have been told about in full.
 The verdict reads `state/.lock`, process liveness, and this process's harness ancestry, all of which the portable suites drive with real processes and a deterministic process table, so no live-harness run is required and none was claimed.
 
 ```sh
@@ -439,7 +440,7 @@ Observed output:
 ```text
 fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 fm-doc-audience-check: ok surfaces=91 local_links=312
-FM_TEST_SUMMARY total=6 failed=0 skipped_gate=0 duration_ms=177936
+FM_TEST_SUMMARY total=6 failed=0 skipped_gate=0 duration_ms=231351
 ```
 
 The actionable-close ordering correction was reverified on 2026-08-02 against an identity-matched live successor.
