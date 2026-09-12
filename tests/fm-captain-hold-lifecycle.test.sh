@@ -1128,6 +1128,120 @@ SH
   pass "a bound channel's captured answers close their captain-held tasks at answer time"
 }
 
+# One board, delivered twice, for the two directions of the cut-capture rule.
+# The captain answered the SAME call twice - `gold-only`, then `everyone` - so
+# the last row is the only one that carries what he chose, and it is the row a
+# cut takes away first. Everything except the runner's output bound is identical
+# between the two legs, so the bound is the only thing either leg proves.
+cut_capture_home() {  # <name>
+  local home board
+  home=$(make_home "$1")
+  tasks_in "$home" add sample-membership-call "Captain call: membership" \
+    --kind scout --repo sample >/dev/null \
+    || fail "could not create the captain call"
+  run_captain "$home" hold sample-membership-call \
+    --reason "captain membership choice pending" >/dev/null \
+    || fail "could not hold the captain call"
+  mkdir -p "$home/adapter-root/bin"
+  cat > "$home/adapter-root/bin/fm-procevent-fixturechan.sh" <<SH
+#!/usr/bin/env bash
+# Fixture channel: reports keyed captain answers and nothing else.
+case "\${1-}" in
+  answers) exec "$ROOT/bin/fm-procevent-lavish.sh" answers "\${2-}" ;;
+esac
+exit 2
+SH
+  chmod +x "$home/adapter-root/bin/fm-procevent-fixturechan.sh"
+  board="$home/board.out"
+  cat > "$board" <<'EOF'
+session:
+  file: /review.html
+  status: feedback
+  session_ended: true
+  ended_by: user
+prompts[2]{uid,prompt,selector,tag,text}:
+  "2","Membership: gold-only\n\nContext data:\n{\n  \"question\": \"sample-membership-call\",\n  \"answer\": \"gold-only\"\n}","section#call > form:nth-of-type(1)",choice,"Membership: gold-only"
+  "7","Membership: everyone\n\nContext data:\n{\n  \"question\": \"sample-membership-call\",\n  \"answer\": \"everyone\"\n}","section#call > form:nth-of-type(1)",choice,"Membership: everyone"
+next_step: This was the last feedback before the user ended the session.
+EOF
+  run_captain "$home" bind fixture-src >/dev/null \
+    || fail "could not bind the fixture channel"
+  PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$ROOT/bin/fm-procevent.sh" register fixturechan fixture-src -- cat "$board" >/dev/null \
+    || fail "could not register the fixture channel source"
+  printf '%s\n' "$home"
+}
+
+# Capture the board once, under whatever output bound the caller names. The
+# session-lock bypass is stripped exactly as the leg above strips it, because the
+# detached capture runner is the real caller this rule has to hold for.
+cut_capture_run() {  # <home> [<max-output-bytes>]
+  local home=$1 bound=${2-}
+  env -u FM_CAPTAIN_ANSWER_BYPASS \
+    ${bound:+FM_PROCEVENT_MAX_OUTPUT_BYTES="$bound"} \
+    PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$home/adapter-root" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$ROOT/bin/fm-procevent.sh" start fixture-src >/dev/null 2>&1
+}
+
+wake_payloads_in() {  # <home>
+  awk -F '\t' '{print $5}' "$1/state/.wake-queue" 2>/dev/null
+}
+
+# The fabricated-provenance case. A result too big for the runner's output bound
+# reaches the adapter as a prefix, so the captain's LAST submission is exactly
+# what fell off the end and the superseded one survives as the last readable
+# answer for its key. Recording that writes into the durable record - the record
+# the fleet later cites as his authority - words he never said, which is worse
+# than recording nothing, because nothing is visible and a false record is not.
+test_cut_capture_records_no_answer() {
+  local home board bound show
+  home=$(cut_capture_home cut-capture-refusal)
+  board="$home/board.out"
+  # Cut inside the captain's last row: the bound falls partway through the row
+  # that carries `everyone`, which is what an oversized result actually suffers.
+  bound=$(awk 'NR<=7 {n += length($0) + 1} END {print n + 60}' "$board")
+  cut_capture_run "$home" "$bound"
+
+  assert_present "$home/state/procevent-inbox/fixture-src.1.result" \
+    "the cut capture stored no result at all"
+  assert_still_held "$home" sample-membership-call \
+    "a cut capture recorded an answer the captain had already replaced"
+  show=$(tasks_in "$home" show sample-membership-call --full)
+  assert_not_contains "$show" "gold-only" \
+    "the superseded answer reached the durable record"
+
+  # A refusal nobody can see is the same loss wearing different clothes, so the
+  # cut capture owes one durable record of its own naming the result to read.
+  assert_contains "$(wake_payloads_in "$home")" "was cut at the output bound" \
+    "the refusal left nothing for firstmate to act on"
+  assert_contains "$(wake_payloads_in "$home")" "fixture-src.1.result" \
+    "the refusal did not name the result that still holds the captain's words"
+  pass "a cut capture records no captain answer and says so durably"
+}
+
+# The other direction, which the refusal must not be bought with: the same board
+# whole. A capture that fit is every capture in practice, and it has to close its
+# call with the captain's real last answer and no refusal noise at all.
+test_whole_capture_still_records_the_captains_answer() {
+  local home show
+  home=$(cut_capture_home whole-capture-unchanged)
+  cut_capture_run "$home"
+
+  show=$(tasks_in "$home" show sample-membership-call --full)
+  assert_contains "$show" "state: done" "a whole capture left the captain call open"
+  assert_contains "$show" "Resolution mode: answered" \
+    "a whole capture did not record its close path"
+  assert_contains "$show" "Answer: everyone" \
+    "a whole capture recorded something other than the captain's last answer"
+  assert_not_contains "$(wake_payloads_in "$home")" "was cut at the output bound" \
+    "a whole capture was refused as if it had been cut"
+  pass "a whole capture still records the captain's last answer exactly as before"
+}
+
 # Answer-time closure is opt-in per source. A channel with no binding must behave
 # exactly as it always did: capture, announce, close nothing.
 test_unbound_source_closes_no_hold() {
@@ -1556,6 +1670,8 @@ test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_bound_channel_answers_close_at_answer_time
+test_cut_capture_records_no_answer
+test_whole_capture_still_records_the_captains_answer
 test_unbound_source_closes_no_hold
 test_legacy_identities_keep_working
 test_chat_channel_feeds_the_same_keyed_answer_intake

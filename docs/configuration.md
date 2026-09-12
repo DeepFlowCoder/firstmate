@@ -630,8 +630,9 @@ The adapter automates only the exact deterministic subset: anything needing judg
 
 This section is the single owner of the runner's operating contract.
 Registration writes one private record under `state/procevent/`, and a completed result plus its immutable adapter identity are captured under `state/procevent-inbox/` before any announcement or event can reference it.
-A capture the output bound below cut also commits a marker recording that content was dropped, and the two seams that read it - the silence verdict and the captain-prose note - therefore cannot mistake the runner's own loss for output the source never produced.
-The marker's reach currently stops at those two seams: the keyed-answer feed below does not read it, so a cut capture's surviving rows still reach the decision intake with no completeness caveat, and the last-submission-wins rule applied over a partial row set can record a superseded answer as the captain's.
+A capture the output bound below cut also commits a marker recording that content was dropped, and the three seams that read it - the silence verdict, the captain-prose note, and the keyed-answer feed - therefore cannot mistake the runner's own loss for output the source never produced.
+The marker's reach stops at those three seams.
+The first two add what the result says about itself; the third refuses outright, because the adapter's last-submission-wins rule applied over a partial row set would record a superseded answer as the captain's, and a missing decision record is visible while a false one is not.
 By default, results are published as ordinary `check` wakes carrying the source id and committed result sequence through the existing durable wake queue, so the runner adds no second notification control plane.
 The self-announcing adapter exception and its fail-safe ordering are defined below.
 The watcher delivers a queued result on its ordinary cycle by reporting it as an actionable `check` wake, so a default or fallback publication reaches firstmate through the same rewake path every other wake uses and never waits for a manual drain.
@@ -671,6 +672,8 @@ A binding can select one decision origin or the script's cross-origin mode; the 
 The adapter reports only what the captain chose; the intake owns every rule about what happens next, so the runner names no adapter, parses no result, and carries no decision rule, and a future source needs nothing here beyond an `answers` command and a binding.
 Feeding is independent of handling: it never acknowledges a result and never suppresses a wake, because recording the answer is transcription while acting on it is firstmate's judgement.
 An unbound source, an adapter with no `answers` command, and a failure on either side all leave the capture untouched and still announced.
+A capture the output bound cut feeds nothing at all, and that is this seam's one decision of its own: the dropped tail holds whatever the captain submitted last, so the answer an adapter can still read for a key may be one he already replaced, and the intake would record words he never said into the durable record the fleet later cites as his authority.
+A cut capture that carried any keyed answer therefore leaves one `check` wake naming the stored result to read instead, while a cut capture that carried none leaves nothing; a capture that fit feeds exactly as before.
 
 Freeform captain prose uses one more seam of the same kind, and exists because the keyed-answer seam above is deliberately narrow.
 It reads only structured choices, so prose can never forge a decision key, which left prose with no reader at all: a review surface closed with a message delivered the captain's words in the same result that ended it, no content command reported anything, and acknowledging the capture retired the only copy.

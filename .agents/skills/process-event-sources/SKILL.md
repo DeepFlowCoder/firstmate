@@ -39,6 +39,7 @@ bin/fm-captain-hold.sh bind <source-id>
 
 The runner then passes each captured result to that source's own adapter `answers` command and pipes the keyed answers it prints into the one keyed-answer intake, which owns every rule about what they mean; the keys are captain-held task ids.
 This is generic: any adapter with an `answers` command works, and the runner still wakes you to act on the result.
+The one exception is a result the runner had to cut at its output bound: a cut takes the captain's LAST submission away first, so the answer still readable for a key may be the one he replaced, and the runner feeds none of it rather than record words he never said.
 `captain-hold-lifecycle` owns when a binding is required and what the keys must be.
 
 A configured remote secondmate reply source is armed and handled through `bin/fm-procevent-remote-reply.sh`.
@@ -87,6 +88,9 @@ Two rules the commands cannot enforce for you:
   This exists because acknowledging a capture used to retire the only copy of the captain's words: the keyed-answer command reads structured choices only, so prose had no reader at all and disappeared in silence.
   The two commands split a result's rows on what the keyed-answer intake actually consumed, so a card the captain filled in that intake could not key still reaches you here as prose rather than falling between them.
   Read the note and act on it; never treat prose as a decision answer, and never assume the capture's acknowledgement cleared it.
+: A `check:` wake saying a captured result **was cut at the output bound** means that result's keyed captain answers were refused, not recorded, because a cut removes what the captain submitted last and leaves an answer he may already have replaced.
+  No captain call it named was closed, so read the result the wake names and record his actual choice through the ordinary answer path before treating any of those calls as settled.
+  Never take the answer the adapter can still read there as his word; if the result cannot settle it, ask him again.
 : Ask the adapter what the result means rather than parsing it yourself - for Lavish, `bin/fm-procevent-lavish.sh classify <result-file>` returns `feedback`, `ended`, `waiting`, `missing`, or `unknown`. A `feedback` result can still be the last one a review ever produces, so never assume another wake is coming just because the state is not `ended`.
 : A routine no-op an adapter positively identifies never becomes a wake at all - it is recorded as handled and stays silent, so you never see it. For Lavish that is exactly an ended session carrying nothing: a board the captain closed without saying anything. A board close carrying a real answer, and every other result, still wakes you unchanged. A capture the runner's own output bound cut is also never silenced and its adapter is not even asked, so a result that looks like it carries nothing can be one whose content the bound dropped - for an adapter that has a `messages` command, Lavish among them, its captain-inbox note says content was discarded, and you must read that as words of the captain's that are gone rather than as a board closed with nothing on it. Never read the absence of a wake as proof a review is still open; ask the source, not the queue.
 : A Lavish wake whose source id matches `bin/fm-procevent-lavish.sh source-id "$(bin/fm-bearings-board.sh path)"` is a bearings board result; load the `bearings` skill's board-wake handling regardless of which answer kinds the result contains.
@@ -109,7 +113,7 @@ Supported by tests:
 - registration and ownership transitions share one per-source boundary, release is generation-bound, and uncertain process identity preserves the source for retry;
 - ownership moves only once a whole generation is gone, so a crashed runner leader whose owned process group is still running never reads as stale: that surviving group is stopped before any replacement starts, and the claim is kept for retry when it cannot be;
 - stored argv is executed directly, so an argument containing spaces or shell metacharacters is never re-split or interpreted;
-- oversized output is bounded rather than published whole or silently dropped, and the drop is committed with the capture, so a cut result is never eligible for the silence verdict and its captain-prose note says content was discarded instead of reporting nothing said; those two seams are the marker's whole reach, and the keyed-answer feed is not among them, so a cut result's surviving rows still reach the decision intake with no completeness caveat.
+- oversized output is bounded rather than published whole or silently dropped, and the drop is committed with the capture, so a cut result is never eligible for the silence verdict, its captain-prose note says content was discarded instead of reporting nothing said, and its keyed captain answers are refused rather than fed - a cut capture that carried one leaves a durable `check` wake saying so, so a superseded answer can never be recorded as the captain's.
 
 The `when` adapter's guarantees are part of the operating contract in [`docs/configuration.md`](../../../docs/configuration.md#process-to-event-sources-stateprocevent).
 

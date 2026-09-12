@@ -381,8 +381,10 @@ fm_procevent_capture() {
 # fm_procevent_result_truncated <result-path>
 # Exit 0 when this capture's output bound dropped bytes, 1 when the stored
 # output is complete. Any entry at the marker path counts, including an unsafe
-# one, because the only cost of reading a complete result as cut is one extra
-# announcement while the reverse is the silent loss this marker exists to stop.
+# one, because reading a complete result as cut costs one extra announcement and
+# one refused keyed-answer feed that firstmate can still record by hand, while
+# the reverse is the silent loss and the fabricated captain answer this marker
+# exists to stop.
 fm_procevent_result_truncated() {
   local marker="${1%.result}.truncated"
   [ -e "$marker" ] || [ -L "$marker" ]

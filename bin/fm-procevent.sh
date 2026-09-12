@@ -73,16 +73,15 @@
 # never existed, so a cut capture was read as an empty one and the captain's own
 # typed words left no trace anywhere. Completeness is therefore committed with
 # the capture as a durable marker owned by bin/fm-procevent-lib.sh, and exactly
-# two seams read it: a cut capture is never eligible for the silence verdict,
-# and its captain-prose note states that content was discarded rather than
-# reporting the shortfall as nothing said. The marker's reach currently stops
-# there. feed_keyed_answers below does NOT read it, so a cut capture's surviving
-# rows still reach the keyed-answer intake with no completeness caveat, and the
-# adapter's last-submission-wins rule applied over a partial row set can record
-# a superseded answer as the captain's. Extending the read into that seam would
-# change what the decision intake accepts, which is an authority boundary over
-# the captain's own word and is not settled here. Adding to what a result says
-# about itself is allowed; claiming an absence this runner caused is not.
+# three seams read it: a cut capture is never eligible for the silence verdict,
+# its captain-prose note states that content was discarded rather than reporting
+# the shortfall as nothing said, and its keyed captain answers are refused rather
+# than fed. The marker's reach stops there. The first two seams ADD what the
+# result says about itself; the third REFUSES to record anything from it, which
+# is a narrower act than it sounds and the keyed-answer note below owns why.
+# Adding to what a result says about itself is allowed; claiming an absence this
+# runner caused is not, and neither is letting a prefix of what the captain said
+# be recorded as the whole of it.
 #
 # Applying a result is adapter-owned through the same kind of seam. Some results
 # carry no judgement at all - they must simply be applied idempotently to the
@@ -124,6 +123,24 @@
 # and never suppresses a wake. Recording the captain's answer is transcription,
 # while ACTING on it is firstmate's judgement, so the capture stays unacknowledged
 # and its `check` wake reaches the handler exactly as it would have anyway.
+#
+# A CUT CAPTURE FEEDS NOTHING, and that is this seam's one refusal. When a result
+# is larger than the output bound below, what reaches this runner is a prefix of
+# what the source said, and the rows that fell off the end are exactly the ones
+# the captain submitted last. An adapter reading that prefix reports the last
+# answer it can still see for a key, and for a form the captain answered twice
+# that is the answer he REPLACED, not the one he chose. The intake would then
+# write into the durable record - the record the whole fleet later cites as the
+# captain's authority - that he said something he did not say. So a capture this
+# runner had to cut never reaches the intake at all: the runner cut it and is the
+# one party that knows, and no rule about which surviving row looks most likely
+# is allowed to stand in for his word. A missing record is a visible problem and
+# a false one is not, so refusing beats guessing here even though refusing loses
+# answers that may well have been intact. The refusal is itself news, so a cut
+# capture that carried any keyed answer leaves one durable `check` wake of this
+# runner's own naming the result to read; a cut capture that carried none leaves
+# nothing, because there was no answer to refuse. Nothing changes for a capture
+# that fit: it feeds exactly as before, which is every capture in practice.
 #
 # Freeform captain prose is adapter-owned through one more seam of the same kind,
 # and exists because the keyed-answer seam above is deliberately narrow. It reads
@@ -186,7 +203,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,170p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,187p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -257,12 +274,41 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
   "$script" autohandle "$id" "$seq" "$result" >/dev/null 2>&1
 }
 
+# Refuse a cut capture's keyed answers and say so where an operator can find it
+# (see the cut-capture note in the header for why refusing beats guessing). The
+# adapter is asked what it can still read only to tell an answer-carrying cut
+# apart from one that carried none; what it prints is deliberately discarded,
+# because reading it is the whole thing this refuses to trust.
+#
+# 1 the cut capture carried no keyed answer to refuse, 2 the refusal is durably
+# recorded, 3 nothing durable could record it.
+refuse_cut_answers() {  # <adapter-script> <source-id> <sequence> <result-file>
+  local script=$1 id=$2 seq=$3 result=$4 body
+  [ -n "$("$script" answers "$result" 2>/dev/null)" ] || return 1
+  # One flat line: the wake queue keeps a payload on a single record, so the
+  # command to run is stated inline rather than laid out on its own.
+  printf -v body \
+    'check: the captured result %s sequence %s was cut at the output bound, so an answer still readable in it may be one the captain already replaced. No answer from it was recorded. Record what he actually chose after reading it yourself: %s answers %s' \
+    "$id" "$seq" "$script" "$result"
+  fm_wake_append check "procevent-answers:$id:$seq" "$body" >/dev/null 2>&1 || return 3
+  return 2
+}
+
 # Pass a bound source's captured result to the one keyed-answer intake. The
 # adapter turns its own format into keyed lines; the intake owns everything those
 # lines mean. Silenced and best-effort exactly like the seams above: an unbound
 # source, an adapter with no `answers` command, and a failure on either side all
 # leave the capture untouched and still announced, because this never
 # acknowledges anything (see the keyed-answer note in the header).
+#
+# A capture the output bound cut feeds nothing and takes the refusal path
+# instead, which is the one thing this seam decides for itself; everything a
+# whole capture's answers mean still belongs to the intake. Read durably, like
+# the other two seams that consult the marker and for the same reason: what the
+# capturing turn observed is not available to a later reconcile.
+#
+# 0 the answers were fed, 1 there was nothing to feed, and 2 or 3 as
+# refuse_cut_answers defines them.
 feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   local adapter=$1 id=$2 result=$3 script origin seq
   script=$(adapter_script "$adapter")
@@ -270,6 +316,10 @@ feed_keyed_answers() {  # <adapter> <source-id> <result-file>
   origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null) || return 1
   [ -n "$origin" ] || return 1
   seq=$(fm_procevent_result_sequence "$result") || return 1
+  if fm_procevent_result_truncated "$result"; then
+    refuse_cut_answers "$script" "$id" "$seq" "$result"
+    return $?
+  fi
   "$script" answers "$result" 2>/dev/null \
     | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
         --source "the captured result $id sequence $seq" >/dev/null 2>&1
@@ -629,9 +679,13 @@ cmd_start() {
 
   # Independent of publication and acknowledgement, so it runs once per capture
   # for every adapter and cannot change what the handler receives.
-  if feed_keyed_answers "$adapter" "$id" "$durable"; then
-    printf 'answers-fed: %s\n' "$id"
-  fi
+  feed_keyed_answers "$adapter" "$id" "$durable"
+  case "$?" in
+    0) printf 'answers-fed: %s\n' "$id" ;;
+    2) printf 'answers-refused: %s (the capture was cut, so none of it was recorded)\n' "$id" ;;
+    3) printf 'the captured result %s was cut and nothing durable could record that its keyed answers were refused; read them yourself in %s\n' \
+         "$id" "$durable" >&2 ;;
+  esac
 
   # Same independence, and strictly before the terminal retirement below, so the
   # captain's own words are durably queued whether or not this result ends the
