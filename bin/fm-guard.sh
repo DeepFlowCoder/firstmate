@@ -23,6 +23,20 @@
 # per distinct down-episode in this FM_HOME (keyed to the failing condition, not
 # the beacon mtime, which a healthy between-turns watcher advances every poll);
 # later guarded commands in the same episode print a one-line reminder instead.
+# A down watcher and an unowned home are two different situations and the guard
+# tells them apart: when this home's session lock is provably held by ANOTHER
+# live session, the banner gives way to ONE informational line that names the
+# home and the session holding it and carries no repair, drain, or arm
+# instruction, because repairing a home another session holds is the one thing
+# not to do. That line is not deduplicated and claims no episode marker - a
+# session without authority over a home does not write that home's state, so it
+# also can no longer consume the owning session's down-episode and leave that
+# session with the one-line reminder instead of its full banner - which is why it
+# is one line and not a box repeated at the foot of every command.
+# The FM_GUARD_READ_ONLY session-start caller is exempt and keeps the full
+# banner: it prints the guard's output once, so there is no repetition for the
+# single line to save, and its read-only text already commands no mutation.
+# fm_session_lock_held_by_other (bin/fm-session-lock-lib.sh) owns that decision.
 # Episode state lives only under state/.guard-watcher-stale-banner (volatile,
 # bounded). Independent alarms (queued wakes, worktree tangle) are never
 # suppressed by that dedup. Normal wake handling (watcher briefly down between a
@@ -52,6 +66,47 @@ STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
 . "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
+
+# Who may act on this home right now.
+# True when a DIFFERENT live session holds this home's session lock, which is the
+# guard's own evidence that nothing here may repair it. fm_session_lock_held_by_other
+# (bin/fm-session-lock-lib.sh) owns that decision and its proof requirements.
+# Resolved at most once per run and only when the answer can change what happens,
+# because resolving it walks this process's harness ancestry - a run of
+# process-table reads that would otherwise be paid at the foot of every guarded
+# command, silent ones included.
+FOREIGN_LOCK=
+FOREIGN_LOCK_PID=
+fm_guard_foreign_lock() {
+  if [ -z "$FOREIGN_LOCK" ]; then
+    if fm_session_lock_held_by_other "$STATE"; then
+      FOREIGN_LOCK=1
+      # The pid the verdict was made on, published by the predicate itself: the
+      # lock file is never read a second time, so the notice cannot name an empty
+      # pid because the owning session released the lock between two reads.
+      FOREIGN_LOCK_PID=$FM_SESSION_LOCK_OTHER_PID
+    else
+      FOREIGN_LOCK=0
+    fi
+  fi
+  [ "$FOREIGN_LOCK" -eq 1 ]
+}
+
+# True when this call has no authority to mutate this home, either because the
+# caller declared it holds no fleet-lock ownership at all (FM_GUARD_READ_ONLY) or
+# because another live session provably holds this one. It governs the episode
+# marker and the drain instruction; the two stay distinguishable because only
+# fm_guard_foreign_lock can name the other session, and only it replaces the
+# banner with a single line.
+# The worktree-tangle alarm below is deliberately NOT governed by this: it is
+# about the firstmate primary checkout (FM_ROOT), which a guard call aimed at
+# another home's state (bin/fm-remote-secondmate-control.sh) still owns.
+fm_guard_advisory() {
+  [ "$READ_ONLY" -eq 1 ] && return 0
+  fm_guard_foreign_lock
+}
 
 # Deterministic episode key from the qualitative down-state (the failing
 # condition), NOT the beacon mtime: under the auto-arm model a healthy
@@ -163,7 +218,11 @@ if [ "$needed" = false ]; then
   # Leave the unhealthy state (nothing riding on the watcher): clear so a later
   # work or X-mode need + stale combination is a fresh episode even if the
   # beacon is still absent with the same key string.
-  [ "$READ_ONLY" -eq 1 ] || fm_guard_clear_stale_banner
+  # No marker means nothing to clear, so the ownership question is never asked on
+  # the ordinary silent path.
+  if [ -e "$STALE_BANNER_MARKER" ] && ! fm_guard_advisory; then
+    fm_guard_clear_stale_banner
+  fi
   exit 0
 fi
 
@@ -173,67 +232,85 @@ fi
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
 # calls in the same episode get a one-line reminder only.
 if [ "$watcher_healthy" = false ]; then
-  episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
-  episode_key=${episode_key%$'\n'}
-  print_full_banner=0
-  if [ "$READ_ONLY" -eq 1 ]; then
-    fm_guard_stale_banner_seen "$STATE" "$episode_key" || print_full_banner=1
-  elif fm_guard_claim_stale_banner "$STATE" "$episode_key"; then
-    print_full_banner=1
-  fi
-  if [ "$print_full_banner" -eq 1 ]; then
-    afk=0
-    [ -e "$STATE/.afk" ] && afk=1
-    queue_arg=0
-    "$queue_pending" && queue_arg=1
-    x_mode=0
-    [ -f "$CONFIG/x-mode.env" ] && x_mode=1
-    fix=$("$SCRIPT_DIR/fm-supervision-instructions.sh" \
-      --read-only "$READ_ONLY" \
-      --afk "$afk" \
-      --x-mode "$x_mode" \
-      --queue-pending "$queue_arg" \
-      --repair-line 2>/dev/null || printf '%s\n' 'Repair missing watcher supervision according to the session-start operating block.')
-    rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-    {
-      printf '●%s\n' "$rule"
-      printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
-      if [ "$watcher_down_reason" = no-watcher ]; then
-        watcher_cause=$(printf 'no live watcher process holds this home lock (last beat: %s)' "$beacon_desc")
-      else
-        watcher_cause=$(printf 'no watcher has a fresh beacon (last beat: %s, grace %ss)' "$beacon_desc" "$GRACE")
-      fi
-      if [ "$in_flight" -gt 0 ]; then
-        printf '●  %s task(s) in flight, but %s.\n' "$in_flight" "$watcher_cause"
-      elif [ "$sources" -gt 0 ]; then
-        printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
-      else
-        printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
-      fi
-      if [ "$READ_ONLY" -eq 1 ]; then
-        printf '●  This read-only session should report the lapse, not repair it.\n'
-      else
-        printf '●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.\n'
-      fi
-      printf '●  %s\n' "$CONTINUE_LINE"
-      printf '●  %s\n' "$fix"
-      printf '●%s\n' "$rule"
-    } >&2
+  if [ "$READ_ONLY" -ne 1 ] && fm_guard_foreign_lock; then
+    # A home another live session holds is not this session's to repair, so the
+    # notice is one informational line: it identifies the home and the session
+    # that holds it, and carries no repair, arm, or drain instruction. It is not
+    # deduplicated and never claims the episode marker, because that episode and
+    # that state belong to the owning session; one line is what makes repeating
+    # it at the foot of every guarded command readable rather than a wall.
+    # READ_ONLY is checked first because the single line exists to survive that
+    # repetition: the read-only session-start caller prints the guard's output
+    # once, where the bordered banner's diagnosis is information rather than
+    # noise, and it already carries no mutation command.
+    printf "WATCHER DOWN - SUPERVISION IS OFF (ANOTHER SESSION HOLDS THIS HOME): %s is held by another live firstmate session (pid %s), so supervision there is that session's to restore.\n" \
+      "$FM_HOME" "$FOREIGN_LOCK_PID" >&2
   else
-    printf 'WARNING: watcher still down (same stale episode; last beat: %s, grace %ss) - full banner already printed this episode.\n' \
-      "$beacon_desc" "$GRACE" >&2
+    episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
+    episode_key=${episode_key%$'\n'}
+    print_full_banner=0
+    if [ "$READ_ONLY" -eq 1 ]; then
+      fm_guard_stale_banner_seen "$STATE" "$episode_key" || print_full_banner=1
+    elif fm_guard_claim_stale_banner "$STATE" "$episode_key"; then
+      print_full_banner=1
+    fi
+    if [ "$print_full_banner" -eq 1 ]; then
+      afk=0
+      [ -e "$STATE/.afk" ] && afk=1
+      queue_arg=0
+      "$queue_pending" && queue_arg=1
+      x_mode=0
+      [ -f "$CONFIG/x-mode.env" ] && x_mode=1
+      fix=$("$SCRIPT_DIR/fm-supervision-instructions.sh" \
+        --read-only "$READ_ONLY" \
+        --afk "$afk" \
+        --x-mode "$x_mode" \
+        --queue-pending "$queue_arg" \
+        --repair-line 2>/dev/null || printf '%s\n' 'Repair missing watcher supervision according to the session-start operating block.')
+      rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+      {
+        printf '●%s\n' "$rule"
+        printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
+        if [ "$watcher_down_reason" = no-watcher ]; then
+          watcher_cause=$(printf 'no live watcher process holds this home lock (last beat: %s)' "$beacon_desc")
+        else
+          watcher_cause=$(printf 'no watcher has a fresh beacon (last beat: %s, grace %ss)' "$beacon_desc" "$GRACE")
+        fi
+        if [ "$in_flight" -gt 0 ]; then
+          printf '●  %s task(s) in flight, but %s.\n' "$in_flight" "$watcher_cause"
+        elif [ "$sources" -gt 0 ]; then
+          printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
+        else
+          printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
+        fi
+        if [ "$READ_ONLY" -eq 1 ]; then
+          printf '●  This read-only session should report the lapse, not repair it.\n'
+        else
+          printf '●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.\n'
+        fi
+        printf '●  %s\n' "$CONTINUE_LINE"
+        printf '●  %s\n' "$fix"
+        printf '●%s\n' "$rule"
+      } >&2
+    else
+      printf 'WARNING: watcher still down (same stale episode; last beat: %s, grace %ss) - full banner already printed this episode.\n' \
+        "$beacon_desc" "$GRACE" >&2
+    fi
   fi
 else
   # Healthy again while work is still in flight: end the episode so a later
-  # restale re-prints the full banner.
-  [ "$READ_ONLY" -eq 1 ] || fm_guard_clear_stale_banner
+  # restale re-prints the full banner. No marker means nothing to clear, so the
+  # ownership question is never asked on the ordinary supervised path.
+  if [ -e "$STALE_BANNER_MARKER" ] && ! fm_guard_advisory; then
+    fm_guard_clear_stale_banner
+  fi
 fi
 
 # Queued wakes are an independent hazard; warn whenever they are pending, even if
 # a watcher is alive. Kept after the banner so the no-watcher alarm reads first.
 # Dedup of the watcher-down banner never suppresses this warning.
 if "$queue_pending"; then
-  if [ "$READ_ONLY" -eq 1 ]; then
+  if fm_guard_advisory; then
     echo "WARNING: queued wakes pending - left untouched because this session lacks verified fleet-lock ownership." >&2
   else
     echo "WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else." >&2
