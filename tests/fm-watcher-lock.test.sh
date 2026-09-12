@@ -1641,6 +1641,59 @@ test_dangling_steal_link_break_cannot_carry_off_a_live_mutex() {
   pass "breaking a dangling steal link cannot carry off the mutex that replaced it"
 }
 
+# The other half of that defence, and the one a storm leans on. The case above
+# overtakes the break so late that the mutex is already lifted and has to be put
+# back; here the replacement lands before the break reaches for it at all, which
+# is where every straggler of a 40-racer storm arrives once the winner has
+# rebuilt the mutex. A racer that lifts a mutex it can already see is not its
+# own takes the path away from the holder for as long as the removal and the
+# restore take, and a holder that looks at its own path inside that window
+# abandons a reclaim it had already won and strands its owner directory.
+#
+# So the mutex must be left completely untouched: not removed and restored, and
+# not quarantined either, which is why the absence of quarantine residue is
+# asserted rather than only the link surviving.
+test_steal_capture_leaves_a_replacement_mutex_untouched() {
+  local dir state lockdir rc residue
+  dir=$(make_case steal-capture-replacement)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    steal="$2.steal"
+    gone_owner="$2.owner.gone"
+    ln -s "$gone_owner" "$steal" || exit 3
+    touch -h -t 202001010000 "$steal" || exit 3
+    [ ! -d "$gone_owner" ] || exit 3
+    live_owner=$(fm_lock_owner_dir "$steal") || exit 3
+    printf "%s\n" "${BASHPID:-$$}" > "$live_owner/pid" || exit 3
+    fm_lock_mid_acquire_is_fresh() {
+      [ -z "${replaced:-}" ] || return 1
+      replaced=1
+      rm -f "$steal"
+      ln -s "$live_owner" "$steal" || exit 4
+      return 1
+    }
+    rc=0
+    _fm_lock_steal_break_stale "$steal" || rc=$?
+    [ "$rc" -eq 1 ] || exit 5
+    [ -L "$steal" ] || exit 6
+    [ "$(readlink "$steal")" = "$live_owner" ] || exit 7
+    [ "$(cat "$live_owner/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ] || exit 8
+  ' _ "$LIB" "$lockdir"
+  rc=$?
+  case "$rc" in
+    0) ;;
+    3|4) fail "the replaced-mutex fixture could not be built (rc=$rc)" ;;
+    5) fail "a break whose target was replaced before it reached it reported success" ;;
+    *) fail "a break lifted a mutex it could already see was not its own (rc=$rc)" ;;
+  esac
+  residue=$(find "$state" -maxdepth 1 -name '*.dead.*' | wc -l | tr -d '[:space:]')
+  [ "$residue" -eq 0 ] \
+    || fail "a break that never owned its target left $residue quarantine directories"
+  pass "a steal break leaves a mutex that replaced its target untouched"
+}
+
 # The residue the case above would otherwise accumulate, pinned where it is
 # deterministic. A lock that still exists as a symlink resolves through itself,
 # so a racer's ln -s lands inside the target owner directory rather than
@@ -1805,6 +1858,7 @@ test_interrupted_steal_does_not_grow_a_steal_chain
 test_stale_steal_mutex_break_yields_one_winner
 test_steal_break_binds_its_proof_to_the_owner_it_renames
 test_dangling_steal_link_break_cannot_carry_off_a_live_mutex
+test_steal_capture_leaves_a_replacement_mutex_untouched
 test_owner_directory_with_a_stray_link_is_still_discarded
 test_lock_recovers_when_only_a_dead_steal_marker_remains
 test_live_steal_with_primary_absent_stays_retryable

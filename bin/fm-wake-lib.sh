@@ -839,16 +839,35 @@ fm_recovery_marker_reopen_announced() {
 # one more look at a path other racers are still moving.
 #
 # <expected> is the owner directory the caller proved dead, or empty for the
-# legacy directory form, which has no owner. A captured copy that matches is the
-# leftover this breaks. Anything else is a mutex somebody rebuilt on the path
-# while this racer was deciding, so it goes back through an ln -s that cannot
-# overwrite an occupant - restoring it by renaming the copy back would destroy a
-# live mutex exactly the way the unbound rm does - and the break reports
-# ordinary contention instead.
+# legacy directory form, which has no owner. The path is bound to it twice: once
+# immediately before the rename, so a racer that has already been overtaken
+# never lifts the mutex at all, and once on the captured copy, which is what
+# catches an overtake that landed inside that last fork. The first check is what
+# keeps a storm's stragglers out of the restore path: without it every one of
+# them lifts the live mutex the winner just installed and puts it back, and a
+# holder that looks at its own path inside one of those windows finds it gone
+# and abandons a reclaim it had already won.
+#
+# A copy that turns out not to be this racer's goes back where it came from: a
+# link through an ln -s that cannot overwrite an occupant, the legacy directory
+# through a rename and only while the path is still free, since a directory has
+# no non-clobbering create. Restoring either one over an occupant would destroy
+# a live mutex exactly the way the unbound rm does, so a copy that cannot go
+# back is discarded rather than stranded, and the break reports contention.
+#
+# A breaker killed between the rename and the cleanup leaves its quarantine
+# directory behind and nothing collects it. That is tolerated rather than swept:
+# the name is neither "<lock>.steal" nor "<lock>.steal.steal", so it provokes no
+# further steal and the one-level bound this mechanism exists for still holds.
 #
 # Status 0 the path was this racer's to take and is now clear, 1 it was not.
 _fm_lock_steal_capture() {
   local steal=$1 expected=$2 quarantine captured target
+  if [ -n "$expected" ]; then
+    fm_lock_points_to_owner "$steal" "$expected" || return 1
+  else
+    { [ ! -L "$steal" ] && [ -d "$steal" ]; } || return 1
+  fi
   quarantine=$(mktemp -d "$steal.dead.XXXXXX" 2>/dev/null) || return 1
   captured="$quarantine/steal"
   if ! mv "$steal" "$captured" 2>/dev/null; then
@@ -874,6 +893,8 @@ _fm_lock_steal_capture() {
       fm_lock_remove_stray_owner_link "$steal" "$target"
     fi
     rm -f "$captured" 2>/dev/null || true
+  elif [ -e "$steal" ] || [ -L "$steal" ] || ! mv "$captured" "$steal" 2>/dev/null; then
+    fm_lock_discard_owner "$captured"
   fi
   rmdir "$quarantine" 2>/dev/null || true
   return 1
