@@ -330,6 +330,8 @@ The same emitter handles a merge firstmate performed and one its poll detected, 
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 A ship task whose branch still has a live validation run that teardown cannot identify as one it already inspected refuses on the same principle, because removing the worker could strand that run waiting at a gate nothing is left to answer.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
+Those proofs, and the clone refresh's up-to-date claim, are measured against the FORGE - the remote [`bin/fm-forge-remote-lib.sh`](../bin/fm-forge-remote-lib.sh) resolves, which is not always `origin`, because a clone whose origin is somebody's working copy is only ever as current as that copy.
+When no forge can be resolved or reached, neither guard substitutes the nearest available answer: teardown refuses and names what it could not consult, and the refresh reports `UNCONFIRMED:` with the reason instead of comparing or moving the clone against a remote that cannot speak for the forge.
 
 ## Optional Relay
 
@@ -395,11 +397,13 @@ Invoked in a primary home, `/stow` then cascades the same sweep to every registe
 
 The locked session-start deferred network stage, PR-based teardown, and merged-PR wake handling refresh remote-backed project clones when the clone is safe to move.
 Wake-time refreshes can target a single clone by project name, so the primary home also catches up when a secondmate reports a merge from its own home.
-Clean default-branch clones fast-forward to `origin/<default>`, and a clean detached HEAD that holds no unique commits is re-attached to the default branch before the same fast-forward path runs.
+Clean default-branch clones fast-forward to the forge's `<default>` resolved above, and a clean detached HEAD that holds no unique commits is re-attached to the default branch before the same fast-forward path runs.
 Dirty clones, non-default branches, detached HEADs with unique commits, diverged defaults, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
+With no forge to measure against, the clone reports `UNCONFIRMED:` describing only what needs no remote - which branch is checked out and whether the tree is dirty - and nothing is compared, judged, or fast-forwarded; the default branch NAME is a forge reading too, so no clone is called off-default or behind on a name origin supplied.
+Pruning is skipped on that same reading whenever the forge could not be resolved or fetched; when its fetch succeeded but it then could not name its default branch or holds no `<default>` ref, the pruning that fetch already justified has run, so a `pruned` line can accompany the `UNCONFIRMED:` one.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
-Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
-The refresh also prunes local branches whose remote is gone and that no worktree still needs.
+Local-only projects, clones without an origin remote, and a failed fetch of an origin that is itself the forge remain benign skips, while a failed fetch of a separate forge remote reports `UNCONFIRMED:` instead.
+The refresh also prunes local branches that no worktree still needs and whose gone upstream is the forge's own, so a branch tracking a working-copy origin is never deleted on that copy's say-so.
 
 ## Self-updates stay safe
 

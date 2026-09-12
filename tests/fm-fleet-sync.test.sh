@@ -87,6 +87,65 @@ advance_origin() {
   git -C "$work" push -q origin main
 }
 
+# build_forge_triangle <home> <name>: the topology that produced a false "already
+# current" - a forge everyone pushes to, the captain's own WORKING COPY cloned
+# from it, and this home's clone whose `origin` is that working copy plus a second
+# remote "gh" that reaches the forge. The clone can then be arbitrarily far behind
+# the forge while matching origin exactly. Echoes the clone path.
+build_forge_triangle() {
+  local home=$1 name=$2 work forge laptop clone forge_abs laptop_abs
+  work="$home/work-$name"
+  forge="$home/remotes/$name.git"
+  laptop="$home/laptop-$name"
+  clone="$home/projects/$name"
+  mkdir -p "$home/remotes"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  commit_file "$work" file.txt v0 C0
+
+  git clone --quiet --bare "$work" "$forge"
+  forge_abs=$(cd "$forge" && pwd)
+  git -C "$work" remote add origin "file://$forge_abs"
+  git -C "$work" push -q -u origin main
+
+  # The captain's working copy, cloned from the forge and then left behind.
+  git clone --quiet "file://$forge_abs" "$laptop"
+  laptop_abs=$(cd "$laptop" && pwd)
+
+  # This home's clone: origin is that working copy, and only the second remote
+  # reaches the forge.
+  git clone --quiet "$laptop_abs" "$clone"
+  git -C "$clone" remote add gh "file://$forge_abs"
+  printf '%s\n' "$clone"
+}
+
+# build_working_copy_origin <home> <name>: a clone whose ONLY remote is somebody's
+# working copy, so no remote here reaches a forge at all. Echoes the clone path.
+build_working_copy_origin() {
+  local home=$1 name=$2 work clone work_abs
+  work="$home/work-$name"
+  clone="$home/projects/$name"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  commit_file "$work" file.txt v0 C0
+  work_abs=$(cd "$work" && pwd)
+
+  git clone --quiet "$work_abs" "$clone"
+  printf '%s\n' "$clone"
+}
+
+# advance_forge <home> <name> <msg>: publish one more commit to the forge in a
+# build_forge_triangle world, WITHOUT touching the captain's working copy - which
+# is exactly how the clone ends up behind the forge while matching its origin.
+advance_forge() {
+  local home=$1 name=$2 msg=$3 work
+  work="$home/work-$name"
+  commit_file "$work" file.txt "$msg" "$msg"
+  git -C "$work" push -q origin main
+}
+
 head_sha() { git -C "$1" rev-parse HEAD; }
 
 # run_sync <home> [args...]: run fleet-sync against an isolated home, stdout only.
@@ -376,8 +435,277 @@ test_already_current_unchanged() {
   assert_contains "$out" "eta: already current" "already-current clone reports unchanged"
   assert_not_contains "$out" "STUCK" "already-current is not flagged STUCK"
   assert_not_contains "$out" "recovered" "already-current is not labelled recovered"
+  assert_not_contains "$out" "checked against" \
+    "a clone whose origin IS the forge names no source, so its text is unchanged"
   [ "$(head_sha "$clone")" = "$before" ] || fail "already-current clone was moved"
   pass "already-current clone is reported unchanged"
+}
+
+test_clone_behind_the_forge_is_never_reported_current() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" finanzas)
+  # Four commits published to the forge that the captain's working copy - this
+  # clone's origin - has never pulled.
+  advance_forge "$home" finanzas C1
+  advance_forge "$home" finanzas C2
+  advance_forge "$home" finanzas C3
+  advance_forge "$home" finanzas C4
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "already current" \
+    "a clone four commits behind the forge must never be reported current"
+  assert_contains "$out" "finanzas: synced" "the clone must be brought up to the forge"
+  assert_contains "$out" "checked against the forge remote gh" \
+    "a success line must name which repository answered when it is not origin"
+  [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
+    || fail "clone was not fast-forwarded to the forge's main"
+  pass "a clone behind the forge is synced to it, not called current because origin agrees"
+}
+
+test_repointed_origin_head_does_not_name_the_measured_branch() {
+  local home clone out set_head_err
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" headdrift)
+  advance_forge "$home" headdrift C1
+  # The captain checks out a branch of their own, and the next spawn's
+  # `git fetch origin` + `git remote set-head origin --auto` - what
+  # bin/fm-spawn.sh runs before every launch - repoints this clone's origin/HEAD
+  # at it. The forge's default branch never changed.
+  git -C "$home/laptop-headdrift" checkout -q -b captains-branch
+  git -C "$clone" fetch -q origin
+  set_head_err=$(git -C "$clone" remote set-head origin --auto 2>&1) \
+    || fail "fixture: could not repoint origin/HEAD: $set_head_err"
+  # Without this the test would still pass against the unfixed code, having
+  # measured nothing: origin/HEAD would simply keep the "main" that git clone
+  # left, which is also the forge's answer.
+  [ "$(git -C "$clone" symbolic-ref --short refs/remotes/origin/HEAD)" = origin/captains-branch ] \
+    || fail "fixture: origin/HEAD was not repointed at the captain's branch"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "captains-branch" \
+    "the branch the captain has checked out is not the branch the forge is measured on"
+  assert_contains "$out" "headdrift: synced" \
+    "a clone current with everything but the forge's newest main must still be caught up"
+  [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
+    || fail "clone was not fast-forwarded to the forge's main"
+  pass "a repointed origin/HEAD never names the branch measured against the forge"
+}
+
+test_unreachable_forge_never_calls_a_healthy_clone_stuck() {
+  local home clone out before set_head_err
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" nofalsealarm)
+  advance_forge "$home" nofalsealarm C1
+  # A first pass catches the clone up, so it now sits exactly on the forge's main.
+  run_sync "$home" "$clone" >/dev/null
+  before=$(head_sha "$clone")
+
+  # The captain checks out a branch of their own and the next spawn repoints this
+  # clone's origin/HEAD at it; then the forge goes out of reach. The only source
+  # left for a branch name is that repointed HEAD, which names a branch this clone
+  # was never supposed to be on.
+  git -C "$home/laptop-nofalsealarm" checkout -q -b captains-branch
+  git -C "$clone" fetch -q origin
+  set_head_err=$(git -C "$clone" remote set-head origin --auto 2>&1) \
+    || fail "fixture: could not repoint origin/HEAD: $set_head_err"
+  [ "$(git -C "$clone" symbolic-ref --short refs/remotes/origin/HEAD)" = origin/captains-branch ] \
+    || fail "fixture: origin/HEAD was not repointed at the captain's branch"
+  rm -rf "$home/remotes/nofalsealarm.git"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "nofalsealarm: UNCONFIRMED:" "an unconsultable forge must be said out loud"
+  assert_not_contains "$out" "needs attention" \
+    "a clone sitting on the forge's default branch needs nothing, and an origin-named branch cannot say otherwise"
+  assert_not_contains "$out" "captains-branch" \
+    "a branch name the forge never vouched for may not appear in any verdict"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "the clone was moved while the forge was unreachable"
+  pass "an unreachable forge never turns a repointed origin/HEAD into a needs-attention verdict"
+}
+
+test_unreachable_origin_does_not_stop_a_reachable_forge() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" offlineorigin)
+  advance_forge "$home" offlineorigin C1
+  # The captain's working copy - this clone's origin - stops answering: a ref
+  # pointing at an object it no longer has, which is what a concurrent gc or a
+  # half-finished rewrite leaves behind. It is still provably a working copy, so
+  # it still speaks for no forge, and must not decide whether the clone is measured.
+  mkdir -p "$home/laptop-offlineorigin/.git/refs/heads"
+  printf '%s\n' 0000000000000000000000000000000000000000 \
+    > "$home/laptop-offlineorigin/.git/refs/heads/main"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "skipped: fetch failed" \
+    "a remote that feeds no reading here must not abort the measurement"
+  assert_contains "$out" "offlineorigin: synced" \
+    "the forge was reachable and had the answer, so it must have been asked"
+  [ "$(git -C "$clone" rev-parse main)" = "$(git -C "$clone" rev-parse gh/main)" ] \
+    || fail "clone was not fast-forwarded to the forge's main"
+  pass "an origin that cannot answer never blocks a sync measured against the forge"
+}
+
+test_unreachable_forge_never_produces_a_divergence_verdict() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" offline)
+  advance_forge "$home" offline C1
+
+  # First pass catches the clone up to the forge, leaving it AHEAD of the
+  # captain's working copy, which is where origin still points.
+  run_sync "$home" "$clone" >/dev/null
+  before=$(head_sha "$clone")
+
+  # The forge goes out of reach - an offline laptop, a forge blip. Nothing about
+  # the clone changed, so nothing here may be reported as a problem with it.
+  rm -rf "$home/remotes/offline.git"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "STUCK" \
+    "a clone ahead of a lagging origin is not diverged, and an unreachable forge cannot prove it is"
+  assert_not_contains "$out" "diverged" "no divergence may be asserted without the forge"
+  assert_contains "$out" "offline: UNCONFIRMED:" "an unreachable forge must be reported as unmeasured"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "the clone was moved while the forge was unreachable"
+  pass "an unreachable forge yields an unmeasured report, never a divergence verdict"
+}
+
+test_forge_that_cannot_be_resolved_is_reported_not_assumed() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_working_copy_origin "$home" solo)
+  # A commit that exists ONLY in the captain's working copy, never published to
+  # any forge. Measuring the clone against that copy would find a fast-forward
+  # available and hand the clone code no forge has ever seen.
+  commit_file "$home/work-solo" file.txt v1 L1
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "already current" \
+    "matching a working copy is not evidence the clone is current with the forge"
+  assert_not_contains "$out" "solo: synced" \
+    "a fast-forward onto a working copy is a verdict answered from the wrong source"
+  assert_contains "$out" "solo: UNCONFIRMED:" "an unconsultable forge must be said out loud"
+  assert_contains "$out" "points at a local working copy" \
+    "the UNCONFIRMED line must name why the forge could not be consulted"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "an unconfirmed clone was moved"
+  pass "a clone whose forge cannot be resolved is reported unconfirmed, never assumed current"
+}
+
+# strand_gone_branch <home> <name> <clone> <branch>: leave <branch> in the clone
+# tracking a remote branch that no longer exists, which is the "[gone]" upstream
+# reading prune_gone_branches acts on. Publishing and deleting the branch happens
+# in the source repo the clone's origin points at, whatever that repo is.
+strand_gone_branch() {
+  local home=$1 name=$2 clone=$3 branch=$4 source_repo
+  source_repo="$home/work-$name"
+  git -C "$source_repo" branch -q "$branch"
+  if git -C "$source_repo" remote get-url origin >/dev/null 2>&1; then
+    git -C "$source_repo" push -q origin "$branch"
+  fi
+  git -C "$clone" fetch -q origin
+  git -C "$clone" branch -q --track "$branch" "origin/$branch"
+  if git -C "$source_repo" remote get-url origin >/dev/null 2>&1; then
+    git -C "$source_repo" push -q origin --delete "$branch"
+  fi
+  git -C "$source_repo" branch -q -D "$branch"
+  # Leave the "[gone]" upstream already recorded here rather than relying on the
+  # sync to produce it, so the fixture holds whichever remote the sync fetches.
+  git -C "$clone" fetch -q origin --prune
+}
+
+test_unconfirmed_forge_prunes_no_branch() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_working_copy_origin "$home" noprune)
+  strand_gone_branch "$home" noprune "$clone" feature
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "noprune: UNCONFIRMED:" "an unconsultable forge must be said out loud"
+  assert_not_contains "$out" "pruned feature" \
+    "a branch deleted on a working copy is no evidence its work landed on the forge"
+  git -C "$clone" show-ref --verify --quiet refs/heads/feature \
+    || fail "a local branch was deleted on a reading no forge backed"
+  pass "an unconfirmed forge deletes no branch, exactly as it moves none"
+}
+
+test_confirmed_forge_still_prunes_gone_branches() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" pruner)
+  strand_gone_branch "$home" pruner "$clone" feature
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "pruner: pruned feature" "a confirmed forge still prunes as before"
+  ! git -C "$clone" show-ref --verify --quiet refs/heads/feature \
+    || fail "expected the gone branch to be pruned when the forge is confirmed"
+  pass "a clone whose origin IS the forge prunes gone branches unchanged"
+}
+
+test_working_copy_origin_cannot_prune_a_branch_the_forge_still_holds() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" triprune)
+  # A task branch the FORGE carries, with an open PR nobody has merged.
+  git -C "$home/work-triprune" branch -q fm/task-x
+  git -C "$home/work-triprune" push -q origin fm/task-x
+  # The captain's working copy - this clone's origin - picks it up, the clone
+  # tracks it from there, and then the captain deletes their own copy of it.
+  git -C "$home/laptop-triprune" fetch -q origin
+  git -C "$home/laptop-triprune" branch -q --track fm/task-x origin/fm/task-x
+  git -C "$clone" fetch -q origin
+  git -C "$clone" branch -q --track fm/task-x origin/fm/task-x
+  git -C "$home/laptop-triprune" branch -q -D fm/task-x
+  git -C "$clone" fetch -q origin --prune
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_not_contains "$out" "pruned fm/task-x" \
+    "a branch the captain deleted in their own copy did not land on the forge"
+  git -C "$clone" show-ref --verify --quiet refs/heads/fm/task-x \
+    || fail "a branch the forge still holds was deleted on the working copy's say-so"
+  pass "a gone upstream on a working-copy origin never prunes while the forge holds the branch"
+}
+
+test_forge_tracked_branch_is_pruned_when_the_forge_drops_it() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_forge_triangle "$home" triprune2)
+  git -C "$home/work-triprune2" branch -q fm/task-y
+  git -C "$home/work-triprune2" push -q origin fm/task-y
+  # The clone tracks it from the FORGE remote, which is where it then disappears.
+  git -C "$clone" fetch -q gh
+  git -C "$clone" branch -q --track fm/task-y gh/fm/task-y
+  git -C "$home/work-triprune2" push -q origin --delete fm/task-y
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "triprune2: pruned fm/task-y" \
+    "a branch the forge itself dropped is the one reading that proves it landed"
+  ! git -C "$clone" show-ref --verify --quiet refs/heads/fm/task-y \
+    || fail "expected a forge-tracked gone branch to be pruned"
+  pass "a gone upstream on the forge remote still prunes"
+}
+
+test_bootstrap_relays_unconfirmed() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_working_copy_origin "$home" relay-unconfirmed)
+
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+
+  assert_contains "$out" "FLEET_SYNC: relay-unconfirmed: UNCONFIRMED:" \
+    "bootstrap must relay an unconfirmed clone so the session sees it"
+  : "$clone"
+  pass "bootstrap relays the UNCONFIRMED fleet-sync outcome"
 }
 
 test_no_origin_skipped() {
@@ -702,6 +1030,17 @@ test_non_default_branch_is_stuck_untouched
 test_diverged_is_stuck_untouched
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
+test_clone_behind_the_forge_is_never_reported_current
+test_repointed_origin_head_does_not_name_the_measured_branch
+test_unreachable_forge_never_calls_a_healthy_clone_stuck
+test_unreachable_origin_does_not_stop_a_reachable_forge
+test_unreachable_forge_never_produces_a_divergence_verdict
+test_forge_that_cannot_be_resolved_is_reported_not_assumed
+test_unconfirmed_forge_prunes_no_branch
+test_confirmed_forge_still_prunes_gone_branches
+test_working_copy_origin_cannot_prune_a_branch_the_forge_still_holds
+test_forge_tracked_branch_is_pruned_when_the_forge_drops_it
+test_bootstrap_relays_unconfirmed
 test_no_origin_skipped
 test_local_only_skipped
 test_single_project_by_bare_name_resolves

@@ -277,6 +277,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-forge-remote-lib.sh
+. "$SCRIPT_DIR/fm-forge-remote-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
@@ -1819,14 +1821,11 @@ validate_spawn_worktree() {  # <source> <inspect-target>
 # pushable remote. Only the absolute and file:// forms count: an unrecognized
 # form keeps the origin-based behavior below, which is the safe direction.
 spawn_origin_is_local_repository() {  # <worktree>
-  local worktree=$1 url origin_path
+  local worktree=$1 url
   url=$(git -C "$worktree" remote get-url origin 2>/dev/null) || return 1
-  case "$url" in
-    file://*) origin_path=${url#file://} ;;
-    /*) origin_path=$url ;;
-    *) return 1 ;;
-  esac
-  [ -d "$origin_path" ] && git -C "$origin_path" rev-parse --git-dir >/dev/null 2>&1
+  # bin/fm-forge-remote-lib.sh owns what a remote URL points at, so this rule and
+  # the forge resolution the landing guards use read a remote the same way.
+  fm_forge_remote_local_repo_path "$url" >/dev/null
 }
 
 # A pooled slot whose only deviation is a submodule gitlink is stale, not dirty:

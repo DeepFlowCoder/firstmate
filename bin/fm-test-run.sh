@@ -1187,6 +1187,14 @@ families_for_changed_path() {
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;
+    bin/fm-forge-remote-lib.sh)
+      # Which remote is the forge decides three separate guards: the teardown
+      # landing test, the fleet refresh's up-to-date claim, and the base a spawn
+      # launches from.
+      printf '%s\n' pr-forge
+      printf '%s\n' session-bootstrap
+      printf '%s\n' backend-dispatch
+      ;;
     bin/fm-nm-run-lib.sh)
       # Shared no-mistakes run-attribution primitives, sourced by both
       # bin/fm-crew-state.sh (pure-contract-unit) and bin/fm-teardown.sh's
