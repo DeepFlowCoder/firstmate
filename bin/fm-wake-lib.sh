@@ -9,19 +9,6 @@ STATE="${FM_STATE_OVERRIDE:-${STATE:-$FM_HOME/state}}"
 FM_WAKE_QUEUE="${FM_WAKE_QUEUE:-$STATE/.wake-queue}"
 FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
-# fm_lock_try_acquire breaks a stale lock by re-entering itself on "<lock>.steal".
-# A genuine chain is one level per steal lock that a killed reclaim leaked and
-# left on disk, so two or three levels are reachable in practice and this cap is
-# pure headroom: a backstop that bounds the bash stack whatever happens, never a
-# limit real recovery is expected to reach.
-FM_LOCK_STEAL_MAX_DEPTH="${FM_LOCK_STEAL_MAX_DEPTH:-32}"
-# A malformed override would make every single lock acquisition noisy, and this
-# is a backstop, not a knob anyone should need: take the default rather than
-# carry a value the comparison below cannot use.
-case "$FM_LOCK_STEAL_MAX_DEPTH" in
-  ''|*[!0-9]*|0) FM_LOCK_STEAL_MAX_DEPTH=32 ;;
-esac
-_FM_LOCK_STEAL_DEPTH=0
 # Resolved once at source time: fm_pid_identity and fm_path_mtime run inside 0.2s
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
@@ -378,6 +365,19 @@ fm_lock_discard_owner() {
   local ownerdir=$1
   [ -n "$ownerdir" ] || return 0
   fm_lock_clean_known_files "$ownerdir"
+  if rmdir "$ownerdir" 2>/dev/null; then
+    return 0
+  fi
+  # An owner directory holds nothing but the known files above, so whatever kept
+  # it can only be a stray owner link: a lock that is still a symlink resolves
+  # THROUGH itself, so a racer's ln -s lands inside the target owner directory
+  # instead of replacing the lock, and fm_lock_remove_stray_owner_link is how
+  # that racer normally takes its own stray back out. A racer that had the path
+  # moved out from under it first - broken, released, or reclaimed by someone
+  # else - can no longer reach its stray, and one unreachable link is enough to
+  # keep this directory on disk forever. The sweep costs a fork, so it runs only
+  # on the removal that already failed, never on the uncontended path.
+  find "$ownerdir" -maxdepth 1 -type l -exec rm -f {} + 2>/dev/null || true
   rmdir "$ownerdir" 2>/dev/null || true
 }
 
@@ -391,6 +391,14 @@ fm_lock_remove_stray_owner_link() {
 
 fm_lock_claim_blocked_by_steal() {
   local lockdir=$1 allowed_steal_owner=${2:-} steal
+  # A steal mutex is broken in place rather than stolen through a deeper name,
+  # so "<lock>.steal.steal" is a name this implementation never creates. Residue
+  # left on disk by the recursive steal this replaced must not gate it either:
+  # a home upgraded mid-storm would otherwise refuse every reclaim of that mutex
+  # forever, which is the wedge the in-place break exists to end.
+  case "$lockdir" in
+    *.steal) return 1 ;;
+  esac
   steal="$lockdir.steal"
   [ -e "$steal" ] || [ -L "$steal" ] || return 1
   if [ -n "$allowed_steal_owner" ] && fm_lock_points_to_owner "$steal" "$allowed_steal_owner"; then
@@ -821,6 +829,156 @@ fm_recovery_marker_reopen_announced() {
   fm_recovery_transition "$1" reopen-announced
 }
 
+# Take a steal mutex out of circulation, which is the only way its removal can
+# be bound to the check that authorised it: a check and a separate rm are two
+# commands with a fork between them, and a racer that completed the whole break
+# and installed its own live mutex in that gap has it deleted by the racer still
+# acting on the older read. An atomic rename has no gap - exactly one racer
+# captures a given path and every other gets ENOENT - and the winner is then
+# alone with what it captured, so it can decide from that copy instead of from
+# one more look at a path other racers are still moving.
+#
+# <expected> is the owner directory the caller proved dead, or empty for the
+# legacy directory form, which has no owner. The path is bound to it twice: once
+# immediately before the rename, so a racer that has already been overtaken
+# never lifts the mutex at all, and once on the captured copy, which is what
+# catches an overtake that landed inside that last fork. The first check is what
+# keeps a storm's stragglers out of the restore path: without it every one of
+# them lifts the live mutex the winner just installed and puts it back, and a
+# holder that looks at its own path inside one of those windows finds it gone
+# and abandons a reclaim it had already won.
+#
+# A copy that turns out not to be this racer's goes back where it came from: a
+# link through an ln -s that cannot overwrite an occupant, the legacy directory
+# through a rename and only while the path is still free, since a directory has
+# no non-clobbering create. Restoring either one over an occupant would destroy
+# a live mutex exactly the way the unbound rm does, so a copy that cannot go
+# back is discarded rather than stranded, and the break reports contention.
+#
+# A breaker killed between the rename and the cleanup leaves its quarantine
+# directory behind and nothing collects it. That is tolerated rather than swept:
+# the name is neither "<lock>.steal" nor "<lock>.steal.steal", so it provokes no
+# further steal and the one-level bound this mechanism exists for still holds.
+#
+# Status 0 the path was this racer's to take and is now clear, 1 it was not.
+_fm_lock_steal_capture() {
+  local steal=$1 expected=$2 quarantine captured target
+  if [ -n "$expected" ]; then
+    fm_lock_points_to_owner "$steal" "$expected" || return 1
+  else
+    { [ ! -L "$steal" ] && [ -d "$steal" ]; } || return 1
+  fi
+  quarantine=$(mktemp -d "$steal.dead.XXXXXX" 2>/dev/null) || return 1
+  captured="$quarantine/steal"
+  if ! mv "$steal" "$captured" 2>/dev/null; then
+    rmdir "$quarantine" 2>/dev/null || true
+    return 1
+  fi
+  if [ -n "$expected" ]; then
+    if fm_lock_points_to_owner "$captured" "$expected"; then
+      rm -f "$captured" 2>/dev/null || true
+      rmdir "$quarantine" 2>/dev/null || true
+      return 0
+    fi
+  elif [ ! -L "$captured" ] && [ -d "$captured" ]; then
+    fm_lock_discard_owner "$captured"
+    rmdir "$quarantine" 2>/dev/null || true
+    return 0
+  fi
+  target=$(readlink "$captured" 2>/dev/null || true)
+  if [ -n "$target" ]; then
+    if ! { ln -s "$target" "$steal" 2>/dev/null && fm_lock_points_to_owner "$steal" "$target"; }; then
+      # ln -s into a path an occupying directory resolves through lands inside
+      # it rather than failing, and that stray is unreachable to everyone else.
+      fm_lock_remove_stray_owner_link "$steal" "$target"
+    fi
+    rm -f "$captured" 2>/dev/null || true
+  elif [ -e "$steal" ] || [ -L "$steal" ] || ! mv "$captured" "$steal" 2>/dev/null; then
+    fm_lock_discard_owner "$captured"
+  fi
+  rmdir "$quarantine" 2>/dev/null || true
+  return 1
+}
+
+# Break a steal mutex whose owner process is gone, in place, without creating a
+# deeper "<lock>.steal.steal" name to arbitrate with.
+#
+# The owner directory is what makes that safe: fm_lock_owner_dir mints a unique
+# one per acquisition and nothing ever reuses it, so renaming it into a private
+# quarantine succeeds for exactly one racer and every other racer finds it
+# already gone. Only that winner goes on to take the mutex out of circulation,
+# and _fm_lock_steal_capture takes it by the same kind of rename, so a break can
+# never carry off a lock another process installed meanwhile. Breaking is not
+# acquiring: the ordinary atomic create that follows is what decides who gets
+# the mutex, so two processes reaching this at once cannot both come away
+# holding it.
+#
+# The proof of death has to be bound to the directory that gets renamed, or the
+# arbitration proves nothing: a racer that reads the pid through the link and
+# then re-resolves the link can quarantine an owner it never examined, because
+# another racer may have completed the whole break and installed a live mutex in
+# between. So the link is resolved once and the pid comes out of that owner
+# directory itself, the way fm_lock_release and fm_lock_recheck_stale_owner read
+# it; an owner directory's pid file only ever records its creator.
+#
+# Status 0 the stale mutex is broken and the path is free to compete for, 1 it
+# has a live or too-fresh owner, or another racer won the break.
+_fm_lock_steal_break_stale() {
+  local steal=$1 owner pid quarantine rc
+  if [ -L "$steal" ]; then
+    owner=$(fm_lock_link_owner "$steal" 2>/dev/null || true)
+    [ -n "$owner" ] || return 1
+    if [ ! -d "$owner" ]; then
+      # The owner directory is already gone, so this link records no pid at all
+      # and no process can be holding the mutex through it. The dangling link is
+      # the whole of what the killed reclaim left behind, and capturing it is
+      # what says this racer rather than another is the one clearing it.
+      if fm_lock_mid_acquire_is_fresh "$steal" ''; then
+        return 1
+      fi
+      rc=0
+      _fm_lock_steal_capture "$steal" "$owner" || rc=$?
+      return "$rc"
+    fi
+    pid=$(cat "$owner/pid" 2>/dev/null || true)
+    if fm_pid_alive "$pid"; then
+      return 1
+    fi
+    if fm_lock_mid_acquire_is_fresh "$owner" "$pid"; then
+      return 1
+    fi
+    quarantine=$(mktemp -d "$owner.dead.XXXXXX" 2>/dev/null) || return 1
+    # Losing this last check means the mutex stopped being the one just proved
+    # dead, so there is nothing here to break: report ordinary contention.
+    if ! fm_lock_points_to_owner "$steal" "$owner" \
+      || ! mv "$owner" "$quarantine/owner" 2>/dev/null; then
+      rmdir "$quarantine" 2>/dev/null || true
+      return 1
+    fi
+    rc=0
+    _fm_lock_steal_capture "$steal" "$owner" || rc=$?
+    fm_lock_discard_owner "$quarantine/owner"
+    rmdir "$quarantine" 2>/dev/null || true
+    return "$rc"
+  fi
+  # The directory form carries no owner directory to arbitrate with, so the
+  # mutex itself is the only thing there is to capture. fm_lock_try_create never
+  # builds this form - it is what fixtures construct and what predates the
+  # symlink owner - so a link where this expected a directory is a mutex some
+  # racer rebuilt on the path, which the capture puts back untouched.
+  [ -d "$steal" ] || return 1
+  pid=$(cat "$steal/pid" 2>/dev/null || true)
+  if fm_pid_alive "$pid"; then
+    return 1
+  fi
+  if fm_lock_mid_acquire_is_fresh "$steal" "$pid"; then
+    return 1
+  fi
+  rc=0
+  _fm_lock_steal_capture "$steal" '' || rc=$?
+  return "$rc"
+}
+
 fm_lock_try_acquire() {
   local lockdir=$1 pid steal cur rc create_rc steal_rc steal_owner primary_owner
   FM_LOCK_HELD_PID=
@@ -834,11 +992,15 @@ fm_lock_try_acquire() {
   fi
 
   # An unwritable lock directory has no holder to break, and the steal path below
-  # would ask that same directory for one more path, fail identically, and recurse
-  # a level deeper forever. That is not theoretical: with the state directory
-  # full, this recursed roughly 900 frames deep and bash died on SIGSEGV, which is
-  # how a watcher cycle's process-event reconcile reported "Segmentation fault:
-  # 11" while its own writes were still failing with "No space left on device".
+  # would ask that same directory for one more path and fail identically. Back
+  # when that path re-entered itself without bound it did so a level deeper every
+  # time: with the state directory full, it recursed roughly 900 frames deep and
+  # bash died on SIGSEGV, which is how a watcher cycle's process-event reconcile
+  # reported "Segmentation fault: 11" while its own writes were still failing
+  # with "No space left on device". The nesting is now capped at one level by
+  # construction, so this guard no longer stands between that crash and the
+  # fleet, but the verdict is still the caller's answer rather than pointless
+  # work: nothing under an unwritable directory can be created or broken.
   # fm_lock_try_create's own status is what says so; see its contract for why the
   # reason has to come from there rather than be guessed at here.
   if [ "$create_rc" -eq 2 ]; then
@@ -877,22 +1039,40 @@ fm_lock_try_acquire() {
     return 1
   fi
 
+  # A stale holder is reclaimed under "<lock>.steal", the mutex that serializes
+  # reclaims of this lock - unless this lock IS such a mutex. Arbitrating a
+  # steal mutex through yet another "<lock>.steal.steal" level is what made an
+  # interrupted reclaim feed itself: the killed process left its own level on
+  # disk without having cleared the level below it, and the only way the next
+  # acquirer knew to clear that leftover was to create one more level for it. So
+  # every kill inside the steal window added one permanent name, each of them a
+  # name whose sole effect was to provoke another steal, until the chain was
+  # deep enough that no acquisition got through it and the fleet's one
+  # unbounded waiter spun on it forever. Breaking the mutex in place instead
+  # holds the nesting at exactly one level, structurally rather than by budget.
+  case "$lockdir" in
+    *.steal)
+      if ! _fm_lock_steal_break_stale "$lockdir"; then
+        FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+        FM_LOCK_OWNER_DIR=
+        return 1
+      fi
+      rc=0
+      fm_lock_try_create "$lockdir" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        # shellcheck disable=SC2034 # Read by sourcing callers after lock acquisition.
+        FM_LOCK_RECOVERED_PID=$pid
+        return 0
+      fi
+      FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
+      FM_LOCK_OWNER_DIR=
+      return "$rc"
+      ;;
+  esac
+
   steal="$lockdir.steal"
-  # Structural backstop for the same runaway. The status-2 guard above is what
-  # actually bounds it - a directory that cannot be written says so on the very
-  # first level instead of failing identically one frame deeper - so this cap only
-  # has to sit above any chain of leaked steal locks real recovery can meet. The
-  # counter is restored immediately after the call, so an outer caller keeps its
-  # own budget and a later independent acquire starts from zero.
-  if [ "$_FM_LOCK_STEAL_DEPTH" -ge "$FM_LOCK_STEAL_MAX_DEPTH" ]; then
-    FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
-    FM_LOCK_OWNER_DIR=
-    return 1
-  fi
-  _FM_LOCK_STEAL_DEPTH=$((_FM_LOCK_STEAL_DEPTH + 1))
   steal_rc=0
   fm_lock_try_acquire "$steal" || steal_rc=$?
-  _FM_LOCK_STEAL_DEPTH=$((_FM_LOCK_STEAL_DEPTH - 1))
   if [ "$steal_rc" -ne 0 ]; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
