@@ -1188,9 +1188,9 @@ __FM_BEARINGS_BOARD_DATA__
   lanes.forEach(function (l) {
     var card = el("div", "bb-lane bb-lane--" + laneTone(l));
     /* A named lane's head already says the project, so an identity column there
-       repeats it on every row and spends width the title and reason need. Only
-       the deliberate no-project lane, where the row has no other identity,
-       pays for one. */
+       repeats it on every row and spends width the title and reason need. Among
+       the lanes, only the deliberate no-project lane, where the row has no other
+       identity, pays for one. */
     function identity(t) { return l.named ? null : rowId(t); }
 
     var head = el("div", "bb-lane__head");
