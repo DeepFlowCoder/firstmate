@@ -424,7 +424,8 @@ Observed output:
 FM_TEST_SUMMARY total=8 failed=0 skipped_gate=0 duration_ms=617507
 ```
 
-The pull-guard session-ownership separation (`bin/fm-guard.sh` no longer prints a repair, arm, or drain instruction for a home whose session lock is provably held by another live session) was verified on 2026-09-12 with the installed ShellCheck 0.11.0 and the isolated behavior suites below.
+The pull-guard session-ownership separation was verified on 2026-09-12 with the installed ShellCheck 0.11.0 and the isolated behavior suites below.
+For a home whose session lock is provably held by another live session, `bin/fm-guard.sh` prints one informational line naming that home and the pid holding it, in place of the bordered banner, with no repair, arm, or drain instruction; the suites pin that it stays one line when the next guarded command repeats it, and that it never writes the owning home's episode marker.
 The verdict reads `state/.lock`, process liveness, and this process's harness ancestry, all of which the portable suites drive with real processes and a deterministic process table, so no live-harness run is required and none was claimed.
 
 ```sh
@@ -438,7 +439,7 @@ Observed output:
 ```text
 fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 fm-doc-audience-check: ok surfaces=91 local_links=312
-FM_TEST_SUMMARY total=6 failed=0 skipped_gate=0 duration_ms=205608
+FM_TEST_SUMMARY total=6 failed=0 skipped_gate=0 duration_ms=177936
 ```
 
 The actionable-close ordering correction was reverified on 2026-08-02 against an identity-matched live successor.

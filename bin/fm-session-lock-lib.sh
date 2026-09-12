@@ -213,10 +213,20 @@ fm_session_lock_pid() {
 # The ancestry is walked once here rather than through fm_session_lock_owned_by_self,
 # because this runs at the foot of ordinary guarded commands and each walk costs a
 # run of process-table reads.
+# On a true verdict FM_SESSION_LOCK_OTHER_PID names the session that was proved,
+# so a caller reporting it names the pid the verdict was made on instead of
+# re-reading a lock that session may have released in the meantime; it is empty
+# whenever the verdict is false.
+FM_SESSION_LOCK_OTHER_PID=
 fm_session_lock_held_by_other() {
   local state=$1 lock_pid pids
+  FM_SESSION_LOCK_OTHER_PID=
   lock_pid=$(fm_session_lock_pid "$state") || return 1
   fm_harness_pid_alive "$lock_pid" || return 1
   pids=$(fm_harness_ancestry_pids) || return 1
-  ! fm_pid_list_contains "$pids" "$lock_pid"
+  if fm_pid_list_contains "$pids" "$lock_pid"; then
+    return 1
+  fi
+  # shellcheck disable=SC2034 # Read by callers after the function returns.
+  FM_SESSION_LOCK_OTHER_PID=$lock_pid
 }

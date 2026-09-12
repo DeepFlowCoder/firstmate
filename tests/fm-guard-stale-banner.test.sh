@@ -731,8 +731,8 @@ test_pi_harness_routes_itself_to_the_extension_model() {
 # holds this home" produced the SAME banner, so a session with no authority over
 # the home was told to repair its supervision - the one action that collides with
 # the session that does own it.
-test_foreign_session_lock_drops_every_repair_instruction() {
-  local dir home out other
+test_foreign_session_lock_prints_one_informational_line() {
+  local dir home out other lines
   dir=$(make_guard_case foreign-lock)
   home=$(case_home "$dir")
   start_harness_session || fail "could not start the competing session"
@@ -741,17 +741,56 @@ test_foreign_session_lock_drops_every_repair_instruction() {
   out=$(run_guard_in_session "$dir" no)
   stop_harness_session "$other"
 
+  lines=$(awk 'END { print NR + 0 }' <<EOF
+$out
+EOF
+)
+  [ "$lines" -eq 1 ] || fail "a home held by another session must get ONE line, got $lines: $out"
+  assert_not_contains "$out" "●" \
+    "the notice for a home held by another session must not be a bordered banner"
   assert_contains "$out" "ANOTHER SESSION HOLDS THIS HOME" \
-    "the banner must say the home is held by another session"
+    "the notice must say the home is held by another session"
+  assert_contains "$out" "$home" \
+    "the notice must name the home it is about"
   assert_contains "$out" "(pid $other)" \
-    "the banner must name the session that holds the home"
+    "the notice must name the session that holds the home"
   assert_not_contains "$out" "Trust the emitted supervision protocol" \
     "a session with no authority over this home must not be told to repair its supervision"
-  assert_contains "$out" "Watcher repair belongs to the session holding the fleet lock" \
-    "the banner must route repair to the session that holds the lock"
+  assert_not_contains "$out" "Watcher repair belongs to" \
+    "the notice must carry no repair instruction at all"
   assert_absent "$home/state/.guard-watcher-stale-banner" \
     "a session with no authority over this home must not claim its down-episode"
-  pass "fm-guard stale banner: a home held by another session gets no repair instruction"
+  pass "fm-guard stale banner: a home held by another session gets one informational line"
+}
+
+# The single line is deliberately NOT deduplicated, because deduplicating it would
+# mean writing the owning home's episode marker from a session with no authority
+# over it. That is only tolerable because it stays one line: every later guarded
+# command in the same state repeats that line and never escalates to the banner.
+test_foreign_session_lock_repeats_the_same_single_line() {
+  local dir home out1 out2 other lines
+  dir=$(make_guard_case foreign-lock-repeated)
+  home=$(case_home "$dir")
+  start_harness_session || fail "could not start the competing session"
+  other=$HARNESS_SESSION_PID
+  printf '%s\n' "$other" > "$home/state/.lock"
+  out1=$(run_guard_in_session "$dir" no)
+  out2=$(run_guard_in_session "$dir" no)
+  stop_harness_session "$other"
+
+  [ "$out2" = "$out1" ] || fail "the second guarded command changed the notice: $out2"
+  lines=$(awk 'END { print NR + 0 }' <<EOF
+$out2
+EOF
+)
+  [ "$lines" -eq 1 ] || fail "the second guarded command must still print ONE line, got $lines: $out2"
+  assert_not_contains "$out2" "●" \
+    "a repeated foreign-lock notice must never escalate to the bordered banner"
+  assert_contains "$out2" "(pid $other)" \
+    "the repeated notice must still name the session that holds the home"
+  assert_absent "$home/state/.guard-watcher-stale-banner" \
+    "repeating the notice must still leave the owning home's episode marker unwritten"
+  pass "fm-guard stale banner: the foreign-lock notice repeats as one line, never as a banner"
 }
 
 test_foreign_session_lock_drops_the_drain_instruction() {
@@ -819,7 +858,8 @@ test_unproven_lock_owners_keep_the_repair_instruction() {
 
 test_first_stale_call_prints_full_banner
 test_repeated_same_episode_prints_reminder_only
-test_foreign_session_lock_drops_every_repair_instruction
+test_foreign_session_lock_prints_one_informational_line
+test_foreign_session_lock_repeats_the_same_single_line
 test_foreign_session_lock_drops_the_drain_instruction
 test_own_session_lock_keeps_the_repair_instruction
 test_unproven_lock_owners_keep_the_repair_instruction
