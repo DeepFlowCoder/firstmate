@@ -42,6 +42,9 @@ Requiring the turn-end guard extension as well as the watch extension is deliber
 Without that proof an unheld lock alarms exactly as it did before, so an unloaded, version-drifted, or exited Pi session is loud immediately, and a cycle the extension never restores is loud once the beacon passes grace.
 Under every persistent-watcher harness a live identity-matched watcher with a fresh beacon is still required, so the pull guard keeps the same strict semantics there.
 Its banner names the true failing condition, either a missing live watcher process or a genuinely stale beacon with its real age, and keys the once-per-episode dedup on that condition rather than the beacon mtime.
+A down watcher says nothing about who may restore it, so the banner also separates a home this session may repair from a home another session already holds.
+When `fm_session_lock_held_by_other` in `bin/fm-session-lock-lib.sh` proves a DIFFERENT live harness session holds this home's session lock, the banner names that session and drops every repair, arm, and drain instruction, the same non-mutating shape session start already uses when it could not verify fleet-lock ownership; it also leaves the down-episode marker untouched, because that episode belongs to the owning session.
+That proof is positive in both directions: an absent, malformed, dead, or non-harness lock owner leaves repair authority here, and so does an ancestry this process cannot resolve, which is what keeps the away-mode daemon and other detached helpers acting for the lock-owning session from outside its process tree.
 
 `FM_STATE_OVERRIDE` wins over `FM_HOME/state`, and `FM_HOME` wins over repository-root `state/`.
 `FM_GUARD_GRACE` controls beacon freshness and defaults to 300 seconds.

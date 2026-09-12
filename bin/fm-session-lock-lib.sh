@@ -5,7 +5,9 @@
 # lock, and does the current process descend from that same harness?" decision.
 # bin/fm-lock.sh uses it to acquire and inspect state/.lock;
 # bin/fm-claude-stop-autoarm.sh uses it to prove a Stop hook fires inside the
-# lock-owning primary session before it may arm or rewake.
+# lock-owning primary session before it may arm or rewake;
+# bin/fm-guard.sh uses it to tell an unowned home, which this session may repair,
+# from a home another live session holds, which it must leave alone.
 # This file is sourced by scripts and has no side effects on source.
 
 # Cursor process identity is NOT expressible as a command-name pattern and is
@@ -152,6 +154,19 @@ fm_harness_pid_alive() {
   fm_harness_process_matches "$comm" "$args"
 }
 
+# True when the newline-separated pid list $1 contains pid $2. One owner of the
+# membership rule both lock questions below are answered with, so a single walk
+# of the process ancestry can serve either of them.
+fm_pid_list_contains() {
+  local pids=$1 needle=$2 pid
+  while IFS= read -r pid; do
+    [ "$pid" = "$needle" ] && return 0
+  done <<EOF
+$pids
+EOF
+  return 1
+}
+
 # True when state dir $1 holds a session lock whose pid is ANY harness ancestor
 # of the current process: this script runs inside the session that owns the
 # home's fleet lock. Membership is the honest test of that question, because the
@@ -161,16 +176,47 @@ fm_harness_pid_alive() {
 # lock, a malformed lock, a lock held by a harness outside this ancestry, or an
 # ancestry that cannot be resolved all fail closed.
 fm_session_lock_owned_by_self() {
-  local state=$1 lock_pid pids pid
+  local state=$1 lock_pid pids
   lock_pid=$(cat "$state/.lock" 2>/dev/null || true)
   case "$lock_pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
   pids=$(fm_harness_ancestry_pids) || return 1
-  while IFS= read -r pid; do
-    [ "$pid" = "$lock_pid" ] && return 0
-  done <<EOF
-$pids
-EOF
-  return 1
+  fm_pid_list_contains "$pids" "$lock_pid"
+}
+
+# Print the session lock pid recorded in state dir $1, or return 1.
+# Accepts only what bin/fm-lock.sh is allowed to publish: a regular, non-symlink
+# file holding one numeric pid.
+fm_session_lock_pid() {
+  local state=$1 lock="$1/.lock" lock_pid
+  [ -f "$lock" ] && [ ! -L "$lock" ] || return 1
+  lock_pid=$(cat "$lock" 2>/dev/null) || return 1
+  case "$lock_pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$lock_pid"
+}
+
+# True when state dir $1 holds a session lock naming a LIVE harness process that
+# is NOT in this process's harness ancestry: ANOTHER firstmate session owns this
+# home right now, so nothing running here may repair, drain, or otherwise mutate
+# its fleet state.
+# This is the exact complement of fm_session_lock_owned_by_self for the one case
+# that can be proved, and it requires positive proof in both directions: an
+# absent, malformed, dead, or non-harness lock is not another session, and an
+# ancestry this process cannot resolve is not proof of foreignness either.
+# That second requirement is deliberate rather than incidental. The away-mode
+# daemon and other detached helpers act FOR the lock-owning session from outside
+# its process tree, where the ancestry walk finds no harness at all; treating
+# that as a foreign home would strip the repair instruction they exist to act on.
+# The ancestry is walked once here rather than through fm_session_lock_owned_by_self,
+# because this runs at the foot of ordinary guarded commands and each walk costs a
+# run of process-table reads.
+fm_session_lock_held_by_other() {
+  local state=$1 lock_pid pids
+  lock_pid=$(fm_session_lock_pid "$state") || return 1
+  fm_harness_pid_alive "$lock_pid" || return 1
+  pids=$(fm_harness_ancestry_pids) || return 1
+  ! fm_pid_list_contains "$pids" "$lock_pid"
 }

@@ -120,6 +120,53 @@ record_pi_extension_session() {
   return 0
 }
 
+# A stand-in harness session process. bin/fm-session-lock-lib.sh identifies a
+# session by an exact harness component in its executable path or argv[0], so a
+# bash named "claude" is a real live process that the lock predicates recognize
+# exactly as they recognize a session - on both platforms' ps reporting.
+HARNESS_BIN="$TMP_ROOT/harness-bin/claude"
+mkdir -p "$TMP_ROOT/harness-bin"
+ln -s /bin/bash "$HARNESS_BIN"
+
+# Start a live stand-in harness session and publish its pid in
+# HARNESS_SESSION_PID. The pid is returned through a variable, not stdout, so the
+# session is a real child of the caller and never inherits a command
+# substitution's pipe - which would block that substitution until it exits.
+HARNESS_SESSION_PID=
+start_harness_session() {
+  local i
+  "$HARNESS_BIN" -c 'sleep 60; :' >/dev/null 2>&1 &
+  HARNESS_SESSION_PID=$!
+  i=0
+  while [ "$i" -lt 200 ]; do
+    case "$(ps -o args= -p "$HARNESS_SESSION_PID" 2>/dev/null)" in
+      *"$HARNESS_BIN"*) return 0 ;;
+    esac
+    sleep 0.05
+    i=$((i + 1))
+  done
+  return 1
+}
+
+stop_harness_session() {
+  local pid=$1
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
+# Run the guard from INSIDE a live stand-in harness session, the way a firstmate
+# session runs its guarded commands. With <claim-lock> = self that session first
+# records its own pid in state/.lock, exactly as session start does.
+run_guard_in_session() {
+  local dir=$1 claim=$2 model=${3:-persistent}
+  # shellcheck disable=SC2016 # deliberate: $$ and the positional args expand inside the stand-in session, not here
+  "$HARNESS_BIN" -c '
+    [ "$4" != self ] || printf "%s\n" "$$" > "$1/state/.lock"
+    FM_ROOT_OVERRIDE="$2" FM_HOME="$1" FM_GUARD_GRACE=999 FM_SUPERVISION_MODEL="$3" \
+      "$5/bin/fm-guard.sh" 2>&1
+    :' _ "$(case_home "$dir")" "$(case_root "$dir")" "$model" "$claim" "$ROOT"
+}
+
 count_text() {
   local haystack=$1 needle=$2
   awk -v needle="$needle" 'index($0, needle) { c++ } END { print c + 0 }' <<EOF
@@ -680,8 +727,102 @@ test_pi_harness_routes_itself_to_the_extension_model() {
   pass "fm-guard stale banner: Pi and pi-signed primaries route themselves to the extension model"
 }
 
+# The defect this block pins: "nobody is supervising" and "another live session
+# holds this home" produced the SAME banner, so a session with no authority over
+# the home was told to repair its supervision - the one action that collides with
+# the session that does own it.
+test_foreign_session_lock_drops_every_repair_instruction() {
+  local dir home out other
+  dir=$(make_guard_case foreign-lock)
+  home=$(case_home "$dir")
+  start_harness_session || fail "could not start the competing session"
+  other=$HARNESS_SESSION_PID
+  printf '%s\n' "$other" > "$home/state/.lock"
+  out=$(run_guard_in_session "$dir" no)
+  stop_harness_session "$other"
+
+  assert_contains "$out" "ANOTHER SESSION HOLDS THIS HOME" \
+    "the banner must say the home is held by another session"
+  assert_contains "$out" "(pid $other)" \
+    "the banner must name the session that holds the home"
+  assert_not_contains "$out" "Trust the emitted supervision protocol" \
+    "a session with no authority over this home must not be told to repair its supervision"
+  assert_contains "$out" "Watcher repair belongs to the session holding the fleet lock" \
+    "the banner must route repair to the session that holds the lock"
+  assert_absent "$home/state/.guard-watcher-stale-banner" \
+    "a session with no authority over this home must not claim its down-episode"
+  pass "fm-guard stale banner: a home held by another session gets no repair instruction"
+}
+
+test_foreign_session_lock_drops_the_drain_instruction() {
+  local dir home out other
+  dir=$(make_guard_case foreign-lock-queue)
+  home=$(case_home "$dir")
+  start_harness_session || fail "could not start the competing session"
+  other=$HARNESS_SESSION_PID
+  printf '%s\n' "$other" > "$home/state/.lock"
+  printf '%s\n' "1700000000	1	signal	task	signal: crewmate needs a decision" > "$home/state/.wake-queue"
+  out=$(run_guard_in_session "$dir" no)
+  stop_harness_session "$other"
+
+  assert_contains "$out" "queued wakes pending" \
+    "the queued-wake hazard must still be reported for a home held by another session"
+  assert_not_contains "$out" "drain them with" \
+    "queued wakes of a home held by another session must not be drained from here"
+  assert_contains "$out" "lacks verified fleet-lock ownership" \
+    "the queued-wake warning must say why this session left them alone"
+  pass "fm-guard stale banner: a home held by another session keeps its queued wakes"
+}
+
+test_own_session_lock_keeps_the_repair_instruction() {
+  local dir home out
+  dir=$(make_guard_case own-lock)
+  home=$(case_home "$dir")
+  out=$(run_guard_in_session "$dir" self)
+  assert_contains "$out" "Trust the emitted supervision protocol" \
+    "the session holding this home must keep its repair instruction"
+  assert_not_contains "$out" "ANOTHER SESSION HOLDS THIS HOME" \
+    "the session holding this home must not be told another session holds it"
+  assert_present "$home/state/.guard-watcher-stale-banner" \
+    "the session holding this home must still claim its down-episode"
+  pass "fm-guard stale banner: the session holding the home keeps its repair instruction"
+}
+
+# Only a live harness process proves another session. A dead owner, and a live
+# process that is not a harness at all, both leave repair authority here - the
+# home is unowned, which is the repairable case.
+test_unproven_lock_owners_keep_the_repair_instruction() {
+  local dir out pid case_name
+  for case_name in dead-session non-harness-pid; do
+    dir=$(make_guard_case "unproven-lock-$case_name")
+    case "$case_name" in
+      dead-session)
+        start_harness_session || fail "could not start the session for $case_name"
+        pid=$HARNESS_SESSION_PID
+        stop_harness_session "$pid"
+        ;;
+      non-harness-pid)
+        sleep 60 &
+        pid=$!
+        ;;
+    esac
+    printf '%s\n' "$pid" > "$(case_home "$dir")/state/.lock"
+    out=$(run_guard_in_session "$dir" no)
+    [ "$case_name" = non-harness-pid ] && stop_harness_session "$pid"
+    assert_contains "$out" "Trust the emitted supervision protocol" \
+      "$case_name must not be mistaken for another live session"
+    assert_not_contains "$out" "ANOTHER SESSION HOLDS THIS HOME" \
+      "$case_name must not be reported as another session holding the home"
+  done
+  pass "fm-guard stale banner: an unproven lock owner leaves repair authority here"
+}
+
 test_first_stale_call_prints_full_banner
 test_repeated_same_episode_prints_reminder_only
+test_foreign_session_lock_drops_every_repair_instruction
+test_foreign_session_lock_drops_the_drain_instruction
+test_own_session_lock_keeps_the_repair_instruction
+test_unproven_lock_owners_keep_the_repair_instruction
 test_pi_harness_routes_itself_to_the_extension_model
 test_extension_handoff_with_live_session_is_healthy
 test_extension_handoff_with_empty_lock_is_healthy

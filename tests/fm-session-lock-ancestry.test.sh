@@ -220,6 +220,88 @@ SH
   pass "session-lock: a live version-named session holding the lock is not mistaken for a stale owner"
 }
 
+# "Another live session holds this home" is the complement of owning the lock,
+# and only positive proof establishes it: guards act on this answer by dropping
+# every repair instruction, so both a false positive and a false negative send a
+# session the wrong way.
+test_another_live_session_is_proved_not_assumed() {
+  local dir fakebin
+  dir="$TMP_ROOT/held-by-other"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+# 600 is another live session, 650 is this process's own session, 660 is a live
+# process that is no harness at all, and 690 is dead (reported by nothing).
+case "$pid:$field" in
+  600:comm=) printf '%s\n' claude ;;
+  600:args=) printf '%s\n' claude ;;
+  600:ppid=) printf '%s\n' 1 ;;
+  650:comm=) printf '%s\n' claude ;;
+  650:args=) printf '%s\n' claude ;;
+  650:ppid=) printf '%s\n' 1 ;;
+  660:comm=) printf '%s\n' sleep ;;
+  660:args=) printf '%s\n' 'sleep 60' ;;
+  660:ppid=) printf '%s\n' 1 ;;
+  690:*) exit 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' bash ;;
+  *:ppid=) printf '%s\n' "${FM_TEST_SESSION_PID:-650}" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  printf '600\n' > "$dir/state/.lock"
+  lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'" \
+    || fail "a live session holding this home's lock from outside this ancestry was not detected"
+
+  printf '650\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then
+    fail "this process's own session was reported as another session holding the home"
+  fi
+
+  printf '690\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then
+    fail "a dead lock owner was reported as another live session"
+  fi
+
+  printf '660\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then
+    fail "a live process that is no harness was reported as another session"
+  fi
+
+  printf 'not-a-pid\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then
+    fail "a malformed lock was reported as another session"
+  fi
+
+  rm -f "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then
+    fail "an absent lock was reported as another session"
+  fi
+
+  # The deliberate fail-open direction: detached helpers such as the away-mode
+  # daemon act FOR the lock-owning session from outside its process tree, where
+  # no harness ancestor exists at all. An ancestry this process cannot resolve is
+  # not evidence of a foreign home, so they keep the repair instruction they act on.
+  printf '600\n' > "$dir/state/.lock"
+  if FM_TEST_SESSION_PID=1 lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then
+    fail "an unresolvable ancestry was treated as proof that another session holds the home"
+  fi
+  FM_TEST_SESSION_PID=1 lib_eval "$fakebin" 'fm_harness_pid_alive 600' \
+    || fail "the fixture's competing session was not live for the unresolvable-ancestry case"
+  pass "session-lock: another live session holding the home is proved, never assumed"
+}
+
 # --- end-to-end layer: the real Stop auto-arm in real process trees ----------
 
 install_autoarm_scripts() {
@@ -360,6 +442,7 @@ test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
+test_another_live_session_is_proved_not_assumed
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
