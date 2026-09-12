@@ -1294,15 +1294,16 @@ __FM_BEARINGS_BOARD_DATA__
   if (anyNotice) {
     chartedWarnings.forEach(function (t) {
       var wrong = reasonText(t);
-      var where = rowId(t);
       var noticed = agoText(t.since);
       notices.appendChild(workRow({
         badgeTone: "danger",
         badgeText: "needs repair",
         title: t.title,
-        sub: wrong ? wrong + " · " + where
-          : noticed ? "recorded " + noticed + " · " + where
-          : where
+        sub: wrong || (noticed ? "recorded " + noticed : ""),
+        /* An alarm that cannot say what it is about is not an alarm, so its
+           identity is passed as identity and never appended to the reason:
+           the reason clamps, and a narrow board would cut the tail off first. */
+        id: rowId(t)
       }));
     });
     if (chartedMoreWarnings) {
