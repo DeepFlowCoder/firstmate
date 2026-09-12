@@ -1188,9 +1188,9 @@ __FM_BEARINGS_BOARD_DATA__
   lanes.forEach(function (l) {
     var card = el("div", "bb-lane bb-lane--" + laneTone(l));
     /* A named lane's head already says the project, so an identity column there
-       repeats it on every row and spends width the title and reason need. Only
-       the deliberate no-project lane, where the row has no other identity,
-       pays for one. */
+       repeats it on every row and spends width the title and reason need. Among
+       the lanes, only the deliberate no-project lane, where the row has no other
+       identity, pays for one. */
     function identity(t) { return l.named ? null : rowId(t); }
 
     var head = el("div", "bb-lane__head");
@@ -1294,15 +1294,16 @@ __FM_BEARINGS_BOARD_DATA__
   if (anyNotice) {
     chartedWarnings.forEach(function (t) {
       var wrong = reasonText(t);
-      var where = rowId(t);
       var noticed = agoText(t.since);
       notices.appendChild(workRow({
         badgeTone: "danger",
         badgeText: "needs repair",
         title: t.title,
-        sub: wrong ? wrong + " · " + where
-          : noticed ? "recorded " + noticed + " · " + where
-          : where
+        sub: wrong || (noticed ? "recorded " + noticed : ""),
+        /* An alarm that cannot say what it is about is not an alarm, so its
+           identity is passed as identity and never appended to the reason:
+           the reason clamps, and a narrow board would cut the tail off first. */
+        id: rowId(t)
       }));
     });
     if (chartedMoreWarnings) {

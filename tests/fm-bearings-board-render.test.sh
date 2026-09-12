@@ -407,6 +407,52 @@ test_integrity_warnings_never_enter_a_lane() {
   pass "integrity warnings stay out of every lane and out of the work tally"
 }
 
+# ---------------------------------------------------------------------------
+# An alarm that cannot say what it is about is not an alarm. The notices band
+# sits outside every lane, so nothing around a notice names its project - the
+# notice itself has to. It used to name it by appending the identity to the
+# reason, inside the element that clamps to two lines: measured in Chrome at a
+# 360px viewport, that element was 159px wide and kept 35px of the 141px the
+# text needed, so the visible reason ended at "the recorded inventory for this
+# home no longer" and the identity was in the cut tail. The tail is the worst
+# place to put it, because a clamp always eats the end first, and a longer
+# reason only moves the identity further into what gets eaten.
+#
+# So the identity rides the row's own identity element, outside the clamped
+# body, exactly as the unnamed lane's rows already do. This asserts the
+# structural half; the width half is a browser measurement the DOM shim below
+# has no layout engine to observe.
+# ---------------------------------------------------------------------------
+test_an_alarm_names_its_project_outside_the_clamped_reason() {
+  local home out
+  home=$(make_home notice-identity)
+  out=$(render "$home" '{
+    "charted": [
+      {"id":"main-inventory","repo":"firstmate-seawall-observatory",
+       "title":"Main inventory integrity",
+       "reason":"the recorded inventory for this home no longer matches what the fleet records hold, so a repair pass has to reconcile them before the books can be trusted again",
+       "dispatchable":false,"kind":"warning","since":"2026-08-21"},
+      {"id":"orphan-alarm","repo":null,"title":"Home unreadable",
+       "reason":"current home state unavailable","dispatchable":false,
+       "kind":"warning","since":null}
+    ]}')
+  # every alarm is named, and a notice that records no project falls back to
+  # the routing id, which is what the captain would answer with
+  printf '%s' "$out" | jq -e '
+    [.notices[] | .id] == ["firstmate-seawall-observatory","orphan-alarm"]
+  ' >/dev/null || fail "a repair alarm did not name what it is about: $out"
+  # and the name is carried apart from the reason, never as its tail
+  printf '%s' "$out" | jq -e '
+    [.notices[] | select(.id as $name | .sub | contains($name))] == []
+  ' >/dev/null || fail "an alarm buried its identity inside the clamped reason: $out"
+  printf '%s' "$out" | jq -e '
+    [.notices[] | .sub]
+      == ["the recorded inventory for this home no longer matches what the fleet records hold, so a repair pass has to reconcile them before the books can be trusted again",
+          "current home state unavailable"]
+  ' >/dev/null || fail "an alarm lost or rewrote the reason it was handed: $out"
+  pass "a repair alarm names its project outside the reason that clamps"
+}
+
 test_a_yard_of_only_warnings_reports_no_work_at_all() {
   local home out
   home=$(make_home warning-only)
@@ -726,9 +772,11 @@ test_a_placeholder_reason_never_becomes_a_subtitle() {
     [.lanes[].berths[].rows[] | select((.sub | startswith("-")) or (.when | startswith("-")))] == []
   ' >/dev/null || fail "a placeholder reason survived into a lane: $out"
   # the notices band reads a reason by the same rule as the two berths: an
-  # alarm falls back to when it was recorded, or to the project alone
+  # alarm falls back to when it was recorded, or to nothing at all, because its
+  # identity is carried apart from the reason rather than as the reason's tail
   printf '%s' "$out" | jq -e '
-    [.notices[] | .sub] == ["recorded 5 days ago · sample", "sample"]
+    [.notices[] | {s:.sub, i:.id}]
+      == [{s:"recorded 5 days ago", i:"sample"}, {s:"", i:"sample"}]
   ' >/dev/null || fail "a repair notice rendered a bare dash for its reason: $out"
   printf '%s' "$out" | jq -e '
     [.notices[] | select(.sub | startswith("-"))] == []
@@ -1101,6 +1149,7 @@ test_a_stopped_fleet_reads_as_capacity_not_as_a_checklist
 test_the_board_still_emits_every_answer_key
 test_dry_dock_and_clear_to_start_are_different_stages
 test_integrity_warnings_never_enter_a_lane
+test_an_alarm_names_its_project_outside_the_clamped_reason
 test_a_yard_of_only_warnings_reports_no_work_at_all
 test_omitted_warnings_never_count_as_more_queued
 test_omitted_queued_work_is_reported_against_the_yard
