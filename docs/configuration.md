@@ -630,7 +630,8 @@ The adapter automates only the exact deterministic subset: anything needing judg
 
 This section is the single owner of the runner's operating contract.
 Registration writes one private record under `state/procevent/`, and a completed result plus its immutable adapter identity are captured under `state/procevent-inbox/` before any announcement or event can reference it.
-A capture the output bound below cut also commits a marker recording that content was dropped, so no later reader can mistake the runner's own loss for output the source never produced.
+A capture the output bound below cut also commits a marker recording that content was dropped, and the two seams that read it - the silence verdict and the captain-prose note - therefore cannot mistake the runner's own loss for output the source never produced.
+The marker's reach currently stops at those two seams: the keyed-answer feed below does not read it, so a cut capture's surviving rows still reach the decision intake with no completeness caveat, and the last-submission-wins rule applied over a partial row set can record a superseded answer as the captain's.
 By default, results are published as ordinary `check` wakes carrying the source id and committed result sequence through the existing durable wake queue, so the runner adds no second notification control plane.
 The self-announcing adapter exception and its fail-safe ordering are defined below.
 The watcher delivers a queued result on its ordinary cycle by reporting it as an actionable `check` wake, so a default or fallback publication reaches firstmate through the same rewake path every other wake uses and never waits for a manual drain.

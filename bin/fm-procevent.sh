@@ -72,12 +72,17 @@
 # defect was that nothing downstream could tell a dropped tail from a tail that
 # never existed, so a cut capture was read as an empty one and the captain's own
 # typed words left no trace anywhere. Completeness is therefore committed with
-# the capture as a durable marker owned by bin/fm-procevent-lib.sh, and every
-# seam that decides what a result carries reads it. A cut capture is never
-# eligible for the silence verdict, and its captain-prose note states that
-# content was discarded rather than reporting the shortfall as nothing said.
-# Adding to what a result says about itself is allowed; claiming an absence this
-# runner caused is not.
+# the capture as a durable marker owned by bin/fm-procevent-lib.sh, and exactly
+# two seams read it: a cut capture is never eligible for the silence verdict,
+# and its captain-prose note states that content was discarded rather than
+# reporting the shortfall as nothing said. The marker's reach currently stops
+# there. feed_keyed_answers below does NOT read it, so a cut capture's surviving
+# rows still reach the keyed-answer intake with no completeness caveat, and the
+# adapter's last-submission-wins rule applied over a partial row set can record
+# a superseded answer as the captain's. Extending the read into that seam would
+# change what the decision intake accepts, which is an authority boundary over
+# the captain's own word and is not settled here. Adding to what a result says
+# about itself is allowed; claiming an absence this runner caused is not.
 #
 # Applying a result is adapter-owned through the same kind of seam. Some results
 # carry no judgement at all - they must simply be applied idempotently to the
@@ -181,7 +186,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,165p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,170p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
