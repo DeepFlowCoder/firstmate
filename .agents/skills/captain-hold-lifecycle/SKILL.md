@@ -33,6 +33,7 @@ An unbound source and a key that names no captain-held task both simply feed not
 A captain-held task closed outside this owner leaves no durable answer, so the completion gate keeps failing until `answer` records the decision the captain actually gave.
 When that close also lifted the hold, the task no longer proves it was ever the captain's item and `answer` refuses it: repair it with `bin/fm-captain-hold.sh hold <id> --reason ... --reopen`, which puts the question back in front of the captain and records nothing, then close it with his real words once he gives them.
 Never reach for `--reopen` to get past a gate on a call he already answered; reconciling a record is not deciding for him, and when the repair would have to pick a value, stop and ask him instead.
+It refuses every close it does not repair, naming `answer` when the hold survived the close, so the gate is never cleared by asking the captain a question he has already settled.
 Recording an answer is firstmate's act and no one else's: both `answer` and `answers` refuse any caller they cannot place on this home's firstmate side, so a crewmate that reaches for them is stopped and told to append `needs-decision:` instead (`bin/fm-captain-hold.sh` owns the proofs and the refusal).
 Resolved findings, recommendations that need no captain choice, and prose that merely sounds decision-like do not create held tasks.
 Bearings reads the resulting structured state and must never compensate by scraping historical reports, visual-review artifacts, terminal output, chat, or other prose.

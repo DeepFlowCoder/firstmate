@@ -688,6 +688,21 @@ test_out_of_band_close_is_recordable() {
   fi
   assert_present "$home/state/$id.meta" "refused teardown removed investigation metadata"
 
+  # This close kept the captain hold, so the call is blocked but not stranded:
+  # --reopen must not resurface a question the captain closed out of band when
+  # answer can still record his words on it.
+  show=$(tasks_in "$home" show sample-submission-call --full)
+  assert_contains "$show" "hold_kind: captain" \
+    "setup error: the plain close dropped the captain provenance, so this is the stranded case"
+  if run_captain "$home" hold sample-submission-call --reason "captain submission choice pending" --reopen \
+    > "$home/held-reopen.out" 2> "$home/held-reopen.err"; then
+    fail "--reopen resurfaced a closed call that answer can still repair"
+  fi
+  assert_grep "answer instead" "$home/held-reopen.err" \
+    "the refusal must name answer as the repair for a close that kept the hold"
+  show=$(tasks_in "$home" show sample-submission-call --full)
+  assert_contains "$show" "state: done" "the refused --reopen reopened the call anyway"
+
   printf 'Declined: do not submit the sample full run upstream.\n' > "$home/submission.txt"
   run_captain "$home" answer sample-submission-call --decision-file "$home/submission.txt" >/dev/null \
     || fail "answer could not record the missing captain decision on the closed task"
@@ -784,6 +799,18 @@ test_stranded_close_is_reopenable_without_inventing_an_answer() {
     fail "teardown proceeded while the captain call was stranded"
   fi
   assert_present "$home/state/$id.meta" "refused teardown removed investigation metadata"
+
+  # An argument the record contradicts refuses before touching it: a half-applied
+  # repair would leave the call open, unheld, and reading as live work.
+  if run_captain "$home" hold "$call" --title "Some other question entirely" \
+    --reason "captain retention choice pending" --reopen \
+    > "$home/drifted-title.out" 2> "$home/drifted-title.err"; then
+    fail "--reopen accepted a title the task does not carry"
+  fi
+  assert_grep "different title" "$home/drifted-title.err" \
+    "the refusal must name the drifted title"
+  show=$(tasks_in "$home" show "$call" --full)
+  assert_contains "$show" "state: done" "a refused --reopen left the call half-reopened"
 
   # The supported exit. It reopens the question; it does not answer it.
   out=$(run_captain "$home" hold "$call" --reason "captain retention choice pending" --reopen) \
