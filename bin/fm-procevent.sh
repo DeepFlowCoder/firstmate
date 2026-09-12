@@ -319,13 +319,16 @@ queue_captain_note() {  # <source-id> <sequence> <body> <fallback-summary>
 # takes the same durable channel the prose would have taken - what the captain
 # may have said is unknown, which is the news.
 #
-# A capture this runner's bound cut is the same news for the same reason, so it
-# never reaches outcome 1. The adapter read only the head it was left, so what it
-# printed - including nothing at all - is a report about surviving bytes and not
-# about what the captain wrote. The note therefore says content was discarded
-# instead of letting the shortfall read as an empty board, and says it whether or
-# not any record survived, because a message the bound cut in half is as lost as
-# one it cut out entirely.
+# For an adapter that implements the command, a capture this runner's bound cut
+# is the same news for the same reason. The adapter read only the head it was
+# left, so what it printed - including nothing at all - is a report about
+# surviving bytes and not about what the captain wrote. The note therefore says
+# content was discarded instead of letting the shortfall read as an empty board,
+# and says it whether or not any record survived, because a message the bound cut
+# in half is as lost as one it cut out entirely. The caveat's reach stops at that
+# adapter: one with no `messages` command is outcome 1 for a cut capture exactly
+# as it is for a whole one, so it still routes nothing and no discarded-content
+# record is produced for it.
 feed_captain_messages() {  # <adapter> <source-id> <result-file>
   local adapter=$1 id=$2 result=$3 script seq records body rc truncated=0
   script=$(adapter_script "$adapter")
