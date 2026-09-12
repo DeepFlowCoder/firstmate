@@ -842,13 +842,63 @@ fm_recovery_marker_reopen_announced() {
 # the ordinary atomic create that follows is what decides who gets the mutex,
 # so two processes reaching this at once cannot both come away holding it.
 #
+# The proof of death has to be bound to the directory that gets renamed, or the
+# arbitration proves nothing: a racer that reads the pid through the link and
+# then re-resolves the link can quarantine an owner it never examined, because
+# another racer may have completed the whole break and installed a live mutex in
+# between. So the link is resolved once and the pid comes out of that owner
+# directory itself, the way fm_lock_release and fm_lock_recheck_stale_owner read
+# it; an owner directory's pid file only ever records its creator.
+#
 # Status 0 the stale mutex is broken and the path is free to compete for, 1 it
 # has a live or too-fresh owner, or another racer won the break.
 _fm_lock_steal_break_stale() {
   local steal=$1 owner pid quarantine
-  # Re-read the holder here rather than trust the caller's earlier read: this is
-  # the check the break is bound to, and narrowing it to the instruction before
-  # the rename is what keeps a holder that came back from being broken.
+  if [ -L "$steal" ]; then
+    owner=$(fm_lock_link_owner "$steal" 2>/dev/null || true)
+    [ -n "$owner" ] || return 1
+    if [ ! -d "$owner" ]; then
+      # The owner directory is already gone, so this link records no pid at all
+      # and no process can be holding the mutex through it. The dangling link is
+      # the whole of what the killed reclaim left behind.
+      if fm_lock_mid_acquire_is_fresh "$steal" ''; then
+        return 1
+      fi
+      if fm_lock_points_to_owner "$steal" "$owner"; then
+        rm -f "$steal" 2>/dev/null || true
+      fi
+      return 0
+    fi
+    pid=$(cat "$owner/pid" 2>/dev/null || true)
+    if fm_pid_alive "$pid"; then
+      return 1
+    fi
+    if fm_lock_mid_acquire_is_fresh "$owner" "$pid"; then
+      return 1
+    fi
+    quarantine=$(mktemp -d "$owner.dead.XXXXXX" 2>/dev/null) || return 1
+    # Losing this last check means the mutex stopped being the one just proved
+    # dead, so there is nothing here to break: report ordinary contention.
+    if ! fm_lock_points_to_owner "$steal" "$owner" \
+      || ! mv "$owner" "$quarantine/owner" 2>/dev/null; then
+      rmdir "$quarantine" 2>/dev/null || true
+      return 1
+    fi
+    if fm_lock_points_to_owner "$steal" "$owner"; then
+      rm -f "$steal" 2>/dev/null || true
+    fi
+    fm_lock_discard_owner "$quarantine/owner"
+    rmdir "$quarantine" 2>/dev/null || true
+    return 0
+  fi
+  # The directory form carries no owner directory to arbitrate with, so the
+  # mutex itself is what gets renamed: exactly one breaker can move it into a
+  # private quarantine, and only that one clears the copy it now owns alone.
+  # fm_lock_try_create never builds this form - it is what fixtures construct
+  # and what predates the symlink owner - so a symlink in the quarantine is a
+  # live mutex some racer rebuilt on the path after the check below, never the
+  # legacy directory: put it back untouched and report contention.
+  [ -d "$steal" ] || return 1
   pid=$(cat "$steal/pid" 2>/dev/null || true)
   if fm_pid_alive "$pid"; then
     return 1
@@ -856,36 +906,21 @@ _fm_lock_steal_break_stale() {
   if fm_lock_mid_acquire_is_fresh "$steal" "$pid"; then
     return 1
   fi
-  if [ -L "$steal" ]; then
-    owner=$(fm_lock_link_owner "$steal" 2>/dev/null || true)
-    [ -n "$owner" ] || return 1
-    if [ -d "$owner" ]; then
-      quarantine=$(mktemp -d "$owner.dead.XXXXXX" 2>/dev/null) || return 1
-      if ! mv "$owner" "$quarantine/owner" 2>/dev/null; then
-        rmdir "$quarantine" 2>/dev/null || true
-        return 1
-      fi
-      if fm_lock_points_to_owner "$steal" "$owner"; then
-        rm -f "$steal" 2>/dev/null || true
-      fi
-      fm_lock_discard_owner "$quarantine/owner"
-      rmdir "$quarantine" 2>/dev/null || true
-      return 0
-    fi
-    # The owner directory is already gone, so this link records no pid at all
-    # and no process can be holding the mutex through it. The dangling link is
-    # the whole of what the killed reclaim left behind.
-    if fm_lock_points_to_owner "$steal" "$owner"; then
-      rm -f "$steal" 2>/dev/null || true
-    fi
-    return 0
+  quarantine=$(mktemp -d "$steal.dead.XXXXXX" 2>/dev/null) || return 1
+  if [ -L "$steal" ] || ! mv "$steal" "$quarantine/steal" 2>/dev/null; then
+    rmdir "$quarantine" 2>/dev/null || true
+    return 1
   fi
-  # The directory form carries no owner to arbitrate with. fm_lock_try_create
-  # never builds one - it is what fixtures construct and what predates the
-  # symlink owner - so clear it only while it is still exactly that directory.
-  [ -d "$steal" ] || return 1
-  fm_lock_clean_known_files "$steal"
-  rmdir "$steal" 2>/dev/null
+  if [ -L "$quarantine/steal" ]; then
+    if [ ! -e "$steal" ] && [ ! -L "$steal" ]; then
+      mv "$quarantine/steal" "$steal" 2>/dev/null || true
+    fi
+    rmdir "$quarantine" 2>/dev/null || true
+    return 1
+  fi
+  fm_lock_discard_owner "$quarantine/steal"
+  rmdir "$quarantine" 2>/dev/null || true
+  return 0
 }
 
 fm_lock_try_acquire() {

@@ -1475,12 +1475,20 @@ VICTIM
 # The state directory is asserted empty at the end for the residue this replaces:
 # a racer whose own stray owner link became unreachable when the directory moved
 # would otherwise leave one undeletable directory behind per contended break.
+#
+# The winner holds until all 40 racers have reported an attempt rather than for
+# a fixed moment: releasing while stragglers are still starting up frees the
+# path completely, and a straggler that then acquires it cleanly is a second
+# winner by legitimate means, which would fail this case for the one reason it
+# is not asserting.
 test_stale_steal_mutex_break_yields_one_winner() {
-  local dir state lockdir dead marker i pids pid wins leftover
+  local dir state lockdir dead marker attempts racers i pids pid wins leftover
   dir=$(make_case stale-steal-mutex-concurrency)
   state="$dir/state"
   lockdir="$state/.wake-queue.lock"
   marker="$dir/wins"
+  attempts="$dir/attempts"
+  racers=40
   dead=$(dead_pid)
   FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
@@ -1492,17 +1500,28 @@ test_stale_steal_mutex_break_yields_one_winner() {
   ' _ "$LIB" "$lockdir" "$dead" \
     || fail "could not build a stale lock behind a stale steal mutex"
   : > "$marker"
+  : > "$attempts"
   pids=
   i=1
-  while [ "$i" -le 40 ]; do
+  while [ "$i" -le "$racers" ]; do
     FM_STATE_OVERRIDE="$state" bash -c '
       . "$1"
       if fm_lock_try_acquire "$2"; then
         printf "%s\n" "${BASHPID:-$$}" >> "$3"
-        sleep 0.3
+        printf "attempted\n" >> "$4"
+        waited=0
+        while [ "$waited" -lt 200 ]; do
+          if [ "$(wc -l < "$4" | tr -d "[:space:]")" -ge "$5" ]; then
+            break
+          fi
+          sleep 0.05
+          waited=$((waited + 1))
+        done
         fm_lock_release "$2"
+      else
+        printf "attempted\n" >> "$4"
       fi
-    ' _ "$LIB" "$lockdir" "$marker" &
+    ' _ "$LIB" "$lockdir" "$marker" "$attempts" "$racers" &
     pids="$pids $!"
     i=$((i + 1))
   done
@@ -1514,8 +1533,58 @@ test_stale_steal_mutex_break_yields_one_winner() {
     || fail "expected exactly one winner breaking a stale steal mutex, got $wins"
   leftover=$(find "$state" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')
   [ "$leftover" -eq 0 ] \
-    || fail "40 contended breaks left $leftover artifacts behind: $(find "$state" -mindepth 1 -maxdepth 1)"
+    || fail "$racers contended breaks left $leftover artifacts behind: $(find "$state" -mindepth 1 -maxdepth 1)"
   pass "breaking a stale steal mutex yields one winner and no residue"
+}
+
+# The break proves a holder dead and renames an owner directory away; those have
+# to be the same directory. A racer preempted between the two can be overtaken
+# by a racer that finishes the whole break and installs its own live mutex, and
+# a proof read through the link rather than out of the owner directory would
+# then quarantine that live owner and unlink a mutex nobody proved dead - the
+# two holders this whole mechanism exists to prevent.
+#
+# The overtake is injected at the liveness check rather than raced for, because
+# the window is a few instructions wide. The live mutex is asserted intact
+# afterwards, so the case cannot pass by the break merely failing for some other
+# reason.
+test_steal_break_binds_its_proof_to_the_owner_it_renames() {
+  local dir state lockdir dead rc
+  dir=$(make_case steal-break-owner-binding)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  dead=$(dead_pid)
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    steal="$2.steal"
+    stale_owner=$(fm_lock_owner_dir "$steal") || exit 3
+    printf "%s\n" "$3" > "$stale_owner/pid" || exit 3
+    ln -s "$stale_owner" "$steal" || exit 3
+    live_owner=$(fm_lock_owner_dir "$steal") || exit 3
+    printf "%s\n" "${BASHPID:-$$}" > "$live_owner/pid" || exit 3
+    fm_pid_alive() {
+      [ -z "${overtaken:-}" ] || return 1
+      overtaken=1
+      rm -rf "$stale_owner"
+      rm -f "$steal"
+      ln -s "$live_owner" "$steal" || exit 4
+      return 1
+    }
+    rc=0
+    _fm_lock_steal_break_stale "$steal" || rc=$?
+    [ "$rc" -eq 1 ] || exit 5
+    [ -L "$steal" ] || exit 6
+    [ "$(readlink "$steal")" = "$live_owner" ] || exit 7
+    [ "$(cat "$live_owner/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ] || exit 8
+  ' _ "$LIB" "$lockdir" "$dead"
+  rc=$?
+  case "$rc" in
+    0) ;;
+    3|4) fail "the overtaken-break fixture could not be built (rc=$rc)" ;;
+    5) fail "a break overtaken after its liveness check still reported success" ;;
+    *) fail "an overtaken break carried off the live mutex that replaced it (rc=$rc)" ;;
+  esac
+  pass "a steal break refuses when the owner it proved dead is no longer the mutex's"
 }
 
 # The residue the case above would otherwise accumulate, pinned where it is
@@ -1680,6 +1749,7 @@ test_watcher_reports_an_unusable_state_directory
 test_lock_steals_through_a_leaked_steal_lock
 test_interrupted_steal_does_not_grow_a_steal_chain
 test_stale_steal_mutex_break_yields_one_winner
+test_steal_break_binds_its_proof_to_the_owner_it_renames
 test_owner_directory_with_a_stray_link_is_still_discarded
 test_lock_recovers_when_only_a_dead_steal_marker_remains
 test_live_steal_with_primary_absent_stays_retryable
