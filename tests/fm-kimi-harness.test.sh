@@ -95,7 +95,9 @@ case "${1:-}" in
             fi
             ;;
           pointer-typed)
-            if [ "${FM_FAKE_KIMI_DELIVERY:-yes}" = yes ]; then
+            if [ "${FM_FAKE_KIMI_SWALLOW_ALL:-no}" = yes ]; then
+              :
+            elif [ "${FM_FAKE_KIMI_DELIVERY:-yes}" = yes ]; then
               if [ "${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" = yes ] \
                  && [ ! -f "$FM_FAKE_KIMI_SWALLOWED" ]; then
                 : > "$FM_FAKE_KIMI_SWALLOWED"
@@ -125,6 +127,13 @@ case "${1:-}" in
       *) fake_screen | awk -v start="$start" -v end="$end" \
            'NR - 1 >= start && NR - 1 <= end' ;;
     esac
+    # The bounded -S -120 read belongs to the spawn's own arrival poll, never to
+    # the composer or busy reads the submit core makes, so this moves the pane
+    # on to FM_FAKE_KIMI_LATE_STATE only once that window is already open.
+    if [ -n "${FM_FAKE_KIMI_LATE_STATE:-}" ] && [ "$state" = pointer-typed ] \
+       && [ "$start" = -120 ]; then
+      printf '%s\n' "$FM_FAKE_KIMI_LATE_STATE" > "$FM_FAKE_KIMI_STATE"
+    fi
     exit 0
     ;;
 esac
@@ -169,6 +178,8 @@ run_spawn() {
     FM_FAKE_KIMI_STATE="$case_dir/kimi.state" \
     FM_FAKE_KIMI_SWALLOWED="$case_dir/kimi.swallowed" \
     FM_FAKE_KIMI_SWALLOW_FIRST="${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" \
+    FM_FAKE_KIMI_SWALLOW_ALL="${FM_FAKE_KIMI_SWALLOW_ALL:-no}" \
+    FM_FAKE_KIMI_LATE_STATE="${FM_FAKE_KIMI_LATE_STATE:-}" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_FAKE_BRIEF_REAL="$(cd "$home/data/$id" && pwd -P)/brief.md" \
     FM_KIMI_READY_POLLS=2 FM_KIMI_DELIVERY_POLLS=2 FM_KIMI_POLL_INTERVAL=0 \
@@ -478,20 +489,135 @@ test_kimi_missing_binary_refuses_before_pane_creation() {
   pass "fm-spawn: missing Kimi executable refuses before pane creation"
 }
 
-test_kimi_unconfirmed_delivery_fails_loudly() {
-  local id rec out rc
+# The brief was submitted and only its acknowledgement went unseen, so the
+# record must say that and nothing more: not a consummated failure (which is
+# terminal in the shared vocabulary and would close the task on a guess), not a
+# success, and not silence. Asserted through the classifier the watcher, the
+# away-mode daemon, and the wake drain all read, because the verb's meaning is
+# what this fixes - the prose already said "not confirmed".
+test_kimi_unconfirmed_delivery_is_recorded_as_unconfirmed_not_failed() {
+  local id rec out rc status_file line open
   id=kimi-drop-z2
   rec=$(make_spawn_case drop "$id")
   read_spawn_record "$rec"
   rc=0
   out=$(FM_FAKE_KIMI_DELIVERY=no run_spawn \
     "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
-  [ "$rc" -ne 0 ] || fail "an unconfirmed kimi delivery should fail"
-  assert_contains "$out" "kimi brief pointer delivery was not confirmed" \
-    "unconfirmed kimi delivery lacked a loud diagnostic"
-  assert_grep 'failed: kimi brief pointer delivery was not confirmed' "$HOME_DIR/state/$id.status" \
-    "unconfirmed kimi delivery did not leave a supervisor-visible failure"
-  pass "fm-spawn: kimi treats a silent pointer drop as a failed spawn"
+  # The pointer reached the endpoint; only the arrival surface never showed it.
+  # Without this the case would be an ordinary send failure, not the one the
+  # separate verb exists for.
+  [ -s "$CASE_DIR/pointer.log" ] \
+    || fail "fixture never submitted the pointer, so it exercises a send failure rather than an unseen acknowledgement"
+
+  status_file="$HOME_DIR/state/$id.status"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-classify-lib.sh"
+  line=$(last_status_line "$status_file")
+  [ "$(status_line_verb "$line")" != failed ] \
+    || fail "an unseen acknowledgement was still recorded as a consummated failure: $line"
+  [ "$(status_line_verb "$line")" = blocked ] \
+    || fail "an unconfirmed kimi delivery did not use the vocabulary's existing needs-a-look verb: $line"
+  status_is_captain_relevant "$line" \
+    || fail "an unconfirmed kimi delivery would not reach firstmate at all: $line"
+  assert_contains "$line" "the worker may already be reading the brief" \
+    "the record did not say the brief may have arrived"
+  open=$(status_open_decisions "$status_file")
+  assert_contains "$open" "kimi-delivery" \
+    "an unconfirmed kimi delivery left no open decision, so nobody is obliged to check the window"
+
+  [ "$rc" -ne 0 ] || fail "an unconfirmed kimi delivery should not report a completed spawn"
+  assert_contains "$out" "arrival was not confirmed" \
+    "unconfirmed kimi delivery lacked a diagnostic naming what went unconfirmed"
+  assert_not_contains "$out" "spawned $id" \
+    "an unconfirmed kimi delivery was reported as a completed spawn"
+  pass "fm-spawn: an unseen kimi acknowledgement is recorded as needing a look, not as a failed delivery"
+}
+
+# The counterpart of the case above: here every Enter is swallowed and the
+# arrival window then passes with the composer still visibly holding the pointer
+# text. A composer that never clears can never be confirmed, so that pair is
+# positive proof the brief never arrived and the unconfirmed verb must not
+# absorb it.
+test_kimi_proven_enter_swallow_is_recorded_as_failed() {
+  local id rec out rc status_file line
+  id=kimi-swallow-z6
+  rec=$(make_spawn_case swallow "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_SWALLOW_ALL=yes run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  [ -s "$CASE_DIR/pointer.log" ] \
+    || fail "fixture never typed the pointer, so it cannot exercise a swallowed Enter"
+
+  status_file="$HOME_DIR/state/$id.status"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-classify-lib.sh"
+  line=$(last_status_line "$status_file")
+  [ "$(status_line_verb "$line")" = failed ] \
+    || fail "a proven kimi Enter swallow was not recorded as a failure: $line"
+  assert_contains "$line" "composer still holds that same pointer text" \
+    "the record did not say what was actually measured"
+  expect_code 1 "$rc" "a proven kimi Enter swallow should exit on the failure contract"
+  assert_not_contains "$out" "spawned $id" \
+    "a proven kimi Enter swallow was reported as a completed spawn"
+  pass "fm-spawn: a proven kimi Enter swallow stays a failed delivery"
+}
+
+# A `pending` submit verdict is frozen before the arrival window opens, so it
+# cannot by itself outlive that window. These are the two ways the composer
+# stops proving a swallow while the acknowledgement still never shows: a queued
+# Enter accepted late clears it, and an unreadable pane says nothing at all.
+# Neither is proof of anything, and a consummated failure is declared only on
+# proof.
+test_kimi_pending_submit_without_proof_at_decision_time_is_unconfirmed() {
+  local case_name id rec out rc status_file line open
+  for case_name in late-accept:ready unreadable:scrambled; do
+    id="kimi-${case_name%%:*}-z8"
+    rec=$(make_spawn_case "${case_name%%:*}" "$id")
+    read_spawn_record "$rec"
+    rc=0
+    out=$(FM_FAKE_KIMI_SWALLOW_ALL=yes FM_FAKE_KIMI_LATE_STATE="${case_name##*:}" run_spawn \
+      "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+
+    status_file="$HOME_DIR/state/$id.status"
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-classify-lib.sh"
+    line=$(last_status_line "$status_file")
+    [ "$(status_line_verb "$line")" != failed ] \
+      || fail "a $case_name composer left no proof of a swallow but was still recorded as a consummated failure: $line"
+    [ "$(status_line_verb "$line")" = blocked ] \
+      || fail "a $case_name composer did not take the needs-a-look verb: $line"
+    open=$(status_open_decisions "$status_file")
+    assert_contains "$open" "kimi-delivery" \
+      "a $case_name composer left no open decision, so nobody is obliged to check the window"
+    expect_code 1 "$rc" "a $case_name composer should still exit nonzero"
+    assert_not_contains "$out" "spawned $id" \
+      "a $case_name composer was reported as a completed spawn"
+  done
+  pass "fm-spawn: a pending submit with no swallow proof left at decision time is unconfirmed, not failed"
+}
+
+# The submit core reports `pending` whenever the composer has not re-rendered by
+# the time the Enter budget runs out, which says nothing about arrival: outside
+# tmux no busy read is taken at all, and inside it the busy read cannot see
+# kimi's own token. So a `pending` submit whose brief then lands inside the
+# arrival window is an ordinary successful spawn, not a failure of any kind.
+test_kimi_pending_submit_confirmed_inside_the_window_succeeds() {
+  local id rec out rc task_tmp
+  id="kimi-late-z7-$$"
+  task_tmp="/tmp/fm-$id"
+  rec=$(make_spawn_case late "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_SWALLOW_ALL=yes FM_FAKE_KIMI_LATE_STATE=delivered run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  rm -rf "$task_tmp"
+  expect_code 0 "$rc" "a kimi brief confirmed inside the arrival window should be a successful spawn"
+  assert_contains "$out" "spawned $id harness=kimi" \
+    "a kimi brief that landed a beat late was not reported as spawned"
+  assert_absent "$HOME_DIR/state/$id.status" \
+    "a successful kimi spawn wrote a status record it had no cause to write"
+  pass "fm-spawn: a pending submit whose brief lands inside the arrival window still spawns"
 }
 
 test_kimi_readiness_gate_precedes_pointer() {
@@ -502,10 +628,14 @@ test_kimi_readiness_gate_precedes_pointer() {
   rc=0
   out=$(FM_FAKE_KIMI_READY=no run_spawn \
     "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
-  [ "$rc" -ne 0 ] || fail "kimi spawn without a ready signal should fail"
+  expect_code 1 "$rc" "kimi spawn without a ready signal should fail on the failure contract"
   assert_contains "$out" "kimi did not show a verified ready signal" \
     "kimi readiness failure lacked a loud diagnostic"
   [ ! -s "$CASE_DIR/pointer.log" ] || fail "kimi pointer was sent before readiness"
+  # Nothing was ever submitted, so this failure is proven, and separating the
+  # unconfirmed case must not soften it into one more thing to go and check.
+  assert_grep 'failed: kimi did not show a verified ready signal' "$HOME_DIR/state/$id.status" \
+    "a proven kimi non-delivery stopped being recorded as a failure"
   jq -e --arg id "$id" 'any(.endpoints[]; .id == $id)' \
     "$HOME_DIR/state/home-summary.json" >/dev/null \
     || fail "kimi readiness failure omitted its durable endpoint from the home summary"
@@ -678,7 +808,10 @@ test_kimi_spawn_refuses_unsafe_global_config_before_pane_creation
 test_kimi_teardown_removes_pointer_and_registry_token
 test_kimi_falls_back_to_expanded_home_binary
 test_kimi_missing_binary_refuses_before_pane_creation
-test_kimi_unconfirmed_delivery_fails_loudly
+test_kimi_unconfirmed_delivery_is_recorded_as_unconfirmed_not_failed
+test_kimi_proven_enter_swallow_is_recorded_as_failed
+test_kimi_pending_submit_without_proof_at_decision_time_is_unconfirmed
+test_kimi_pending_submit_confirmed_inside_the_window_succeeds
 test_kimi_readiness_gate_precedes_pointer
 test_kimi_detection_uses_ancestry_after_markers
 test_kimi_session_lock_identity

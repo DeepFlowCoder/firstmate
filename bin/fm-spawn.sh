@@ -185,6 +185,14 @@
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
+# A kimi spawn separates a proven delivery failure from an unproven one, and the
+# task's status record carries the difference: `failed` means the brief
+# demonstrably never arrived (no ready signal so no pointer was sent, the send
+# itself failed, or the composer still reads back the pointer text after both
+# the Enter retries and the arrival window), while `blocked` under the key
+# kimi-delivery means the pointer was submitted and only its arrival went
+# unconfirmed, so the endpoint is preserved and that open decision stays up
+# until someone checks the window and closes it.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -2326,8 +2334,12 @@ kimi_capture() {
 # spawn readiness fleet-wide the day kimi's TUI goes borderless the way
 # claude's did. The banner and brief-echo greps below are launch-progress
 # signals, not composer shapes, so they stay here.
+kimi_composer_state() {
+  fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null
+}
+
 kimi_composer_is_empty() {
-  [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" = empty ]
+  [ "$(kimi_composer_state)" = empty ]
 }
 
 kimi_wait_for_ready() {
@@ -2367,9 +2379,33 @@ kimi_wait_for_delivery() {
   return 1
 }
 
+# The durable record of a kimi spawn this script PROVED did not deliver: the
+# ready gate never opened, so no pointer was ever sent, the submit core
+# reported the send itself failed, or the composer read back the pointer text
+# after both the Enter retries and the arrival window that follows them.
+# `failed` is a terminal verb in
+# bin/fm-classify-lib.sh - it closes an open decision and opens none - which is
+# the truth only when the brief demonstrably never arrived.
 kimi_spawn_fail() {  # <detail>
   printf 'failed: %s\n' "$1" >> "$STATE/$ID.status"
   echo "error: $1; inspect window $T" >&2
+}
+
+# The durable record of a kimi spawn whose delivery VERIFICATION was
+# inconclusive: the pointer was submitted, the send reported no failure, and
+# only the arrival surface (a cleared composer plus the echoed submission or
+# nonzero context) went unobserved inside its window. The brief may be in front
+# of a worker already reading it, so writing `failed` here reported an unseen
+# acknowledgement as a consummated failure and closed the task on the record.
+# `blocked` is this vocabulary's existing verb for "firstmate must look", so
+# reusing it leaves no consumer with an unhandled state: it is captain-relevant,
+# it maps to a `blocked` crew state, and it OPENS a keyed decision that only an
+# explicit resolution closes, which keeps an unconfirmed delivery surfacing in
+# the wake drain's open decisions until someone checks the window.
+KIMI_DELIVERY_DECISION_KEY=kimi-delivery
+kimi_spawn_unconfirmed() {  # <detail>
+  printf 'blocked [key=%s]: %s\n' "$KIMI_DELIVERY_DECISION_KEY" "$1" >> "$STATE/$ID.status"
+  echo "unconfirmed: $1; inspect window $T" >&2
 }
 
 if [ "$RELAUNCH" -eq 1 ]; then
@@ -3069,8 +3105,24 @@ if [ "$HARNESS" = kimi ]; then
     kimi_spawn_fail "kimi brief pointer could not be submitted"
     exit 1
   fi
+  # A `pending` verdict proves the composer held real text at the instant the
+  # Enter budget ran out, and nothing about arrival. What is missing is the BUSY
+  # read that would tell a queued Enter from a swallow: outside tmux the submit
+  # core takes none at all, and inside tmux it runs harness-less, so it cannot
+  # see kimi's only busy token. So `pending` must never short-circuit the
+  # arrival window, and it is not enough on its own afterwards either: the
+  # verdict is frozen before the window opens, and a queued Enter accepted
+  # inside it clears the composer. The terminal verb therefore demands positive
+  # proof at decision time - the pointer text read back into the composer AGAIN
+  # after the window closed. Absence of proof is not proof: an unreadable or
+  # cleared composer leaves arrival genuinely unknown and takes the unconfirmed
+  # record, which is the whole point of the split.
   if ! kimi_wait_for_delivery; then
-    kimi_spawn_fail "kimi brief pointer delivery was not confirmed"
+    if [ "$KIMI_SUBMIT_VERDICT" = pending ] && [ "$(kimi_composer_state)" = pending ]; then
+      kimi_spawn_fail "kimi brief pointer Enter retries were spent with the pointer text in the composer, the arrival window then passed unconfirmed, and the composer still holds that same pointer text, so the brief did not arrive"
+    else
+      kimi_spawn_unconfirmed "kimi brief pointer was submitted but its arrival was not confirmed; the worker may already be reading the brief, so check the window before assuming it never arrived"
+    fi
     exit 1
   fi
 fi
