@@ -64,6 +64,8 @@ A board the captain closes without saying anything therefore produces exactly on
 The verdict is confined to that one shape and fails closed everywhere else.
 A `Send & End` close carrying the captain's own answer classifies `feedback`, never `ended`, so it is announced unchanged; so is any `ended` result that still carries a `prompts` or `feedback` block, which this lifecycle is not expected to produce but which must never be dropped on that expectation.
 A `waiting` session, a `missing` one, an `unknown` or unreadable result, and every error stay announced, because none of them positively proves nothing was said.
+A capture this runner's own output bound cut belongs to that same set and stays announced too, and its adapter is not asked at all, because no verdict about output whose tail is gone can prove nothing was said.
+That last member is backed by `tests/fm-procevent.test.sh` alone, not by any dated verification run against a real board.
 The content check anchors on column zero for the same reason the terminal check reads the leading `session:` block: content headers are top-level and their rows are indented, so captain-supplied payload text can neither forge a content block nor hide behind a fake empty one.
 Any recognized block counts as present even when its declared count is zero, and a malformed top-level `prompts` or `feedback` header is indeterminate and therefore announced.
 
@@ -128,6 +130,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | source-only supervision | a registered source with no task metadata trips the shared predicate and general guard |
 | argv integrity | an argument containing spaces survives as one argument, a shell-looking argument is passed literally with no interpretation, and an unrepresentable newline is rejected at registration |
 | bounded output | output beyond `FM_PROCEVENT_MAX_OUTPUT_BYTES` is drained while only the bound is staged, then truncated and captured |
+| a bound-cut capture is never read as an empty one | the suite proves a cut capture commits the completeness marker with its result, a capture that fits records as whole and clears any marker an earlier rolled-back capture left at that generation, and a cut capture is refused the silence verdict, stays unsilenced across a later reconcile, and routes a note saying content was discarded while still delivering the words that survived; this row is suite evidence only, with no dated verification run against a real board behind it |
 | condition->action single-fire and trust | `tests/fm-procevent-when.test.sh` drives the public `when` adapter and generic runner with real commands, proving stable true fires once, a claimed fire restarts as ambiguous without a second action, concurrent arms publish one complete watch, and mutated specs or action executables are refused before execution |
 | condition->action terminal outcomes | the same suite proves flapping true polls do not fire, action failure, condition error budget, deadline expiry, and a true poll completing after its deadline each produce the expected terminal captured result without an unsafe action |
 | condition->action process bounds | the same suite proves action timeout terminates descendants and command-output staging remains within `FM_WHEN_OUTPUT_TAIL_BYTES` while the command runs |

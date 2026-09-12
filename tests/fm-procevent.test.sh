@@ -1671,6 +1671,35 @@ assert_absent "${RW%.result}.truncated" \
   "output that fits the bound was recorded as though it had been cut"
 pass "a capture the bound left whole is recorded as whole"
 
+# A generation can already carry a marker before this capture writes anything:
+# sequence selection only skips generations whose result exists, so a capture
+# killed between its marker and the result's rename hands its orphan to the next
+# capture at the same sequence. Left in place, it turns whole output into a cut
+# one - the captain is told content was discarded from a result nothing was
+# discarded from, and a silence verdict that was correct is suppressed.
+HFSTALE="$TMP_ROOT/hfstale"; new_home "$HFSTALE"
+pe_register "$HFSTALE" lavish bound-stale-src -- /bin/sh -c \
+  'printf "session:\n  file: /stale.html\n  status: ended\n  ended_by: user\n"' >/dev/null
+mkdir -p "$HFSTALE/state/procevent-inbox"
+: > "$HFSTALE/state/procevent-inbox/bound-stale-src.1.truncated"
+FM_PROCEVENT_MAX_OUTPUT_BYTES=4096 pe "$HFSTALE" start bound-stale-src >/dev/null 2>&1
+RSTALE=$(first_result "$HFSTALE" bound-stale-src || true)
+[ -n "$RSTALE" ] || fail "a capture at a generation carrying a stale marker was not captured at all"
+assert_absent "$HFSTALE/state/procevent-inbox/bound-stale-src.1.truncated" \
+  "a whole capture inherited an earlier rolled-back capture's marker and now reads as cut"
+STALE_HANDLED="$HFSTALE/state/procevent-inbox/bound-stale-src.1.handled"
+for _ in $(seq 1 100); do
+  [ -f "$STALE_HANDLED" ] && break
+  sleep 0.1
+done
+[ -f "$STALE_HANDLED" ] \
+  || fail "an inherited marker suppressed the silence verdict for a capture nothing was cut from"
+[ -z "$(wake_payloads "$HFSTALE")" ] \
+  || fail "an inherited marker woke the captain over whole output: $(wake_payloads "$HFSTALE")"
+[ "$(count_notes "$HFSTALE")" -eq 0 ] \
+  || fail "an inherited marker reported discarded content from a result that lost none"
+pass "a capture that fits the bound clears a marker left at its generation"
+
 HG="$TMP_ROOT/hg-live"; new_home "$HG"
 NOISY="$TMP_ROOT/noisy.sh"
 NOISY_PID="$TMP_ROOT/noisy.pid"
