@@ -681,21 +681,58 @@ _fm_classify_resolve_platform() {  # -> 0 with _FM_CLASSIFY_UNAME set, non-zero 
 _fm_classify_resolve_platform || true
 
 # Portable device:inode identity for the rotation/recreation check below.
+#
+# The two birth-time reads here are the reads that decide whether this identity
+# carries the file's birth time. Other reads in this library also absorb a
+# failed read, but each absorbs it into a value the next call re-derives - the
+# fold cursor's read falls back to a full re-fold of the authoritative status
+# bytes, per its own owner comment above - while the answer these two produce
+# is one a caller writes down and keeps. Every stat that supports these
+# directives reports "this filesystem records no birth time" through a
+# SUCCESSFUL read - BSD `%B` and GNU `%W` print 0 - so that legitimate answer
+# always arrives with status 0. A reader that died said nothing about birth
+# times at all, and discarding its status turned that silence into the same
+# `weak:` value, which callers then store as durable identity. That is the
+# swallowed-failure shape the platform cache above already refuses, reached
+# through a different read, and it costs more here: `weak:` is exactly the
+# identity that cannot tell a recreated status file apart from the original
+# when the inode is recycled, so the rotation guard is quietly downgraded by a
+# fault that was never measured.
+#
+# So the reader's status decides the reading:
+#
+# - Killed by a signal: the host broke the read. Its status travels out of here
+#   unchanged so _fm_status_read_diagnosis names it as the host's fault rather
+#   than the status file's.
+# - An ordinary non-zero from the PROBE: the stat cannot produce that directive.
+#   That is a stable answer about the tooling which cannot heal on a retry -
+#   the same class as the absent `uname` (127) the platform cache accepts above -
+#   and a weak identity is the correct reading of it.
+# - Once the probe has answered that the file HAS a birth time, the timestamp
+#   read can no longer be unsupported, so any failure there - including a
+#   success that returns no usable value - is a failed read and refuses.
 _fm_open_decisions_file_ident() {  # <file> -> strongest available identity
-  local f=$1 epoch birth ident
+  local f=$1 epoch birth ident rc flag epoch_fmt birth_fmt
   if [ -n "${FM_STATUS_IDENTITY_READER:-}" ]; then
     "$FM_STATUS_IDENTITY_READER" "$f"
     return
   fi
   _fm_classify_resolve_platform || return "$_FM_STATUS_PLATFORM_UNRESOLVED"
   if [ "$_FM_CLASSIFY_UNAME" = Darwin ]; then
-    ident=$(LC_ALL=C stat -f '%d:%i' "$f" 2>/dev/null) || return
-    epoch=$(LC_ALL=C stat -f '%B' "$f" 2>/dev/null) || epoch=0
-    if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -f '%FB' "$f" 2>/dev/null) || birth=''; else birth=''; fi
+    flag=-f; epoch_fmt='%B'; birth_fmt='%FB'
   else
-    ident=$(LC_ALL=C stat -c '%d:%i' "$f" 2>/dev/null) || return
-    epoch=$(LC_ALL=C stat -c '%W' "$f" 2>/dev/null) || epoch=0
-    if [ "$epoch" != 0 ]; then birth=$(LC_ALL=C stat -c '%w' "$f" 2>/dev/null) || birth=''; else birth=''; fi
+    flag=-c; epoch_fmt='%W'; birth_fmt='%w'
+  fi
+  ident=$(LC_ALL=C stat "$flag" '%d:%i' "$f" 2>/dev/null) || return
+  birth=''
+  epoch=$(LC_ALL=C stat "$flag" "$epoch_fmt" "$f" 2>/dev/null) || {
+    rc=$?
+    [ "$rc" -le 128 ] || return "$rc"
+    epoch=0
+  }
+  if [ "$epoch" != 0 ]; then
+    birth=$(LC_ALL=C stat "$flag" "$birth_fmt" "$f" 2>/dev/null) || return
+    [ -n "$birth" ] || return 1
   fi
   case "$ident$birth" in *$'\t'*|*$'\n'*|'') return 1 ;; esac
   if [ -n "$birth" ]; then printf 'strong:%s:%s' "$ident" "$birth"; else printf 'weak:%s' "$ident"; fi
