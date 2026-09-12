@@ -1362,13 +1362,13 @@ test_watcher_reports_an_unusable_state_directory() {
   pass "an unusable state directory is reported as such, not as a running watcher"
 }
 
-# The steal path still has to survive a leaked steal lock, which is the one
-# legitimate reason to nest a second level: a reclaim killed mid-flight leaves
-# "<lock>.steal" behind with a dead owner, and the successor can only break the
-# primary lock by stealing that leftover first. The bound added for the runaway
-# above must sit clear of this, so pin the two-level chain explicitly - otherwise
-# a tighter bound would look correct while quietly stranding every lock whose
-# reclaim was interrupted.
+# The steal path still has to survive a leaked steal lock: a reclaim killed
+# mid-flight leaves "<lock>.steal" behind with a dead owner, and the successor
+# cannot touch the primary lock until that leftover is cleared. The successor
+# now breaks the leftover in place instead of stealing it through a deeper
+# level, and this pins the half that bound must not cost - a mutex whose owner
+# is genuinely gone has to stop holding the lock it guards, or every interrupted
+# reclaim would strand its lock for good.
 test_lock_steals_through_a_leaked_steal_lock() {
   local dir state lockdir rc
   dir=$(make_case leaked-steal-chain)
@@ -1386,7 +1386,167 @@ test_lock_steals_through_a_leaked_steal_lock() {
   rc=$?
   [ "$rc" -eq 0 ] \
     || fail "a lock whose steal marker leaked from a dead owner was not reclaimable (rc=$rc)"
-  pass "a leaked steal lock is still stolen through, two levels deep"
+  pass "a leaked steal lock is broken in place and the lock it guarded is reclaimed"
+}
+
+# The storm that bound exists for. A steal is a two-step reclaim - take
+# "<lock>.steal", then break the lock it guards - so a process killed between
+# those steps leaves the mutex behind with a dead owner. Clearing such a
+# leftover used to mean stealing it, one level deeper, so every kill inside that
+# window added one permanent name whose only effect was to provoke the next
+# steal: ".steal.steal.steal..." grew one level per crash, and once the chain
+# outgrew what a single acquisition would walk, every acquire failed and the
+# fleet's one unbounded waiter spun on it forever.
+#
+# The kill is injected at the instruction that breaks the primary lock rather
+# than timed, because the window is a handful of syscalls wide and racing for it
+# would be flaky in both directions. A victim that did not really die inside the
+# window proves nothing, so its signal death and the untouched primary lock are
+# asserted on every pass.
+test_interrupted_steal_does_not_grow_a_steal_chain() {
+  local dir state lockdir dead victim i rc lockpid waiter waited waiter_rc
+  dir=$(make_case interrupted-steal-chain)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  victim="$dir/mid-steal-victim.sh"
+  dead=$(dead_pid)
+  mkdir "$lockdir"
+  printf '%s\n' "$dead" > "$lockdir/pid"
+
+  cat > "$victim" <<'VICTIM'
+set -u
+. "$1"
+fm_lock_remove_path() { kill -KILL "${BASHPID:-$$}"; sleep 30; }
+fm_lock_try_acquire "$2"
+VICTIM
+
+  i=1
+  while [ "$i" -le 4 ]; do
+    FM_STATE_OVERRIDE="$state" bash "$victim" "$LIB" "$lockdir" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -eq 137 ] \
+      || fail "mid-steal victim $i did not die inside the steal window (rc=$rc)"
+    lockpid=$(cat "$lockdir/pid" 2>/dev/null || true)
+    [ "$lockpid" = "$dead" ] \
+      || fail "mid-steal victim $i changed the lock it was killed before breaking"
+    if [ -e "$lockdir.steal.steal" ] || [ -L "$lockdir.steal.steal" ]; then
+      fail "interrupted steal $i left a name only another steal could clear"
+    fi
+    i=$((i + 1))
+  done
+
+  # The other half: a dead holder must still lose the lock. Through the waiter,
+  # because an unacquirable lock is not what a caller sees - it spins in here.
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    fm_lock_release "$2"
+  ' _ "$LIB" "$lockdir" >/dev/null 2>&1 &
+  waiter=$!
+  waited=0
+  while [ "$waited" -lt 300 ] && kill -0 "$waiter" 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$waiter" 2>/dev/null; then
+    kill -KILL "$waiter" 2>/dev/null || true
+    wait "$waiter" 2>/dev/null || true
+    fail "a lock left by repeated interrupted steals wedged its waiter forever"
+  fi
+  wait "$waiter" 2>/dev/null
+  waiter_rc=$?
+  [ "$waiter_rc" -eq 0 ] \
+    || fail "a lock left by repeated interrupted steals was not reclaimable (rc=$waiter_rc)"
+  if [ -e "$lockdir.steal" ] || [ -L "$lockdir.steal" ]; then
+    fail "completed reclaim left its steal mutex behind"
+  fi
+  pass "interrupted steals leave one bounded leftover the next reclaim clears"
+}
+
+# Breaking the leftover in place removes the mutex that used to serialize this,
+# so the break has to arbitrate itself: the owner directory a reclaim mints is
+# unique and never reused, so exactly one racer can rename it away and only that
+# racer may unlink the mutex it belonged to. Two winners here would be worse
+# than the storm - both would go on to reclaim the lock they each proved stale.
+# The leftover is built in the shape a killed reclaim actually leaves, a symlink
+# to an owner directory recording a dead pid, because the arbitration is the
+# owner directory and a fixture without one would not exercise it.
+#
+# The state directory is asserted empty at the end for the residue this replaces:
+# a racer whose own stray owner link became unreachable when the directory moved
+# would otherwise leave one undeletable directory behind per contended break.
+test_stale_steal_mutex_break_yields_one_winner() {
+  local dir state lockdir dead marker i pids pid wins leftover
+  dir=$(make_case stale-steal-mutex-concurrency)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  marker="$dir/wins"
+  dead=$(dead_pid)
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    for path in "$2" "$2.steal"; do
+      owner=$(fm_lock_owner_dir "$path") || exit 1
+      printf "%s\n" "$3" > "$owner/pid" || exit 1
+      ln -s "$owner" "$path" || exit 1
+    done
+  ' _ "$LIB" "$lockdir" "$dead" \
+    || fail "could not build a stale lock behind a stale steal mutex"
+  : > "$marker"
+  pids=
+  i=1
+  while [ "$i" -le 40 ]; do
+    FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      if fm_lock_try_acquire "$2"; then
+        printf "%s\n" "${BASHPID:-$$}" >> "$3"
+        sleep 0.3
+        fm_lock_release "$2"
+      fi
+    ' _ "$LIB" "$lockdir" "$marker" &
+    pids="$pids $!"
+    i=$((i + 1))
+  done
+  for pid in $pids; do
+    wait "$pid" 2>/dev/null || true
+  done
+  wins=$(awk 'NF { c++ } END { print c + 0 }' "$marker")
+  [ "$wins" -eq 1 ] \
+    || fail "expected exactly one winner breaking a stale steal mutex, got $wins"
+  leftover=$(find "$state" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')
+  [ "$leftover" -eq 0 ] \
+    || fail "40 contended breaks left $leftover artifacts behind: $(find "$state" -mindepth 1 -maxdepth 1)"
+  pass "breaking a stale steal mutex yields one winner and no residue"
+}
+
+# The residue the case above would otherwise accumulate, pinned where it is
+# deterministic. A lock that still exists as a symlink resolves through itself,
+# so a racer's ln -s lands inside the target owner directory rather than
+# replacing the lock; fm_lock_remove_stray_owner_link is how that racer takes
+# its stray back out, and a racer whose path was broken, released, or reclaimed
+# first never gets to. One link it left behind is enough to make the directory
+# undeletable, and the name is dotted like every lock in a state root, so a
+# sweep that only looks at ordinary glob matches would walk straight past it.
+test_owner_directory_with_a_stray_link_is_still_discarded() {
+  local dir state lockdir rc remaining
+  dir=$(make_case owner-stray-link)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    owner=$(fm_lock_owner_dir "$2") || exit 3
+    fm_lock_prepare_owner "$owner" || exit 4
+    ln -s "$2.owner.stranded" "$owner/$(basename "$2").owner.stranded" || exit 5
+    fm_lock_discard_owner "$owner"
+    [ -e "$owner" ] || [ -L "$owner" ]
+  ' _ "$LIB" "$lockdir"
+  rc=$?
+  [ "$rc" -lt 3 ] || fail "the stray-link fixture could not be built (rc=$rc)"
+  [ "$rc" -ne 0 ] \
+    || fail "an owner directory holding one stray owner link was left on disk"
+  remaining=$(find "$state" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')
+  [ "$remaining" -eq 0 ] \
+    || fail "discarding a stray-linked owner left $remaining artifacts in the state root"
+  pass "an owner directory holding an unreachable stray link is still discarded"
 }
 
 # The narrower window of the case above, and the one that made the unusable
@@ -1518,6 +1678,9 @@ test_errexit_caller_waits_out_ordinary_contention
 test_wake_drain_refuses_to_run_unlocked
 test_watcher_reports_an_unusable_state_directory
 test_lock_steals_through_a_leaked_steal_lock
+test_interrupted_steal_does_not_grow_a_steal_chain
+test_stale_steal_mutex_break_yields_one_winner
+test_owner_directory_with_a_stray_link_is_still_discarded
 test_lock_recovers_when_only_a_dead_steal_marker_remains
 test_live_steal_with_primary_absent_stays_retryable
 test_lock_stale_steal_single_winner_under_concurrency
