@@ -127,6 +127,13 @@ case "${1:-}" in
       *) fake_screen | awk -v start="$start" -v end="$end" \
            'NR - 1 >= start && NR - 1 <= end' ;;
     esac
+    # The bounded -S -120 read belongs to the spawn's own arrival poll, never to
+    # the composer or busy reads the submit core makes, so this lets a swallowed
+    # Enter still land while that window is open.
+    if [ "${FM_FAKE_KIMI_LATE_DELIVERY:-no}" = yes ] && [ "$state" = pointer-typed ] \
+       && [ "$start" = -120 ]; then
+      printf 'delivered\n' > "$FM_FAKE_KIMI_STATE"
+    fi
     exit 0
     ;;
 esac
@@ -172,6 +179,7 @@ run_spawn() {
     FM_FAKE_KIMI_SWALLOWED="$case_dir/kimi.swallowed" \
     FM_FAKE_KIMI_SWALLOW_FIRST="${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" \
     FM_FAKE_KIMI_SWALLOW_ALL="${FM_FAKE_KIMI_SWALLOW_ALL:-no}" \
+    FM_FAKE_KIMI_LATE_DELIVERY="${FM_FAKE_KIMI_LATE_DELIVERY:-no}" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_FAKE_BRIEF_REAL="$(cd "$home/data/$id" && pwd -P)/brief.md" \
     FM_KIMI_READY_POLLS=2 FM_KIMI_DELIVERY_POLLS=2 FM_KIMI_POLL_INTERVAL=0 \
@@ -525,10 +533,11 @@ test_kimi_unconfirmed_delivery_is_recorded_as_unconfirmed_not_failed() {
   pass "fm-spawn: an unseen kimi acknowledgement is recorded as needing a look, not as a failed delivery"
 }
 
-# The counterpart of the case above: here every Enter is swallowed, so after the
-# retry budget is spent the composer still visibly holds the pointer text with
-# an idle pane. That is positive proof the brief never arrived, and the separate
-# unconfirmed verb must not absorb it.
+# The counterpart of the case above: here every Enter is swallowed and the
+# arrival window then passes with the composer still visibly holding the pointer
+# text. A composer that never clears can never be confirmed, so that pair is
+# positive proof the brief never arrived and the unconfirmed verb must not
+# absorb it.
 test_kimi_proven_enter_swallow_is_recorded_as_failed() {
   local id rec out rc status_file line
   id=kimi-swallow-z6
@@ -546,12 +555,35 @@ test_kimi_proven_enter_swallow_is_recorded_as_failed() {
   line=$(last_status_line "$status_file")
   [ "$(status_line_verb "$line")" = failed ] \
     || fail "a proven kimi Enter swallow was not recorded as a failure: $line"
-  assert_contains "$line" "composer still holds the pointer text" \
+  assert_contains "$line" "arrival window then passed unconfirmed" \
     "the record did not say what was actually measured"
   expect_code 1 "$rc" "a proven kimi Enter swallow should exit on the failure contract"
   assert_not_contains "$out" "spawned $id" \
     "a proven kimi Enter swallow was reported as a completed spawn"
   pass "fm-spawn: a proven kimi Enter swallow stays a failed delivery"
+}
+
+# The submit core reports `pending` whenever the composer has not re-rendered by
+# the time the Enter budget runs out, which says nothing about arrival: outside
+# tmux no pane is read at all, and inside it the busy read cannot see kimi's own
+# token. So a `pending` submit whose brief then lands inside the arrival window
+# is an ordinary successful spawn, not a failure of any kind.
+test_kimi_pending_submit_confirmed_inside_the_window_succeeds() {
+  local id rec out rc task_tmp
+  id="kimi-late-z7-$$"
+  task_tmp="/tmp/fm-$id"
+  rec=$(make_spawn_case late "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_SWALLOW_ALL=yes FM_FAKE_KIMI_LATE_DELIVERY=yes run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  rm -rf "$task_tmp"
+  expect_code 0 "$rc" "a kimi brief confirmed inside the arrival window should be a successful spawn"
+  assert_contains "$out" "spawned $id harness=kimi" \
+    "a kimi brief that landed a beat late was not reported as spawned"
+  assert_absent "$HOME_DIR/state/$id.status" \
+    "a successful kimi spawn wrote a status record it had no cause to write"
+  pass "fm-spawn: a pending submit whose brief lands inside the arrival window still spawns"
 }
 
 test_kimi_readiness_gate_precedes_pointer() {
@@ -744,6 +776,7 @@ test_kimi_falls_back_to_expanded_home_binary
 test_kimi_missing_binary_refuses_before_pane_creation
 test_kimi_unconfirmed_delivery_is_recorded_as_unconfirmed_not_failed
 test_kimi_proven_enter_swallow_is_recorded_as_failed
+test_kimi_pending_submit_confirmed_inside_the_window_succeeds
 test_kimi_readiness_gate_precedes_pointer
 test_kimi_detection_uses_ancestry_after_markers
 test_kimi_session_lock_identity
