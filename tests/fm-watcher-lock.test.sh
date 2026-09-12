@@ -1653,6 +1653,14 @@ test_dangling_steal_link_break_cannot_carry_off_a_live_mutex() {
 # So the mutex must be left completely untouched: not removed and restored, and
 # not quarantined either, which is why the absence of quarantine residue is
 # asserted rather than only the link surviving.
+#
+# Surviving is not the same as never having been lifted, and only the second one
+# is the property here: a break that captures the replacement and puts an
+# identical link back leaves every observable assertion above satisfied and the
+# window wide open. The rename itself is what the case watches, so it fails on
+# the mutex path being used as a rename source at all. The interception is
+# pinned to that one path as the source, which leaves the quarantine and owner
+# renames the break legitimately performs untouched.
 test_steal_capture_leaves_a_replacement_mutex_untouched() {
   local dir state lockdir rc residue
   dir=$(make_case steal-capture-replacement)
@@ -1674,19 +1682,28 @@ test_steal_capture_leaves_a_replacement_mutex_untouched() {
       ln -s "$live_owner" "$steal" || exit 4
       return 1
     }
+    mv() {
+      if [ "$1" = "$steal" ]; then
+        lifted=1
+        return 1
+      fi
+      command mv "$@"
+    }
     rc=0
     _fm_lock_steal_break_stale "$steal" || rc=$?
-    [ "$rc" -eq 1 ] || exit 5
-    [ -L "$steal" ] || exit 6
-    [ "$(readlink "$steal")" = "$live_owner" ] || exit 7
-    [ "$(cat "$live_owner/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ] || exit 8
+    [ -z "${lifted:-}" ] || exit 5
+    [ "$rc" -eq 1 ] || exit 6
+    [ -L "$steal" ] || exit 7
+    [ "$(readlink "$steal")" = "$live_owner" ] || exit 8
+    [ "$(cat "$live_owner/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ] || exit 9
   ' _ "$LIB" "$lockdir"
   rc=$?
   case "$rc" in
     0) ;;
     3|4) fail "the replaced-mutex fixture could not be built (rc=$rc)" ;;
-    5) fail "a break whose target was replaced before it reached it reported success" ;;
-    *) fail "a break lifted a mutex it could already see was not its own (rc=$rc)" ;;
+    5) fail "a break lifted a mutex it could already see was not its own" ;;
+    6) fail "a break whose target was replaced before it reached it reported success" ;;
+    *) fail "a break damaged the mutex that replaced its target (rc=$rc)" ;;
   esac
   residue=$(find "$state" -maxdepth 1 -name '*.dead.*' | wc -l | tr -d '[:space:]')
   [ "$residue" -eq 0 ] \
