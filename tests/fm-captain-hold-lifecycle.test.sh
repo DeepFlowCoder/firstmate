@@ -722,6 +722,110 @@ test_out_of_band_close_is_recordable() {
   pass "an out-of-band close is recordable with the captain's word and nothing else"
 }
 
+# The sibling of the case above, and the one that had no way out. The close is
+# out of band again, but the captain hold is LIFTED FIRST - `tasks-axi unhold`
+# then `done`, the shape of "this looks settled, drop the hold and close it".
+# tasks-axi keeps the hold annotations through a plain close, so the case above
+# repairs through `answer`; unhold erases the very `hold_kind` that path relies
+# on as its surviving proof. The task is then closed, carries no captain
+# provenance and no recorded answer, and the origin's attested inventory still
+# names it: `complete` and `verify` fail on it forever, `answer` refuses it as
+# ordinary finished work, and `hold` refuses it as closed. The investigation
+# could never be completed and its source could never be cleaned up.
+#
+# The exit reopens the call rather than closing it: `hold --reopen` puts the
+# question back in front of the captain and records no answer at all, which is
+# the only reconciliation that does not decide for him. From there both
+# documented directions work again.
+test_stranded_close_is_reopenable_without_inventing_an_answer() {
+  local home id call show out
+  home=$(make_home stranded-close)
+  id=sample-retention-review
+  call=sample-retention-call
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample retention window" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the stranded-close origin"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample retention review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
+  run_captain "$home" hold "$call" --title "Choose the sample retention window" \
+    --reason "captain retention choice pending" --repo sample --origin "$id" >/dev/null \
+    || fail "could not register the captain-held task"
+  run_captain "$home" complete "$id" "$call" >/dev/null \
+    || fail "completion failed before the out-of-band close"
+
+  # The close that strands the record: the hold goes first, so nothing on the
+  # task can still say this was ever the captain's item.
+  tasks_in "$home" unhold "$call" >/dev/null || fail "could not lift the hold out of band"
+  tasks_in "$home" "done" "$call" >/dev/null || fail "could not reproduce the out-of-band close"
+  show=$(tasks_in "$home" show "$call" --full)
+  assert_contains "$show" "state: done" "setup error: the call was not closed"
+  assert_not_contains "$show" "hold_kind: captain" \
+    "setup error: the captain provenance survived the lifted hold, so this is the other case"
+
+  # The dead end, in all three directions.
+  if run_captain "$home" verify "$id" > "$home/stranded-verify.out" 2> "$home/stranded-verify.err"; then
+    fail "verification passed a captain call with neither provenance nor a recorded answer"
+  fi
+  printf 'An answer the captain never gave.\n' > "$home/invented.txt"
+  if run_captain "$home" answer "$call" --decision-file "$home/invented.txt" \
+    > "$home/stranded-answer.out" 2> "$home/stranded-answer.err"; then
+    fail "the stranded call was dressed up as an answered captain call"
+  fi
+  assert_grep "never held for the captain" "$home/stranded-answer.err" \
+    "the answer refusal must name the lost captain-hold provenance"
+  if run_captain "$home" hold "$call" --reason "captain retention choice pending" \
+    > "$home/stranded-hold.out" 2> "$home/stranded-hold.err"; then
+    fail "a plain hold silently resurrected a closed captain call"
+  fi
+  assert_grep "already closed" "$home/stranded-hold.err" \
+    "the plain-hold refusal must still protect a closed task"
+  if run_teardown "$home" "$id" > "$home/stranded-teardown.out" 2> "$home/stranded-teardown.err"; then
+    fail "teardown proceeded while the captain call was stranded"
+  fi
+  assert_present "$home/state/$id.meta" "refused teardown removed investigation metadata"
+
+  # The supported exit. It reopens the question; it does not answer it.
+  out=$(run_captain "$home" hold "$call" --reason "captain retention choice pending" --reopen) \
+    || fail "--reopen could not repair the stranded captain call"
+  assert_contains "$out" "reopened: $call" "--reopen did not report what it repaired"
+  show=$(tasks_in "$home" show "$call" --full)
+  assert_contains "$show" "state: queued" "--reopen left the call closed"
+  assert_contains "$show" "held: yes" "--reopen did not put the call back under a hold"
+  assert_contains "$show" "hold_kind: captain" "--reopen did not restore the captain provenance"
+  assert_not_contains "$show" "Resolution recorded by fm-captain-hold" \
+    "--reopen invented a captain answer"
+  assert_contains "$show" "Origin: $id" "--reopen discarded the task body"
+  run_captain "$home" verify "$id" >/dev/null \
+    || fail "the reopened call did not satisfy the completion gate"
+
+  # Repeating it is an ordinary idempotent hold, not a second reopen.
+  out=$(run_captain "$home" hold "$call" --reason "captain retention choice pending" --reopen) \
+    || fail "--reopen was not idempotent on an already-open call"
+  assert_not_contains "$out" "reopened:" "--reopen reported a reopen on an already-open call"
+
+  # And from here the captain's own words close it exactly as they always did.
+  printf 'Keep the sample retention window at ninety days.\n' > "$home/retention.txt"
+  run_captain "$home" answer "$call" --decision-file "$home/retention.txt" >/dev/null \
+    || fail "the reopened call could not be answered"
+  show=$(tasks_in "$home" show "$call" --full)
+  assert_contains "$show" "state: done" "the answered call did not close"
+  assert_contains "$show" "Keep the sample retention window at ninety days." \
+    "the answer lost the captain decision text"
+  run_teardown "$home" "$id" >/dev/null 2> "$home/stranded-teardown2.err" \
+    || fail "teardown still refused after the repair: $(cat "$home/stranded-teardown2.err")"
+
+  # A call the captain already answered is not stranded, and resurfacing it
+  # would ask him a question he has already closed.
+  if run_captain "$home" hold "$call" --reason "captain retention choice pending" --reopen \
+    > "$home/answered-reopen.out" 2> "$home/answered-reopen.err"; then
+    fail "--reopen resurfaced a call the captain had already answered"
+  fi
+  assert_grep "already records a captain answer" "$home/answered-reopen.err" \
+    "the refusal must say the call was already answered"
+  pass "a captain call stranded by a lifted hold reopens without inventing an answer"
+}
+
 # A post-teardown visual review completes against the surviving report and
 # durable tasks, with no volatile task metadata and no second decision database.
 test_visual_review_uses_shared_completion_owner() {
@@ -1419,6 +1523,7 @@ test_answer_records_and_closes
 test_release_frees_held_work
 test_deferral_leaves_captains_call_until_due
 test_out_of_band_close_is_recordable
+test_stranded_close_is_reopenable_without_inventing_an_answer
 test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
