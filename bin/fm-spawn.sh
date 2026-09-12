@@ -185,14 +185,13 @@
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
-# A kimi spawn separates a proven delivery failure from an unproven one, and exit
-# status carries the difference the same way bin/fm-send.sh's typed plane does:
-# exit 1 means the brief demonstrably never arrived (no ready signal, so no
-# pointer was sent, or the send itself failed) and the task's record says
-# `failed`; exit 3 means the pointer was submitted and only its arrival went
-# unconfirmed, so the record says `blocked` under the key kimi-delivery and the
-# endpoint is preserved for inspection. Never treat exit 3 as a failed dispatch:
-# check the window, then close that decision with the answer it deserves.
+# A kimi spawn separates a proven delivery failure from an unproven one, and the
+# task's status record carries the difference: `failed` means the brief
+# demonstrably never arrived (no ready signal so no pointer was sent, the send
+# itself failed, or every Enter was swallowed with the pointer text still in the
+# composer), while `blocked` under the key kimi-delivery means the pointer was
+# submitted and only its arrival went unconfirmed, so the endpoint is preserved
+# and that open decision stays up until someone checks the window and closes it.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -2376,8 +2375,9 @@ kimi_wait_for_delivery() {
 }
 
 # The durable record of a kimi spawn this script PROVED did not deliver: the
-# ready gate never opened, so no pointer was ever sent, or the submit core
-# reported the send itself failed. `failed` is a terminal verb in
+# ready gate never opened, so no pointer was ever sent, the submit core
+# reported the send itself failed, or it proved every Enter was swallowed with
+# the pointer text still sitting in the composer. `failed` is a terminal verb in
 # bin/fm-classify-lib.sh - it closes an open decision and opens none - which is
 # the truth only when the brief demonstrably never arrived.
 kimi_spawn_fail() {  # <detail>
@@ -3095,13 +3095,27 @@ if [ "$HARNESS" = kimi ]; then
     kimi_spawn_fail "kimi brief pointer could not be submitted"
     exit 1
   }
-  if [ "$KIMI_SUBMIT_VERDICT" = send-failed ]; then
-    kimi_spawn_fail "kimi brief pointer could not be submitted"
-    exit 1
-  fi
+  # Two of the submit core's verdicts are positive proof that nothing arrived,
+  # and softening either one would destroy the very distinction this split
+  # exists for: an unseen acknowledgement is not a failure, but a PROVEN
+  # non-delivery is not merely unconfirmed. `pending` is the swallow verdict
+  # bin/fm-composer-lib.sh's fm_composer_queued_enter_verdict returns only when
+  # the Enter retry budget is spent, the composer is structurally proven to
+  # still hold the pointer text, and the pane is idle. Only the verdicts where
+  # arrival is genuinely unknown may reach the unconfirmed record below.
+  case "$KIMI_SUBMIT_VERDICT" in
+    send-failed)
+      kimi_spawn_fail "kimi brief pointer could not be submitted"
+      exit 1
+      ;;
+    pending)
+      kimi_spawn_fail "kimi brief pointer Enter retries were spent and the composer still holds the pointer text with an idle pane, so the brief did not arrive"
+      exit 1
+      ;;
+  esac
   if ! kimi_wait_for_delivery; then
     kimi_spawn_unconfirmed "kimi brief pointer was submitted but its arrival was not confirmed; the worker may already be reading the brief, so check the window before assuming it never arrived"
-    exit 3
+    exit 1
   fi
 fi
 if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then

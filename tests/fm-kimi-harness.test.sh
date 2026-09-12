@@ -95,7 +95,9 @@ case "${1:-}" in
             fi
             ;;
           pointer-typed)
-            if [ "${FM_FAKE_KIMI_DELIVERY:-yes}" = yes ]; then
+            if [ "${FM_FAKE_KIMI_SWALLOW_ALL:-no}" = yes ]; then
+              :
+            elif [ "${FM_FAKE_KIMI_DELIVERY:-yes}" = yes ]; then
               if [ "${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" = yes ] \
                  && [ ! -f "$FM_FAKE_KIMI_SWALLOWED" ]; then
                 : > "$FM_FAKE_KIMI_SWALLOWED"
@@ -169,6 +171,7 @@ run_spawn() {
     FM_FAKE_KIMI_STATE="$case_dir/kimi.state" \
     FM_FAKE_KIMI_SWALLOWED="$case_dir/kimi.swallowed" \
     FM_FAKE_KIMI_SWALLOW_FIRST="${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" \
+    FM_FAKE_KIMI_SWALLOW_ALL="${FM_FAKE_KIMI_SWALLOW_ALL:-no}" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_FAKE_BRIEF_REAL="$(cd "$home/data/$id" && pwd -P)/brief.md" \
     FM_KIMI_READY_POLLS=2 FM_KIMI_DELIVERY_POLLS=2 FM_KIMI_POLL_INTERVAL=0 \
@@ -514,12 +517,41 @@ test_kimi_unconfirmed_delivery_is_recorded_as_unconfirmed_not_failed() {
   assert_contains "$open" "kimi-delivery" \
     "an unconfirmed kimi delivery left no open decision, so nobody is obliged to check the window"
 
-  expect_code 3 "$rc" "an unconfirmed kimi delivery should exit on the unconfirmed contract, not the failure one"
+  [ "$rc" -ne 0 ] || fail "an unconfirmed kimi delivery should not report a completed spawn"
   assert_contains "$out" "arrival was not confirmed" \
     "unconfirmed kimi delivery lacked a diagnostic naming what went unconfirmed"
   assert_not_contains "$out" "spawned $id" \
     "an unconfirmed kimi delivery was reported as a completed spawn"
   pass "fm-spawn: an unseen kimi acknowledgement is recorded as needing a look, not as a failed delivery"
+}
+
+# The counterpart of the case above: here every Enter is swallowed, so after the
+# retry budget is spent the composer still visibly holds the pointer text with
+# an idle pane. That is positive proof the brief never arrived, and the separate
+# unconfirmed verb must not absorb it.
+test_kimi_proven_enter_swallow_is_recorded_as_failed() {
+  local id rec out rc status_file line
+  id=kimi-swallow-z6
+  rec=$(make_spawn_case swallow "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_SWALLOW_ALL=yes run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  [ -s "$CASE_DIR/pointer.log" ] \
+    || fail "fixture never typed the pointer, so it cannot exercise a swallowed Enter"
+
+  status_file="$HOME_DIR/state/$id.status"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-classify-lib.sh"
+  line=$(last_status_line "$status_file")
+  [ "$(status_line_verb "$line")" = failed ] \
+    || fail "a proven kimi Enter swallow was not recorded as a failure: $line"
+  assert_contains "$line" "composer still holds the pointer text" \
+    "the record did not say what was actually measured"
+  expect_code 1 "$rc" "a proven kimi Enter swallow should exit on the failure contract"
+  assert_not_contains "$out" "spawned $id" \
+    "a proven kimi Enter swallow was reported as a completed spawn"
+  pass "fm-spawn: a proven kimi Enter swallow stays a failed delivery"
 }
 
 test_kimi_readiness_gate_precedes_pointer() {
@@ -711,6 +743,7 @@ test_kimi_teardown_removes_pointer_and_registry_token
 test_kimi_falls_back_to_expanded_home_binary
 test_kimi_missing_binary_refuses_before_pane_creation
 test_kimi_unconfirmed_delivery_is_recorded_as_unconfirmed_not_failed
+test_kimi_proven_enter_swallow_is_recorded_as_failed
 test_kimi_readiness_gate_precedes_pointer
 test_kimi_detection_uses_ancestry_after_markers
 test_kimi_session_lock_identity
