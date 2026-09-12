@@ -452,6 +452,135 @@ SH
   pass "a crashed platform read costs one read, not the life of the process"
 }
 
+# A status file's durable identity is the rotation/recreation guard, and its
+# strongest form is the one that carries the file's birth time. The two birth
+# reads behind that form discarded their reader's exit status, so a reader the
+# host killed produced the very same `weak:` answer as a filesystem that
+# genuinely records no birth time - and the drain stored that answer as durable
+# identity while exiting green. Drive the two apart here: a killed reader must
+# refuse, while a stat that simply cannot produce the directive must still read
+# as no birth time, or the fix has flattened a supported host into a refusal.
+test_a_host_killed_birth_read_never_reads_as_no_birth_time() {
+  local dir state statusfile out err rc real_stat baseline degraded lib
+  local kill_epoch kill_birth err_epoch
+  dir=$(make_case birth-read-killed)
+  state="$dir/state"
+  statusfile="$state/task10.status"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+  lib="$ROOT/bin/fm-classify-lib.sh"
+  kill_epoch="$dir/shim-kill-epoch"
+  kill_birth="$dir/shim-kill-birth"
+  err_epoch="$dir/shim-err-epoch"
+  real_stat=$(command -v stat) || fail "no stat on PATH to build the shim from"
+
+  mkdir -p "$kill_epoch" "$kill_birth" "$err_epoch"
+  # Killed on the birth-time PROBE ('%B' on BSD, '%W' on GNU): the read that
+  # decides whether this file has a birth time at all. Reachable on every host.
+  cat > "$kill_epoch/stat" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in '%B'|'%W') kill -TERM \$\$ ;; esac
+done
+exec "$real_stat" "\$@"
+SH
+  # Killed on the birth TIMESTAMP read ('%FB' on BSD, '%w' on GNU), which only
+  # runs once the probe has already answered that the file HAS a birth time.
+  cat > "$kill_birth/stat" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in '%FB'|'%w') kill -TERM \$\$ ;; esac
+done
+exec "$real_stat" "\$@"
+SH
+  # The legitimate degradation this must NOT swallow into a refusal: a stat too
+  # old to know the directive answers with an ordinary non-zero status, and that
+  # answer is stable - it cannot heal on a retry - so a weak identity is the
+  # correct reading of it.
+  cat > "$err_epoch/stat" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in '%B'|'%W') exit 1 ;; esac
+done
+exec "$real_stat" "\$@"
+SH
+  chmod +x "$kill_epoch/stat" "$kill_birth/stat" "$err_epoch/stat"
+
+  printf 'needs-decision [key=b]: a call the captain still owes\n' > "$statusfile"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain before the injected birth-read failures failed"
+
+  baseline=$(bash -c '. "$1"; _fm_open_decisions_file_ident "$2"' _ "$lib" "$statusfile") \
+    || fail "the identity read failed on an untouched host, so this case cannot be set up"
+
+  rc=0
+  PATH="$kill_epoch:$PATH" bash -c '. "$1"; _fm_open_decisions_file_ident "$2"' \
+    _ "$lib" "$statusfile" > "$dir/ident.out" 2>/dev/null || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "a birth-time probe killed by a signal still answered with an identity ($(command cat "$dir/ident.out")), so a dead reader reads as a filesystem without birth times"
+
+  rc=0
+  PATH="$kill_epoch:$PATH" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "a birth-time probe killed by a signal let the drain exit green, so a discarded read reads as nothing being open"
+  grep -F 'wake drain: the durable status could not be read' "$err" >/dev/null \
+    || fail "a host-killed birth-time probe stopped refusing loudly: $(command cat "$err")"
+  grep -F 'killed by signal 15' "$err" >/dev/null \
+    || fail "the refusal did not report the killed birth read as a signal death: $(command cat "$err")"
+  grep -F 'genuine I/O failure' "$err" >/dev/null \
+    && fail "a host-killed birth read was blamed on the status file: $(command cat "$err")"
+
+  # The timestamp read is only reachable where the probe reports a birth time.
+  # Report the unreachable host rather than passing silently over the case.
+  case "$baseline" in
+    strong:*)
+      rc=0
+      PATH="$kill_birth:$PATH" bash -c '. "$1"; _fm_open_decisions_file_ident "$2"' \
+        _ "$lib" "$statusfile" > "$dir/ident2.out" 2>/dev/null || rc=$?
+      [ "$rc" -ne 0 ] \
+        || fail "a birth-timestamp read killed by a signal still answered with an identity ($(command cat "$dir/ident2.out")) on a host that does record birth times"
+      rc=0
+      PATH="$kill_birth:$PATH" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" || rc=$?
+      [ "$rc" -ne 0 ] \
+        || fail "a birth-timestamp read killed by a signal let the drain exit green"
+      grep -F 'killed by signal 15' "$err" >/dev/null \
+        || fail "the refusal did not report the killed birth-timestamp read as a signal death: $(command cat "$err")"
+      ;;
+    *)
+      printf 'ok - # SKIP the birth-timestamp read is unreachable here: this filesystem records no birth time (%s)\n' "$baseline"
+      ;;
+  esac
+
+  # The other half of the rule: the same probe failing with an ordinary status
+  # still reads as no birth time, so a killed reader and an unsupported
+  # directive cannot both collapse into one verdict. Where this host does record
+  # birth times, assert the two readings actually diverge, so the case cannot go
+  # quietly vacuous by degrading to the value it started from.
+  degraded=$(PATH="$err_epoch:$PATH" bash -c '. "$1"; _fm_open_decisions_file_ident "$2"' \
+    _ "$lib" "$statusfile") \
+    || fail "a stat that cannot produce the birth-time directive was turned into a failed identity read, so a supported host lost its weak identity"
+  case "$degraded" in
+    weak:*) ;;
+    *) fail "an unsupported birth-time directive did not degrade to a weak identity: $degraded" ;;
+  esac
+  case "$baseline" in
+    strong:*)
+      [ "$degraded" != "$baseline" ] \
+        || fail "the degraded identity is identical to the untouched one ($degraded) on a host that does record birth times, so the shim never reached the probe"
+      ;;
+  esac
+
+  PATH="$err_epoch:$PATH" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" 2> "$err" \
+    || fail "an unsupported birth-time directive was turned into a refusal: $(command cat "$err")"
+  grep -F 'task10' "$out" | grep -F '[key=b]' >/dev/null \
+    || fail "the open decision disappeared under a weak identity: $(command cat "$out")"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "wake drain did not recover after the injected birth-read failures"
+
+  pass "a host-killed birth read refuses instead of reading as a filesystem without birth times"
+}
+
 # The captain's decisions reach the captain through this drain, so "nothing
 # printed, exit 0" is an affirmative claim that nothing is open. Drive the real
 # script repeatedly with the size read failing and assert it can never make that
@@ -793,6 +922,7 @@ test_read_failure_refuses_loudly_and_preserves_state_for_retry
 test_refusal_tells_a_killed_reader_apart_from_a_genuine_io_failure
 test_a_host_killed_identity_stat_is_not_reported_as_a_status_file_fault
 test_a_crashed_platform_read_is_not_pinned_for_the_process_lifetime
+test_a_host_killed_birth_read_never_reads_as_no_birth_time
 test_unreadable_status_never_exits_green_and_empty_while_a_decision_is_open
 test_open_decisions_fold_read_failure_refuses_instead_of_claiming_nothing_is_open
 test_cursor_commit_failure_after_a_full_presentation_notices_and_stays_green
