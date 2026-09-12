@@ -829,18 +829,68 @@ fm_recovery_marker_reopen_announced() {
   fm_recovery_transition "$1" reopen-announced
 }
 
+# Take a steal mutex out of circulation, which is the only way its removal can
+# be bound to the check that authorised it: a check and a separate rm are two
+# commands with a fork between them, and a racer that completed the whole break
+# and installed its own live mutex in that gap has it deleted by the racer still
+# acting on the older read. An atomic rename has no gap - exactly one racer
+# captures a given path and every other gets ENOENT - and the winner is then
+# alone with what it captured, so it can decide from that copy instead of from
+# one more look at a path other racers are still moving.
+#
+# <expected> is the owner directory the caller proved dead, or empty for the
+# legacy directory form, which has no owner. A captured copy that matches is the
+# leftover this breaks. Anything else is a mutex somebody rebuilt on the path
+# while this racer was deciding, so it goes back through an ln -s that cannot
+# overwrite an occupant - restoring it by renaming the copy back would destroy a
+# live mutex exactly the way the unbound rm does - and the break reports
+# ordinary contention instead.
+#
+# Status 0 the path was this racer's to take and is now clear, 1 it was not.
+_fm_lock_steal_capture() {
+  local steal=$1 expected=$2 quarantine captured target
+  quarantine=$(mktemp -d "$steal.dead.XXXXXX" 2>/dev/null) || return 1
+  captured="$quarantine/steal"
+  if ! mv "$steal" "$captured" 2>/dev/null; then
+    rmdir "$quarantine" 2>/dev/null || true
+    return 1
+  fi
+  if [ -n "$expected" ]; then
+    if fm_lock_points_to_owner "$captured" "$expected"; then
+      rm -f "$captured" 2>/dev/null || true
+      rmdir "$quarantine" 2>/dev/null || true
+      return 0
+    fi
+  elif [ ! -L "$captured" ] && [ -d "$captured" ]; then
+    fm_lock_discard_owner "$captured"
+    rmdir "$quarantine" 2>/dev/null || true
+    return 0
+  fi
+  target=$(readlink "$captured" 2>/dev/null || true)
+  if [ -n "$target" ]; then
+    if ! { ln -s "$target" "$steal" 2>/dev/null && fm_lock_points_to_owner "$steal" "$target"; }; then
+      # ln -s into a path an occupying directory resolves through lands inside
+      # it rather than failing, and that stray is unreachable to everyone else.
+      fm_lock_remove_stray_owner_link "$steal" "$target"
+    fi
+    rm -f "$captured" 2>/dev/null || true
+  fi
+  rmdir "$quarantine" 2>/dev/null || true
+  return 1
+}
+
 # Break a steal mutex whose owner process is gone, in place, without creating a
 # deeper "<lock>.steal.steal" name to arbitrate with.
 #
 # The owner directory is what makes that safe: fm_lock_owner_dir mints a unique
 # one per acquisition and nothing ever reuses it, so renaming it into a private
 # quarantine succeeds for exactly one racer and every other racer finds it
-# already gone. Only that winner unlinks the mutex, and only while the path
-# still points at the owner it proved dead, so a break can never carry off a
-# lock another process installed meanwhile - nobody can install one while the
-# path is still occupied by the link being broken. Breaking is not acquiring:
-# the ordinary atomic create that follows is what decides who gets the mutex,
-# so two processes reaching this at once cannot both come away holding it.
+# already gone. Only that winner goes on to take the mutex out of circulation,
+# and _fm_lock_steal_capture takes it by the same kind of rename, so a break can
+# never carry off a lock another process installed meanwhile. Breaking is not
+# acquiring: the ordinary atomic create that follows is what decides who gets
+# the mutex, so two processes reaching this at once cannot both come away
+# holding it.
 #
 # The proof of death has to be bound to the directory that gets renamed, or the
 # arbitration proves nothing: a racer that reads the pid through the link and
@@ -853,21 +903,21 @@ fm_recovery_marker_reopen_announced() {
 # Status 0 the stale mutex is broken and the path is free to compete for, 1 it
 # has a live or too-fresh owner, or another racer won the break.
 _fm_lock_steal_break_stale() {
-  local steal=$1 owner pid quarantine
+  local steal=$1 owner pid quarantine rc
   if [ -L "$steal" ]; then
     owner=$(fm_lock_link_owner "$steal" 2>/dev/null || true)
     [ -n "$owner" ] || return 1
     if [ ! -d "$owner" ]; then
       # The owner directory is already gone, so this link records no pid at all
       # and no process can be holding the mutex through it. The dangling link is
-      # the whole of what the killed reclaim left behind.
+      # the whole of what the killed reclaim left behind, and capturing it is
+      # what says this racer rather than another is the one clearing it.
       if fm_lock_mid_acquire_is_fresh "$steal" ''; then
         return 1
       fi
-      if fm_lock_points_to_owner "$steal" "$owner"; then
-        rm -f "$steal" 2>/dev/null || true
-      fi
-      return 0
+      rc=0
+      _fm_lock_steal_capture "$steal" "$owner" || rc=$?
+      return "$rc"
     fi
     pid=$(cat "$owner/pid" 2>/dev/null || true)
     if fm_pid_alive "$pid"; then
@@ -884,20 +934,17 @@ _fm_lock_steal_break_stale() {
       rmdir "$quarantine" 2>/dev/null || true
       return 1
     fi
-    if fm_lock_points_to_owner "$steal" "$owner"; then
-      rm -f "$steal" 2>/dev/null || true
-    fi
+    rc=0
+    _fm_lock_steal_capture "$steal" "$owner" || rc=$?
     fm_lock_discard_owner "$quarantine/owner"
     rmdir "$quarantine" 2>/dev/null || true
-    return 0
+    return "$rc"
   fi
   # The directory form carries no owner directory to arbitrate with, so the
-  # mutex itself is what gets renamed: exactly one breaker can move it into a
-  # private quarantine, and only that one clears the copy it now owns alone.
-  # fm_lock_try_create never builds this form - it is what fixtures construct
-  # and what predates the symlink owner - so a symlink in the quarantine is a
-  # live mutex some racer rebuilt on the path after the check below, never the
-  # legacy directory: put it back untouched and report contention.
+  # mutex itself is the only thing there is to capture. fm_lock_try_create never
+  # builds this form - it is what fixtures construct and what predates the
+  # symlink owner - so a link where this expected a directory is a mutex some
+  # racer rebuilt on the path, which the capture puts back untouched.
   [ -d "$steal" ] || return 1
   pid=$(cat "$steal/pid" 2>/dev/null || true)
   if fm_pid_alive "$pid"; then
@@ -906,21 +953,9 @@ _fm_lock_steal_break_stale() {
   if fm_lock_mid_acquire_is_fresh "$steal" "$pid"; then
     return 1
   fi
-  quarantine=$(mktemp -d "$steal.dead.XXXXXX" 2>/dev/null) || return 1
-  if [ -L "$steal" ] || ! mv "$steal" "$quarantine/steal" 2>/dev/null; then
-    rmdir "$quarantine" 2>/dev/null || true
-    return 1
-  fi
-  if [ -L "$quarantine/steal" ]; then
-    if [ ! -e "$steal" ] && [ ! -L "$steal" ]; then
-      mv "$quarantine/steal" "$steal" 2>/dev/null || true
-    fi
-    rmdir "$quarantine" 2>/dev/null || true
-    return 1
-  fi
-  fm_lock_discard_owner "$quarantine/steal"
-  rmdir "$quarantine" 2>/dev/null || true
-  return 0
+  rc=0
+  _fm_lock_steal_capture "$steal" '' || rc=$?
+  return "$rc"
 }
 
 fm_lock_try_acquire() {

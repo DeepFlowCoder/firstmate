@@ -1587,6 +1587,60 @@ test_steal_break_binds_its_proof_to_the_owner_it_renames() {
   pass "a steal break refuses when the owner it proved dead is no longer the mutex's"
 }
 
+# The same defect one branch over, on the leftover a breaker killed between the
+# two halves of its own break leaves behind: a mutex link whose owner directory
+# is gone. Nothing can be holding that link, so clearing it is right, but a
+# check followed by a separate rm is two commands with a fork between them, and
+# every racer reading the same dangling link passes that check. The one whose rm
+# runs second deletes the live mutex the first one already broke, rebuilt and
+# now holds, and both go on to reclaim the lock they each proved stale.
+#
+# The link is aged rather than slept past, because a link younger than the
+# mid-acquire grace is not breakable at all. The overtake is injected at the
+# ownership check for the same reason as the case above: the window between that
+# check and the removal is one fork wide, and the injected racer does exactly
+# what a real one does - remove the dangling link and install its own live mutex
+# on the path.
+test_dangling_steal_link_break_cannot_carry_off_a_live_mutex() {
+  local dir state lockdir rc
+  dir=$(make_case dangling-steal-link)
+  state="$dir/state"
+  lockdir="$state/.wake-queue.lock"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    steal="$2.steal"
+    gone_owner="$2.owner.gone"
+    ln -s "$gone_owner" "$steal" || exit 3
+    touch -h -t 202001010000 "$steal" || exit 3
+    [ ! -d "$gone_owner" ] || exit 3
+    live_owner=$(fm_lock_owner_dir "$steal") || exit 3
+    printf "%s\n" "${BASHPID:-$$}" > "$live_owner/pid" || exit 3
+    eval "fm_lock_points_to_owner_real() $(declare -f fm_lock_points_to_owner | tail -n +2)"
+    fm_lock_points_to_owner() {
+      local answer=0
+      fm_lock_points_to_owner_real "$1" "$2" || answer=1
+      if [ -z "${overtaken:-}" ]; then
+        overtaken=1
+        rm -f "$steal"
+        ln -s "$live_owner" "$steal" || exit 4
+      fi
+      return "$answer"
+    }
+    _fm_lock_steal_break_stale "$steal" || true
+    [ -L "$steal" ] || exit 5
+    [ "$(readlink "$steal")" = "$live_owner" ] || exit 6
+    [ "$(cat "$live_owner/pid" 2>/dev/null || true)" = "${BASHPID:-$$}" ] || exit 7
+  ' _ "$LIB" "$lockdir"
+  rc=$?
+  case "$rc" in
+    0) ;;
+    3|4) fail "the dangling-link fixture could not be built (rc=$rc)" ;;
+    5) fail "a dangling-link break deleted the live mutex that replaced it" ;;
+    *) fail "a dangling-link break damaged the live mutex that replaced it (rc=$rc)" ;;
+  esac
+  pass "breaking a dangling steal link cannot carry off the mutex that replaced it"
+}
+
 # The residue the case above would otherwise accumulate, pinned where it is
 # deterministic. A lock that still exists as a symlink resolves through itself,
 # so a racer's ln -s lands inside the target owner directory rather than
@@ -1750,6 +1804,7 @@ test_lock_steals_through_a_leaked_steal_lock
 test_interrupted_steal_does_not_grow_a_steal_chain
 test_stale_steal_mutex_break_yields_one_winner
 test_steal_break_binds_its_proof_to_the_owner_it_renames
+test_dangling_steal_link_break_cannot_carry_off_a_live_mutex
 test_owner_directory_with_a_stray_link_is_still_discarded
 test_lock_recovers_when_only_a_dead_steal_marker_remains
 test_live_steal_with_primary_absent_stays_retryable
