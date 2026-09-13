@@ -57,6 +57,11 @@
 # MergeableState, MergeStateStatus). Every value outside the explicit pass
 # lists below is treated as failing, so a value GitHub adds later refuses a
 # merge instead of being silently read as green.
+#
+# Those pass lists are also the single owner of the same question for a surface
+# that only REPORTS a check summary rather than gating a merge:
+# fm_pr_fitness_rollup folds a whole check list into one word for it, and
+# bin/fm-bearings-snapshot.sh reads its summary through that function.
 
 # Every FM_PR_FITNESS_* name below is an output of fm_pr_fitness_classify, read
 # by the sourcing script rather than within this library.
@@ -141,6 +146,62 @@ fm_pr_fitness_context() {
     PENDING|EXPECTED) printf 'running' ;;
     *) printf 'failing' ;;
   esac
+}
+
+# fm_pr_fitness_rollup: fold a whole check list into one summary word, reading it
+# on stdin as one line per check in either of two forms:
+#   run <status> <conclusion>      a check run
+#   context <state>                a legacy commit status
+# Echoes one of:
+#   none     the list carried no check at all
+#   failing  at least one check did not pass
+#   pending  at least one check has not finished
+#   passing  every check passed
+#
+# Every field has to be a non-empty word, so a caller renders its own sentinel
+# for a value the forge left empty rather than losing a field to the split, and
+# a line that does not match either form folds as failing: a line this cannot
+# parse is not evidence that anything passed.
+#
+# This exists so a surface that needs only the summary can ask this owner rather
+# than spell the pass lists again, and bin/fm-bearings-snapshot.sh's own earlier
+# spelling is why. That one named the conclusions it treated as bad and passed
+# everything else, so a check that reached NO verdict - COMPLETED carrying no
+# conclusion, STARTUP_FAILURE, STALE, or any value GitHub adds after it was
+# written - was reported to the captain as passing, which is the one direction a
+# check summary must not be wrong in.
+#
+# The summary is deliberately NOT folded by check name the way
+# fm_pr_fitness_classify is. A red left behind by a run that a later run
+# superseded still reaches this verdict, so the summary can read failing for a
+# check that is green now. That is the direction this fold is allowed to be
+# wrong in; merge fitness, which cannot be, uses the classifier instead.
+fm_pr_fitness_rollup() {
+  local kind f1 f2 rest verdict worst=none
+  while IFS=' ' read -r kind f1 f2 rest || [ -n "$kind" ]; do
+    [ -n "$kind" ] || continue
+    verdict=failing
+    if [ -z "$rest" ]; then
+      case "$kind" in
+        run)
+          if [ -n "$f1" ] && [ -n "$f2" ]; then
+            verdict=$(fm_pr_fitness_checkrun "$f1" "$f2")
+          fi
+          ;;
+        context)
+          if [ -n "$f1" ] && [ -z "$f2" ]; then
+            verdict=$(fm_pr_fitness_context "$f1")
+          fi
+          ;;
+      esac
+    fi
+    case "$verdict" in
+      failing) worst=failing ;;
+      running) if [ "$worst" != failing ]; then worst=pending; fi ;;
+      *) if [ "$worst" = none ]; then worst=passing; fi ;;
+    esac
+  done
+  printf '%s' "$worst"
 }
 
 # fm_pr_fitness_classify: read the rendered reading on stdin and set

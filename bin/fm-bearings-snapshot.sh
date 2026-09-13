@@ -81,6 +81,10 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# Which forge check values count as a pass is not this wrapper's rule to spell.
+# shellcheck source=bin/fm-pr-fitness-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-pr-fitness-lib.sh"
 
 # Bounds (overridable for tests / large fleets).
 FM_BEARINGS_LANDED=${FM_BEARINGS_LANDED:-6}
@@ -261,6 +265,37 @@ gh_bounded() {  # <args...>
     env GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 gh "$@"
 }
 
+# Field separator for the per-pull-request verdict reading folded below.
+PR_TAB=$(printf '\t')
+
+# Render one pull request's statusCheckRollup as the reading fm_pr_fitness_rollup
+# folds, and echo that owner's summary word (none, failing, pending, passing).
+#
+# A sentinel stands in for any value the forge left empty or null, so no field is
+# lost to the fold's word split, and an entry this cannot recognise as either
+# form is rendered as a check run carrying both sentinels - which the owner folds
+# as failing, because an entry that says nothing readable is not a pass.
+# GitHub supplies __typename on a rollup entry, and the two shape tests behind it
+# are what keep a reading that carries no __typename classifiable - without them
+# such an entry would fall to the same default and read as failing wholesale.
+pr_checks_verdict() {  # <statusCheckRollup JSON array>
+  local reading
+  reading=$(printf '%s' "${1:-[]}" | jq -r '
+    def word($v; $fallback):
+      ($v | tostring) as $s | if $s == "" or $s == "null" then $fallback else $s end;
+    .[]
+    | (if (.__typename | tostring) == "StatusContext" then "context"
+       elif (.__typename | tostring) == "CheckRun" then "run"
+       elif (has("status") or has("conclusion")) then "run"
+       elif (has("state") or has("context")) then "context"
+       else "run" end) as $kind
+    | if $kind == "context"
+      then "context \(word(.state; "UNKNOWN"))"
+      else "run \(word(.status; "UNKNOWN")) \(word(.conclusion; "NONE"))"
+      end' 2>/dev/null) || { printf 'failing'; return 0; }
+  printf '%s' "$reading" | fm_pr_fitness_rollup
+}
+
 if [ "$INCLUDE_PRS" = 1 ]; then
   if ! command -v gh >/dev/null 2>&1; then
     PR_STATUS='unavailable (gh not found)'
@@ -294,20 +329,30 @@ EOF
         --json number,title,url,headRefName,reviewDecision,mergeable,statusCheckRollup 2>/dev/null) \
         || { nwarn=$((nwarn + 1)); continue; }
       [ -n "$out" ] || out='[]'
-      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" '
-        [ .[] | {
+      # Fold each pull request's checks through bin/fm-pr-fitness-lib.sh before
+      # the rows are built, so the summary below is that owner's verdict rather
+      # than a second spelling of the pass lists that can drift from it.
+      pr_verdicts=
+      while IFS="$PR_TAB" read -r pr_num pr_rollup; do
+        [ -n "$pr_num" ] || continue
+        pr_verdicts="$pr_verdicts$pr_num$PR_TAB$(pr_checks_verdict "$pr_rollup")
+"
+      done <<EOF
+$(printf '%s' "$out" | jq -rc '.[] | "\(.number)\t\(.statusCheckRollup // [])"' 2>/dev/null)
+EOF
+      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --arg verdicts "$pr_verdicts" --argjson limit "$FM_BEARINGS_PR_LIMIT" '
+        ($verdicts | split("\n") | map(select(length > 0) | split("\t"))
+          | map({key: .[0], value: .[1]}) | from_entries) as $verdict
+        | [ .[] | {
           num:(.number|tostring),
           repo:$repo,
           task:(if (.headRefName // "" | startswith("fm/")) then (.headRefName | ltrimstr("fm/")) else "-" end),
           url:(.url // "-"),
           review:(.reviewDecision // "none"),
           mergeable:(.mergeable // "UNKNOWN"),
-          checks:(
-            (.statusCheckRollup // []) as $c
-            | if ($c|length) == 0 then "none"
-              elif any($c[]; (.conclusion // .state // "") as $s | ($s=="FAILURE" or $s=="ERROR" or $s=="TIMED_OUT" or $s=="CANCELLED" or $s=="ACTION_REQUIRED")) then "failing"
-              elif any($c[]; ((.status // "") != "COMPLETED") and ((.state // "") != "SUCCESS")) then "pending"
-              else "passing" end)
+          # A pull request the fold above did not reach is not reported as
+          # passing; absence of a verdict is never a pass on any path here.
+          checks:($verdict[(.number|tostring)] // "failing")
         } ] as $rows | {returned:($rows | length), rows:$rows[:$limit]}') || { nwarn=$((nwarn + 1)); continue; }
       returned=$(printf '%s' "$repo_result" | jq '.returned')
       repo_rows=$(printf '%s' "$repo_result" | jq '.rows')

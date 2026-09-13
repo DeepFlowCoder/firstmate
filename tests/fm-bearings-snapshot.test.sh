@@ -49,6 +49,12 @@ SH
 echo "gh $*" >> "$NET_LOG"
 if [ "${FAKE_GH_FAIL:-0}" = 1 ]; then exit 1; fi
 if [ "${FAKE_GH_SLEEP:-0}" = 1 ]; then sleep 30; fi
+if [ -n "${FAKE_GH_ROLLUP:-}" ]; then
+  cat <<JSON
+[{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":$FAKE_GH_ROLLUP}]
+JSON
+  exit 0
+fi
 if [ "${FAKE_GH_MANY:-0}" = 1 ]; then
   cat <<'JSON'
 [{"number":1,"title":"One","url":"https://github.com/acme/repo/pull/1","headRefName":"fm/one","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":2,"title":"Two","url":"https://github.com/acme/repo/pull/2","headRefName":"fm/two","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":3,"title":"Three","url":"https://github.com/acme/repo/pull/3","headRefName":"fm/three","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}]
@@ -1256,6 +1262,58 @@ test_include_prs_is_the_only_fetch_path() {
   pass "--include-prs is the only path that fetches, and it enriches correctly"
 }
 
+# A check that reached no verdict must never be reported as passing, on any
+# path, and a pull request whose checks all reported green must still read
+# passing. Both directions are asserted here because only the pair proves the
+# summary discriminates: a classifier that answered "failing" unconditionally
+# would satisfy the first half alone.
+#
+# The cases that used to read "passing" are the ones worth naming: a COMPLETED
+# check carrying no conclusion at all, STARTUP_FAILURE, STALE, and any value
+# GitHub adds after this was written. Each of those is a check that ended
+# without a verdict, which is the shape that resembles an approved one.
+test_no_verdict_check_is_never_reported_passing() {
+  local home fakebin rollup expect json got
+  home=$(make_home checks-verdict); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  while IFS='|' read -r rollup expect; do
+    [ -n "$rollup" ] || continue
+    json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+      || fail "the bearings view failed for rollup $rollup"
+    got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+    [ "$got" = "$expect" ] \
+      || fail "rollup $rollup must read $expect, read $got"
+  done <<'EOF'
+[]|none
+[{"status":"COMPLETED","conclusion":"SUCCESS"}]|passing
+[{"status":"COMPLETED","conclusion":"SKIPPED"}]|passing
+[{"status":"COMPLETED","conclusion":"NEUTRAL"}]|passing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","name":"Lint"}]|passing
+[{"__typename":"StatusContext","state":"SUCCESS","context":"legacy"}]|passing
+[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"SUCCESS"}]|passing
+[{"status":"COMPLETED","conclusion":null}]|failing
+[{"status":"COMPLETED"}]|failing
+[{"status":"COMPLETED","conclusion":"STARTUP_FAILURE"}]|failing
+[{"status":"COMPLETED","conclusion":"STALE"}]|failing
+[{"status":"COMPLETED","conclusion":"A_VALUE_GITHUB_ADDED_LATER"}]|failing
+[{"status":"COMPLETED","conclusion":"CANCELLED"}]|failing
+[{"status":"COMPLETED","conclusion":"TIMED_OUT"}]|failing
+[{"status":"COMPLETED","conclusion":"FAILURE"}]|failing
+[{"status":"A_STATUS_GITHUB_ADDED_LATER","conclusion":null}]|failing
+[{"__typename":"StatusContext","state":"ERROR","context":"legacy"}]|failing
+[{"__typename":"StatusContext","state":"A_STATE_GITHUB_ADDED_LATER","context":"legacy"}]|failing
+[{"no":"recognisable","check":"fields"}]|failing
+[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":null}]|failing
+[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"STARTUP_FAILURE"}]|failing
+[{"status":"IN_PROGRESS","conclusion":null}]|pending
+[{"status":"QUEUED"}]|pending
+[{"__typename":"StatusContext","state":"PENDING","context":"legacy"}]|pending
+[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"IN_PROGRESS"}]|pending
+[{"status":"IN_PROGRESS"},{"status":"COMPLETED","conclusion":"FAILURE"}]|failing
+EOF
+  pass "a check that reached no verdict never reads as passing, and green checks still do"
+}
+
 test_partial_github_failure_degrades() {
   local home fakebin json rc
   home=$(make_home partial); write_fixture "$home"
@@ -2230,6 +2288,7 @@ test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
 test_superseded_queued_item_dropped_by_default
 test_include_prs_is_the_only_fetch_path
+test_no_verdict_check_is_never_reported_passing
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
