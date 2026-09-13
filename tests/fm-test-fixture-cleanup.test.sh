@@ -501,7 +501,10 @@ test_assert_line_refuses_what_it_cannot_compare() {
 # only fail this test, never hang the suite that is defending against hangs.
 # The swallowing worker ignores SIGTERM outright, which puts reap in front of
 # the same observable condition a failed trap parse produces: the signal was
-# delivered and the process is still running.
+# delivered and the process is still running. The honouring worker traps TERM
+# from inside a one-second sleep, so reap has to wait out the deferral that
+# governs what every real call site costs, and a grace window too short for that
+# fails the case instead of passing it.
 
 REAP_HARNESS_OUT=
 REAP_HARNESS_WORKER=
@@ -526,15 +529,24 @@ set -u
 mode=$2
 ready=$3
 pidfile=$4
-# The worker's own loop is bounded. In "swallows" mode it ignores SIGTERM by
-# construction, and an overrunning harness gets SIGKILLed before it reaps the
-# worker, so an unbounded loop there would orphan a spinning process that
-# nothing in this suite collects and no SIGTERM can stop.
-spin='printf r > "$1"; i=0; while [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done'
+# Both workers bound their own loop at about a minute. In "swallows" mode the
+# worker ignores SIGTERM by construction, and an overrunning harness gets
+# SIGKILLed before it reaps the worker, so an unbounded loop there would orphan a
+# spinning process that nothing in this suite collects and no SIGTERM can stop.
+#
+# The "honors" worker traps TERM and sleeps a whole second per iteration, which
+# is what makes its case mean anything: bash defers a TRAPPED signal until the
+# command running in the foreground finishes, so the trap body cannot run until
+# that second is up. Reap is called right after the worker reports ready, so it
+# meets a deferral of very nearly the full second and its grace window has to
+# span it. With no trap the kernel would kill the worker outright and the window
+# would never be exercised at all.
+swallow_spin='printf r > "$1"; i=0; while [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done'
+honor_spin='printf r > "$1"; i=0; while [ "$i" -lt 60 ]; do sleep 1; i=$((i + 1)); done'
 if [ "$mode" = swallows ]; then
-  bash -c "trap '' TERM; $spin" _ "$ready" &
+  bash -c "trap '' TERM; $swallow_spin" _ "$ready" &
 else
-  bash -c "$spin" _ "$ready" &
+  bash -c "trap 'exit 0' TERM; $honor_spin" _ "$ready" &
 fi
 child=$!
 printf '%s\n' "$child" > "$pidfile"
@@ -550,8 +562,9 @@ if [ "$mode" = swallows ]; then
   if is_live_non_zombie "$child"; then printf 'swallowed=yes\n'; else printf 'swallowed=no\n'; fi
   reap "$child"
 else
-  # No signal of our own and no wait for one: reap is handed a LIVE worker, so
-  # its grace window is what has to let that worker's own SIGTERM handling run.
+  # No signal of our own and no wait for one: reap is handed a LIVE worker mid
+  # sleep, so its grace window is what has to outlast bash's deferral and let the
+  # worker's own TERM trap run.
   if is_live_non_zombie "$child"; then printf 'live=yes\n'; else printf 'live=no\n'; fi
   reap "$child"
 fi
@@ -607,7 +620,7 @@ test_reap_does_not_escalate_on_a_worker_that_honors_sigterm() {
     "reap reached for SIGKILL instead of waiting out a worker that honors SIGTERM"
   assert_contains "$REAP_HARNESS_OUT" 'gone=yes' \
     "reap returned while the worker it was asked to stop was still running"
-  pass "reap waits a live worker that honors SIGTERM out through its grace window"
+  pass "reap waits out bash's signal deferral rather than SIGKILLing past a TERM trap"
 }
 
 test_fixture_root_gone_after_normal_exit
