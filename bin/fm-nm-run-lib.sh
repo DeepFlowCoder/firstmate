@@ -5,9 +5,12 @@
 # fm-crew-state.sh (read-only current-state reporting) and fm-teardown.sh
 # (pre-teardown run abort, see its "Fix 1" header comment). Teardown uses only
 # strict branch-and-head identity; crew-state additionally permits the active
-# pipeline-owned exemption defined below. Getting this wrong in either
-# direction is unsafe: a false negative hides a genuinely parked run, and a
-# false positive lets teardown act on a run it does not own.
+# pipeline-owned exemption and the submitted-head binding defined below. Getting
+# this wrong in either direction is unsafe: a false negative hides a genuinely
+# parked run - or, in crew-state, leaves a crew with work in flight unreadable -
+# and a false positive lets teardown act on a run it does not own. Every binding
+# here keeps the branch gate as a precondition, so a run on another branch can
+# never answer for a crew however well its other fields line up.
 #
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards
@@ -64,8 +67,10 @@ fm_nm_field() {  # <toon-output> <key>
 #     the same history advanced the run tip past local HEAD)
 #   - run head is a strict ancestor of worktree HEAD, or diverged: no match
 #     (local work advanced outside the run, or the branch tip was rewritten)
-# fm_nm_run_is_pipeline_owned_active below carries the one exemption: a live
-# run whose pipeline currently owns the branch binds without head equality.
+# Two bindings below reach runs this rule cannot: fm_nm_run_is_pipeline_owned_active
+# (a live run whose pipeline currently owns the branch) and
+# fm_nm_run_submitted_head_binds_worktree (a run whose recorded submitted head IS
+# this worktree's commit, whatever the pipeline has since done to the branch).
 fm_nm_head_matches_worktree() {  # <worktree> <run_head>
   local wt=$1 run_head=$2 local_full run_full
   [ -n "$run_head" ] || return 1
@@ -121,6 +126,58 @@ fm_nm_run_is_active() {  # <toon-output>
 fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   [ "$(fm_nm_branch_sync_state "$1")" = pipeline_owned ] || return 1
   fm_nm_run_is_active "$1"
+}
+
+# branch_sync.pipeline.submitted_head from captured `axi status` TOON $1: the sha
+# the crew handed the pipeline when it started this run. Scoped to the
+# branch_sync block exactly as fm_nm_branch_sync_state is; `submitted_head`
+# appears only inside that block's nested `pipeline:` record, so no second
+# indentation rule is needed to reach it. Empty when the block, the nested
+# record, or the field is absent, and empty when no run is bound to the branch
+# (the field is then rendered as "").
+fm_nm_branch_sync_submitted_head() {  # <toon-output>
+  local s
+  s=$(printf '%s\n' "$1" \
+    | sed -n '/^[[:space:]]*branch_sync:[[:space:]]*$/,/^[^[:space:]][^:]*:/s/^[[:space:]]\{1,\}submitted_head:[[:space:]]*\(.*\)/\1/p' \
+    | head -1)
+  fm_nm_strip_quotes "$s"
+}
+
+# The binding that survives the pipeline MOVING the branch head. Measured
+# 2026-09-12 on run 01M2B9NKDQJ6801HS98CK2AKMW (no-mistakes v1.72.0, recorded in
+# docs/verification/run-attribution.md): the pipeline's `rebase` step advanced the
+# branch in its own managed worktree and pushed it, so the run reported head
+# 8acc107b97 while the crew worktree and its local branch stayed at the submitted
+# head 44115a8750. The advanced head is not a git object in the crew worktree at
+# all, so the head rule above cannot even evaluate its ancestry rule - the one
+# rule written for exactly these pipeline fix commits - and fm_nm_head_resolvable
+# reads the run as unknown attribution. That is a perfectly ordinary step of a
+# no-mistakes delivery, not a fault, and it left a crew with an open pull request
+# and running checks unreadable for the whole monitor phase.
+#
+# 0 if the run in captured `axi status` TOON $2 records a submitted head that is
+# EXACTLY worktree $1's current commit. Exactly, deliberately: the submitted head
+# is the code identity this run was started from, so equality says the run came
+# out of this worktree and nothing weaker is accepted in its place. A branch name
+# reused by a later task fails it (that worktree is at its own commit), a
+# rewritten or locally-advanced tip fails it (the worktree has moved off the
+# submitted sha), and an absent or empty field fails it - each leaving the strict
+# head rule the only way to bind. What this binding does NOT discriminate is an
+# aborted run from the live run that replaced it, because both report the same
+# submitted head; the callers' newest-first runs-list arbitration owns that
+# question for every verdict it reports, so this binding never decides it.
+#
+# It complements the pipeline-owned exemption rather than replacing it: that one
+# answers while the daemon declares it owns the branch, and this one answers once
+# a push binding exists and the declared state has moved on - which is where the
+# measured run sat, with its pull request open and its checks running.
+fm_nm_run_submitted_head_binds_worktree() {  # <worktree> <toon-output>
+  local wt=$1 submitted local_full submitted_full
+  submitted=$(fm_nm_branch_sync_submitted_head "$2")
+  [ -n "$submitted" ] || return 1
+  local_full=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 1
+  submitted_full=$(git -C "$wt" rev-parse --verify "${submitted}^{commit}" 2>/dev/null) || return 1
+  [ "$submitted_full" = "$local_full" ]
 }
 
 # --- runs-list primitives ---------------------------------------------------

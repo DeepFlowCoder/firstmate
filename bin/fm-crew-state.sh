@@ -27,7 +27,8 @@
 #      unreachable or unreadable remote reports unknown-remote, never a false
 #      gone/dead.
 #   2. Attribute an active or terminal no-mistakes run under the branch, head,
-#      pipeline-custody, and newest-first rules owned by bin/fm-nm-run-lib.sh.
+#      submitted-head, pipeline-custody, and newest-first rules owned by
+#      bin/fm-nm-run-lib.sh.
 #      The run-step is AUTHORITATIVE, and what a run WORD means is translated in
 #      exactly ONE place - fm_nm_verdict_state in bin/fm-nm-run-lib.sh - shared
 #      by the `outcome:`, `status:` and coarse runs-list readings, so a word
@@ -759,12 +760,17 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
   RUN_OUT=$(nm_run axi status)
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
-    # Head equality, or the pipeline-owned-active exemption: while the
-    # pipeline owns this branch, the daemon's own branch attribution is
-    # authoritative and the lane head need not be a git object here
-    # (fm_nm_run_is_pipeline_owned_active in bin/fm-nm-run-lib.sh).
+    # Head equality, the pipeline-owned-active exemption (while the pipeline owns
+    # this branch, the daemon's own branch attribution is authoritative and the
+    # lane head need not be a git object here), or the run's own recorded
+    # submitted head - the sha this worktree handed the pipeline, which still
+    # binds the run after the pipeline has rebased or committed the branch head
+    # somewhere this worktree cannot see. All three rules are owned by
+    # bin/fm-nm-run-lib.sh; the branch gate stays a precondition of every one of
+    # them, so a run on another branch can never answer for this crew.
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] \
-      && { nm_run_head_matches_worktree || fm_nm_run_is_pipeline_owned_active "$RUN_OUT"; }; then
+      && { nm_run_head_matches_worktree || fm_nm_run_is_pipeline_owned_active "$RUN_OUT" \
+        || fm_nm_run_submitted_head_binds_worktree "$WT" "$RUN_OUT"; }; then
       HAVE_RUN=1
     else
       # The active-or-most-recent run is for another branch, or its same-branch
@@ -775,7 +781,7 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       elif [ "$run_branch" != "$CREW_BRANCH" ]; then
         ATTRIBUTION_MISS="axi status answered for $run_branch, not $CREW_BRANCH"
       else
-        ATTRIBUTION_MISS="axi status answered for $CREW_BRANCH but its run head does not bind to this worktree"
+        ATTRIBUTION_MISS="axi status answered for $CREW_BRANCH but neither its run head nor its recorded submitted head binds to this worktree"
       fi
       # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
       # primary call means the CLI itself did not respond, so retrying it
