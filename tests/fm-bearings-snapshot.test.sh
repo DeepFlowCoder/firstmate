@@ -1893,14 +1893,13 @@ EOF
 # phantom id is shared by three rows - the second shape being the card's own
 # worst case, one completed blocker holding six tasks, which a distinct-id count
 # would collapse to 1 and hide.
-# The last three rows pin reason attribution, whose rule has two halves that
-# only work together: blocked_reason renders when the row named exactly one
-# blocked-by token AND that token is the one still holding the row. A
-# multi-token row would otherwise explain its unresolved blocker with a reason
-# written about the already-completed one, and a row the archive just freed
-# would keep a reason saying why it waits beside a blocker column reading "-".
-# That second shape is the whole population this task is about, so it is the one
-# most likely to reach the captain.
+# The last three rows pin what this board does with the attributed reason
+# bin/fm-fleet-snapshot.sh hands it: it renders unresolved_blocker_reason and
+# derives nothing itself, so a multi-token row shows no reason at all rather
+# than explaining its unresolved blocker with one written about the
+# already-completed one, and a row the archive just freed carries no reason
+# beside a blocker column reading "-". That second shape is the whole population
+# this task is about, so it is the one most likely to reach the captain.
 test_main_unknown_blocker_is_disclosed_without_invalidating_inventory() {
   local home fakebin json canonical
   home=$(make_home main-unknown-blocker)
@@ -1951,6 +1950,136 @@ EOF
                         and .reason == "-"))
   ' >/dev/null || fail "unknown blockers were not disclosed per reference, or a reason was misattributed: $json"
   pass "main unknown blocker is disclosed in omitted without invalidating inventory"
+}
+
+# Every human-readable surface asks the same question of a held row - which id is
+# holding it, and why - and each one used to answer it by deriving the answer
+# itself from the raw row text. Three of them derived it wrong, one at a time,
+# and each was found only because somebody happened to look. So the question is
+# answered ONCE, in bin/fm-fleet-snapshot.sh, as unresolved_blocker_ids plus
+# unresolved_blocker_reason, and every screen here reads that pair verbatim.
+# This test is the falsifier in both directions, run against all three screens
+# at once so no one of them can drift away from the others again:
+#   two-blockers  - one blocker resolved, one live, and the row-level reason
+#                   belongs to the RESOLVED one. Every screen must name only the
+#                   live blocker, and none may print that reason. This is the
+#                   exact shape that once told a human "live - landed is done",
+#                   an assertion that a task is held by work already finished.
+#   one-blocker   - the single-blocker row, where the reason IS attributable and
+#                   must survive, so no screen passes by going uniformly blank.
+#   free-row      - a row whose only blocker completed and was pruned into the
+#                   archive. It is free and must read free everywhere.
+#   freed-reason  - the same shape, except it DID write down why it was waiting.
+#                   Attribution needs both halves of its rule, and this row is
+#                   the half the single-blocker count alone cannot supply: with
+#                   only that count the row would keep explaining a wait it is
+#                   no longer in, beside a blocker column correctly reading "-".
+#   phantom-a/b/c - three rows held by ONE id that exists in neither the backlog
+#                   nor the archive. Each screen must still name that id on each
+#                   row, and the disclosure counter must score three references
+#                   for one phantom rather than collapsing them to one and
+#                   hiding how far the phantom reaches.
+# The record assertions pin the invariant that makes the fourth mistake
+# impossible rather than merely absent: the raw last-token blocked_by and the
+# row-scoped blocked_reason are no longer on the record at all, so a new screen
+# has nothing to pair up wrongly, and a reason never appears without exactly one
+# unresolved id to attribute it to.
+test_every_screen_reads_one_derived_blocker_answer() {
+  local home fakebin canonical view summary json
+  home=$(make_home one-blocker-answer)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] two-blockers - Two Blockers blocked-by: pending blocked-by: landed - landed is done (repo: firstmate) (kind: ship)
+- [ ] one-blocker - One Blocker blocked-by: pending - pending owes the schema (repo: firstmate) (kind: ship)
+- [ ] free-row - Free Row blocked-by: landed (repo: firstmate) (kind: ship)
+- [ ] freed-reason - Freed Reason blocked-by: landed - waits for the landed API shape (repo: firstmate) (kind: ship)
+- [ ] phantom-a - Phantom A blocked-by: ghost (repo: firstmate) (kind: ship)
+- [ ] phantom-b - Phantom B blocked-by: ghost (repo: firstmate) (kind: ship)
+- [ ] phantom-c - Phantom C blocked-by: ghost (repo: firstmate) (kind: ship)
+- [ ] pending - Pending Blocker (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [x] landed - Completed then pruned (repo: firstmate) (kind: ship) (done 2026-07-22)
+EOF
+  fakebin=$(make_fakebin "$home")
+
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    ([.backlog.records[] | select(.structured)]
+      | all(has("blocked_by") == false and has("blocked_reason") == false
+            and has("row_reason") == false))
+    and ([.backlog.records[] | select(.structured and .unresolved_blocker_reason != null)]
+      | all((.unresolved_blocker_ids | length) == 1))
+    and (.backlog.records[] | select(.id == "two-blockers")
+      | .blocked_by_ids == ["pending", "landed"]
+        and .unresolved_blocker_ids == ["pending"]
+        and .unresolved_blocker_reason == null)
+    and (.backlog.records[] | select(.id == "one-blocker")
+      | .unresolved_blocker_ids == ["pending"]
+        and .unresolved_blocker_reason == "pending owes the schema")
+    and ([.backlog.records[] | select(.id == "free-row" or .id == "freed-reason")]
+      | all(.blocked_by_ids == ["landed"]
+            and .unresolved_blocker_ids == []
+            and .unresolved_blocker_reason == null))
+    and ([.backlog.records[] | select(.id == "phantom-a" or .id == "phantom-b" or .id == "phantom-c")]
+      | all(.unresolved_blocker_ids == ["ghost"] and .unknown_blocker_ids == ["ghost"]))
+    and .main_inventory.unknown_blocker_count == 3
+    and ([.main_inventory.unknown_blockers[].id] | sort) == ["phantom-a", "phantom-b", "phantom-c"]
+    and ([.main_inventory.unknown_blockers[].blocker] | unique) == ["ghost"]
+  ' >/dev/null || fail "the canonical derivation or the shared-phantom score was wrong: $canonical"
+
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-fleet-view.sh")
+  assert_contains "$view" "| two-blockers | Two Blockers | firstmate | ship | pending |" \
+    "fleet view should name only the blocker still holding the row"
+  assert_not_contains "$view" "landed is done" \
+    "fleet view must not explain a live blocker with the resolved blocker's reason"
+  assert_contains "$view" "| one-blocker | One Blocker | firstmate | ship | pending - pending owes the schema |" \
+    "fleet view should keep an attributable reason"
+  assert_contains "$view" "| free-row | Free Row | firstmate | ship | - |" \
+    "fleet view should read a row whose only blocker landed as free"
+  assert_contains "$view" "| freed-reason | Freed Reason | firstmate | ship | - |" \
+    "fleet view must drop the reason of a row the archive already freed"
+  assert_not_contains "$view" "waits for the landed API shape" \
+    "fleet view must not say why a freed row waits"
+  assert_contains "$view" "| phantom-a | Phantom A | firstmate | ship | ghost |" \
+    "fleet view should still name a blocker that exists in neither file"
+  assert_contains "$view" "| phantom-c | Phantom C | firstmate | ship | ghost |" \
+    "fleet view should name the shared phantom on every row it holds"
+
+  summary=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --secondmate-home-summary)
+  printf '%s' "$summary" | jq -e '
+    (.holds[] | select(.id == "two-blockers")
+      | .blocked_by == "pending" and .unresolved_blocker_ids == ["pending"]
+        and .reason == "blocked")
+    and (.holds[] | select(.id == "one-blocker")
+      | .blocked_by == "pending" and .reason == "pending owes the schema")
+    and ([.holds[].id] | index("free-row") | not)
+    and ([.holds[].id] | index("freed-reason") | not)
+    and (.queued[] | select(.id == "freed-reason") | .unresolved_blocker_reason == null)
+    and ([.holds[] | select(.id | startswith("phantom-")) | .blocked_by] == ["ghost", "ghost", "ghost"])
+    and (.queued[] | select(.id == "two-blockers")
+      | .unresolved_blocker_ids == ["pending"] and .unresolved_blocker_reason == null)
+    and (.queued[] | select(.id == "one-blocker")
+      | .unresolved_blocker_reason == "pending owes the schema")
+  ' >/dev/null || fail "the home summary paired a blocker with an unattributable reason: $summary"
+
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.id == "two-blockers" and .blocked_by == "pending" and .reason == "-"))
+    and (.gates | any(.id == "one-blocker" and .blocked_by == "pending"
+                      and .reason == "pending owes the schema"))
+    and (.gates | any(.id == "free-row" and .blocked_by == "-" and .reason == "-"))
+    and (.gates | any(.id == "freed-reason" and .blocked_by == "-" and .reason == "-"))
+    and ([.gates[] | select(.id | startswith("phantom-")) | .blocked_by] == ["ghost", "ghost", "ghost"])
+    and (.omitted | any(.surface == "main current backlog blocked-by reference(s) to an id in neither the backlog nor the archive: 3"))
+  ' >/dev/null || fail "the bearings board disagreed with the other screens: $json"
+  pass "every screen reads one derived blocker answer, including the shared phantom"
 }
 
 test_main_orphan_counterfactual_meta_clears_inventory_warning() {
@@ -2361,6 +2490,7 @@ test_open_decisions_carry_their_project
 test_main_orphan_in_flight_is_disclosed_not_invented
 test_main_unstructured_current_is_disclosed_with_structured_sibling
 test_main_unknown_blocker_is_disclosed_without_invalidating_inventory
+test_every_screen_reads_one_derived_blocker_answer
 test_main_orphan_counterfactual_meta_clears_inventory_warning
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection
