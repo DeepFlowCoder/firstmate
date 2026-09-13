@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for tests/lib.sh's own shared helpers: the fixture-tempdir
 # helper (fm_test_tmproot / fm_test_cleanup / fm_test_reap_orphans), the
+# bounded background-process reaper (reap / is_live_non_zombie), the
 # verdict-preserving EXIT trap a test file with its own teardown installs
 # through fm_test_exit_trap, and the whole-line matcher assert_line.
 #
@@ -10,8 +11,10 @@
 # that exact pattern and assert the fixture root is actually gone once the
 # owning process's guarded teardown has run - on a normal exit and on a
 # terminating signal - plus that a stale marked fixture from a killed prior
-# run gets reaped on the next source. Nothing here inspects tests/lib.sh's
-# source text; it only observes filesystem state around the real helper.
+# run gets reaped on the next source. The reap cases work the same way, driving
+# real workers and observing process state rather than inferring from timing.
+# Nothing here inspects tests/lib.sh's source text; it only observes the state
+# the real helpers leave behind.
 set -u
 
 # shellcheck source=tests/lib.sh
