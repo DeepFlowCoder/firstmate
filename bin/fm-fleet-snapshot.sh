@@ -58,9 +58,11 @@
 #     unknown_blockers[],unknown_blocker_count} - main-home current-inventory
 #     checks shared with secondmate_home_summary_json (orphan structured
 #     in-flight ids with no state/<id>.meta, and unstructured current backlog
-#     rows) decide valid and reason. unknown_blockers keeps every current row
-#     blocked by an id in neither the backlog nor the archive as {id,blocker},
-#     for disclosure only: it is counted, never a validity reason.
+#     rows) decide valid and reason. unknown_blockers keeps one {id,blocker}
+#     pair per blocked-by id in neither the backlog nor the archive, so a row
+#     waiting on several such ids contributes one entry each and
+#     unknown_blocker_count counts ids rather than rows.
+#     For disclosure only: it is counted, never a validity reason.
 #     Does not invent live tasks; meta remains truth for
 #     workers. Bearings maps failures into omitted[] disclosure (and a Charted
 #     Next gate line) rather than silent empty Underway.

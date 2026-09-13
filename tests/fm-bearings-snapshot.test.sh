@@ -1887,13 +1887,17 @@ EOF
 # silent: a renamed or mistyped field path yields no line at all and the count
 # goes back to being discoverable only by manual audit. The disclosure is
 # deliberately not an invalidity, so no (main-inventory) gate row may appear.
+# One row here carries two unknown ids and one archived-completed blocker, so
+# the id count and the affected-row count differ: the surface must report 2 for
+# a single row, which is what keeps the wording honest for the consolidation row
+# the card names as its worst case, waiting on six blockers at once.
 test_main_unknown_blocker_is_disclosed_without_invalidating_inventory() {
   local home fakebin json canonical
   home=$(make_home main-unknown-blocker)
   : > "$home/data/secondmates.md"
   cat > "$home/data/backlog.md" <<'EOF'
 ## Queued
-- [ ] gate-unknown - Waits on an id nobody has blocked-by: vanished (repo: firstmate) (kind: ship)
+- [ ] gate-unknown - Waits on two ids nobody has blocked-by: vanished blocked-by: ghost blocked-by: landed (repo: firstmate) (kind: ship)
 - [ ] gate-archived - Waits on completed pruned work blocked-by: landed (repo: firstmate) (kind: ship)
 
 ## Done
@@ -1908,16 +1912,18 @@ EOF
   printf '%s' "$canonical" | jq -e '
     .main_inventory.valid == true
       and .main_inventory.reason == null
-      and .main_inventory.unknown_blocker_count == 1
-      and .main_inventory.unknown_blockers == [{id:"gate-unknown", blocker:"vanished"}]
-  ' >/dev/null || fail "canonical main inventory mis-scored the unknown blocker: $canonical"
+      and .main_inventory.unknown_blocker_count == 2
+      and .main_inventory.unknown_blockers == [{id:"gate-unknown", blocker:"vanished"},
+                                               {id:"gate-unknown", blocker:"ghost"}]
+      and ([.main_inventory.unknown_blockers[].id] | unique | length) == 1
+  ' >/dev/null || fail "canonical main inventory mis-scored the unknown blockers: $canonical"
   json=$(run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
-    (.omitted | any(.surface == "main current backlog row(s) blocked by an id in neither the backlog nor the archive: 1"))
+    (.omitted | any(.surface == "main current backlog blocked-by id(s) in neither the backlog nor the archive: 2"))
       and ([.gates[].id] | index("(main-inventory)") | not)
-      and (.gates | any(.id == "gate-unknown" and .blocked_by == "vanished"))
+      and (.gates | any(.id == "gate-unknown" and .blocked_by == "vanished,ghost"))
       and (.gates | any(.id == "gate-archived" and .blocked_by == "-"))
-  ' >/dev/null || fail "unknown blocker was not disclosed, or it spent a gate row: $json"
+  ' >/dev/null || fail "unknown blockers were not disclosed per id, or they spent a gate row: $json"
   pass "main unknown blocker is disclosed in omitted without invalidating inventory"
 }
 
