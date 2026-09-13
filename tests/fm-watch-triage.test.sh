@@ -1891,6 +1891,53 @@ test_wedge_escalation_defers_to_a_busy_harness() {
   pass "a quiet pane whose harness declares itself busy is deferred, while an unreadable harness and a busy one past the completed-turn bound both still wedge-escalate"
 }
 
+# The bounded re-surface is the ENTIRE answer to "cannot be silent forever" for a
+# `run-step` verdict: nothing else ever escalates that deferral, because the probe
+# keeps answering `working` for as long as the pipeline reports `running` and each
+# deferral restarts the idle timer. A run that hangs while still reporting
+# `running` is the ticket's own "a hung run IS a wedge" case, so the recheck firing
+# once per PAUSE_RESURFACE_SECS is what keeps it in front of the supervisor. The
+# write chain's identical bound is pinned by
+# test_write_deferral_resurfaces_on_the_bounded_cadence; this is its sibling.
+test_working_deferral_resurfaces_on_the_bounded_cadence() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid back
+  dir=$(make_case wedge-working-resurface); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-long-run"
+  printf 'no-mistakes axi run: validating...' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/long-run.meta"
+  printf 'working: handed to validation\n' > "$state/long-run.status"
+  sig=$(seen_sig "$state/long-run.status"); printf '%s' "$sig" > "$state/.seen-long-run_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "$(cat "$capture_file")")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+  # This pane has already been deferring on the same live run for 500s, so the
+  # chain is past the bounded cadence when the next at-threshold probe defers again.
+  : > "$state/.working-since-$key"
+  set_mtime "$back" "$state/.working-since-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_STALE_ESCALATE_SECS=240 FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "a run that keeps reporting itself running never re-surfaced on the bounded cadence"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "the live-work recheck did not print a stale wake: $(cat "$out")"
+  grep -F "reading as working via run-step" "$out" >/dev/null || fail "the live-work recheck did not name the evidence that answered: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null && fail "a live-work recheck was mislabeled a possible wedge: $(cat "$out")"
+  [ -e "$state/.working-resurfaced-$key" ] || fail "the live-work re-surface throttle marker was not recorded"
+  [ ! -e "$state/.wedge-escalations-$key" ] || fail "a live-work recheck advanced the wedge escalation counter"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the live-work recheck failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the live-work recheck was not queued"
+  pass "a live-work deferral re-surfaces once on the bounded pause cadence, so a run that reports running forever cannot stay invisible"
+}
+
 # --- non-terminal stale, crew NOT provably working: surfaced immediately ------
 # The key requirement: a crew with no running pipeline that has gone quiet (and is
 # not busy) has stopped - it may be done via interactive menus, waiting, or wedged.
@@ -4544,6 +4591,7 @@ test_declared_pause_outranks_healthy_idle_class
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_defers_to_a_live_run_step
 test_wedge_escalation_defers_to_a_busy_harness
+test_working_deferral_resurfaces_on_the_bounded_cadence
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_busy_pane_below_turn_age_bound_is_absorbed

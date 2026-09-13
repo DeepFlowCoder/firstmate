@@ -591,24 +591,24 @@ wedge_defer_writing() {  # <window> <since-file> <triage-label> <idle-age>
 # .working-since-<key> marker ages the whole chain, and the pane re-surfaces once
 # every PAUSE_RESURFACE_SECS through the shared resurface_absorbed, throttled by
 # its own .working-resurfaced-<key> marker. <evidence> is the source that answered
-# working, and it decides the wording because the two mean different things to
-# whoever reads the recheck: a pipeline step is running, or the harness itself
-# says it is mid-turn. The escalation counter is left alone for the same reason
+# working, and the recheck names it, but the figure it carries is the CHAIN's age:
+# how long this pane has kept reading as working, which is the only duration
+# measured here. The source's own clock is not: a chain opened on one source can be
+# re-probed on the other, and the chain opens one STALE_ESCALATE_SECS after the
+# quiet window on work that was already under way, so reporting it as the run's or
+# the turn's duration would put a number the supervisor acts on under the wrong
+# subject. The escalation counter is left alone for the same reason
 # the write deferral leaves it alone: this is not an escalation, and a later
 # genuine one must keep the demand-deep-inspection history it had already earned.
 wedge_defer_working() {  # <window> <since-file> <triage-label> <idle-age> <evidence>
-  local win=$1 since_file=$2 label=$3 age=$4 evidence=$5 key wsf wage detail
+  local win=$1 since_file=$2 label=$3 age=$4 evidence=$5 key wsf wage
   key=$(window_key "$win")
   wsf="$STATE/.working-since-$key"
   [ -e "$wsf" ] || date +%s > "$wsf"
   wage=$(age_of "$wsf")
   date +%s > "$since_file"
-  case "$evidence" in
-    run-step) detail="its validation run has been running for ${wage}s" ;;
-    *)        detail="its harness has reported itself busy for ${wage}s" ;;
-  esac
   resurface_absorbed "$win" "$STATE/.working-resurfaced-$key" "$wage" \
-    "stale: $win (idle ${age}s, $detail, rechecked on a long cadence not a wedge; confirm the work is really progressing)"
+    "stale: $win (idle ${age}s, reading as working via $evidence for ${wage}s, rechecked on a long cadence not a wedge; confirm the work is really progressing)"
   triage_log "absorbed $label (authoritative state still working via $evidence, idle ${age}s): $win"
 }
 
@@ -725,8 +725,13 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
 # BUSY_TURN_MAX_SECS old. Ages the per-task turn-ended marker, the harness-neutral
 # signal every verified harness's turn-end hook touches; before any turn has
 # completed, ages the task's spawn record instead so a fresh task still gets a
-# bound. The caller checks that the pane is busy and routes a crossed bound
-# through busy_turn_bound_check, never anything that touches the worker itself.
+# bound. It reports an AGE, never that the pane is busy, and neither caller may be
+# read as having established that. The busy path checks window_is_busy itself and
+# routes a crossed bound through busy_turn_bound_check, never anything that touches
+# the worker itself. wedge_live_working_evidence calls it for a pane the watcher
+# already reads as QUIET, where a crossed bound means the harness's busy verdict
+# has outlived its last completed turn, so that verdict stops being admissible
+# evidence and the wedge escalation proceeds inline.
 busy_turn_over_age() {  # <task>
   local task=$1 f
   f="$STATE/$task.turn-ended"
