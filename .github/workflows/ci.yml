@@ -66,14 +66,13 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    # Cap is a tripwire, not the expected end of the lane. Two-worker green runs
-    # took 15m03s-15m47s (job 99565342352's green attempt is the upper extreme).
-    # One worker measured no wall penalty on a many-core host, but this runner
-    # has two cores, where the second worker does buy real parallelism, so budget
-    # for the pessimistic case of about twice the two-worker wall - near 31
-    # minutes. The cap stays 45: still above that, and still far short of the
-    # 6-hour GitHub default that let run 33353469575 sit 61 minutes before
-    # reporting.
+    # Cap is a tripwire, not the expected end of the lane, and it has a lot of
+    # room now: with the source boundary described above, this one-worker lane
+    # measured a 464s wall, against the 19-21 minutes a green run took before it.
+    # Read the older 15m03s-15m47s two-worker figures as history - they predate
+    # that boundary. The cap stays 45: far above today's wall, and still far
+    # short of the 6-hour GitHub default that let run 33353469575 sit 61 minutes
+    # before reporting.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
