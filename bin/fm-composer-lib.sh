@@ -61,8 +61,11 @@
 #   left-bar   - opencode: rows prefixed by a heavy left bar `┃` with no
 #                closing border, holding the idle hint, blank rows, and a
 #                mode/model footer line.
-#   separated  - pi: content rows between two solid horizontal `─` rules, no
-#                glyph and no side border. Provable only with a live agent
+#   separated  - pi: content rows between two horizontal `─` rules, no glyph
+#                and no side border. Either rule may carry a TITLE embedded in
+#                it, the same tolerance the bordered shape grants a titled
+#                border; claude draws its current task title in the rule above
+#                its own composer. Provable only with a live agent
 #                identity reporting an idle/done pi (herdr `agent
 #                get`; the tmux foreground-process probe), because a blank
 #                region between two transcript rules is otherwise exactly the
