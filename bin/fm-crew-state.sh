@@ -966,8 +966,13 @@ if [ "$HAVE_RUN" = 1 ]; then
         # work landed, because a positive claim needs the stronger evidence the
         # list alone does not carry.
         if [ "$BRANCH_NEWEST_STATUS" = failed ]; then
+          FAILED_DETAIL=$RUN_DETAIL
+          case "$RUN_DETAIL" in
+            *"the work is not lost"*) ;;
+            *) FAILED_DETAIL="$RUN_DETAIL - the work is not lost" ;;
+          esac
           emit failed run-step \
-            "$(fm_nm_verdict_detail failed)${SEP}a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL)"
+            "a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($FAILED_DETAIL)"
         fi
         # Any other newest status - `pending`, a terminal word belonging to a run
         # this read cannot re-attribute, a status this helper does not model -
