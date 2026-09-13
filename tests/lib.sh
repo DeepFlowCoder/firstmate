@@ -6,9 +6,10 @@
 #   . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 #
 # It provides the boilerplate every test file used to re-roll: ok/not-ok
-# reporters, a self-cleaning temp root, fakebin/PATH-shim helpers, deterministic
-# git identity and fixture builders, state/<id>.meta writers, and the common
-# string/exit-code/file assertions. Shared fake-toolchain and spawn-world
+# reporters, a self-cleaning temp root, a bounded reaper for background
+# processes, fakebin/PATH-shim helpers, deterministic git identity and fixture
+# builders, state/<id>.meta writers, and the common string/exit-code/file
+# assertions. Shared fake-toolchain and spawn-world
 # builders live in tests/fixtures.sh; wake-queue mocks in wake-helpers.sh;
 # secondmate-lifecycle mocks in secondmate-helpers.sh. Suite-specific fakes
 # that encode a single test's terminal or lifecycle assumptions still belong
@@ -228,6 +229,64 @@ fm_test_reap_orphans() {
 }
 
 fm_test_reap_orphans
+
+# --- bounded background-process reaper ---------------------------------------
+#
+# is_live_non_zombie <pid> is 0 only while <pid> is a running process. A killed
+# child stays visible to `kill -0` as a zombie until its parent reaps it, so a
+# plain `kill -0` poll can never see a background job die.
+#
+# reap <pid> [grace-ticks] stops a test's background process and returns.
+# Bounded on purpose: `kill` asks, it does not compel. A worker whose signal
+# trap bash fails to parse keeps running - bash prints the parse error and
+# carries on rather than dying - so the SIGTERM is swallowed and the plain
+# `kill "$pid"; wait "$pid"` this replaces blocks forever on a process that was
+# never going to exit. That is measured, not hypothetical: three CI shards on
+# 2026-09-12 went silent for the rest of their 20-minute cap immediately after
+# one such swallowed SIGTERM, and were reported as cancelled rather than as a
+# failure anyone could attribute. SIGKILL cannot be trapped or ignored, so
+# escalating to it keeps the wait bounded whatever the worker does with
+# SIGTERM, and a wedged worker becomes a bounded test failure instead of a
+# silent suite hang. FM_TEST_REAP_ESCALATED records whether that escalation was
+# needed, so a test can assert on it rather than infer it from timing.
+#
+# A tick is 0.02s, not the 0.1s the other waits in this suite use, because this
+# one runs on the healthy path: the watcher suites reap well over a hundred
+# background processes per run, and a coarse tick would charge every one of them
+# most of a tenth of a second for a worker that was already gone.
+
+FM_TEST_REAP_TICK_SECONDS=0.02
+FM_TEST_REAP_GRACE_TICKS=${FM_TEST_REAP_GRACE_TICKS:-250}
+FM_TEST_REAP_ESCALATED=0
+
+is_live_non_zombie() {  # <pid>
+  local pid=$1 stat
+  kill -0 "$pid" 2>/dev/null || return 1
+  stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
+  case "$stat" in
+    Z*) return 1 ;;
+  esac
+  return 0
+}
+
+reap() {  # <pid> [grace-ticks]
+  local pid=$1 limit=${2:-$FM_TEST_REAP_GRACE_TICKS} i=0
+  FM_TEST_REAP_ESCALATED=0
+  kill "$pid" 2>/dev/null || true
+  while [ "$i" -lt "$limit" ]; do
+    if ! is_live_non_zombie "$pid"; then
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep "$FM_TEST_REAP_TICK_SECONDS"
+    i=$((i + 1))
+  done
+  # shellcheck disable=SC2034 # Read by the sourcing test file, not by this library.
+  FM_TEST_REAP_ESCALATED=1
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  return 0
+}
 
 # --- fakebin / PATH shims ---------------------------------------------------
 #

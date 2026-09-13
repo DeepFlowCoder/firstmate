@@ -480,8 +480,104 @@ test_assert_line_refuses_what_it_cannot_compare() {
   pass "assert_line refuses loudly when it cannot complete the comparison"
 }
 
+# --- the bounded background-process reaper ----------------------------------
+#
+# reap has to answer one question: what happens when the worker does not die on
+# SIGTERM? That is not hypothetical. A worker whose signal trap bash fails to
+# parse keeps running, because bash prints the parse error and carries on, and
+# the unbounded `kill; wait` reap replaces then blocked on a process that was
+# never going to exit - measured as CI shards that went silent for the rest of
+# their 20-minute cap right after one such swallowed SIGTERM.
+#
+# Both cases run the reap inside a SEPARATE process that this suite polls to
+# completion and kills hard if it overruns, so a reap that failed to return can
+# only fail this test, never hang the suite that is defending against hangs.
+# The swallowing worker ignores SIGTERM outright, which puts reap in front of
+# the same observable condition a failed trap parse produces: the signal was
+# delivered and the process is still running.
+
+REAP_HARNESS_OUT=
+
+run_reap_harness() {  # <mode: honors|swallows> -> rc, sets REAP_HARNESS_OUT
+  local mode=$1 harness script out ready pid tries
+  harness=$(fm_test_tmproot "fm-test-reap-$mode")
+  script="$harness/harness.sh"
+  out="$harness/out"
+  ready="$harness/ready"
+  cat > "$script" <<'SH'
+#!/usr/bin/env bash
+set -u
+# shellcheck source=/dev/null
+. "$1"
+mode=$2
+ready=$3
+if [ "$mode" = swallows ]; then
+  bash -c 'trap "" TERM; printf r > "$1"; while :; do sleep 0.1; done' _ "$ready" &
+else
+  bash -c 'printf r > "$1"; while :; do sleep 0.1; done' _ "$ready" &
+fi
+child=$!
+i=0
+while [ ! -s "$ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+[ -s "$ready" ] || { printf 'ready=no\n'; exit 1; }
+# The polite signal first, and its outcome is reported rather than assumed: a
+# "swallows" case that did not actually swallow would prove nothing about reap.
+kill -TERM "$child" 2>/dev/null || true
+sleep 0.5
+if is_live_non_zombie "$child"; then printf 'swallowed=yes\n'; else printf 'swallowed=no\n'; fi
+reap "$child" 25
+printf 'returned=yes escalated=%s\n' "$FM_TEST_REAP_ESCALATED"
+if kill -0 "$child" 2>/dev/null; then printf 'gone=no\n'; else printf 'gone=yes\n'; fi
+SH
+  bash "$script" "$LIB" "$mode" "$ready" > "$out" 2>&1 &
+  pid=$!
+  tries=0
+  while [ "$tries" -lt 300 ]; do
+    is_live_non_zombie "$pid" || break
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  if is_live_non_zombie "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    REAP_HARNESS_OUT=$(cat "$out" 2>/dev/null || true)
+    return 124
+  fi
+  wait "$pid" 2>/dev/null || true
+  REAP_HARNESS_OUT=$(cat "$out" 2>/dev/null || true)
+  return 0
+}
+
+test_reap_returns_on_a_worker_that_swallows_sigterm() {
+  local rc=0
+  run_reap_harness swallows || rc=$?
+  [ "$rc" -ne 124 ] \
+    || fail "reap never returned on a worker that swallowed SIGTERM: $REAP_HARNESS_OUT"
+  assert_contains "$REAP_HARNESS_OUT" 'swallowed=yes' \
+    "the worker died on the plain SIGTERM, so this case proves nothing about reap"
+  assert_contains "$REAP_HARNESS_OUT" 'returned=yes escalated=1' \
+    "reap returned without escalating past the SIGTERM the worker had ignored"
+  assert_contains "$REAP_HARNESS_OUT" 'gone=yes' \
+    "reap returned while the worker it was asked to stop was still running"
+  pass "reap escalates past a swallowed SIGTERM and returns instead of waiting forever"
+}
+
+test_reap_does_not_escalate_on_a_worker_that_honors_sigterm() {
+  local rc=0
+  run_reap_harness honors || rc=$?
+  [ "$rc" -ne 124 ] \
+    || fail "reap never returned on a worker that honors SIGTERM: $REAP_HARNESS_OUT"
+  assert_contains "$REAP_HARNESS_OUT" 'swallowed=no' \
+    "the worker outlived a SIGTERM it was supposed to honor"
+  assert_contains "$REAP_HARNESS_OUT" 'returned=yes escalated=0' \
+    "reap reached for SIGKILL on a worker that had already stopped"
+  pass "reap leaves a worker that honors SIGTERM to its own exit, with no SIGKILL"
+}
+
 test_fixture_root_gone_after_normal_exit
 test_fixture_root_gone_after_sigterm
+test_reap_returns_on_a_worker_that_swallows_sigterm
+test_reap_does_not_escalate_on_a_worker_that_honors_sigterm
 test_cleanup_registry_resists_precreation
 test_fixture_registration_failure_rolls_back_root
 test_orphan_sweep_respects_fixture_ownership

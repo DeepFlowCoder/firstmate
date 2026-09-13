@@ -287,19 +287,10 @@ wait_for_exit() {
     sleep 0.1
     i=$((i + 1))
   done
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  # Bounded, so a worker that swallows the SIGTERM cannot turn a budget that
+  # expired into an unbounded wait (tests/lib.sh owns reap).
+  reap "$pid"
   return 124
-}
-
-is_live_non_zombie() {
-  local pid=$1 stat
-  kill -0 "$pid" 2>/dev/null || return 1
-  stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
-  case "$stat" in
-    Z*) return 1 ;;
-  esac
-  return 0
 }
 
 hash_text() {

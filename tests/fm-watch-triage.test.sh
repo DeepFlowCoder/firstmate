@@ -174,7 +174,7 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# reap comes from tests/lib.sh, which owns its bound.
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
