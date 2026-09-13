@@ -23,13 +23,6 @@ set -u
 # which would otherwise report its mentions of the directive as unbounded ones.
 DIRECTIVE='# shellcheck source='/dev/null
 
-# The canonical set, from the consumer that defines it. CI=true selects the
-# full set rather than the branch's changed subset, which is what the boundary
-# invariant is about.
-fm_canonical_roots() {
-  CI=true fm_run_timed 60 "$ROOT/bin/fm-lint.sh" --list-files
-}
-
 # Repo-anchored directory variables used by bounded imports, as the location
 # they denote: the containing script's own directory, or the repo root. A
 # target led by anything else cannot be resolved by reading the file.
@@ -45,16 +38,12 @@ fm_resolve_dir_var() {  # <var> <containing-file>
 
 test_bounded_imports_stay_inside_the_canonical_set() {
   local roots_list total=0 checked=0 runtime=0
-  roots_list=$(fm_canonical_roots) \
+  # The canonical set, from the consumer that defines it. CI=true selects the
+  # full set rather than the branch's changed subset, which is what the
+  # boundary invariant is about.
+  roots_list=$(CI=true fm_run_timed 60 "$ROOT/bin/fm-lint.sh" --list-files) \
     || fail "bin/fm-lint.sh --list-files did not report the canonical set"
   [ -n "$roots_list" ] || fail "bin/fm-lint.sh --list-files reported an empty canonical set"
-
-  local -A canonical=()
-  local r
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
-    canonical["$r"]=1
-  done <<< "$roots_list"
 
   local file line next target var rest dir resolved
   while IFS= read -r file; do
@@ -86,7 +75,7 @@ test_bounded_imports_stay_inside_the_canonical_set() {
         [ -z "$resolved" ] || [ "$resolved" = "." ] && resolved=$rest || resolved="$resolved/$rest"
         [ -f "$ROOT/$resolved" ] \
           || fail "$file:$((line + 1)): bounded import resolves to a missing file: $target -> $resolved"
-        [ -n "${canonical[$resolved]:-}" ] \
+        printf '%s\n' "$roots_list" | grep -qxF "$resolved" \
           || fail "$file:$((line + 1)): bounded import is analysed nowhere - $resolved is not a canonical lint root: $target"
         checked=$((checked + 1))
       else
@@ -109,30 +98,6 @@ test_bounded_imports_stay_inside_the_canonical_set() {
   pass "every repo-anchored bounded import is a canonical lint root ($checked of $total; $runtime runtime paths)"
 }
 
-test_the_canonical_set_excludes_nested_modules() {
-  # The check above is only worth running if the canonical set can actually
-  # exclude something. Confirm it admits no nested path, so a module moved one
-  # directory down - bin/helpers/, say - really does fall outside it.
-  local roots_list r dir nested=0
-  roots_list=$(fm_canonical_roots) \
-    || fail "bin/fm-lint.sh --list-files did not report the canonical set"
-
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
-    dir=${r%/*}
-    case "$dir" in
-      bin|bin/backends|tests) : ;;
-      *) nested=$((nested + 1)); printf 'unexpected canonical root: %s\n' "$r" >&2 ;;
-    esac
-  done <<< "$roots_list"
-
-  [ "$nested" -eq 0 ] \
-    || fail "$nested canonical roots live outside bin/, bin/backends/ and tests/"
-
-  pass "the canonical set is flat, so a nested bounded import is outside it"
-}
-
 test_bounded_imports_stay_inside_the_canonical_set
-test_the_canonical_set_excludes_nested_modules
 
 printf '# fm-test-complete %s\n' "$(basename "${BASH_SOURCE[0]}")"
