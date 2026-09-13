@@ -118,10 +118,11 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-afk-return.sh`       | Own deterministic return shutdown, catch-up evidence, and the firstmate-actionable blocker gate |
 | `fm-supervisor-target-lib.sh` | Resolve the shared supervisor target and backend for the daemon and launcher       |
 | `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery |
+| `fm-wedge-alarm-lib.sh`  | Single owner of `config/wedge-alarm`: the pane-independent out-of-band alert channels shared by the away-mode daemon and the in-session disk watch ([wedge-alarm.md](wedge-alarm.md)) |
 | `fm-notify-moshi.sh`     | Deliver one alert to the captain's phone through Moshi's push webhook, for a `command:` wedge-alarm channel ([wedge-alarm.md](wedge-alarm.md)) |
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
 | `fm-nm-run-lib.sh`       | Single owner of shared no-mistakes run-attribution primitives and rules: branch and code identity, runs-list row parsing, run-status vocabulary, and the one run-word to reported-state translation |
-| `fm-disk-space-lib.sh`   | Shared free-disk-space guard: one measurement and one wording for the session-start report and the dispatch refusal |
+| `fm-disk-space-lib.sh`   | Shared free-disk-space guard: one measurement and one wording for the session-start report, the dispatch refusal, and the watcher's in-session disk watch |
 | `fm-line-cap-lib.sh`     | Shared per-line cap for agent-facing digest lines                                    |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification          |
 | `fm-timeout-lib.sh`      | Single owner of hard-bounded command execution and its fallback watchdog |

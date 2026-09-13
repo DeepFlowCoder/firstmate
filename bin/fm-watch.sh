@@ -1222,7 +1222,7 @@ disk_space_tick() {
     summary=$(fm_disk_space_summary "$FM_HOME") \
       || summary="free space below the refusal floor on $FM_HOME"
     wedge_alarm_notify "$summary - new work will not be dispatched" \
-      "$STATE/.disk-space-tier"
+      "$STATE/.wake-queue"
     reason="check: disk space critical: $summary - new work will not be dispatched"
   else
     summary=$(fm_disk_space_warn_summary "$FM_HOME") \
