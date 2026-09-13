@@ -33,6 +33,20 @@ DIRECTIVE='# shellcheck source='/dev/null
 # under bin/, to that module's own directory, so they denote bin/ wherever
 # they are read - including from a file that does not live there. A target
 # led by anything else cannot be resolved by reading the file.
+#
+# DO NOT DELETE AN ARM BECAUSE NO IMPORT IN THIS FILE APPEARS TO USE IT. The
+# library-scoped names are not speculative: FM_BACKEND_LIB_DIR, FM_LEASE_LIB_DIR
+# and _FM_TASK_INBOX_LIB_DIR are each set by one module under bin/ and travel to
+# files that do not define them - bin/backends/*.sh reads FM_BACKEND_LIB_DIR - so
+# what they denote cannot be inferred from an importing file's own text, and
+# HERDR_TEST_SAFETY_DIR is the same shape from tests/. Judging them by name alone
+# once led a review to call these arms unexercised and order their removal, which
+# would have shipped a test that fails seven times on unmodified code.
+#
+# What hid that error is a scope difference worth carrying here: the roots this
+# change bounded are a subset of the directives this test scans repo-wide, so a
+# count taken over the bounded roots and a count taken over the whole directive
+# set can look contradictory while both are correct.
 fm_resolve_dir_var() {  # <var> <containing-file>
   case "$1" in
     SCRIPT_DIR) printf '%s' "$(dirname "$2")" ;;
