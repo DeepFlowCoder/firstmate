@@ -26,6 +26,15 @@ fm_git_identity fmtest fmtest@example.invalid
 TMP_ROOT=$(fm_test_tmproot fm-gh-repo-resolution)
 BASE_REPO="$ROOT/bin/fm-gh-base-repo.sh"
 
+# fm_gh_repo_slug is a library function with no executable surface of its own: a
+# public subcommand is earned by use, and nothing outside this file would call
+# one. Source the library the way the rest of tests/ sources bin libraries, after
+# the forge-remote library it depends on.
+# shellcheck source=bin/fm-forge-remote-lib.sh
+. "$ROOT/bin/fm-forge-remote-lib.sh"
+# shellcheck source=bin/fm-gh-repo-lib.sh
+. "$ROOT/bin/fm-gh-repo-lib.sh"
+
 # A clone with the measured topology: origin is this fleet's repository and
 # upstream is the unrelated one whose PR numbers collide with it.
 two_remote_clone() {  # [<origin-url>] [<upstream-url>]
@@ -43,6 +52,16 @@ two_remote_clone() {  # [<origin-url>] [<upstream-url>]
 
 pins_of() {  # <dir>
   git -C "$1" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null || true
+}
+
+# A non-bare local repository, which bin/fm-forge-remote-lib.sh disqualifies as a
+# forge and which gh never recognizes as a host - so a gh-resolved key left on a
+# remote pointing here is one gh will never read.
+working_copy() {
+  local dir
+  dir=$(mktemp -d "$TMP_ROOT/workcopy.XXXXXX")
+  git -C "$dir" init -q
+  printf '%s' "$dir"
 }
 
 # --- the pin itself ---------------------------------------------------------
@@ -89,6 +108,57 @@ test_an_operators_own_pin_is_never_overwritten() {
   [ "$(pins_of "$dir")" = "remote.upstream.gh-resolved base" ] \
     || fail "the operator's own pin must survive untouched, got: $(pins_of "$dir")"
   pass "fm-gh-base-repo.sh: an operator's own default repository is never reverted"
+}
+
+test_a_pin_gh_never_reads_does_not_stop_the_forge_from_being_pinned() {
+  local dir local_repo out
+  # The reported sequence: origin was once a github.com remote and was pinned,
+  # then repointed at somebody's working copy. The key is still there, but gh
+  # filters remotes to its known hosts BEFORE consulting gh-resolved, so it never
+  # reads it - and deferring to it would leave the forge unpinned and hand the
+  # unnamed query straight back to the other repository.
+  local_repo=$(working_copy)
+  dir=$(two_remote_clone "$local_repo" https://github.com/DeepFlowCoder/firstmate.git)
+  git -C "$dir" config remote.origin.gh-resolved base
+  out=$("$BASE_REPO" pin "$dir")
+  case "$out" in
+    pinned:*DeepFlowCoder/firstmate*) ;;
+    *) fail "a stale pin gh never reads must not stop the forge being pinned, got: $out" ;;
+  esac
+  [ "$(git -C "$dir" config --get remote.upstream.gh-resolved)" = base ] \
+    || fail "the forge remote must carry the pin: $(pins_of "$dir")"
+  # Nothing is ever rewritten or removed, whatever host it sits on.
+  [ "$(git -C "$dir" config --get remote.origin.gh-resolved)" = base ] \
+    || fail "the stale key must survive untouched: $(pins_of "$dir")"
+  pass "fm-gh-base-repo.sh: a pin on a remote gh never reads leaves the forge pinnable, and survives untouched"
+}
+
+test_every_existing_pin_is_considered_not_only_the_first() {
+  local dir local_repo out
+  # Two keys, and the one gh never reads is written FIRST so it is what a scan of
+  # only the first key would find. The operator's real pin, on a github.com
+  # remote, is second and must still be honoured.
+  local_repo=$(working_copy)
+  dir=$(two_remote_clone https://github.com/DeepFlowCoder/firstmate.git "")
+  # Remote order is config-file order, which is the order git prints the keys in.
+  git -C "$dir" remote add scratch "$local_repo"
+  git -C "$dir" remote add upstream https://github.com/kunchenguid/firstmate.git
+  git -C "$dir" config remote.scratch.gh-resolved base
+  git -C "$dir" config remote.upstream.gh-resolved kunchenguid/firstmate
+  [ "$(pins_of "$dir" | head -1)" = "remote.scratch.gh-resolved base" ] \
+    || fail "fixture must present the unread key first: $(pins_of "$dir")"
+  out=$("$BASE_REPO" pin "$dir")
+  case "$out" in
+    skipped:*kunchenguid/firstmate*upstream*) ;;
+    *) fail "a later pin gh does read must still be honoured, got: $out" ;;
+  esac
+  [ -z "$(git -C "$dir" config --get remote.origin.gh-resolved)" ] \
+    || fail "the forge must be left unpinned when the operator has pinned a remote gh reads"
+  [ "$(git -C "$dir" config --get remote.scratch.gh-resolved)" = base ] \
+    || fail "the unread key must survive untouched: $(pins_of "$dir")"
+  [ "$(git -C "$dir" config --get remote.upstream.gh-resolved)" = kunchenguid/firstmate ] \
+    || fail "the operator's pin must survive untouched: $(pins_of "$dir")"
+  pass "fm-gh-base-repo.sh: every gh-resolved key is weighed, not just the first one git prints"
 }
 
 test_a_single_remote_clone_is_pinned_too() {
@@ -173,10 +243,10 @@ test_sweep_covers_the_home_and_its_project_clones() {
 # --- naming a repository ----------------------------------------------------
 
 test_slug_accepts_the_spellings_git_writes() {
-  local url slug
+  local url want slug
   while IFS='|' read -r url want; do
     [ -n "$url" ] || continue
-    slug=$("$BASE_REPO" slug "$url") || fail "slug must accept $url"
+    slug=$(fm_gh_repo_slug "$url") || fail "slug must accept $url"
     [ "$slug" = "$want" ] || fail "slug of $url must be $want, got $slug"
   done <<'EOF'
 https://github.com/DeepFlowCoder/firstmate.git|DeepFlowCoder/firstmate
@@ -186,7 +256,7 @@ ssh://git@github.com/DeepFlowCoder/firstmate.git|DeepFlowCoder/firstmate
 https://github.com/DeepFlowCoder/firstmate/pull/44|DeepFlowCoder/firstmate
 https://x-access-token:TOKEN@github.com/DeepFlowCoder/firstmate.git|DeepFlowCoder/firstmate
 EOF
-  pass "fm-gh-base-repo.sh: every spelling git writes for a github.com remote names the same repository"
+  pass "fm_gh_repo_slug: every spelling git writes for a github.com remote names the same repository"
 }
 
 test_slug_refuses_what_only_resembles_github() {
@@ -203,16 +273,18 @@ test_slug_refuses_what_only_resembles_github() {
     https://github.com/ \
     /Users/someone/.no-mistakes/repos/14f712cb403a.git \
     'https://github.com/a b/c'; do
-    if "$BASE_REPO" slug "$url" >/dev/null 2>&1; then
+    if fm_gh_repo_slug "$url" >/dev/null 2>&1; then
       fail "slug must refuse $url rather than invent a repository name"
     fi
   done
-  pass "fm-gh-base-repo.sh: a host or path that only resembles GitHub is refused, not guessed at"
+  pass "fm_gh_repo_slug: a host or path that only resembles GitHub is refused, not guessed at"
 }
 
 test_pin_names_the_forge_remote
 test_pin_is_idempotent_and_reports_no_change
 test_an_operators_own_pin_is_never_overwritten
+test_a_pin_gh_never_reads_does_not_stop_the_forge_from_being_pinned
+test_every_existing_pin_is_considered_not_only_the_first
 test_a_single_remote_clone_is_pinned_too
 test_a_non_github_forge_is_reported_not_guessed
 test_a_non_repository_is_an_answer_not_a_crash

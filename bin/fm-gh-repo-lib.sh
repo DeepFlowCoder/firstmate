@@ -39,10 +39,11 @@
 #       config key and contacts no network.
 #       The outcomes are pinned (a key was written), unchanged (already the
 #       answer), skipped (a configuration this rule has nothing to say about - a
-#       clone with no resolvable forge, a forge gh would not read, or a pin the
-#       operator made themselves), and failed (the write itself did not go
-#       through). skipped and failed are deliberately separate: the first is
-#       ordinary and the second is the only one a caller should raise.
+#       clone with no resolvable forge, a forge gh would not read, or an
+#       operator's own pin on a remote gh does read), and failed (the write
+#       itself did not go through). skipped and failed are deliberately separate:
+#       the first is ordinary and the second is the only one a caller should
+#       raise.
 #
 # Which remote is the forge is bin/fm-forge-remote-lib.sh's question, not this
 # file's, and a caller must source that library first. Pinning the FORGE rather
@@ -60,11 +61,21 @@
 # gh-resolved on a gitlab.com origin plus a github.com remote still resolved to
 # the github.com remote and answered correctly.
 #
-# An existing pin is never overwritten. `gh repo set-default <other/repo>` is the
-# operator's own deliberate statement about this clone, and a convergence sweep
-# that quietly reverted it would make their setting unkeepable. This is also why
-# pinning never restricts anything: naming another repository explicitly, with
-# --repo upstream/project or any other slug, keeps working exactly as before.
+# An existing pin is never overwritten and never removed, whatever its value:
+# `gh repo set-default <other/repo>` is the operator's own deliberate statement
+# about this clone, and a convergence sweep that quietly reverted it would make
+# their setting unkeepable. What the rule does distinguish is a pin gh READS from
+# one it does not, because only the first can be that statement. gh filters
+# remotes to its known hosts before consulting gh-resolved, so a key stranded on
+# a remote gh never looks at expresses no choice and removes no ambiguity;
+# deferring to it would leave the forge unpinned and hand an unnamed query
+# straight back to the other repository, which is the defect above. So the pin is
+# skipped only when an existing pin sits on a remote whose URL names a github.com
+# repository. Everywhere else the forge remote is pinned and every existing key
+# stays exactly where it is: gh-resolved is per remote, so pinning the forge
+# never requires touching a neighbour's. This is also why pinning never restricts
+# anything: naming another repository explicitly, with --repo upstream/project or
+# any other slug, keeps working exactly as before.
 #
 # The pin is applied even when the clone has a single remote today. The guarantee
 # has to survive somebody adding an `upstream` next week, and a pin that was
@@ -74,7 +85,10 @@
 # This library answers WHICH repository. bin/fm-pr-lib.sh remains the single owner
 # of parsing a canonical pull-request URL into its provider-tagged identity, a
 # stricter question over a narrower input, and bin/fm-forge-pr-state-lib.sh
-# remains the single owner of what state a pull request is in.
+# remains the single owner of what state a pull request is in. The resemblance
+# between the GitHub name rules below and bin/fm-pr-lib.sh's is real and is not a
+# duplicated predicate: the two answer different questions at different
+# strictness, and sharing one would fuse them.
 
 # Echo owner/repo for a github.com URL. Accepts the spellings git writes for a
 # remote (https, ssh://, git://, scp-like) and the pull-request URLs firstmate
@@ -151,7 +165,7 @@ _fm_gh_repo_answer() {  # <outcome> <detail>
 }
 
 fm_gh_repo_base_pin() {  # <repo-dir>
-  local dir=${1-} answer forge url slug existing pinned_remote pinned_value
+  local dir=${1-} answer forge url slug key pinned_remote pinned_value pinned_url
 
   [ -n "$dir" ] || { _fm_gh_repo_answer skipped "no repository given to pin a base repository for"; return 0; }
   if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
@@ -178,21 +192,29 @@ fm_gh_repo_base_pin() {  # <repo-dir>
     return 0
   fi
 
-  # One existing pin, wherever it sits, ends this: it is either already the answer
-  # or somebody else's deliberate one.
-  existing=$(git -C "$dir" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null | head -1) || existing=
-  if [ -n "$existing" ]; then
-    pinned_remote=${existing%% *}
-    pinned_remote=${pinned_remote#remote.}
-    pinned_remote=${pinned_remote%.gh-resolved}
-    pinned_value=${existing#* }
-    if [ "$pinned_remote" = "$forge" ] && [ "$pinned_value" = base ]; then
-      _fm_gh_repo_answer unchanged "$dir already resolves unnamed queries to $slug"
-    else
-      _fm_gh_repo_answer skipped "$dir is already pinned to $pinned_value on remote $pinned_remote, which is the operator's own setting and is left as configured"
-    fi
+  # The forge already carrying the pin is the converged case, and it is asked
+  # first so that a stray key on another remote cannot make convergence read as
+  # somebody else's setting.
+  pinned_value=$(git -C "$dir" config --get "remote.$forge.gh-resolved" 2>/dev/null) || pinned_value=
+  if [ "$pinned_value" = base ]; then
+    _fm_gh_repo_answer unchanged "$dir already resolves unnamed queries to $slug"
     return 0
   fi
+
+  # Every gh-resolved key is considered, not the first one git happens to print,
+  # and only a key gh would actually read ends this - see the header. Nothing
+  # here writes or removes an existing key on any remote.
+  while read -r key pinned_value; do
+    [ -n "$key" ] || continue
+    pinned_remote=${key#remote.}
+    pinned_remote=${pinned_remote%.gh-resolved}
+    pinned_url=$(git -C "$dir" remote get-url "$pinned_remote" 2>/dev/null) || pinned_url=
+    if [ -z "$pinned_url" ] || ! fm_gh_repo_slug "$pinned_url" >/dev/null; then
+      continue
+    fi
+    _fm_gh_repo_answer skipped "$dir is already pinned to $pinned_value on remote $pinned_remote, which is the operator's own setting and is left as configured"
+    return 0
+  done < <(git -C "$dir" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null || true)
 
   if ! git -C "$dir" config "remote.$forge.gh-resolved" base 2>/dev/null; then
     _fm_gh_repo_answer failed "could not write remote.$forge.gh-resolved in $dir"

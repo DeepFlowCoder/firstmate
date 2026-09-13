@@ -18,10 +18,6 @@
 #          CHANGED and nothing else, so a converged fleet is silent and
 #          bin/fm-bootstrap.sh can relay a real change as a BOOTSTRAP_INFO fact.
 #          Exits 0.
-#        fm-gh-base-repo.sh slug <url>
-#          Print the owner/repo a github.com URL names, or exit 1 printing
-#          nothing. This is the only spelling that actually names a repository to
-#          gh-axi; see the library header.
 #
 # Every path here is offline and idempotent: it resolves remotes already
 # configured and writes at most one git config key per repository, so a session
@@ -55,11 +51,6 @@ case "${1-}" in
     [ -n "${2-}" ] || { echo "usage: fm-gh-base-repo.sh pin <repo-dir>" >&2; exit 2; }
     answer=$(pin_one "$2")
     printf '%s: %s\n' "${answer%%$'\t'*}" "${answer#*$'\t'}"
-    ;;
-  slug)
-    [ -n "${2-}" ] || { echo "usage: fm-gh-base-repo.sh slug <url>" >&2; exit 2; }
-    slug=$(fm_gh_repo_slug "$2") || exit 1
-    printf '%s\n' "$slug"
     ;;
   sweep)
     # The home's own checkout first: it is the repository whose session-start
