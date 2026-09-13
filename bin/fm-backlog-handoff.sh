@@ -71,15 +71,21 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 REG="$DATA/secondmates.md"
 MAIN_BACKLOG="$DATA/backlog.md"
-# shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
+# Source analysis stops at the imported modules below. Each one is itself a
+# canonical root of this same lint run, so following it from here re-analyses
+# it inside this root's program rather than covering anything the run would
+# otherwise miss. On this root that re-analysis is not free: it is what made a
+# single ShellCheck process cost more memory than a CI runner has, measured in
+# docs/verification/lint-lane-memory.md. Same boundary the test roots use.
+# shellcheck source=/dev/null disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
-# shellcheck source=bin/fm-secondmate-registry-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
-# shellcheck source=bin/fm-wake-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-wake-lib.sh"
-# shellcheck source=bin/fm-public-followup-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
-# shellcheck source=bin/fm-pending-reply-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 
 RECEIVER_WAKE_MESSAGE='New routed work is in your backlog. Run bin/fm-session-start.sh now, then act on the routed task.'

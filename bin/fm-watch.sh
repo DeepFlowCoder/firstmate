@@ -120,7 +120,13 @@ mkdir -p "$STATE"
 # runtime can exceed the bounded CI lint worker while adding no uncovered file.
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-push-transition-lib.sh"
-# shellcheck source=bin/fm-pr-lib.sh
+# Source analysis stops at the imported modules below. Each one is itself a
+# canonical root of this same lint run, so following it from here re-analyses
+# it inside this root's program rather than covering anything the run would
+# otherwise miss. On this root that re-analysis is not free: it is what made a
+# single ShellCheck process cost more memory than a CI runner has, measured in
+# docs/verification/lint-lane-memory.md. Same boundary the test roots use.
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # Single owner of durable merge-outcome publication, shared with
 # bin/fm-pr-merge.sh so self and poll origins use the same role-routed outcome.
@@ -133,21 +139,21 @@ mkdir -p "$STATE"
 # worker while adding no uncovered file.
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-merge-outcome-lib.sh"
-# shellcheck source=bin/fm-x-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-x-lib.sh"
-# shellcheck source=bin/fm-check-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-check-lib.sh"
 # Parent-owned secondmate missed-report guards: durable pending-reply
 # expectations created by fm-send on marked secondmate requests. The tick is
 # cheap when no records exist and never scrapes secondmate conversation.
-# shellcheck source=bin/fm-pending-reply-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
-# shellcheck source=bin/fm-busy-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # Steering-inbox loss detection: bin/fm-task-inbox-lib.sh owns the record,
 # doorbell, and re-ring ladder contracts; this watcher only supplies the busy
 # gate and the wake emission (inbox_steer_check below).
-# shellcheck source=bin/fm-task-inbox-lib.sh
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
