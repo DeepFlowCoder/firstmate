@@ -216,7 +216,8 @@ At session start, the deferred network stage reads one `quota-axi --json` snapsh
 Every locked session start also keeps `state/capacity.check.sh` registered with the watcher, which repeats the same check on its normal check cadence and wakes firstmate only when the degraded capacity shape changes.
 Recovery and unchanged readings stay silent, while a later degradation becomes reportable again.
 
-The warning distinguishes an exhausted prepaid balance, an exhausted time window with its reset time, and an unusable credential because those require recharge, waiting, and sign-in respectively.
+The warning names an exhausted time window by its reset hour, an unusable credential, and an allowance spent with no reset reported, because those require waiting, sign-in, and investigating respectively.
+quota-axi exposes no verified signal that separates a spent prepaid balance from a spent window whose reset is missing, so the guard reports that shape as `exhausted` rather than guessing a recharge.
 Unconfirmed quota evidence is named as unconfirmed rather than guessed to be a credential failure.
 The guard reports only and never refuses a dispatch.
 [`bin/fm-capacity-check.sh`](../bin/fm-capacity-check.sh)'s header owns snapshot acquisition, threshold precedence, transition state, and watcher registration, while [`bin/fm-capacity-policy.mjs`](../bin/fm-capacity-policy.mjs)'s header owns classification and wording.
