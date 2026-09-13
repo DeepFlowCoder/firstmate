@@ -253,13 +253,22 @@ fm_test_reap_orphans
 # SIGKILL skips, and a silent kill would only trade a silent hang for a silent
 # kill. Stderr rather than stdout, so it cannot be read as an ok/not-ok line.
 #
-# A worker that is already gone costs zero ticks, because the liveness check
-# runs before any sleep. The tick therefore governs only how often a still-live
-# worker is polled while the bound runs down, so it is the 0.1s the other waits
-# in these suites use, and 50 of them make the bound five seconds.
+# A tick is 0.02s rather than the 0.1s the other waits in these suites use,
+# because on the healthy path the loop sleeps about one tick per reap rather than
+# none: is_live_non_zombie forks `ps` microseconds after the `kill`, so it still
+# sees the worker alive and sleeps once before the exit becomes visible. The tick
+# size is therefore very nearly the whole per-reap cost, not a polling
+# granularity - measured at roughly 80ms more per reap at 0.1s, over 177 reap
+# call sites in tests/fm-watch-triage.test.sh, which is about 14 extra seconds
+# per run of the exact shard whose runtime is why this change exists. The fork
+# count is the same either way, since either tick sleeps about once. 250 ticks
+# hold the sleeping budget at the same nominal five seconds, but only the healthy
+# path is cheap: a worker that never dies is polled all 250 times, and since each
+# poll forks `ps`, its real grace runs well past five seconds on a loaded machine.
+# Bounded is the guarantee here, not punctual.
 
-FM_TEST_REAP_TICK_SECONDS=0.1
-FM_TEST_REAP_GRACE_TICKS=50
+FM_TEST_REAP_TICK_SECONDS=0.02
+FM_TEST_REAP_GRACE_TICKS=250
 FM_TEST_REAP_ESCALATED=0
 
 is_live_non_zombie() {  # <pid>

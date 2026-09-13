@@ -348,6 +348,15 @@ CHILD
   child_root=$(cat "$dirfile")
 
   kill -TERM "$pid"
+  tries=0
+  while is_live_non_zombie "$pid" && [ "$tries" -lt 200 ]; do
+    sleep 0.05
+    tries=$((tries + 1))
+  done
+  if is_live_non_zombie "$pid"; then
+    reap "$pid"
+    fail "the signalled child was still running after SIGTERM and had to be killed"
+  fi
   rc=0
   wait "$pid" 2>/dev/null || rc=$?
   [ "$rc" -eq 143 ] || fail "the signalled child exited $rc instead of the conventional SIGTERM status 143"
