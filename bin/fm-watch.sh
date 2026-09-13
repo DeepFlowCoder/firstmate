@@ -52,12 +52,15 @@
 #                          wake payload itself, not just repetition, forces a
 #                          closer look instead of another routine supervision
 #                          resume. Unless afk is active. That escalation re-reads
-#                          the authoritative state first: a pane whose run step is
-#                          still running, or whose harness still reports itself
-#                          busy inside the completed-turn bound, is deferred
-#                          rather than escalated (wedge_live_working_evidence and
+#                          the authoritative state first: inside the completed-turn
+#                          bound, a pane whose run step is still running, or whose
+#                          harness still reports itself busy, is deferred rather
+#                          than escalated (wedge_live_working_evidence and
 #                          wedge_defer_working), because a quiet pane is what both
-#                          of those look like. A pane whose own task worktree was
+#                          of those look like. Once that bound has crossed, NO
+#                          working verdict defers the escalation, whichever source
+#                          reports it: past the bound a live-looking read is what a
+#                          hung foreground call hides behind. A pane whose own task worktree was
 #                          written during the quiet window is deferred the same
 #                          way (wedge_defer_writing), because files appearing
 #                          there are liveness the pane and the run step cannot
@@ -631,17 +634,20 @@ wedge_defer_working() {  # <window> <since-file> <triage-label> <idle-age> <evid
 # reclassifying a healthy crew, and reusing it here would let a stale memory of
 # `working` silence the alarm for a crew whose evidence has since gone away.
 #
-# The pane verdict is additionally bounded by the completed-turn bound the busy
-# path already owns (busy_turn_over_age): a busy signature is exactly what can
-# hide a hung foreground call, so past that bound it stops being evidence and the
-# escalation proceeds. A run step carries no such bound, because the pipeline is a
-# separate live process with its own terminal states - when it dies, hangs up, or
-# is cancelled, the very next read stops answering `working` and the alarm fires -
-# and the bounded re-surface above is what keeps a run that reports `running`
-# forever from going quiet on the supervisor.
-wedge_live_working_evidence() {  # <task>
-  local task=$1 line src
+# Every verdict is bounded by the same completed-turn bound the busy path owns
+# (BUSY_TURN_MAX_SECS), because a live-looking read is exactly what a hung
+# foreground call hides behind, whichever source reports it: a `run-step` that
+# answers `running` forever says nothing about whether the run is advancing, and a
+# busy signature outlives the turn it belongs to. Once that bound has crossed, NO
+# working verdict defers the escalation. <bound-crossed> is how the caller that
+# already established the crossing says so - busy_turn_bound_check reaches here
+# only past the bound - so the bound is decided once by the caller rather than
+# re-derived per source; on the ordinary idle-pane stale paths, where no caller
+# owns that state, the pane verdict still ages the bound itself.
+wedge_live_working_evidence() {  # <task> <bound-crossed>
+  local task=$1 crossed=$2 line src
   [ -n "$task" ] || return 0
+  [ -z "$crossed" ] || return 0
   line=$(crew_state_line "$task")
   [ "$(absorb_class_of_state_line "$line")" = working ] || return 0
   src=${line#*source: }; src=${src%% *}
@@ -671,8 +677,11 @@ clear_defer_tracking() {  # <window-key>
 # escalate - at most one crew-state read and one bounded worktree walk per window
 # per STALE_ESCALATE_SECS, never per poll - and the cheaper authoritative read
 # goes first, so the common case of a live validation never pays for the walk.
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason evidence
+# <bound-crossed> is non-empty only from the caller that already established the
+# completed-turn bound has crossed (busy_turn_bound_check); it is handed to the
+# working probe, which then lets no verdict defer this escalation.
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> [bound-crossed]
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 crossed=${6:-} since age n reason evidence
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -685,7 +694,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
-        evidence=$(wedge_live_working_evidence "$task")
+        evidence=$(wedge_live_working_evidence "$task" "$crossed")
         if [ -n "$evidence" ]; then
           wedge_defer_working "$win" "$since_file" "$label" "$age" "$evidence"
           return 0
@@ -824,7 +833,11 @@ handle_healthy_idle_stale() {  # <window> <task> <hash> <class>
 # the expected external wait. The caller has already confirmed liveness through
 # the busy verdict, so this exception does not suppress undeclared wedges or
 # alter the separate non-busy classification. handle_paused_stale keeps the
-# exception bounded by re-surfacing it once per PAUSE_RESURFACE_SECS. Away mode
+# exception bounded by re-surfacing it once per PAUSE_RESURFACE_SECS. With no such
+# declaration the wedge timer gets the crossed bound itself, so none of the live
+# working verdicts wedge_live_working_evidence reads may defer that escalation:
+# past this bound a worker that still reads `working` is precisely the hung
+# foreground call this backstop exists to catch. Away mode
 # remains daemon-owned and receives the undecorated wake identity for its own
 # classification, which is why the declaration is read before the afk branch
 # rather than after it.
@@ -866,7 +879,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
     handle_paused_stale "$win" "$task" "$h"
     return 0
   fi
-  wedge_timer_check "$win" "$since_file" "busy (no completed turn)" "$escalation_file" "$task"
+  wedge_timer_check "$win" "$since_file" "busy (no completed turn)" "$escalation_file" "$task" crossed
   return 1
 }
 
@@ -1004,7 +1017,15 @@ pause_state_class() {  # <window> <task>
   #   * It applies only while the LAST status line still declares the wait. A worker
   #     that never declared one, or that appends any later line that stops declaring
   #     one, never reaches here (the gate at the top of this function) and keeps the
-  #     unchanged wedge path.
+  #     wedge path. That path re-reads the same authoritative state at the moment
+  #     its alarm would fire (wedge_live_working_evidence), so an undeclared worker
+  #     with this identical live run step is deferred there instead - on that path's
+  #     own timer, marker and wording. What the declaration changes is therefore
+  #     which absorber owns the wait, not whether a wedge can hide behind one: the
+  #     wedge path keeps the stricter bound of the two, since past
+  #     BUSY_TURN_MAX_SECS with no completed turn no working verdict defers it at
+  #     all, while a declared wait is the worker's own account of why the silence is
+  #     expected.
   #   * The recheck file is deliberately left cleared, so the cheap repeat path above
   #     stays disarmed and every poll re-derives the corroboration from a fresh
   #     authoritative read. The absorb ends on the first poll the run stops reading

@@ -3028,6 +3028,73 @@ test_busy_pane_stable_hash_escalates_past_turn_age_bound() {
   pass "a busy worker with a stable pane hash still escalates once its completed-turn age reaches the bound"
 }
 
+# The completed-turn bound is kind-agnostic, and the at-threshold liveness re-read
+# must not quietly reopen it. A worker blocked in a FOREGROUND `no-mistakes axi
+# run` keeps a busy pane and keeps answering `working - source: run-step -
+# validating (running)` for as long as the call hangs, so a run-step verdict is
+# exactly the read a hung foreground call hides behind here - the same hazard the
+# busy verdict is bounded for, on weaker evidence, since a hung run reports
+# `running` indefinitely. Past the bound the escalation must fire on the unchanged
+# STALE_ESCALATE_SECS schedule rather than relaxing to the hourly recheck, or a
+# genuinely wedged worker reaches demand-deep-inspection hours late, or never.
+test_busy_pane_live_run_step_still_escalates_past_turn_age_bound() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  dir=$(make_case busy-live-run-turn-age); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-busy-live-run"
+  printf 'Running... (1m 13s - timeout 10m)' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-live-run.meta"
+  record_pi_busy "$state" busy-live-run
+  printf 'working: handed to validation\n' > "$state/busy-live-run.status"
+  sig=$(seen_sig "$state/busy-live-run.status"); printf '%s' "$sig" > "$state/.seen-busy-live-run_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "$(cat "$capture_file")")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # No completed turn ever recorded for this task: age the spawn record itself,
+  # exactly as the stable-hash fixture above does.
+  touch -t 200001010000 "$state/busy-live-run.meta"
+
+  # Phase A: past the bound, with the run still reporting itself alive, the pane
+  # is absorbed for this poll but the wedge timer is armed behind it.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a busy pane past the turn-age bound escalated before the wedge threshold: $(cat "$out")"
+  fi
+  [ -s "$state/.stale-since-$key" ] || { reap "$pid"; fail "a busy pane past the turn-age bound did not start a wedge timer"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional live-run phase-A stop"
+
+  # Phase B: the wedge threshold is reached on the same unchanged pane, with the
+  # run step STILL answering `working`. The crossed bound owns this escalation,
+  # so the live read must not defer it.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_PAUSE_RESURFACE_SECS=999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "a busy over-age pane with a live run step never wedge-escalated"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "the over-age live-run escalation did not print a stale wake: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the over-age live-run escalation did not flag a possible wedge: $(cat "$out")"
+  grep -F "rechecked on a long cadence" "$out" >/dev/null \
+    && fail "the crossed completed-turn bound was relaxed to the long recheck by a live run step: $(cat "$out")"
+  [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || true)" = 1 ] || fail "the over-age live-run escalation was not counted"
+  [ ! -e "$state/.working-since-$key" ] || fail "a crossed completed-turn bound started a live-work deferral chain"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the over-age live-run escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the over-age live-run escalation was not queued"
+  pass "a busy pane past the completed-turn bound still wedge-escalates while its run step reports itself running"
+}
+
 # Regression fixture for the incident's actual masking condition: Pi's rendered
 # elapsed-time footer changes every poll, so the pane hash never repeats and the
 # watcher always takes the "new hash" branch, never the stable-hash one above.
@@ -4451,6 +4518,7 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
 test_busy_pane_below_turn_age_bound_is_absorbed
 test_busy_pane_stable_hash_escalates_past_turn_age_bound
+test_busy_pane_live_run_step_still_escalates_past_turn_age_bound
 test_busy_pane_changing_hash_escalates_past_turn_age_bound
 test_busy_pane_turn_end_touch_resets_age
 test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
