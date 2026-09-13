@@ -140,6 +140,16 @@ SH
   chmod +x "$fakebin/jq"
 }
 
+add_real_node() {
+  local fakebin=$1 real_node
+  real_node=$(command -v node 2>/dev/null) || fail "node is required for capacity policy tests"
+  cat > "$fakebin/node" <<SH
+#!/usr/bin/env bash
+exec '$real_node' "\$@"
+SH
+  chmod +x "$fakebin/node"
+}
+
 make_fake_fleet_sync_root() {
   local dir=$1 fake_root
   fake_root="$dir/fake-root"
@@ -1148,6 +1158,32 @@ ROWS
   pass "bootstrap validates crew-dispatch.json and reports malformed or unverified configs"
 }
 
+test_capacity_guard_is_reported_and_armed() {
+  local case_dir fakebin snapshot out
+  case_dir="$TMP_ROOT/capacity-guard"
+  mkdir -p "$case_dir/home/config" "$case_dir/home/state"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_node "$fakebin"
+  snapshot="$case_dir/quota.json"
+  printf '%s\n' '{"schemaVersion":5,"providers":[{"provider":"codex","state":{"status":"auth_required","remedyCommand":"codex login"},"windows":[],"quotaSemantics":{"effectiveAvailability":[]}}]}' > "$snapshot"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_BOOTSTRAP_NETWORK=only FM_CAPACITY_MIN_LANES=2 FM_CAPACITY_SNAPSHOT="$snapshot" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "CAPACITY: 0 of 1 provider lanes dispatchable" \
+    "the network half of bootstrap must relay the aggregate capacity warning"
+
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_BOOTSTRAP_NETWORK=skip FM_CAPACITY_MIN_LANES=2 FM_CAPACITY_SNAPSHOT="$snapshot" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh" >/dev/null
+  assert_present "$case_dir/home/state/capacity.check.sh" \
+    "the locked local half of bootstrap must arm the capacity watcher"
+  assert_present "$case_dir/home/state/capacity.check-trust" \
+    "the bootstrap-armed capacity watcher must have a trust binding"
+  pass "bootstrap reports capacity in its network half and arms the heartbeat poll in its local half"
+}
+
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_gh_axi_min_version
@@ -1176,3 +1212,4 @@ test_network_phases_record_per_step_elapsed_times
 test_tasks_axi_verdict_handoff_is_consumed_once
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
 test_crew_dispatch_validation
+test_capacity_guard_is_reported_and_armed

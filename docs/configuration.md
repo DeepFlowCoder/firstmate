@@ -206,6 +206,22 @@ That is also why no secondmate launch consults the guard: the volume a primary c
 For the same reason `FM_DISK_SPACE_MIN_GB`, `FM_DISK_SPACE_WARN_GB`, and `FM_SPAWN_ALLOW_LOW_DISK` are cleared on that launch, so the dispatches the secondmate later makes from its own home are decided by that home rather than by whatever the primary was started with.
 [`bin/fm-disk-space-lib.sh`](../bin/fm-disk-space-lib.sh)'s header owns the exact measurement, parsing, and wording.
 
+## Fleet capacity guard (config/capacity-min-lanes)
+
+The default warning threshold is **2 dispatchable provider lanes**, and the local, gitignored `config/capacity-min-lanes` file overrides it with one whole number from 0 to 99.
+The `FM_CAPACITY_MIN_LANES` environment variable overrides that file for a single run, and `0` retires the guard.
+A malformed configured value is reported and falls back to 2 rather than silently disabling protection.
+
+At session start, the deferred network stage reads one `quota-axi --json` snapshot and prints a `CAPACITY:` line only when fewer lanes remain than the threshold, when every remaining lane is projected to exhaust before its own reset, or when the snapshot cannot be classified.
+Every locked session start also keeps `state/capacity.check.sh` registered with the watcher, which repeats the same check on its normal check cadence and wakes firstmate only when the degraded capacity shape changes.
+Recovery and unchanged readings stay silent, while a later degradation becomes reportable again.
+
+The warning names an exhausted time window by its reset hour, an unusable credential, and an allowance spent with no reset reported, because those require waiting, sign-in, and investigating respectively.
+quota-axi exposes no verified signal that separates a spent prepaid balance from a spent window whose reset is missing, so the guard reports that shape as `exhausted` rather than guessing a recharge.
+Unconfirmed quota evidence is named as unconfirmed rather than guessed to be a credential failure.
+The guard reports only and never refuses a dispatch.
+[`bin/fm-capacity-check.sh`](../bin/fm-capacity-check.sh)'s header owns snapshot acquisition, threshold precedence, transition state, and watcher registration, while [`bin/fm-capacity-policy.mjs`](../bin/fm-capacity-policy.mjs)'s header owns classification and wording.
+
 ## Update source (config/update-remote)
 
 `/updatefirstmate` pulls firstmate's own improvements from the git remote named in the local, gitignored `config/update-remote` file.
@@ -772,6 +788,7 @@ FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context pr
 FM_SPAWN_ALLOW_LOW_DISK=  # non-empty dispatches one spawn despite the low-disk refusal; see "Disk space guard"
 FM_DISK_SPACE_MIN_GB=   # optional free-space threshold override in whole gigabytes, ahead of config/disk-space-min-gb; 0 retires the guard; see "Disk space guard"
 FM_DISK_SPACE_WARN_GB=  # optional advisory threshold override in whole gigabytes, ahead of config/disk-space-warn-gb; 0 retires only the warning tier
+FM_CAPACITY_MIN_LANES=  # optional provider-lane warning threshold override, ahead of config/capacity-min-lanes; 0 retires the guard; see "Fleet capacity guard"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline

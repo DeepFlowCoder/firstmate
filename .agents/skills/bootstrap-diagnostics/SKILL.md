@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, CAPACITY, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -44,6 +44,14 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Report the malformed setting and let them correct it; never infer what they meant.
 - `DISK_SPACE: invalid <config/disk-space-warn-gb|FM_DISK_SPACE_WARN_GB> - <reason>; warning at the default <n> GB` - the named advisory threshold source is unreadable, is not one whole number of gigabytes, or is at or below the refusal floor, so the in-session watch is warning at its default rather than the captain's intended value.
   Report the malformed setting and let them correct it; never infer what they meant.
+- `CAPACITY: <n> of <n> provider lanes dispatchable (<why>): <lanes>` - the fleet's aggregate provider capacity has fallen below the dispatch threshold, or every remaining lane is projected to run out before its own reset.
+  Tell the captain the concrete shape and the remedy each lane names, because the action differs by cause: `out of window until <time>` means waiting for that reset, `sign-in required` means the captain signs in, and `allowance spent, with no reset reported` means checking whether it is a prepaid balance to recharge.
+  The line reports only and never refuses a dispatch; the last remaining lane is exactly when the captain still needs to work.
+  It arrives once per changed shape rather than on every heartbeat, so an unchanged degraded fleet is not repeated.
+- `CAPACITY: capacity unknown - <reason>` - the quota snapshot could not be read or classified (a probe timeout, an unreadable snapshot file, a missing node, or a report that will not parse), so the guard cannot say whether the fleet is healthy.
+  Report it as a blind guard, not as a credential fault: the reason names the actual failure, and unconfirmed evidence is never escalated to a sign-in demand.
+- `CAPACITY: invalid <config/capacity-min-lanes|FM_CAPACITY_MIN_LANES> - <reason>; guarding at the default <n>` - the named threshold source is malformed or unreadable, so the guard runs at its default rather than the captain's intended value.
+  Report the malformed setting and let the captain correct it; never infer what they meant.
 - `GH_BASE_REPO: could not write <key> in <repo>; unnamed gh and gh-axi queries there can answer for a different repository - make .git/config writable (check ownership, a read-only checkout, or a full filesystem) and rerun session start` - the session-start convergence could not pin which GitHub repository an unnamed query in this home's checkout answers for, so that checkout is still resolving to whichever remote the tool prefers.
   This is not cosmetic and it does not self-heal: the start-up summary keeps listing another repository's issues and pull requests under this repository's name, and every pull-request number here collides with a real, old one over there, which typically returns closed with zero checks - the shape a reader takes for finished and green.
   Fix the named write, not the symptom: the line carries the exact `git config` key and the repository it belongs to, so check that repository's `.git/config` for the condition the line names, then rerun session start to confirm the line is gone.
