@@ -280,6 +280,7 @@ family_for_basename() {
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
     fm-send-inbox-doorbell-live-e2e.test.sh|\
+    fm-gh-repo-resolution-live-e2e.test.sh|\
     fm-herdr-submit-confirm-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
@@ -294,7 +295,7 @@ family_for_basename() {
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
       ;;
-    fm-merge-local.test.sh|\
+    fm-merge-local.test.sh|fm-gh-repo-resolution.test.sh|\
     fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-review-diff.test.sh|\
     fm-teardown.test.sh|fm-x-mode.test.sh)
       printf '%s\n' pr-forge
@@ -1194,6 +1195,17 @@ families_for_changed_path() {
       printf '%s\n' pr-forge
       printf '%s\n' session-bootstrap
       printf '%s\n' backend-dispatch
+      ;;
+    bin/fm-gh-repo-lib.sh|bin/fm-gh-base-repo.sh)
+      # Which GitHub repository an unnamed query answers for decides the teardown
+      # landing lookup, the session-start convergence sweep, the repository a
+      # spawned worker's own calls resolve to, and the bearings PR enrichment.
+      # The vendor half is re-measured by the live guard.
+      printf '%s\n' pr-forge
+      printf '%s\n' session-bootstrap
+      printf '%s\n' backend-dispatch
+      printf '%s\n' snapshot-bearings
+      printf '%s\n' live-harness-optin
       ;;
     bin/fm-nm-run-lib.sh)
       # Shared no-mistakes run-attribution primitives, sourced by both

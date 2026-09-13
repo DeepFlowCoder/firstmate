@@ -225,6 +225,9 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 # The single owner of which remote is the forge; see its header.
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-forge-remote-lib.sh"
+# The single owner of how a GitHub repository is NAMED to gh-axi; see its header.
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/fm-gh-repo-lib.sh"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
 # shellcheck source=/dev/null
@@ -1054,13 +1057,33 @@ resolve_forge_remote() {  # <repo-dir>
   FORGE_REMOTE=$answer
 }
 
+# Which GitHub repository this task's worktree ships to, as the owner/repo slug
+# gh-axi needs. Echoes it and returns 0; returns non-zero when the forge is
+# unresolvable or is not a github.com repository, which the landing tests below
+# treat exactly as "no PR found". It reads the forge remote directly rather than
+# through resolve_forge_remote, which owns LANDED_FORGE_UNCONFIRMED for the
+# refusals that quote it, and must not have that reason overwritten from here.
+forge_repo_slug() {
+  local answer url
+  answer=$(fm_forge_remote_resolve "$WT")
+  case "$answer" in
+    unresolved$'\t'*) return 1 ;;
+  esac
+  url=$(git -C "$WT" remote get-url "$answer" 2>/dev/null) || return 1
+  fm_gh_repo_slug "$url"
+}
+
 # Resolve the PR number for a worktree branch via gh-axi. Echoes the number on a
 # single match and returns 0; returns non-zero on no match or any lookup failure,
 # so the caller treats it as "no PR found" (fail-safe).
+# The repository is NAMED, never left to gh's own pick among the clone's remotes:
+# an unnamed query answers for whichever remote gh prefers, and a landing test
+# that asks the wrong repository about this branch is not a test, it is a guess.
 pr_number_from_branch() {
-  local branch=$1 out n
+  local branch=$1 out n slug
   [ -n "$branch" ] && [ "$branch" != HEAD ] || return 1
-  out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
+  slug=$(forge_repo_slug) || return 1
+  out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 --repo "$slug" 2>/dev/null ) || return 1
   n=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
   [ -n "$n" ] || return 1
   printf '%s' "$n"
@@ -1134,14 +1157,23 @@ EOF
 # current work is not contained in the PR head, no PR is found, or any gh error
 # occurs - the caller then falls back to the content check.
 pr_is_merged() {
-  local branch=$1 target view state head current
+  local branch=$1 target view state head current slug
+  # A recorded pr= URL names its own repository and needs no --repo; a bare
+  # number names none at all, so this asks the forge by name rather than letting
+  # gh pick a remote. A wrong "merged" here releases work that never landed.
+  slug=
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
   else
     target=$(pr_number_from_branch "$branch") || return 1
+    slug=$(forge_repo_slug) || return 1
   fi
   [ -n "$target" ] || return 1
-  view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
+  if [ -n "$slug" ]; then
+    view=$(cd "$WT" && gh pr view "$target" --repo "$slug" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
+  else
+    view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
+  fi
   state=${view%%$'\t'*}
   head=${view#*$'\t'}
   [ "$state" != "$view" ] || return 1

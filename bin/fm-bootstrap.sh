@@ -78,6 +78,13 @@
 #          guesses at malformed or unsafe existing files, and secondmate homes
 #          await the primary-authoritative inherited value instead of creating
 #          their own.
+#          The same locked mutable path converges gh's implicit base repository in
+#          this home's own checkout and its project clones, so a gh or gh-axi query
+#          that names no repository cannot answer for a different one. The rule and
+#          its safety are owned by bin/fm-gh-repo-lib.sh and run through
+#          bin/fm-gh-base-repo.sh; it is offline, idempotent, and silent once
+#          converged, and a repository it actually pins is reported as one
+#          BOOTSTRAP_INFO fact.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -1193,6 +1200,20 @@ startup_memory_budget_setup() {
   fi
 }
 
+# Converge gh's implicit base repository in this home's own checkout and its
+# project clones, so a query that does not name a repository cannot answer for a
+# different one. bin/fm-gh-repo-lib.sh owns the rule and why it is safe to repeat;
+# bin/fm-gh-base-repo.sh is its executable surface. Offline, idempotent, and silent
+# once converged, so only a real change is reported, as a completed benign fact.
+gh_base_repo_sweep() {
+  local line
+  [ -x "$FM_ROOT/bin/fm-gh-base-repo.sh" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    echo "BOOTSTRAP_INFO: ${line#pinned: }"
+  done < <("$FM_ROOT/bin/fm-gh-base-repo.sh" sweep 2>/dev/null || true)
+}
+
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -1214,6 +1235,7 @@ fi
 # the local pass that ran first already closed that window.
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   startup_memory_budget_setup
+  gh_base_repo_sweep
 fi
 
 # Local detection: presence, version floors, and configuration. Nothing here
