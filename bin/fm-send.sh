@@ -52,6 +52,11 @@
 # the composer visibly holds pending text the ring is skipped with a notice and
 # the watcher re-rings an ordinary record later; no composer verdict is
 # delivery proof on this plane, and a failed ring never fails the send.
+# A separate bare-shell safety gate runs before the composer check and refuses
+# the ring when the backend positively proves the endpoint is a shell prompt
+# that would execute the line instead of reading it; the record still durably
+# exists, the send still exits 0, and the watcher surfaces the agent-less
+# endpoint at once (bin/fm-task-inbox-lib.sh owns both gates).
 #
 # TYPED - the LOCAL text that must reach the terminal itself: a harness-native
 # invocation (a leading "/", or a leading "$" to a codex target) must reach

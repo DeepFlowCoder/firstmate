@@ -3156,6 +3156,10 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
   fi
 fi
 
+# A replacement worker's doorbell must start fresh: clear the steering-inbox
+# escalation marker and delivery-attempt ladder so a relaunched agent is rung
+# for its durable records instead of inheriting the old worker's spent ladder
+# or bare-shell escalation (bin/fm-task-inbox-lib.sh owns those markers).
 if [ "$RELAUNCH" -eq 1 ]; then
   rm -f "$STATE/$ID.inbox/.escalated" "$STATE/$ID.inbox/.ring-state" 2>/dev/null || true
 fi
