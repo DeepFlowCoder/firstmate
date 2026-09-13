@@ -156,12 +156,16 @@ function boundingWindows(provider, scopes) {
 }
 
 /**
- * A prepaid balance is spent. quota-axi models it two ways and either is
- * sufficient: a bounding window of kind `credits` at zero, or a provider-level
- * credit purse that is not unlimited and has nothing left.
+ * A prepaid balance is spent. quota-axi models it two ways: a bounding window
+ * of kind `credits` at zero, or a provider-level credit purse that is not
+ * unlimited and has nothing left. The purse reading is trusted only when the
+ * spent set holds no time window, because some providers (Grok) report a
+ * constant `credits.remaining: 0` next to a real time window - a spent window
+ * must take precedence, since only it names a reset the captain can wait for.
  */
 function balanceSpent(provider, exhausted) {
   if (exhausted.some((w) => w.kind === "credits")) return true;
+  if (exhausted.some((w) => w.kind !== "credits")) return false;
   const credits = provider.credits;
   if (!credits || credits.unlimited === true) return false;
   return percent(credits.remaining) === 0;

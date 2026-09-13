@@ -88,6 +88,23 @@ window_exhausted_provider() {
 EOF
 }
 
+# grok_window_exhausted_provider <id> - a spent time window next to Grok's
+# constant `credits.remaining: 0` (docs/verification/dispatch-auth.md): the zero
+# purse is never headroom, so it must not be read as a spent balance.
+grok_window_exhausted_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"fresh","stale":false},
+ "credits":{"remaining":0,"unlimited":false,"unit":"usd"},
+ "windows":[{"id":"window:720h","label":"720h window","kind":"weekly",
+             "percentRemaining":0,"resetsAt":"2026-09-16T01:26:08Z"}],
+ "quotaSemantics":{"status":"known","effectiveAvailability":[
+   {"scope":"all_models","status":"known","effectivePercentRemaining":0,
+    "boundedBy":["window:720h"],"limitingWindowIds":["window:720h"],
+    "runway":{"status":"exhausted_now","limitingWindowId":"window:720h"}}]}}
+EOF
+}
+
 # balance_exhausted_provider <id> - a prepaid purse spent. No reset will fix it;
 # only the captain paying will.
 balance_exhausted_provider() {
@@ -210,6 +227,17 @@ assert_not_contains "$out" "deepseek out of window" "a spent purse must not be r
 assert_not_contains "$out" "codex out of balance" "a spent window must not be reported as a purse"
 pass "balance and window exhaustion are not confused for each other"
 
+# A provider that reports a constant zero credits purse next to a real time
+# window (Grok does this) is a spent WINDOW, not a spent balance: the captain
+# waits for the named reset rather than recharging a purse that reads the same
+# zero when healthy.
+home=$(fresh_home grok-window)
+snapshot "$home/snap.json" "$(grok_window_exhausted_provider grok)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "grok out of window until 2026-09-16T01:26Z" "a spent time window must beat a constant zero credits purse"
+assert_not_contains "$out" "grok out of balance" "the constant zero purse must not be read as a spent balance"
+pass "a constant zero credits purse does not hide a spent time window"
+
 # === uncertainty is not a cause =============================================
 #
 # AGENTS.md section 4 is explicit that unmeasurable headroom or a missing auth
@@ -328,6 +356,21 @@ out=$(run_guard "$home" 0 "$home/snap.json" report)
 [ -z "$out" ] || fail "0 must retire the guard entirely, got: $out"
 pass "0 retires the guard"
 
+# Retirement must stop the probe, not just the verdict: an unparseable snapshot
+# must stay silent too, because 0 means the guard makes no vendor call at all.
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_guard "$home" 0 "$home/snap.json" report)
+[ -z "$out" ] || fail "a retired guard must not probe or report, got: $out"
+pass "a retired guard makes no probe and no report"
+
+# Arming a retired guard is a no-op: no shim, no trust binding, no probe on the
+# watcher cadence.
+home=$(fresh_home retired-arm)
+FM_HOME="$home" FM_CAPACITY_MIN_LANES=0 "$CHECK" arm
+assert_absent "$home/state/capacity.check.sh" "arm must not create a shim for a retired guard"
+assert_absent "$home/state/capacity.check-trust" "arm must not bind a retired guard"
+pass "arm does not arm a retired guard"
+
 home=$(fresh_home config-file)
 snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
 printf '3\n' >"$home/config/capacity-min-lanes"
@@ -411,7 +454,7 @@ pass "a fleet with no lanes left still exits 0 - this guard reports, it never re
 # the transition tests above cannot pass while the between-session wire is dead.
 home=$(fresh_home watcher-arm)
 snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
-FM_HOME="$home" "$CHECK" arm
+FM_HOME="$home" FM_CAPACITY_MIN_LANES=2 "$CHECK" arm
 assert_present "$home/state/capacity.check.sh" "arm must create the watcher shim"
 assert_present "$home/state/capacity.check-trust" "arm must bind the watcher shim to trusted bytes"
 out=$(FM_CAPACITY_MIN_LANES=2 FM_CAPACITY_SNAPSHOT="$home/snap.json" "$home/state/capacity.check.sh")

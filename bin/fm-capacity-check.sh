@@ -235,6 +235,10 @@ classify() {
 
 action_report() {
   resolve_min_lanes
+  # 0 is the captain's own off switch: a retired guard probes nothing and says
+  # nothing, because retiring it means stopping the vendor calls, not just the
+  # verdict.
+  [ "$MIN_LANES" -eq 0 ] && return 0
   if ! acquire_snapshot report || ! classify; then
     [ -z "$SNAPSHOT_PROBLEM" ] || printf 'capacity unknown - %s\n' "$SNAPSHOT_PROBLEM"
     [ -z "$MIN_LANES_PROBLEM" ] || printf '%s\n' "$MIN_LANES_PROBLEM"
@@ -255,6 +259,8 @@ action_report() {
 
 action_check() {
   resolve_min_lanes
+  # A retired guard probes nothing and reports nothing; see action_report.
+  [ "$MIN_LANES" -eq 0 ] && return 0
   # An unmeasurable snapshot is silent here by design; see this file's header.
   acquire_snapshot check || return 0
   classify || return 0
@@ -354,6 +360,14 @@ arm_interrupted() {
 
 action_arm() {
   local want home
+  resolve_min_lanes
+  # A retired guard must not keep a shim armed: the watcher would keep probing
+  # quota-axi on every poll even though the captain switched the guard off.
+  # Disarm silently, because arming a retired guard is a no-op, not a report.
+  if [ "$MIN_LANES" -eq 0 ]; then
+    action_disarm >/dev/null
+    return 0
+  fi
   mkdir -p "$STATE" || return 1
   case "$FM_HOME" in
     /*) home=$FM_HOME ;;
