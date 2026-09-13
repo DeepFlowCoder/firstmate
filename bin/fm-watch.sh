@@ -57,10 +57,13 @@
 #                          harness still reports itself busy, is deferred rather
 #                          than escalated (wedge_live_working_evidence and
 #                          wedge_defer_working), because a quiet pane is what both
-#                          of those look like. Once that bound has crossed, NO
-#                          working verdict defers the escalation, whichever source
-#                          reports it: past the bound a live-looking read is what a
-#                          hung foreground call hides behind. A pane whose own task worktree was
+#                          of those look like. On the busy-pane completed-turn
+#                          backstop below, where the bound has ALREADY crossed, no
+#                          working verdict defers at all - not even a run step
+#                          still answering `running`, since that is exactly the
+#                          read a hung foreground call hides behind there. A quiet,
+#                          not-busy pane's live run step still defers.
+#                          A pane whose own task worktree was
 #                          written during the quiet window is deferred the same
 #                          way (wedge_defer_writing), because files appearing
 #                          there are liveness the pane and the run step cannot
@@ -634,16 +637,16 @@ wedge_defer_working() {  # <window> <since-file> <triage-label> <idle-age> <evid
 # reclassifying a healthy crew, and reusing it here would let a stale memory of
 # `working` silence the alarm for a crew whose evidence has since gone away.
 #
-# Every verdict is bounded by the same completed-turn bound the busy path owns
-# (BUSY_TURN_MAX_SECS), because a live-looking read is exactly what a hung
-# foreground call hides behind, whichever source reports it: a `run-step` that
-# answers `running` forever says nothing about whether the run is advancing, and a
-# busy signature outlives the turn it belongs to. Once that bound has crossed, NO
-# working verdict defers the escalation. <bound-crossed> is how the caller that
-# already established the crossing says so - busy_turn_bound_check reaches here
-# only past the bound - so the bound is decided once by the caller rather than
-# re-derived per source; on the ordinary idle-pane stale paths, where no caller
-# owns that state, the pane verdict still ages the bound itself.
+# <bound-crossed> is how a caller that has ALREADY established the completed-turn
+# bound (BUSY_TURN_MAX_SECS) crossed says so, and the busy-pane backstop
+# (busy_turn_bound_check) is the only caller that ever does. There no working
+# verdict defers, not even a `run-step` still answering `running`: a busy pane that
+# has completed no turn for that long is where a hung foreground call hides, and a
+# run that answers `running` forever says nothing about whether it is advancing.
+# Every other caller is an idle-pane stale path that owns no such state, so there
+# the bound reaches the `pane` verdict alone, which ages it itself, and a live
+# `run-step` defers - the pipeline being a separate live process whose death,
+# hang-up, or cancellation stops answering `working` on the very next read.
 wedge_live_working_evidence() {  # <task> <bound-crossed>
   local task=$1 crossed=$2 line src
   [ -n "$task" ] || return 0
@@ -1021,11 +1024,10 @@ pause_state_class() {  # <window> <task>
   #     its alarm would fire (wedge_live_working_evidence), so an undeclared worker
   #     with this identical live run step is deferred there instead - on that path's
   #     own timer, marker and wording. What the declaration changes is therefore
-  #     which absorber owns the wait, not whether a wedge can hide behind one: the
-  #     wedge path keeps the stricter bound of the two, since past
-  #     BUSY_TURN_MAX_SECS with no completed turn no working verdict defers it at
-  #     all, while a declared wait is the worker's own account of why the silence is
-  #     expected.
+  #     which absorber owns the wait and how its recheck is worded, not the cadence:
+  #     both land on the same PAUSE_RESURFACE_SECS re-surface, and neither caches
+  #     the verdict that put them there. What the declaration adds is the worker's
+  #     own account of why the silence is expected.
   #   * The recheck file is deliberately left cleared, so the cheap repeat path above
   #     stays disarmed and every poll re-derives the corroboration from a fresh
   #     authoritative read. The absorb ends on the first poll the run stops reading

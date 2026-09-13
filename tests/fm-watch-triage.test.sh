@@ -3643,9 +3643,11 @@ test_wedge_escalation_deferred_while_worktree_is_written() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   # Already-classified hash with an idle window that opened 500s ago, so the very
-  # first stale poll lands straight on the at-threshold wedge branch (this repeat
-  # path never re-reads crew state, so the worktree evidence is the only input
-  # that can change the outcome).
+  # first stale poll lands straight on the at-threshold wedge branch. That branch
+  # re-reads the crew state BEFORE walking the worktree, so this case deliberately
+  # leaves FM_FAKE_CREW_STATE unset: the fake then answers `unknown`, which never
+  # defers, and the worktree evidence is the only input that can change the
+  # outcome.
   printf '%s' "$pane_hash" > "$state/.stale-$key"
   back=$(( $(date +%s) - 500 ))
   echo "$back" > "$state/.stale-since-$key"
