@@ -1881,6 +1881,46 @@ EOF
   pass "main unstructured current is disclosed while structured siblings still project"
 }
 
+# The integrity check is the card's second half, and omitted[] is where the
+# captain actually reads it, so it needs the same by-name pin its two sibling
+# main_inventory disclosures already carry. Without one the expression fails
+# silent: a renamed or mistyped field path yields no line at all and the count
+# goes back to being discoverable only by manual audit. The disclosure is
+# deliberately not an invalidity, so no (main-inventory) gate row may appear.
+test_main_unknown_blocker_is_disclosed_without_invalidating_inventory() {
+  local home fakebin json canonical
+  home=$(make_home main-unknown-blocker)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] gate-unknown - Waits on an id nobody has blocked-by: vanished (repo: firstmate) (kind: ship)
+- [ ] gate-archived - Waits on completed pruned work blocked-by: landed (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [x] landed - Completed then pruned (repo: firstmate) (kind: ship) (done 2026-07-22)
+EOF
+  fakebin=$(make_fakebin "$home")
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    .main_inventory.valid == true
+      and .main_inventory.reason == null
+      and .main_inventory.unknown_blocker_count == 1
+      and .main_inventory.unknown_blockers == [{id:"gate-unknown", blocker:"vanished"}]
+  ' >/dev/null || fail "canonical main inventory mis-scored the unknown blocker: $canonical"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.omitted | any(.surface == "main current backlog row(s) blocked by an id in neither the backlog nor the archive: 1"))
+      and ([.gates[].id] | index("(main-inventory)") | not)
+      and (.gates | any(.id == "gate-unknown" and .blocked_by == "vanished"))
+      and (.gates | any(.id == "gate-archived" and .blocked_by == "-"))
+  ' >/dev/null || fail "unknown blocker was not disclosed, or it spent a gate row: $json"
+  pass "main unknown blocker is disclosed in omitted without invalidating inventory"
+}
+
 test_main_orphan_counterfactual_meta_clears_inventory_warning() {
   local home fakebin json_before json_after
   home=$(make_home main-orphan-counterfactual)
@@ -2288,6 +2328,7 @@ test_captains_call_anti_leak
 test_open_decisions_carry_their_project
 test_main_orphan_in_flight_is_disclosed_not_invented
 test_main_unstructured_current_is_disclosed_with_structured_sibling
+test_main_unknown_blocker_is_disclosed_without_invalidating_inventory
 test_main_orphan_counterfactual_meta_clears_inventory_warning
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection

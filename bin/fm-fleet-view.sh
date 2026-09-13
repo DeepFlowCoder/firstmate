@@ -52,8 +52,17 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     else $t.actions.watch end;
   def task_row($t):
     "| \($t.id) | \($t.current_state.state) / \($t.current_state.source) | \($t.kind) | \(dash($t.backlog.repo // $t.project)) | \($t.backend) | \(endpoint_of($t)) | \(artifact($t)) | \(path_of($t)) | \(action_of($t)) |";
+  # blocked_by is the raw token parsed off the row, unresolved by construction.
+  # The snapshot owns resolution and bin/fm-bearings-snapshot.sh already reads
+  # unresolved_blocker_ids for this same column, so reading the raw token here
+  # would make the two human surfaces disagree about the same row: one printing
+  # it as free, the other pointing the reader at an id retention has already
+  # pruned out of the backlog and that they cannot check by hand. An
+  # unstructured row carries no unresolved_blocker_ids and keeps the raw form.
   def blocker($r):
-    if ($r.blocked_by // "") == "" then "-"
+    if ($r.unresolved_blocker_ids // null) != null
+       and ($r.unresolved_blocker_ids | length) == 0 then "-"
+    elif ($r.blocked_by // "") == "" then "-"
     elif ($r.blocked_reason // "") == "" then $r.blocked_by
     else "\($r.blocked_by) - \($r.blocked_reason)" end;
   def backlog_row($r):

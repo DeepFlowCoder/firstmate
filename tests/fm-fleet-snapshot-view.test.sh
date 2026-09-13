@@ -922,6 +922,38 @@ test_view_renders_snapshot() {
   pass "fleet view renders the snapshot without secondmate peek guidance"
 }
 
+# The Blocked By column is the surface the card's second consequence lands on:
+# a reader who sees "waits for X" with X pruned out of the backlog cannot check
+# it by hand. bin/fm-bearings-snapshot.sh already resolves this column through
+# unresolved_blocker_ids, so the fleet view must agree with it rather than print
+# the raw token, and a blocker that is genuinely still pending must keep showing
+# with its reason suffix so the column does not go uniformly blank.
+test_view_resolves_blocked_by_through_the_archive() {
+  local home fakebin view
+  home=$(make_home view-archived-blocker)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] freed-row - Freed Row blocked-by: landed (repo: alpha) (kind: ship)
+- [ ] held-row - Held Row (repo: alpha) (kind: ship) blocked-by: pending - waits on pending
+- [ ] pending - Pending Blocker (repo: alpha) (kind: ship)
+
+## Done
+EOF
+  cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [x] landed - Completed then pruned (repo: alpha) (kind: ship) (done 2026-07-22)
+EOF
+  fakebin=$(make_fakebin "$home")
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+  assert_contains "$view" "| freed-row | Freed Row | alpha | ship | - |" \
+    "view should not print a blocker the archive already records as completed"
+  assert_not_contains "$view" "| freed-row | Freed Row | alpha | ship | landed" \
+    "view must not send the reader to an id pruned out of the backlog"
+  assert_contains "$view" "| held-row | Held Row | alpha | ship | pending - waits on pending |" \
+    "view should keep printing a blocker that is genuinely still pending, with its reason"
+  pass "fleet view resolves the blocked-by column through the archive"
+}
+
 test_view_renders_dead_secondmate_agent_status() {
   local home fakebin view
   home=$(make_home dead-secondmate)
@@ -1136,6 +1168,7 @@ test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
+test_view_resolves_blocked_by_through_the_archive
 test_view_renders_dead_secondmate_agent_status
 
 # Last statement of the suite, so a consumer can tell "every registered case
