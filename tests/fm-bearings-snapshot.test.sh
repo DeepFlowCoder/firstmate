@@ -1352,6 +1352,7 @@ write_large_fixture() {  # <home> <count>
   local home=$1 count=$2 i id
   : > "$home/data/backlog.md"
   printf '## Queued\n' >> "$home/data/backlog.md"
+  printf '## Archived 2026-07-22\n' > "$home/data/done-archive.md"
   i=1
   while [ "$i" -le "$count" ]; do
     id="dead-$i"
@@ -1359,6 +1360,13 @@ write_large_fixture() {  # <home> <count>
     printf '# Report\n' > "$home/data/$id/report.md"
     printf -- '- [ ] gate-%s - Gate %s blocked-by: task-%s (repo: repo-%s) (kind: ship)\n' "$i" "$i" "$i" "$i" >> "$home/data/backlog.md"
     printf -- '- [ ] decision-%s - Decision %s (repo: repo-%s) (kind: captain) (hold: captain choice pending) (hold-kind: captain)\n' "$i" "$i" "$i" >> "$home/data/backlog.md"
+    # Each blocker is completed work retention has already pruned out of the
+    # backlog. This fixture is about section caps, so its rows must not also
+    # trip the backlog-integrity check for a blocker id no file accounts for,
+    # and the archive is where a landed blocker legitimately lives. A pending
+    # row here instead would land in Queued and inflate the gate count itself.
+    printf -- '- [x] task-%s - Blocker %s (repo: repo-%s) (kind: ship) (done 2026-07-22)\n' \
+      "$i" "$i" "$i" >> "$home/data/done-archive.md"
     fm_write_meta "$home/state/$id.meta" \
       "window=firstmate:fm-$id" \
       "worktree=$home/projects/$id" \

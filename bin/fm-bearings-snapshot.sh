@@ -42,7 +42,8 @@
 # also leaves the in_flight row it was occupying.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
-# object (orphan structured in-flight without meta, unstructured current rows).
+# object (orphan structured in-flight without meta, unstructured current rows,
+# and current rows blocked by an id in neither the backlog nor its archive).
 # Bearings never invents Underway rows from backlog-only ids; it discloses those
 # gaps in omitted[] and, when invalid, a Charted Next gate line so the four-section
 # chat cannot claim an empty fleet while main current state is broken.
@@ -618,6 +619,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | if $n > 0 then {surface:("main in-flight backlog item(s) have no child metadata: \($n)"), reveal:"inspect main data/backlog.md In flight vs state/*.meta"} else empty end),
         ((($snap.main_inventory.unstructured_current_count // 0)) as $n
          | if $n > 0 then {surface:("main unstructured current backlog row(s): \($n)"), reveal:"inspect main data/backlog.md In flight and Queued free-form rows"} else empty end),
+        ((($snap.main_inventory.unknown_blocker_count // 0)) as $n
+         | if $n > 0 then {surface:("main current backlog row(s) blocked by an id in neither the backlog nor the archive: \($n)"), reveal:"inspect main data/backlog.md blocked-by: ids against data/done-archive.md"} else empty end),
         (if $all_in_flight == 0 and ($in_flight_all | length) > $in_flight_n then {surface:("in_flight showing \($in_flight_n) of \($in_flight_all | length)"), reveal:"--all-in-flight"} else empty end),
         (if $all_secondmates == 0 and ($secondmates_all | length) > $secondmates_n then {surface:("secondmates showing \($secondmates_n) of \($secondmates_all | length)"), reveal:"--all-secondmates"} else empty end),
         (if (($snap.secondmate_current.truncated // 0) > 0) then {surface:("registered secondmates omitted by snapshot bound: \($snap.secondmate_current.truncated)"), reveal:"raise FM_SNAPSHOT_SECONDMATES"} else empty end),
