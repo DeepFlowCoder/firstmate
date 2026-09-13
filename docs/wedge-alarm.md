@@ -21,6 +21,11 @@ It lists channel directives, one per non-empty, non-comment line, and every list
 An absent `config/wedge-alarm` behaves as `auto`, which is default-on on macOS.
 This is deliberate because the alarm fires only after a genuine max-defer wedge and is rate-limited to at most once per max-defer window.
 
+That default is a floor, not a delivery guarantee, and a home that relies on it alone can be alerted and never know.
+`osascript` exits 0 whether the banner is presented or the OS suppresses it, so a home with no `command:` directive records a fired alarm in the daemon log with no evidence that anything reached a person.
+This was measured on 2026-09-13 on a home with no `config/wedge-alarm`: the daemon raised 115 max-defer alarms over five days through the resolved `osascript` channel, logged no channel failure, and the captain still reported the stall first.
+Arm a second channel that leaves the machine when a wedge must actually reach you.
+
 Each channel is best-effort.
 A missing binary or non-zero exit logs a warning and continues to the next channel without crashing the daemon loop.
 Every invocation is process-group bounded by `FM_WEDGE_ALARM_TIMEOUT_SECS`, which defaults to 10 seconds, including `command:`, `osascript`, `herdr`, and the test seam.
