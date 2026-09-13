@@ -495,14 +495,16 @@ test_assert_line_refuses_what_it_cannot_compare() {
 # delivered and the process is still running.
 
 REAP_HARNESS_OUT=
+REAP_HARNESS_WORKER=
 
-run_reap_harness() {  # <mode: honors|swallows> -> rc, sets REAP_HARNESS_OUT
-  local mode=$1 harness script out ready child_tmp pid tries
+run_reap_harness() {  # <mode: honors|swallows> -> rc, sets REAP_HARNESS_OUT/_WORKER
+  local mode=$1 harness script out ready pidfile child_tmp pid tries rc=0
   harness=$(fm_test_tmproot "fm-test-reap-$mode")
   script="$harness/harness.sh"
   out="$harness/out"
   ready="$harness/ready"
-  # Its own TMPDIR, for the reason run_teardown_child documents below: the child
+  pidfile="$harness/worker-pid"
+  # Its own TMPDIR, for the reason run_teardown_child documents above: the child
   # sources tests/lib.sh, which mktemps a cleanup registry there, and this child
   # can be SIGKILLed past its own teardown when it overruns the budget.
   child_tmp="$harness/tmp"
@@ -514,31 +516,40 @@ set -u
 . "$1"
 mode=$2
 ready=$3
+pidfile=$4
+# The worker's own loop is bounded. In "swallows" mode it ignores SIGTERM by
+# construction, and an overrunning harness gets SIGKILLed before it reaps the
+# worker, so an unbounded loop there would orphan a spinning process that
+# nothing in this suite collects and no SIGTERM can stop.
+spin='printf r > "$1"; i=0; while [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done'
 if [ "$mode" = swallows ]; then
-  bash -c 'trap "" TERM; printf r > "$1"; while :; do sleep 0.1; done' _ "$ready" &
+  bash -c "trap '' TERM; $spin" _ "$ready" &
 else
-  bash -c 'printf r > "$1"; while :; do sleep 0.1; done' _ "$ready" &
+  bash -c "$spin" _ "$ready" &
 fi
 child=$!
+printf '%s\n' "$child" > "$pidfile"
 i=0
 while [ ! -s "$ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
 [ -s "$ready" ] || { printf 'ready=no\n'; exit 1; }
-# The polite signal first, and its outcome is reported rather than assumed: a
-# "swallows" case that did not actually swallow would prove nothing about reap.
-# The outcome is polled for the full budget rather than sampled after a fixed
-# sleep: bash defers a terminating signal until the foreground sleep it is in
-# finishes, so a loaded runner can leave an honoring worker alive well past any
-# margin a fixed sleep could pick. A worker that really swallows the signal
-# never dies, so it still reports swallowed=yes once the budget expires.
-kill -TERM "$child" 2>/dev/null || true
-i=0
-while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do sleep 0.05; i=$((i + 1)); done
-if is_live_non_zombie "$child"; then printf 'swallowed=yes\n'; else printf 'swallowed=no\n'; fi
-reap "$child" 25
+if [ "$mode" = swallows ]; then
+  # The polite signal first, and its outcome is reported rather than assumed: a
+  # "swallows" case that did not actually swallow would prove nothing about reap.
+  kill -TERM "$child" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do sleep 0.05; i=$((i + 1)); done
+  if is_live_non_zombie "$child"; then printf 'swallowed=yes\n'; else printf 'swallowed=no\n'; fi
+  reap "$child" 5
+else
+  # No signal of our own and no wait for one: reap is handed a LIVE worker, so
+  # its grace window is what has to let that worker's own SIGTERM handling run.
+  if is_live_non_zombie "$child"; then printf 'live=yes\n'; else printf 'live=no\n'; fi
+  reap "$child"
+fi
 printf 'returned=yes escalated=%s\n' "$FM_TEST_REAP_ESCALATED"
 if kill -0 "$child" 2>/dev/null; then printf 'gone=no\n'; else printf 'gone=yes\n'; fi
 SH
-  TMPDIR="$child_tmp" bash "$script" "$LIB" "$mode" "$ready" > "$out" 2>&1 &
+  TMPDIR="$child_tmp" bash "$script" "$LIB" "$mode" "$ready" "$pidfile" > "$out" 2>&1 &
   pid=$!
   tries=0
   while [ "$tries" -lt 300 ]; do
@@ -548,13 +559,12 @@ SH
   done
   if is_live_non_zombie "$pid"; then
     kill -KILL "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    REAP_HARNESS_OUT=$(cat "$out" 2>/dev/null || true)
-    return 124
+    rc=124
   fi
   wait "$pid" 2>/dev/null || true
   REAP_HARNESS_OUT=$(cat "$out" 2>/dev/null || true)
-  return 0
+  REAP_HARNESS_WORKER=$(cat "$pidfile" 2>/dev/null || true)
+  return "$rc"
 }
 
 test_reap_returns_on_a_worker_that_swallows_sigterm() {
@@ -568,7 +578,13 @@ test_reap_returns_on_a_worker_that_swallows_sigterm() {
     "reap returned without escalating past the SIGTERM the worker had ignored"
   assert_contains "$REAP_HARNESS_OUT" 'gone=yes' \
     "reap returned while the worker it was asked to stop was still running"
-  pass "reap escalates past a swallowed SIGTERM and returns instead of waiting forever"
+  [ -n "$REAP_HARNESS_WORKER" ] \
+    || fail "the harness never published the worker pid the escalation has to name"
+  assert_contains "$REAP_HARNESS_OUT" "pid $REAP_HARNESS_WORKER" \
+    "the escalation never named the process it SIGKILLed"
+  assert_contains "$REAP_HARNESS_OUT" 'EXIT cleanup did not run' \
+    "the escalation never said the SIGKILLed worker's EXIT cleanup had been skipped"
+  pass "reap escalates past a swallowed SIGTERM, says what it killed, and returns"
 }
 
 test_reap_does_not_escalate_on_a_worker_that_honors_sigterm() {
@@ -576,11 +592,13 @@ test_reap_does_not_escalate_on_a_worker_that_honors_sigterm() {
   run_reap_harness honors || rc=$?
   [ "$rc" -ne 124 ] \
     || fail "reap never returned on a worker that honors SIGTERM: $REAP_HARNESS_OUT"
-  assert_contains "$REAP_HARNESS_OUT" 'swallowed=no' \
-    "the worker outlived a SIGTERM it was supposed to honor"
+  assert_contains "$REAP_HARNESS_OUT" 'live=yes' \
+    "the worker was already gone when reap was called, so its grace window went untested"
   assert_contains "$REAP_HARNESS_OUT" 'returned=yes escalated=0' \
-    "reap reached for SIGKILL on a worker that had already stopped"
-  pass "reap leaves a worker that honors SIGTERM to its own exit, with no SIGKILL"
+    "reap reached for SIGKILL instead of waiting out a worker that honors SIGTERM"
+  assert_contains "$REAP_HARNESS_OUT" 'gone=yes' \
+    "reap returned while the worker it was asked to stop was still running"
+  pass "reap waits a live worker that honors SIGTERM out through its grace window"
 }
 
 test_fixture_root_gone_after_normal_exit

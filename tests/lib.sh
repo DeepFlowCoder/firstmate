@@ -253,13 +253,13 @@ fm_test_reap_orphans
 # SIGKILL skips, and a silent kill would only trade a silent hang for a silent
 # kill. Stderr rather than stdout, so it cannot be read as an ok/not-ok line.
 #
-# A tick is 0.02s, not the 0.1s the other waits in this suite use, because this
-# one runs on the healthy path: the watcher suites reap well over a hundred
-# background processes per run, and a coarse tick would charge every one of them
-# most of a tenth of a second for a worker that was already gone.
+# A worker that is already gone costs zero ticks, because the liveness check
+# runs before any sleep. The tick therefore governs only how often a still-live
+# worker is polled while the bound runs down, so it is the 0.1s the other waits
+# in these suites use, and 50 of them make the default bound five seconds.
 
-FM_TEST_REAP_TICK_SECONDS=0.02
-FM_TEST_REAP_GRACE_TICKS=250
+FM_TEST_REAP_TICK_SECONDS=0.1
+FM_TEST_REAP_GRACE_TICKS=50
 FM_TEST_REAP_ESCALATED=0
 
 is_live_non_zombie() {  # <pid>
