@@ -10,12 +10,16 @@ permissions:
   contents: read
 
 # THROWAWAY MEASUREMENT BRANCH. Every job but Lint is stripped so a measurement
-# run costs one runner instead of sixteen. Do not merge this file.
+# run costs eight runners instead of twenty-three. Do not merge this file.
 jobs:
   lint:
-    name: Lint
+    name: Lint ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v6
       - name: Install pinned ShellCheck
@@ -28,42 +32,30 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Machine baseline before lint
-        run: |
-          set -eu
-          echo "nproc=$(nproc)"
-          free -m
-          df -Pm .
-          cat /proc/pressure/memory || echo "no PSI"
-          swapon --show || echo "no swap"
-      - name: Run lint under a whole-machine memory and time trace
+      - name: Run lint shard under a whole-machine memory and time trace
+        env:
+          FM_LINT_SHARD: ${{ matrix.shard }}of${{ strategy.job-total }}
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-mem"
+          echo "shard_roots=$(bin/fm-lint.sh --list-files --shard "$FM_LINT_SHARD" | wc -l)"
           bin/fm-mem-trace.sh --interval 10 \
             --out "$RUNNER_TEMP/fm-mem/mem-trace.log" &
           trace_pid=$!
           rc=0
-          bin/fm-lint.sh --telemetry "$RUNNER_TEMP/fm-mem/lint-telemetry.tsv" || rc=$?
+          bin/fm-lint.sh --shard "$FM_LINT_SHARD" \
+            --telemetry "$RUNNER_TEMP/fm-mem/lint-telemetry.tsv" || rc=$?
           kill "$trace_pid" 2>/dev/null || true
           wait "$trace_pid" 2>/dev/null || true
           echo "lint_exit=$rc"
           exit "$rc"
-      - name: Machine state after lint
+      - name: Machine state after lint shard
         if: always()
         run: |
           set -eu
           free -m
-          df -Pm .
           cat /proc/pressure/memory || echo "no PSI"
           echo "--- kernel OOM evidence, if any ---"
           sudo dmesg 2>/dev/null | grep -iE 'out of memory|oom-kill|oom_reaper|killed process' || echo "no kernel OOM lines"
           echo "--- lint telemetry ---"
           cat "$RUNNER_TEMP/fm-mem/lint-telemetry.tsv" 2>/dev/null || echo "no telemetry written"
-      - name: Upload memory trace
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fm-lint-mem-trace
-          path: ${{ runner.temp }}/fm-mem/
-          if-no-files-found: warn
