@@ -27,6 +27,10 @@
 # copy, which has already produced a false "not landed" refusal on work the forge's
 # main already held. When no forge can be resolved or reached, teardown REFUSES and
 # names what it could not consult; it never falls back to a source it cannot trust.
+# They also NAME that forge to gh, in the owner/repo spelling bin/fm-gh-repo-lib.sh
+# owns, so a forge that is not a github.com repository - a local-only project's,
+# say - reads as no PR found rather than letting gh pick a remote and answer about
+# a stranger's pull request. The content check still runs in that case.
 # Uncommitted changes are never landed.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
