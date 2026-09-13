@@ -593,8 +593,18 @@ test_registered_agent_at_bare_shell_is_dead() {
   printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/2.out"
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":123,"foreground_process_group_id":123,"foreground_processes":[{"pid":123,"name":"zsh","argv":["zsh"]}]}}}\n' > "$resp/3.out"
+  cat > "$dir/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "-axo pid=,ppid=") printf '1 0\n123 1\n' ;;
+  "-p 123 -o stat=") printf 'Ss\n' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$dir/ps"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    FM_HERDR_PS_BIN="$dir/ps" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p2' "$ROOT" )
   [ "$out" = dead ] \
     || fail "a hook-registered agent whose pane is back at its bare shell must be dead, got '$out'"

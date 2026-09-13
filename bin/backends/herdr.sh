@@ -1856,13 +1856,14 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
   [ "$presence" = dead ]
 }
 
-# fm_backend_herdr_pane_shell_only: true (0) only when `pane process-info`
-# POSITIVELY proves <pane_id> is sitting at its own bare shell prompt with
-# nothing else running in it. Every other outcome - an unparseable or missing
-# response, a pane_id that does not round-trip, an absent or non-numeric
-# shell_pid, an empty process list, or any foreground process that is not the
-# shell itself - returns 1, so this probe can only ever CONFIRM emptiness and
-# never manufacture it.
+# fm_backend_herdr_pane_shell_only: true (0) only when <pane_id> is positively
+# proven to sit at its own bare shell prompt with nothing else running in it.
+# It delegates to fm_backend_herdr_pane_idle_shell_sample, the single owner of
+# the idle-shell proof, so every other outcome - an unparseable or missing
+# response, a pane_id that does not round-trip, a foreground process that is
+# not a recognized shell, or a busy or child-bearing process-table shape -
+# returns 1. The probe can only ever CONFIRM emptiness and never manufacture
+# it.
 #
 # This is the second source `agent get` needs. Herdr's agent registry is fed by
 # lifecycle hooks, so an agent that dies without firing its stop hook can leave
@@ -1871,23 +1872,7 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 # of the foreground process group. The dated real-Herdr evidence is recorded in
 # docs/verification/runtime-backends.md under "Steering-inbox doorbell".
 fm_backend_herdr_pane_shell_only() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out verdict
-  out=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane_id" 2>/dev/null) || return 1
-  verdict=$(printf '%s' "$out" | jq -r --arg pane "$pane_id" '
-    (.result.process_info // empty) as $p
-    | if ($p | type) != "object" then "no"
-      elif ($p.pane_id // "") != $pane then "no"
-      elif ($p.shell_pid | type) != "number" then "no"
-      elif ($p.foreground_process_group_id | type) != "number" then "no"
-      elif $p.foreground_process_group_id != $p.shell_pid then "no"
-      elif ($p.foreground_processes | type) != "array" then "no"
-      elif ($p.foreground_processes | length) == 0 then "no"
-      elif ([$p.foreground_processes[] | select((.pid // null) == $p.shell_pid)] | length)
-           != ($p.foreground_processes | length) then "no"
-      else "yes"
-      end
-  ' 2>/dev/null) || return 1
-  [ "$verdict" = yes ]
+  fm_backend_herdr_pane_idle_shell_sample "$1" "$2" >/dev/null 2>&1
 }
 
 # fm_backend_herdr_pane_is_bare_shell: the herdr half of
