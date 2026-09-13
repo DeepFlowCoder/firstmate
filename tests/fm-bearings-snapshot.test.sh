@@ -1893,10 +1893,14 @@ EOF
 # phantom id is shared by three rows - the second shape being the card's own
 # worst case, one completed blocker holding six tasks, which a distinct-id count
 # would collapse to 1 and hide.
-# The last two rows pin reason attribution: blocked_reason is row-level, so it
-# renders only when the row had exactly one blocked-by token. On a multi-token
-# row it would explain the unresolved blocker with a reason written about the
-# already-completed one.
+# The last three rows pin reason attribution, whose rule has two halves that
+# only work together: blocked_reason renders when the row named exactly one
+# blocked-by token AND that token is the one still holding the row. A
+# multi-token row would otherwise explain its unresolved blocker with a reason
+# written about the already-completed one, and a row the archive just freed
+# would keep a reason saying why it waits beside a blocker column reading "-".
+# That second shape is the whole population this task is about, so it is the one
+# most likely to reach the captain.
 test_main_unknown_blocker_is_disclosed_without_invalidating_inventory() {
   local home fakebin json canonical
   home=$(make_home main-unknown-blocker)
@@ -1909,6 +1913,7 @@ test_main_unknown_blocker_is_disclosed_without_invalidating_inventory() {
 - [ ] gate-shared-b - Also waits on the shared phantom blocked-by: ghost (repo: firstmate) (kind: ship)
 - [ ] gate-one-reason - Waits on a live blocker blocked-by: gate-archived - gate-archived owes a handoff (repo: firstmate) (kind: ship)
 - [ ] gate-multi-reason - Waits on live and pruned work blocked-by: gate-archived blocked-by: landed - landed is done (repo: firstmate) (kind: ship)
+- [ ] gate-freed-reason - Waited on pruned work blocked-by: landed - waits for the landed API shape (repo: firstmate) (kind: ship)
 
 ## Done
 EOF
@@ -1941,6 +1946,8 @@ EOF
       and (.gates | any(.id == "gate-one-reason" and .blocked_by == "gate-archived"
                         and .reason == "gate-archived owes a handoff"))
       and (.gates | any(.id == "gate-multi-reason" and .blocked_by == "gate-archived"
+                        and .reason == "-"))
+      and (.gates | any(.id == "gate-freed-reason" and .blocked_by == "-"
                         and .reason == "-"))
   ' >/dev/null || fail "unknown blockers were not disclosed per reference, or a reason was misattributed: $json"
   pass "main unknown blocker is disclosed in omitted without invalidating inventory"

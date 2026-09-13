@@ -445,13 +445,20 @@ MODEL=$(printf '%s' "$SNAP" | jq \
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
   # blocked_reason is a single ROW-level field: it belongs to whichever
   # blocked-by token carried a " - reason" suffix, which need not be the one
-  # still holding the row. Attaching it to a row with several tokens would
-  # assert that the unresolved blocker holds the row for a reason that
-  # describes a different, possibly already completed, blocker. Only a
-  # single-token row can attribute it unambiguously; elsewhere an empty reason
-  # misleads nobody and a wrong one does.
+  # still holding the row. It is therefore attributable under one rule with two
+  # halves that must be applied together: the row named exactly ONE blocker, AND
+  # that blocker is the one still holding the row. Drop the first half and a
+  # multi-token row explains its unresolved blocker with a reason written about
+  # a different, possibly already completed, one - which is also the only way
+  # the raw blocked-by text can leak into this cell, so the single-token
+  # requirement is what forecloses that leak rather than a lucky accident. Drop
+  # the second half and a row the archive just freed keeps a reason saying why
+  # it waits beside a blocker column that correctly reads "-". Elsewhere an
+  # empty reason misleads nobody and a wrong one does.
   def blocked_reason_of($r):
-    if (($r.blocked_by_ids // []) | length) == 1 then ($r.blocked_reason // null)
+    if (($r.blocked_by_ids // []) | length) == 1
+       and ((($r.unresolved_blocker_ids // []) | length) == 1)
+      then ($r.blocked_reason // null)
     else null end;
   def round_robin_landed($n):
     . as $groups
