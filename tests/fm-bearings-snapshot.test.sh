@@ -1010,6 +1010,7 @@ test_default_view_filters_by_structured_state_not_row_prose() {
 - [ ] canon-marca - Mark the E316 (repo: bitagora) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED as a marker) (hold-kind: captain)
 - [ ] canon-marca-gated - Mark the E316 phase two blocked-by: blocker-live (repo: bitagora) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED as a marker) (hold-kind: captain)
 - [ ] really-parked - Genuinely set-aside work (repo: bitagora) (kind: ship) (hold: replaced by canon-marca) (hold-kind: parked)
+- [ ] parked-dated - Parked with a future date (repo: bitagora) (kind: ship) (hold: replaced) (hold-kind: parked) (hold-until: 2099-01-01)
 - [ ] future-dated - Deferred to a future date (repo: bitagora) (kind: ship) (hold: after launch) (hold-kind: future) (hold-until: 2099-01-01)
 - [ ] future-due - Date-deferred work whose date has arrived (repo: bitagora) (kind: ship) (hold: start after launch) (hold-kind: future) (hold-until: 2020-01-01)
 
@@ -1023,11 +1024,12 @@ EOF
   # The same prose on a blocked hold reaches Charted Next rather than vanishing.
   printf '%s' "$json" | jq -e '.gates | any(.[]; .id == "canon-marca-gated")' >/dev/null \
     || fail "a blocked captain hold was hidden by a word inside its reason: $json"
-  # The filter still REFUSES: a structurally set-aside row stays hidden.
+  # The filter still REFUSES: a parked row stays hidden even with a date.
   printf '%s' "$json" | jq -e '
     (.gates | any(.[]; .id == "really-parked") | not)
       and (.decisions_open | any(.[]; .id == "really-parked") | not)
-  ' >/dev/null || fail "a structurally set-aside row must stay hidden by default: $json"
+      and (.gates | any(.[]; .id == "parked-dated") | not)
+  ' >/dev/null || fail "a parked row must stay hidden by default: $json"
   # A future-kind row carrying a still-ahead date is a dated gate, not hidden.
   printf '%s' "$json" | jq -e '
     .gates[] | select(.id == "future-dated") | .reason | startswith("until 2099-01-01:")
@@ -1037,8 +1039,8 @@ EOF
     || fail "a future-kind row whose date arrived was hidden: $json"
   printf '%s' "$json" | jq -e '
     [.omitted[] | select(.reveal == "--all-queued")] as $d
-    | ($d | length) == 1 and ($d[0].surface | test("1$"))
-  ' >/dev/null || fail "exactly one row was withheld and the count must say so: $json"
+    | ($d | length) == 1 and ($d[0].surface | test("2$"))
+  ' >/dev/null || fail "exactly two rows were withheld and the count must say so: $json"
   json=$(run "$home" "$fakebin" --json --all-queued)
   printf '%s' "$json" | jq -e '.gates | any(.[]; .id == "really-parked")' >/dev/null \
     || fail "--all-queued must reveal the set-aside row: $json"

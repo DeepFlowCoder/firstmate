@@ -463,12 +463,13 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   # The one place the default gates view decides to withhold a row, so the
   # omitted[] count below counts exactly what was dropped. deferred_marker is
   # the structured parked hint derived once by bin/fm-fleet-snapshot.sh from
-  # the hold kind field, never a word found in row prose. A future-kind row is
-  # date-deferred, never withheld: it renders as its dated gate line while its
-  # date is ahead and surfaces once due.
+  # the hold kind field, never a word found in row prose. Parked is always
+  # withheld, regardless of any hold_until date: date-based resurfacing is the
+  # backlog job (the hold lifts and the task becomes due), not this gate job.
+  # A future-kind row is date-deferred and never withheld: it renders as its
+  # dated gate line while its date is ahead and surfaces once due.
   def gate_deferred_hidden:
-    (.deferred_marker == true)
-    and (((.hold_until // null) == null) or (.hold_until <= $today));
+    (.deferred_marker == true);
   def round_robin_landed($n):
     . as $groups
     | [range(0; (($groups | map(length) | max) // 0)) as $i
