@@ -147,6 +147,17 @@ kill %1
 
 On a non-Linux host it prints `fm-mem-trace: unsupported platform` and takes no trace; the numbers above are Linux-only by nature.
 
+The trace matches the process name `shellcheck` exactly, and that is not configurable.
+It briefly was: the instrument shipped with a `--match` option documented as a "pattern" but implemented as an exact `pgrep -x` match, so any regex passed to it would have matched nothing and reported `procs=0 proc_max_rss_mib=0` with no error, while ShellCheck held gigabytes.
+That option has been removed rather than documented, because an instrument whose reassuring answer can be its failure mode is worse than one with a knob fewer.
+
+**No figure on this page is in question and nothing needs remeasuring**, because no measurement here ever took that path.
+Every trace ran the default `shellcheck` matcher.
+Runs 34737337424 and 34738406568 state it directly in their `fm-mem-trace: format=v1 ... match=shellcheck` header.
+In runs 34741012650 and 34741641068 log truncation dropped the header, but every sample reports a live ShellCheck process with a non-zero RSS - 47 of 47 samples in the final bounded-lane run, rising to the 2574 MiB peak reported above - which a failed match could not have produced.
+The structural reason is the stronger one: a false-zero match can only hide consumption, never invent it, so no figure above could have come from the defective path even in principle.
+The header field is kept for exactly this purpose - it is what made the question answerable after the fact rather than a matter of recollection.
+
 To reprofile one root's own cost on Linux:
 
 ```sh
@@ -185,14 +196,25 @@ The whole lane, same job, same file set, traced end to end (run 34741641068, exi
 
 Peak memory falls to 32% of the machine, the lane never touches swap, and it finishes in under a third of the time a green run used to take.
 
+Read the lane peak and the per-root peaks as what they each are, because they are not the same instrument and not the same run.
+The lane figure is `/proc/<pid>/VmHWM` sampled from outside the process at the trace's fixed interval; the per-root figures are `/usr/bin/time %M` over a process dedicated to one root.
+So the lane's 2574 MiB does not bound `bin/fm-spawn.sh`'s own 2718-2721 MiB, even though that root is unbounded and the lane still lints it.
+The two come from different runs, and the sampled figure can also sit below the true peak: `VmHWM` is monotonic, so a sample catches it, but the last sample before a shard's process exits is up to one interval stale, and a peak reached inside that window is never read.
+Neither reading changes the conclusion - 2.7 GiB of 7942 MiB is about a third of the machine, with swap untouched.
+
 ### What the boundary costs
 
 Not nothing, and the cost is visible rather than hidden.
 Cutting the follow means ShellCheck can no longer see a sourced module's use of a name, which produces false positives it used to suppress.
-The full set on this repo is twelve, all confirmed as boundary artefacts against the real consumer, each carrying a comment that names it:
+The full set on this repo is eleven, all confirmed as boundary artefacts against the real consumer, each carrying a comment that names it:
 
 - `bin/fm-teardown.sh`: one `SC2034` on `FM_LOCK_LOG_PREFIX`, which `fm_lock_log` in `bin/fm-lock-lib.sh` reads.
-- `tests/fm-pending-reply.test.sh`: eight `SC2329` on stubs that `bin/fm-pending-reply-lib.sh` calls back into, and two `SC2031` on `FM_FROMFIRST_MARK`, which that library defines.
+- `tests/fm-pending-reply.test.sh`: eight `SC2329` on stubs that `bin/fm-pending-reply-lib.sh` calls back into, and two `SC2031` on `FM_FROMFIRST_MARK`, which `bin/fm-operational-input.sh` defines and which reaches this root through `bin/fm-marker-lib.sh`. `bin/fm-pending-reply-lib.sh` only reads that name; restoring the follow of `bin/fm-marker-lib.sh` alone does not clear the diagnostic, which is why the comments name the definer rather than a single responsible import.
+
+The second cost is a check given up rather than a warning gained, and it is easier to miss.
+The 48 `# shellcheck source=bin/<lib>.sh` directives replaced across the seven roots were also ShellCheck's dangling-import check: before the change, renaming or deleting `bin/fm-wake-lib.sh` while leaving `. "$SCRIPT_DIR/fm-wake-lib.sh"` in `bin/fm-teardown.sh` produced `SC1091` and failed the lane at default severity.
+With `source=/dev/null` it never does, and that breakage now surfaces only at runtime or in the behavior suite.
+This is accepted, not overlooked: ShellCheck has no way to verify a path without following it, and following it is the cost this boundary exists to avoid.
 
 No diagnostic was lost: every other root reports exactly what it reported before, and the lane's verdict is clean.
 What is given up is cross-module dataflow *within these seven roots* - the modules themselves keep full analysis at their own roots.

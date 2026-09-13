@@ -14,17 +14,15 @@
 # too when a path is given, for the runs that do finish.
 #
 # Usage:
-#   fm-mem-trace.sh [--interval <seconds>] [--out <path>] [--match <pattern>]
+#   fm-mem-trace.sh [--interval <seconds>] [--out <path>]
 #   fm-mem-trace.sh --help
 #
-# --match names the processes whose resident size is reported alongside the
-# machine totals (default: shellcheck). VmHWM is reported as well as VmRSS, so a
-# peak that falls between two samples is still visible afterwards.
+# VmHWM is reported as well as VmRSS, so a peak that falls between two samples
+# is still visible afterwards.
 set -u
 
 INTERVAL=10
 OUT=
-MATCH=shellcheck
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -36,11 +34,6 @@ while [ "$#" -gt 0 ]; do
     --out)
       [ "$#" -ge 2 ] || { printf 'fm-mem-trace.sh: --out requires a path.\n' >&2; exit 2; }
       OUT=$2
-      shift 2
-      ;;
-    --match)
-      [ "$#" -ge 2 ] || { printf 'fm-mem-trace.sh: --match requires a pattern.\n' >&2; exit 2; }
-      MATCH=$2
       shift 2
       ;;
     --help|-h)
@@ -95,12 +88,12 @@ fm_mem_disk_free() {
   df -Pm . 2>/dev/null | awk 'NR == 2 {print $4; found = 1} END {if (!found) print "na"}'
 }
 
-# Resident size of the matched processes: count, largest current VmRSS, and
-# largest VmHWM, all in mebibytes. VmHWM is each process's own high-water mark,
-# so a peak reached between two samples is still reported by the next one.
+# Resident size of the live ShellCheck processes: count, largest current VmRSS,
+# and largest VmHWM, all in mebibytes. VmHWM is each process's own high-water
+# mark, so a peak reached between two samples is still reported by the next one.
 fm_mem_matched() {
   local pids pid rss hwm count=0 max_rss=0 max_hwm=0 sum_rss=0
-  pids=$(pgrep -x "$MATCH" 2>/dev/null || true)
+  pids=$(pgrep -x shellcheck 2>/dev/null || true)
   for pid in $pids; do
     [ -r "/proc/$pid/status" ] || continue
     rss=$(awk '$1 == "VmRSS:" {printf "%.0f", $2 / 1024; exit}' "/proc/$pid/status" 2>/dev/null || true)
@@ -119,7 +112,7 @@ MEM_TOTAL=$(fm_mem_field MemTotal)
 SWAP_TOTAL=$(fm_mem_field SwapTotal)
 CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 'na')
 [ -z "$OUT" ] || : > "$OUT"
-fm_mem_emit "fm-mem-trace: format=v1 interval=${INTERVAL}s match=${MATCH} mem_total_mib=${MEM_TOTAL} swap_total_mib=${SWAP_TOTAL} cpus=${CPUS}"
+fm_mem_emit "fm-mem-trace: format=v1 interval=${INTERVAL}s match=shellcheck mem_total_mib=${MEM_TOTAL} swap_total_mib=${SWAP_TOTAL} cpus=${CPUS}"
 fm_mem_emit "fm-mem-trace: columns t_s mem_avail_mib mem_free_mib cached_mib swap_free_mib psi_mem_some/full_avg10 psi_cpu_some/full_avg10 procs proc_max_rss_mib proc_max_hwm_mib proc_sum_rss_mib load1 disk_free_mib"
 
 START=$(date +%s)

@@ -856,7 +856,7 @@ test_fm_send_marked_secondmate_creates_pending_and_embeds_corr() {
   run_send "$fb" "$home" "$log" "hibit" "audit the build"; rc=$?
   expect_code 0 "$rc" "secondmate send should succeed"
   got=$(latest_record_body "$home" hibit)
-  # shellcheck disable=SC2031 # FM_FROMFIRST_MARK comes from fm-pending-reply-lib.sh, which this root no longer follows.
+  # shellcheck disable=SC2031 # FM_FROMFIRST_MARK is defined in bin/fm-operational-input.sh and reaches here through bin/fm-marker-lib.sh, which this root no longer follows.
   case "$got" in
     "$FM_FROMFIRST_MARK"corr=*) : ;;
     *) fail "secondmate steer record must embed marker+corr"$'\n'"$(printf '%s' "$got" | od -An -c)" ;;
@@ -1106,7 +1106,7 @@ test_correlations_reuse_only_for_matching_open_task() {
     || fail "cross-task expectation must belong to the new target"
   printf 'done [corr=%s]: complete\n' "$corr1" > "$state/domain.status"
   fm_pending_reply_try_resolve "$state" "$corr1" || fail "first expectation should resolve"
-  # shellcheck disable=SC2031 # FM_FROMFIRST_MARK comes from fm-pending-reply-lib.sh, which this root no longer follows.
+  # shellcheck disable=SC2031 # FM_FROMFIRST_MARK is defined in bin/fm-operational-input.sh and reaches here through bin/fm-marker-lib.sh, which this root no longer follows.
   run_send "$fb" "$home" "$log" domain "${FM_FROMFIRST_MARK}corr=${corr1} follow-up" \
     || fail "resolved-correlation follow-up failed"
   corr3=$(fm_pending_reply_extract_corr "$(latest_record_body "$home" domain)")

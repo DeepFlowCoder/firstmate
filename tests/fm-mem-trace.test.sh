@@ -30,7 +30,7 @@ test_usage_is_readable() {
 
 test_rejects_bad_arguments() {
   local rc out
-  for bad in "--interval" "--out" "--match"; do
+  for bad in "--interval" "--out"; do
     rc=0
     out=$("$TRACE" "$bad" 2>&1) || rc=$?
     [ "$rc" -eq 2 ] || fail "$bad without a value exited $rc, expected 2"
@@ -58,6 +58,17 @@ test_rejects_bad_arguments() {
   case "$out" in
     *"unknown argument"*) : ;;
     *) fail "an unknown argument was not named back" ;;
+  esac
+
+  # The matched process name is not configurable: a matcher that silently finds
+  # nothing reports procs=0 while ShellCheck holds gigabytes, which is the one
+  # reading this instrument exists to make impossible.
+  rc=0
+  out=$("$TRACE" --match shellcheck 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "--match exited $rc, expected 2"
+  case "$out" in
+    *"unknown argument"*"--match"*) : ;;
+    *) fail "--match was not refused as an unknown argument: $out" ;;
   esac
 
   pass "fm-mem-trace.sh refuses bad arguments before it samples anything"
