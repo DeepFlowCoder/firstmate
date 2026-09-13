@@ -233,34 +233,37 @@ test_matrix_claude_titled_rule_above_composer() {
 }
 
 test_pi_separator_tolerates_one_title_only() {
-  # The separator predicate's boundary, pinned directly: exactly one title
-  # embedded in one rule. Widening it further would start claiming real border
-  # rows as separators.
-  local row
+  # The separator-rule boundary, pinned where a consumer can see it: the rule
+  # directly ABOVE claude's `❯` composer is varied while the rule below it
+  # stays plain. A row that is a separator closes the pair and the composer
+  # reads `empty`; a row that is not leaves the bottom rule unpaired, which is
+  # the strict deferral (`unknown`) the shape selection owes. Widening the
+  # tolerance further would start claiming real border rows as separators, and
+  # each negative row below is one that would then read `empty`.
+  local plain row screen
+  plain='─────────────────────────────────────────────'
   for row in \
     '─────────────────────────' \
     '───────────── Armar el lavhish de bearings ──' \
-    '── Voice input (⌥ + v to start) ─────────'
+    '── Voice input (⌥ + v to start) ─────────' \
+    '────── a task title long enough to leave no run of eight ──'
   do
-    _fm_composer_pi_separator_row "$row" \
-      || fail "separator rule must be recognized: '$row'"
-    LC_ALL=C _fm_composer_pi_separator_row "$row" \
-      || fail "separator rule must be recognized under LC_ALL=C: '$row'"
+    screen=$'transcript line\n'"$row"$'\n❯'"$NBSP"$'\n'"$plain"$'\n  Opus 5 | Context: 36% used'
+    assert_screen "separator rule '$row'" empty "$CAPS_PLAIN" "$screen"
   done
   for row in \
     '┌───────────────────────┐' \
     '╭─────────── title ─────╮' \
     '── left ───────── right ──' \
     '──────' \
+    '───── title ──' \
     ' Armar el lavhish de bearings ' \
     '─────────── trailing title'
   do
-    ! _fm_composer_pi_separator_row "$row" \
-      || fail "must NOT be a separator rule: '$row'"
-    ! LC_ALL=C _fm_composer_pi_separator_row "$row" \
-      || fail "must NOT be a separator rule under LC_ALL=C: '$row'"
+    screen=$'transcript line\n'"$row"$'\n❯'"$NBSP"$'\n'"$plain"$'\n  Opus 5 | Context: 36% used'
+    assert_screen "not a separator rule '$row'" unknown "$CAPS_PLAIN" "$screen"
   done
-  pass "_fm_composer_pi_separator_row: one embedded title is tolerated, border rows and two-run rows are not"
+  pass "matrix: one embedded title bounds the composer, border rows and two-run and under-width rules do not"
 }
 
 test_matrix_codex_dim_hint_row() {

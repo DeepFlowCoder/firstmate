@@ -574,8 +574,8 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 # exact positive proof they require (`empty`), so unrecognized future verdicts
 # fail safe by default.
 
-# _fm_composer_pi_separator_row: a separator rule - `─` at least 8 columns
-# wide, either solid or carrying one embedded TITLE. The width floor and every
+# _fm_composer_pi_separator_row: a separator rule - at least 8 `─` glyphs in
+# total, either solid or carrying one embedded TITLE. The width floor and every
 # glyph test are literal substring removals so they are byte-exact in every
 # locale.
 #
@@ -584,7 +584,9 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 # so the title is embedded IN the rule rather than replacing it. Requiring
 # exactly one embedded run - an opening rule, a title carrying no `─` of its
 # own, and a closing rule - is what keeps a real border row or a two-shape row
-# out.
+# out. The floor counts the opening and closing runs TOGETHER, because a title
+# long relative to the pane width leaves neither run 8 glyphs wide on its own -
+# an 80-column pane with a 70-character title opens its rule with 6.
 #
 # It is load-bearing, not cosmetic (task fm-afk-digest-atascado). Claude draws
 # its current task title in the rule directly ABOVE its `❯` composer. Without
@@ -597,24 +599,21 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 # which still requires the agent glyph or a live idle/done pi identity before
 # anything reads `empty`, so this widens shape SELECTION only.
 _fm_composer_pi_separator_row() {  # <trimmed-row>
-  local row=$1 middle
+  local row=$1 middle open=0 close=0
   [ -n "$row" ] || return 1
-  case "$row" in
-    *────────*) ;;
-    *) return 1 ;;
-  esac
-  [ -n "${row//─/}" ] || return 0
   case "$row" in
     ─*─) ;;
     *) return 1 ;;
   esac
   middle=$row
-  while [ "${middle#─}" != "$middle" ]; do middle=${middle#─}; done
-  while [ "${middle%─}" != "$middle" ]; do middle=${middle%─}; done
-  case "$middle" in
-    *─*) return 1 ;;
-  esac
-  return 0
+  while [ "${middle#─}" != "$middle" ]; do middle=${middle#─}; open=$((open + 1)); done
+  if [ -n "$middle" ]; then
+    while [ "${middle%─}" != "$middle" ]; do middle=${middle%─}; close=$((close + 1)); done
+    case "$middle" in
+      *─*) return 1 ;;
+    esac
+  fi
+  [ $((open + close)) -ge 8 ]
 }
 
 # Row-scan results are returned through FM_COMPOSER_SCAN_* globals (bash 3.2
