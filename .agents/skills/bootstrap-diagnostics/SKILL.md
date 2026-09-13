@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -42,6 +42,10 @@ When any diagnostic needs captain attention, report the plain consequence and re
   `FM_SPAWN_ALLOW_LOW_DISK=1` on one spawn is only for work the captain explicitly wants started anyway, and raising or retiring the threshold at the source the message names is a captain decision, never a way around an inconvenient refusal.
 - `DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB` - the named threshold source is unreadable or is not one whole number of gigabytes, so the guard is running at its default rather than the captain's intended value.
   Report the malformed setting and let them correct it; never infer what they meant.
+- `GH_BASE_REPO: could not write <key> in <repo>; unnamed gh and gh-axi queries there can answer for a different repository - make .git/config writable (check ownership, a read-only checkout, or a full filesystem) and rerun session start` - the session-start convergence could not pin which GitHub repository an unnamed query in this home's checkout answers for, so that checkout is still resolving to whichever remote the tool prefers.
+  This is not cosmetic and it does not self-heal: the start-up summary keeps listing another repository's issues and pull requests under this repository's name, and every pull-request number here collides with a real, old one over there, which typically returns closed with zero checks - the shape a reader takes for finished and green.
+  Fix the named write, not the symptom: the line carries the exact `git config` key and the repository it belongs to, so check that repository's `.git/config` for the condition the line names, then rerun session start to confirm the line is gone.
+  Until it is gone, name the repository explicitly on every GitHub call from that checkout (`--repo <owner>/<repo>`, never a full URL), and do not trust an unnamed reading of a pull request.
 - `FLEET_SYNC: <repo>: skipped: <reason>` - a benign one-off skip (offline, no origin, local-only); bootstrap continued, investigate only if it blocks work.
   A skip can also report the bounded fleet-refresh timeout (`FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT`, or a fleet-size-aware default with a 20 second floor); a timeout never blocks startup.
 - `FLEET_SYNC: <repo>: recovered: <detail>` - the clone had drifted onto a clean detached HEAD holding no unique commits and the sync self-healed it (re-attached the default branch and fast-forwarded); no action needed, it is reported only so the self-heal is visible.

@@ -413,6 +413,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/gh-repo-resolution.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/git-editor-guard.md",
       "audience": "maintainer-verification"
     },

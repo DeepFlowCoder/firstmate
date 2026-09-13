@@ -287,6 +287,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-forge-remote-lib.sh
 . "$SCRIPT_DIR/fm-forge-remote-lib.sh"
+# shellcheck source=bin/fm-gh-repo-lib.sh
+. "$SCRIPT_DIR/fm-gh-repo-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
@@ -2476,6 +2478,22 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
+fi
+# A worker's own gh or gh-axi call is the one query nothing here can review, so
+# the repository it resolves to is settled before the worker exists rather than
+# left to whichever remote gh happens to prefer. bin/fm-gh-repo-lib.sh owns the
+# rule; it is offline and idempotent, and it never restricts naming another
+# repository explicitly. Only a failed WRITE is reported: a project with no
+# GitHub forge, or one the captain pinned themselves, is an ordinary
+# configuration and never a reason to add a line to every spawn - and neither is
+# ever a reason to refuse a launch that is otherwise sound.
+if [ "$KIND" != secondmate ]; then
+  gh_base_answer=$(fm_gh_repo_base_pin "$WT")
+  case "$gh_base_answer" in
+    failed$'\t'*)
+      echo "warning: could not settle which GitHub repository unnamed queries answer for in '$WT': ${gh_base_answer#*$'\t'}" >&2
+      ;;
+  esac
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't

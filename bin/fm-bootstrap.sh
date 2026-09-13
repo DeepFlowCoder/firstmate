@@ -12,6 +12,9 @@
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "DISK_SPACE: <n.n> GB free on <home> (threshold <n> GB[ from <source>])" or
 #                 "DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB",
+#                 "GH_BASE_REPO: could not write <key> in <repo>; unnamed gh and
+#                 gh-axi queries there can answer for a different repository -
+#                 make .git/config writable ... and rerun session start",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK|UNCONFIRMED: <detail>",
 #                 "HOME_SUMMARY: <ledger never published|not republished since
 #                 <stamp>>; <n> failed attempt(s) ... last: <recorded failure>",
@@ -78,6 +81,18 @@
 #          guesses at malformed or unsafe existing files, and secondmate homes
 #          await the primary-authoritative inherited value instead of creating
 #          their own.
+#          The same locked mutable path converges gh's implicit base repository in
+#          this home's own checkout ONLY, so a gh or gh-axi query that names no
+#          repository cannot answer for a different one. Project clones are left
+#          alone: bin/fm-spawn.sh settles every clone the fleet actually works in,
+#          and the base repository also governs where an unnamed publish goes, so
+#          pinning a clone the fleet never enters could redirect somebody's pull
+#          request away from the parent it was meant for. The rule and its safety
+#          are owned by bin/fm-gh-repo-lib.sh and run through
+#          bin/fm-gh-base-repo.sh; it is offline, idempotent, and silent once
+#          converged. A repository it actually pins is reported as one
+#          BOOTSTRAP_INFO fact, and a write that does not go through is reported
+#          as an actionable GH_BASE_REPO line rather than passing in silence.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -1193,6 +1208,31 @@ startup_memory_budget_setup() {
   fi
 }
 
+# Converge gh's implicit base repository in this home's own checkout, so a query
+# that does not name a repository cannot answer for a different one.
+# bin/fm-gh-repo-lib.sh owns the rule and why it is safe to repeat;
+# bin/fm-gh-base-repo.sh is its executable surface and owns the swept scope.
+# Offline, idempotent, and silent once converged.
+#
+# A real change is a completed benign fact. A write that did not go through is
+# NOT: the pin looks applied and is not, and this checkout is exactly the one
+# whose start-up summary labels another repository's issues and pull requests
+# with this repository's name, so the mislabelling would continue silently and
+# indefinitely. Its stderr is deliberately not discarded either - a sweep that
+# dies outright must be visible rather than read as convergence.
+gh_base_repo_sweep() {
+  local line
+  [ -x "$FM_ROOT/bin/fm-gh-base-repo.sh" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      pinned:*) echo "BOOTSTRAP_INFO: ${line#pinned: }" ;;
+      failed:*)
+        echo "GH_BASE_REPO: ${line#failed: }; unnamed gh and gh-axi queries there can answer for a different repository - make .git/config writable (check ownership, a read-only checkout, or a full filesystem) and rerun session start"
+        ;;
+    esac
+  done < <("$FM_ROOT/bin/fm-gh-base-repo.sh" sweep || true)
+}
+
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -1214,6 +1254,7 @@ fi
 # the local pass that ran first already closed that window.
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
   startup_memory_budget_setup
+  gh_base_repo_sweep
 fi
 
 # Local detection: presence, version floors, and configuration. Nothing here

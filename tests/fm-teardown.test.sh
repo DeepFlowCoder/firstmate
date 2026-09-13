@@ -38,6 +38,7 @@
 #   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
+#   (z) unlanded + merged PR from a repo teardown cannot NAME  -> REFUSE (wrong-repo)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -266,6 +267,18 @@ land_on_origin_main() {
   git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "squash $file"
   git -C "$tmp" push -q origin HEAD:main
   rm -rf "$tmp"
+}
+
+# Name the project's forge remote as the GitHub repository it really would be.
+# The fixture's remotes are local paths so the case can fetch and push without a
+# network, but the landed-work lookup asks GitHub BY NAME, and a local path names
+# no GitHub repository. Call this after all git plumbing is done and before
+# running teardown: from here on `git remote get-url origin` answers
+# example/repo, and the mocked gh-axi is asked about that repository by name.
+# Args: case_dir
+name_origin_as_github() {
+  local case_dir=$1
+  git -C "$case_dir/project" remote set-url origin https://github.com/example/repo.git
 }
 
 # Rebuild the case's remote topology into the shape that produced a false "not
@@ -793,6 +806,10 @@ test_no_pr_recorded_discovers_merged_pr_by_branch_allows() {
   land_on_origin_main "$case_dir" feature.txt hello
   add_gh_pr_merged_for_head "$case_dir" "$pr_head"
   # No append_pr_meta_* call: state/task-x1.meta has no pr= or pr_head= line.
+  # The forge is named as the GitHub repository it stands for, because the branch
+  # lookup asks GitHub BY NAME - it must never fall back to an unnamed query,
+  # which answers for whichever remote the tool prefers.
+  name_origin_as_github "$case_dir"
 
   ! grep -qE '^(pr|pr_head)=' "$case_dir/state/task-x1.meta" \
     || fail "no-pr-branch-discovery: test setup bug, meta unexpectedly has a pr= line"
@@ -805,6 +822,40 @@ test_no_pr_recorded_discovers_merged_pr_by_branch_allows() {
   expect_code 0 "$rc" "no-pr-branch-discovery: teardown should succeed by discovering the merged PR from the branch name"
   ! grep -q REFUSED "$case_dir/stderr" || fail "no-pr-branch-discovery: teardown printed a REFUSED line"
   pass "teardown discovers a merged PR by branch name and tears down when no pr= was ever recorded"
+}
+
+# The defect this pins, in the place it would have cost the most: teardown's
+# landed-work test. A branch whose work is NOT landed anywhere, in a project
+# whose forge names no GitHub repository, must NOT be released on the strength of
+# a pull request that some OTHER repository answered for. Before the repository
+# was named on the wire, the lookup ran unnamed, whichever remote the tool
+# preferred answered, and a merged pull request with a containing head read as
+# "landed" - which releases work that never landed, and treehouse return hard-
+# resets the worktree.
+test_unnameable_repository_never_releases_unlanded_work() {
+  local case_dir rc local_head pr_head
+  case_dir=$(make_case unnameable-repo-no-release)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  # A head that CONTAINS the local work, so every landing test an answered lookup
+  # feeds would say "landed". Nothing is pushed and nothing lands on the default
+  # branch, so a pull request answer is the only path to a teardown.
+  pr_head=$(commit_tree_from_wt_head "$case_dir" "$local_head" "someone elses merge")
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  # The forge stays a local repository: it names no GitHub repository at all, so
+  # there is nothing this lookup could legitimately ask GitHub about.
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] \
+    || fail "unnameable-repo: teardown released unlanded work on a pull request from a repository it could not name"
+  grep -q REFUSED "$case_dir/stderr" \
+    || fail "unnameable-repo: teardown must refuse loudly, stderr was: $(cat "$case_dir/stderr")"
+  pass "unlanded work is never released on a pull request answered by a repository teardown could not name"
 }
 
 test_squash_merged_pr_allows_replayed_unpushed_patch() {
@@ -3141,6 +3192,7 @@ test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
+test_unnameable_repository_never_releases_unlanded_work
 test_squash_merged_pr_allows_replayed_unpushed_patch
 test_merged_pr_with_later_local_commit_refuses
 test_pr_check_does_not_refresh_stale_pr_head

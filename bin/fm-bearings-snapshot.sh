@@ -92,6 +92,10 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 # shellcheck source=bin/fm-pr-fitness-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-pr-fitness-lib.sh"
+# The single owner of turning a GitHub URL into the owner/repo slug --repo needs.
+# shellcheck source=bin/fm-gh-repo-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-gh-repo-lib.sh"
 
 # Bounds (overridable for tests / large fleets).
 FM_BEARINGS_LANDED=${FM_BEARINGS_LANDED:-6}
@@ -261,8 +265,10 @@ PR_ROWS_CAPPED=0
 PR_ROWS_MIN_TOTAL=0
 
 # Parse owner/repo from an https or ssh GitHub remote/PR URL; empty if not GitHub.
+# bin/fm-gh-repo-lib.sh owns the parse, because every --repo in this fleet has to
+# agree on what names a repository and what only resembles one.
 repo_slug() {  # <url>
-  printf '%s' "$1" | sed -n 's#.*github\.com[:/]\([^/]*/[^/]*\)#\1#p' | sed 's#\.git$##; s#/pull/.*$##; s#/$##'
+  fm_gh_repo_slug "$1" || true
 }
 
 # Bounded gh call; prints stdout, non-zero on timeout/failure. gh only.

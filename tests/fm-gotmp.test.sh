@@ -80,6 +80,10 @@ make_fake_root() {
   # the forge. Nothing in this fixture resolves a forge, but teardown sources it
   # unconditionally.
   ln -s "$ROOT/bin/fm-forge-remote-lib.sh" "$fake/bin/fm-forge-remote-lib.sh"
+  # fm-gh-repo-lib.sh: teardown sources it as the owner of how a GitHub
+  # repository is named to gh-axi. Nothing in this fixture names one, but
+  # teardown sources it unconditionally.
+  ln -s "$ROOT/bin/fm-gh-repo-lib.sh" "$fake/bin/fm-gh-repo-lib.sh"
   # fm-public-followup-lib.sh (and the fm-x-lib.sh it sources): teardown sources
   # it for the relay-activation gate on the promised-public-reply check. Neither
   # does anything in this fixture, which has no .env, but both are real siblings
@@ -173,6 +177,10 @@ test_teardown_skips_gracefully_without_tasktmp() {
   # the forge. Nothing in this fixture resolves a forge, but teardown sources it
   # unconditionally.
   ln -s "$ROOT/bin/fm-forge-remote-lib.sh" "$fake/bin/fm-forge-remote-lib.sh"
+  # fm-gh-repo-lib.sh: teardown sources it as the owner of how a GitHub
+  # repository is named to gh-axi. Nothing in this fixture names one, but
+  # teardown sources it unconditionally.
+  ln -s "$ROOT/bin/fm-gh-repo-lib.sh" "$fake/bin/fm-gh-repo-lib.sh"
   # fm-public-followup-lib.sh (and the fm-x-lib.sh it sources): teardown sources
   # it for the relay-activation gate on the promised-public-reply check. Neither
   # does anything in this fixture, which has no .env, but both are real siblings
