@@ -84,10 +84,12 @@ function usage() {
     "fm-capacity-policy.mjs - classify a quota-axi snapshot into a fleet capacity verdict.",
     "",
     "Usage:",
-    "  fm-capacity-policy.mjs --min-lanes <n> < <quota-axi --json output>",
+    "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record] < <quota-axi --json output>",
     "",
     "Prints one line when the fleet is worth reporting and nothing when it is not.",
     "--min-lanes 0 retires the guard: the verdict is always silent.",
+    "--emit record prefixes the repeat-suppression digest and a TAB, for callers",
+    "that suppress an unchanged repeat; --emit line (the default) omits it.",
     "",
     "Exit: 0 verdict reached (fired or silent), 2 usage error, 3 unusable snapshot.",
   ].join("\n");
@@ -394,7 +396,11 @@ function main(argv) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n`);
     return 3;
   }
-  if (result.fire) process.stdout.write(`${result.line}\n`);
+  if (!result.fire) return 0;
+  // `record` prefixes the repeat-suppression digest and a TAB, so the caller gets
+  // both halves from one parse of the snapshot. `line` stays the default so the
+  // CLI is readable when a person runs it directly.
+  process.stdout.write(options.emit === "record" ? `${result.digest}\t${result.line}\n` : `${result.line}\n`);
   return 0;
 }
 
