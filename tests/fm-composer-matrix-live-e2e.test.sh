@@ -125,6 +125,80 @@ for h in claude codex opencode pi grok kimi muse; do
   fi
 done
 
+# --- 1b. claude's TITLED task rule, over the real rendered composer ----------
+# Regression for task fm-afk-digest-atascado. Section 1 launches a FRESH
+# claude, which has no current task and therefore draws a PLAIN rule above its
+# composer - the exact blind spot that let a TITLED rule classify `unknown` for
+# five days on a live primary and defer 2142 consecutive away-mode injections.
+# Driving a real claude to a titled rule needs a submitted prompt, which this
+# guard never does, so the title is embedded into the pane's OWN captured rule
+# row: the rule glyph, its width, the composer row, the cursor row and the
+# footer all stay claude's real rendered output, and only the title text is
+# added. Both forms must classify empty, and the two screens must really
+# differ, so the check cannot go vacuous.
+if command -v claude >/dev/null 2>&1; then
+  cl_version=$(harness_version claude)
+  tmux -L "$SOCKET" new-window -d -t "$SESSION:" -n titledrule -c "$ROOT" -- claude \
+    || fail "claude ($cl_version): could not launch for the titled-rule check"
+  i=0
+  while [ "$i" -lt "${FM_COMPOSER_MATRIX_LIVE_POLLS:-45}" ]; do
+    [ "$(fm_tmux_composer_state "$SESSION:titledrule")" = empty ] && break
+    i=$((i + 1))
+    sleep 1
+  done
+  # Shape survives ANSI stripping, so the check runs on the plain rendering of
+  # claude's own screen with a plain-capture descriptor - the weakest profile
+  # in the fleet (cmux, orca), which is where a shape defect shows first.
+  cl_esc=$(printf '\033')
+  cl_plain=$(fm_tmux_composer_capture "$SESSION:titledrule" 2>/dev/null \
+    | LC_ALL=C sed "s/${cl_esc}\\[[0-9;:?]*[[:alpha:]]//g" || true)
+  # The composer's TOP rule: the second-to-last solid rule row claude rendered.
+  # The last one is its bottom rule, whose titled form the bordered catalogue
+  # already covered. Rule rows are found by literal glyph removal rather than a
+  # regex repetition, which counts BYTES on a multibyte glyph under LC_ALL=C.
+  cl_rules=$(printf '%s\n' "$cl_plain" | awk '
+    { row = $0; gsub(/[ \t]/, "", row); bare = row; gsub(/─/, "", bare)
+      if (row != "" && bare == "" && index(row, "──────────") > 0) print NR }')
+  cl_rule_count=$(printf '%s' "$cl_rules" | grep -c '[0-9]')
+  cl_rule_no=$(printf '%s\n' "$cl_rules" | tail -2 | head -1)
+  if [ -z "$cl_plain" ] || [ "$cl_rule_count" -lt 2 ]; then
+    FAILED=1
+    printf 'not ok - claude (%s): rendered composer has no rule pair to build the titled-rule check from (found %s)\n' \
+      "$cl_version" "${cl_rule_count:-0}" >&2
+  else
+    # Embed the title in claude's own rule row: keep its opening run, spend two
+    # glyphs of the closing one, and let the rule still open and close the row -
+    # the shape claude draws for a current task.
+    cl_rule=$(printf '%s\n' "$cl_plain" | awk -v n="$cl_rule_no" 'NR == n { print; exit }')
+    while [ "${cl_rule# }" != "$cl_rule" ]; do cl_rule=${cl_rule# }; done
+    while [ "${cl_rule% }" != "$cl_rule" ]; do cl_rule=${cl_rule% }; done
+    cl_titled="${cl_rule%──} Armar el lavhish de bearings ──"
+    cl_after=$(printf '%s\n' "$cl_plain" \
+      | awk -v n="$cl_rule_no" -v t="$cl_titled" 'NR == n { print t; next } { print }')
+    if [ "$cl_after" = "$cl_plain" ]; then
+      FAILED=1
+      printf 'not ok - claude (%s): titled-rule screen did not diverge from the real capture\n' "$cl_version" >&2
+    else
+      cl_caps=$'styled=0\ncursor=0\nidentity=0\nrows=0'
+      cl_v1=$(fm_composer_classify_screen "$cl_caps" "$cl_plain")
+      cl_v2=$(fm_composer_classify_screen "$cl_caps" "$cl_after")
+      if [ "$cl_v1" = empty ] && [ "$cl_v2" = empty ]; then
+        CHECKED=$((CHECKED + 1))
+        pass "claude ($cl_version): its rendered composer classifies empty under a plain AND a titled task rule"
+      else
+        FAILED=1
+        printf '# claude titled-rule check: plain=%s titled=%s\n' "${cl_v1:-unreadable}" "${cl_v2:-unreadable}" >&2
+        printf '%s\n' "$cl_after" | grep '[^[:space:]]' | tail -6 | sed 's/^/#   /' >&2
+        printf 'not ok - claude (%s): a titled task rule above the real composer did not classify empty\n' \
+          "$cl_version" >&2
+      fi
+    fi
+  fi
+  tmux -L "$SOCKET" kill-window -t "$SESSION:titledrule" 2>/dev/null || true
+else
+  note "harness absent, not verified here: claude (titled task rule not exercised)"
+fi
+
 # --- 2. The strict blank-row posture, live ----------------------------------
 # A plain shell pane parked on a blank line between two rules (the audit's
 # sleep-pane counterexample): the permissive rule read this empty; strict must

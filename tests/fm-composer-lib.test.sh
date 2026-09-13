@@ -188,6 +188,81 @@ test_matrix_claude_bare_nbsp_row() {
   pass "matrix: claude's ❯+NBSP row reads empty on every profile in both locales (#1988)"
 }
 
+test_matrix_claude_titled_rule_above_composer() {
+  # Real idle claude with a current task: the SAME `❯`+NBSP composer as above,
+  # but the rule directly ABOVE it carries claude's task title. The rule below
+  # it stays plain.
+  #
+  # Task fm-afk-digest-atascado. A separator rule used to have to be nothing
+  # but `─`, so the titled rule was not one, the pair never formed, and the
+  # lone plain rule BELOW the glyph row tripped the unpaired-separator guard
+  # in _fm_composer_select_cursorless - which abandons selection and returns
+  # `unknown`. That is what deferred every away-mode escalation on a claude
+  # primary: 2142 consecutive defers and zero deliveries over five days on the
+  # captain's own pane, measured in state/.supervise-daemon.log.
+  local titled plain blank pi_idle pi_working none
+  titled='───────────── Armar el lavhish de bearings ──'
+  plain='─────────────────────────────────────────────'
+  pi_idle=$(printf 'pi\tidle'); pi_working=$(printf 'pi\tworking'); none=$(printf 'zsh\t')
+
+  # The defect's own screen, footer included: the footer is what a runaway wrap
+  # region would swallow, so its presence keeps the case non-vacuous.
+  local screen
+  screen=$'transcript line\n'"$titled"$'\n❯'"$NBSP"$'\n'"$plain"$'\n  Opus 5 | Context: 36% used'
+  case "$screen" in *"Opus 5"*) : ;; *) fail "fixture lost its footer content" ;; esac
+  assert_screen "claude titled rule on herdr" empty "$CAPS_STYLED" "$screen" '' probe-absent
+  assert_screen "claude titled rule with a live non-pi identity" empty "$CAPS_STYLED" "$screen" '' "$none"
+  assert_screen "claude titled rule on tmux" empty "$CAPS_TMUX" "$screen" 2 probe-absent
+  assert_screen "claude titled rule on zellij" empty "$CAPS_STYLED_NOID" "$screen"
+  assert_screen "claude titled rule on cmux/orca" empty "$CAPS_PLAIN" "$screen"
+  # Identity-capable but unfetched: the tolerance must ask for the lazy probe,
+  # not answer without it.
+  [ "$(fm_composer_classify_screen "$CAPS_STYLED" "$screen")" = need-identity ] \
+    || fail "a titled pair around an agent glyph should still request the identity probe"
+
+  # The other direction, so the tolerance cannot go vacuous by making every
+  # titled pair injectable: drop the agent glyph and the SAME titled pair is a
+  # blank region again, which only a live idle/done pi can prove.
+  blank=$'transcript line\n'"$titled"$'\n\n'"$plain"$'\n  footer'
+  assert_screen "titled pair, blank region, idle pi" empty "$CAPS_STYLED" "$blank" '' "$pi_idle"
+  assert_screen "titled pair, blank region, working pi" unknown "$CAPS_STYLED" "$blank" '' "$pi_working"
+  assert_screen "titled pair, blank region, non-pi" unknown "$CAPS_STYLED" "$blank" '' "$none"
+  assert_screen "titled pair, blank region, absent identity" unknown "$CAPS_STYLED" "$blank" '' probe-absent
+  assert_screen "titled pair, blank region, no identity capability" unknown "$CAPS_PLAIN" "$blank"
+  pass "matrix: claude's titled task rule still bounds its composer, and a titled pair alone proves nothing"
+}
+
+test_pi_separator_tolerates_one_title_only() {
+  # The separator predicate's boundary, pinned directly: exactly one title
+  # embedded in one rule. Widening it further would start claiming real border
+  # rows as separators.
+  local row
+  for row in \
+    '─────────────────────────' \
+    '───────────── Armar el lavhish de bearings ──' \
+    '── Voice input (⌥ + v to start) ─────────'
+  do
+    _fm_composer_pi_separator_row "$row" \
+      || fail "separator rule must be recognized: '$row'"
+    LC_ALL=C _fm_composer_pi_separator_row "$row" \
+      || fail "separator rule must be recognized under LC_ALL=C: '$row'"
+  done
+  for row in \
+    '┌───────────────────────┐' \
+    '╭─────────── title ─────╮' \
+    '── left ───────── right ──' \
+    '──────' \
+    ' Armar el lavhish de bearings ' \
+    '─────────── trailing title'
+  do
+    ! _fm_composer_pi_separator_row "$row" \
+      || fail "must NOT be a separator rule: '$row'"
+    ! LC_ALL=C _fm_composer_pi_separator_row "$row" \
+      || fail "must NOT be a separator rule under LC_ALL=C: '$row'"
+  done
+  pass "_fm_composer_pi_separator_row: one embedded title is tolerated, border rows and two-run rows are not"
+}
+
 test_matrix_codex_dim_hint_row() {
   # Real idle codex: bold `›`, reset, then an SGR-2 dim hint. Styled captures
   # strip the ghost and prove empty; plain captures must defer as unknown -
@@ -613,6 +688,8 @@ test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
+test_matrix_claude_titled_rule_above_composer
+test_pi_separator_tolerates_one_title_only
 test_matrix_codex_dim_hint_row
 test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
