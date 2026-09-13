@@ -1702,6 +1702,206 @@ outcome: failed"
   pass "the exemption never applies to a terminal run"
 }
 
+# --- the pipeline moved the branch head --------------------------------------
+#
+# MEASURED 2026-09-12 against the installed no-mistakes v1.72.0 and its real run
+# store, on the run that produced the blind read (01M2B9NKDQJ6801HS98CK2AKMW,
+# branch fm/fm-autoarm-stop-no-se-ejecuta, pull request 44). The pipeline's
+# `rebase` step advanced the branch to 8acc107b97 in its own managed worktree and
+# pushed it, while the crew worktree and its local branch stayed at the submitted
+# head 44115a8750 - so the head the run REPORTS is not a git object in the crew
+# worktree at all, and neither the head rule nor `fm_nm_head_resolvable` can bind
+# it. branch_sync was not `pipeline_owned` either, so the lane exemption did not
+# apply, and a crew whose pull request was open with checks running read as
+# `unknown` for the whole monitor phase.
+#
+# The binding signal the same output carries is branch_sync.pipeline.submitted_head:
+# the sha the crew handed the pipeline, which IS this worktree's commit.
+# docs/verification/run-attribution.md records the exact measured output.
+#
+# The fixture's branch_sync state is `merged_remote_retained`, the word the
+# verification record measured on this very run. Only one property of it is
+# load-bearing: it is not `pipeline_owned`, so fm_nm_run_is_pipeline_owned_active
+# does not fire and the submitted-head rule is what actually binds. The incident
+# proved the state was not `pipeline_owned`, because the lane exemption would
+# otherwise have bound the run and there would have been no blind read to fix.
+run_with_moved_head() {  # <branch> <advanced-head> <submitted-head> [<status>]
+  cat <<EOF
+run:
+  id: "01RUNMOVED"
+  branch: $1
+  status: ${4:-ci}
+  head: $2
+  head_sha: $2
+  pr: "https://github.com/o/r/pull/44"
+  findings: none
+  steps[3]{step,status,findings,duration_ms}:
+    intent,completed,0,22
+    rebase,completed,0,2319
+    ci,running,0,0
+branch_sync:
+  state: merged_remote_retained
+  changed: false
+  local:
+    branch: $1
+    head: $3
+    clean: true
+  pipeline:
+    run: "01RUNMOVED"
+    status: running
+    phase: ci
+    submitted_head: $3
+    current_head: $2
+    pushed_head: $2
+    pushed_at: 1789237775
+    push_generation: 1
+  relation: unknown
+  pr_state: open
+EOF
+}
+
+# Direction 1 of the mandatory falsifier: with the pipeline having moved the
+# head, the read must still report the real step instead of refusing.
+test_pipeline_moved_head_still_reports_the_real_step() {
+  reset_fakes
+  local d submitted out
+  d=$(new_case moved-head)
+  make_repo_on_branch "$d/wt" fm/feat-moved
+  submitted=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/moved.meta" "window=fm:fm-moved" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/moved.status"
+  FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/feat-moved f0f0f0f0f0f0f0f0 "$submitted")"
+  # The branch's newest row carries the advanced head too, so the arbitrator can
+  # only corroborate this reading through the branch's own run identity.
+  FM_FAKE_RUNS_LIST="  running    fm/feat-moved f0f0f0f0  2026-09-12 17:12"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" moved
+  out=$(run_crew_state "$d" moved)
+  assert_contains "$out" "source: run-step" "the submitted head binds the run the pipeline advanced"
+  assert_contains "$out" "state: working" "a crew whose checks are running is working, not unknown"
+  assert_contains "$out" "ci running" "the line names the real step"
+  assert_not_contains "$out" "could not be determined" "attribution is no longer refused"
+  assert_not_contains "$out" "does not bind to this worktree" \
+    "the advanced head is no longer what decides attribution"
+  pass "a pipeline-moved branch head still reports the real run step"
+}
+
+# The shape the measurement was actually taken in: the same moved head on a run
+# that has finished. The binding is the run's code identity, not its liveness, so
+# the finished run's own verdict is reported instead of an unknown - and the
+# newest-first arbitration still decides whether that verdict is the current one.
+test_pipeline_moved_head_reports_a_finished_runs_verdict() {
+  reset_fakes
+  local d submitted out
+  d=$(new_case moved-head-terminal)
+  make_repo_on_branch "$d/wt" fm/feat-moved-d
+  submitted=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/moved-d.meta" "window=fm:fm-moved-d" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/moved-d.status"
+  FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/feat-moved-d f0f0f0f0f0f0f0f0 "$submitted" completed)
+outcome: passed"
+  # The branch's newest row carries the pipeline-advanced head, which is the only
+  # shape a row can have once the pipeline has pushed: a sha this worktree cannot
+  # resolve at all.
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-moved-d f0f0f0f0  2026-09-12 17:12"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" moved-d
+  out=$(run_crew_state "$d" moved-d)
+  assert_contains "$out" "source: run-step" "a finished run the pipeline advanced is still this crew's run"
+  assert_contains "$out" "state: done" "its own verdict is reported"
+  assert_contains "$out" "run passed" "the line names the verdict the run reached"
+  assert_not_contains "$out" "could not be determined" "attribution is no longer refused"
+  pass "a finished run whose head the pipeline moved still reports its verdict"
+}
+
+# Direction 2 of the mandatory falsifier: a run that genuinely belongs to other
+# work must still be refused. Here the submitted head is a commit this worktree
+# does not carry, so nothing binds it and the strict refusal stands.
+test_foreign_submitted_head_is_still_refused() {
+  reset_fakes
+  local d out
+  d=$(new_case moved-head-foreign)
+  make_repo_on_branch "$d/wt" fm/feat-moved-b
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/moved-b.meta" "window=fm:fm-moved-b" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/moved-b.status"
+  FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/feat-moved-b f0f0f0f0f0f0f0f0 d1d1d1d1d1d1d1d1)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" moved-b
+  out=$(run_crew_state "$d" moved-b)
+  assert_not_contains "$out" "source: run-step" "a submitted head this worktree never had must not bind"
+  assert_contains "$out" "source: status-log" "falls back to the durable record instead"
+  pass "a run whose submitted head is foreign to this worktree is still refused"
+}
+
+# Direction 2, the laxity half: the submitted-head rule is EXACT equality, and a
+# submitted head this worktree CAN resolve but is not sitting on must still be
+# refused. The unresolvable fixture above cannot pin this, because every ancestry
+# weakening refuses an sha that is not a git object here and stays green. These
+# two cases are the ones that catch a weakening, one per direction of near-miss:
+# with the worktree behind the submitted head, accepting "local HEAD is an
+# ancestor of the submitted head" would bind it; with the worktree ahead of it,
+# accepting the reverse ancestry would bind it. Both are the laxity the captain
+# ruled out, so both must read as a refusal.
+test_a_resolvable_but_unequal_submitted_head_is_refused() {
+  reset_fakes
+  local d behind ahead out
+  d=$(new_case moved-head-unequal)
+  make_repo_on_branch "$d/wt" fm/feat-moved-e
+  behind=$(git -C "$d/wt" rev-parse HEAD)
+  git -C "$d/wt" commit -q --allow-empty -m advanced
+  ahead=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/moved-e.meta" "window=fm:fm-moved-e" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/moved-e.status"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+
+  # The worktree advanced past the submitted head: local work outside the run.
+  FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/feat-moved-e f0f0f0f0f0f0f0f0 "$behind")"
+  arm_idle_record "$d/state" moved-e
+  out=$(run_crew_state "$d" moved-e)
+  assert_not_contains "$out" "source: run-step" \
+    "a submitted head this worktree has advanced past must not bind"
+  assert_contains "$out" "source: status-log" "falls back to the durable record instead"
+
+  # The worktree sits behind a submitted head it can still resolve: a rewound or
+  # rewritten local tip, with the submitted commit still in the object store.
+  git -C "$d/wt" reset -q --hard "$behind"
+  FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/feat-moved-e f0f0f0f0f0f0f0f0 "$ahead")"
+  arm_idle_record "$d/state" moved-e
+  out=$(run_crew_state "$d" moved-e)
+  assert_not_contains "$out" "source: run-step" \
+    "a submitted head this worktree is behind must not bind either"
+  assert_contains "$out" "source: status-log" "falls back to the durable record instead"
+  pass "a resolvable submitted head that is not this worktree's commit is refused"
+}
+
+# Direction 2, the adversarial half: the branch gate outranks the new signal. A
+# run on ANOTHER branch may never answer for this crew even when its recorded
+# submitted head happens to be exactly this worktree's commit.
+test_other_branch_run_is_refused_despite_a_matching_submitted_head() {
+  reset_fakes
+  local d submitted out
+  d=$(new_case moved-head-other-branch)
+  make_repo_on_branch "$d/wt" fm/feat-moved-c
+  submitted=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/moved-c.meta" "window=fm:fm-moved-c" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/moved-c.status"
+  FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/other-crew f0f0f0f0f0f0f0f0 "$submitted")"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" moved-c
+  out=$(run_crew_state "$d" moved-c)
+  assert_not_contains "$out" "source: run-step" "another branch's run must never answer for this crew"
+  assert_contains "$out" "source: status-log" "falls back to the durable record instead"
+  pass "another branch's run is refused even with a matching submitted head"
+}
+
 test_missing_run_head_falls_back_to_current_state() {
   reset_fakes
   local d out
@@ -1953,10 +2153,11 @@ EOF
 }
 
 # The other route into the same stop: `axi status` DID answer for this branch,
-# but its run head does not bind to this worktree, so attribution falls to the
+# but nothing it reports binds to this worktree, so attribution falls to the
 # coarse scan and that scan hits an unresolvable row. The named reason must be
-# the binding refusal, not a cross-branch answer, or the reader checks the wrong
-# thing.
+# the binding refusal, and must name BOTH identities that were tried, or the
+# reader checks the wrong thing - or re-opens a fixed defect because the line
+# reads as though only the head was ever considered.
 test_unknown_attribution_names_a_head_binding_refusal() {
   reset_fakes
   local d out
@@ -1975,8 +2176,9 @@ test_unknown_attribution_names_a_head_binding_refusal() {
   out=$(run_crew_state "$d" attrib-h)
   assert_contains "$out" "state: unknown" "a same-branch run that cannot bind reports unknown"
   assert_contains "$out" "source: run-step" "the unknown-attribution verdict is run-step sourced"
-  assert_contains "$out" "axi status answered for fm/feat-attrib-h but its run head does not bind to this worktree" \
-    "the detail names the head-binding refusal, not a cross-branch answer"
+  assert_contains "$out" \
+    "axi status answered for fm/feat-attrib-h but neither its run head nor its recorded submitted head binds to this worktree" \
+    "the detail names the binding refusal and both identities it tried, not a cross-branch answer"
   assert_not_contains "$out" "supersedes the reported terminal run" \
     "a refused head binding is not a supersession"
   # The status log's `working:` must not answer over the refusal above.
@@ -3129,6 +3331,11 @@ test_failed_run_with_no_later_run_still_surfaces
 test_coarse_unresolvable_active_row_never_falls_to_older_row
 test_non_pipeline_owned_unresolvable_head_not_attributed
 test_pipeline_owned_terminal_run_not_exempt
+test_pipeline_moved_head_still_reports_the_real_step
+test_pipeline_moved_head_reports_a_finished_runs_verdict
+test_foreign_submitted_head_is_still_refused
+test_a_resolvable_but_unequal_submitted_head_is_refused
+test_other_branch_run_is_refused_despite_a_matching_submitted_head
 test_missing_run_head_falls_back_to_current_state
 test_cancelled_run_superseded_by_live_run_reports_the_live_run
 test_passed_run_superseded_by_live_run_is_not_done
