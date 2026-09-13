@@ -780,7 +780,7 @@ test_backlog_tasks_axi_forms_and_overrides() {
 - [ ] prose-mentions-marker - Captain call whose reason discusses the word (repo: sample) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED and NOT REQUIRED as markers) (hold-kind: captain)
 - [ ] structurally-parked - Genuinely set-aside work (repo: sample) (kind: ship) (hold: replaced by captain-gated-work) (hold-kind: parked)
 - [ ] structurally-future - Set aside for later (repo: sample) (kind: ship) (hold: after launch) (hold-kind: future)
-- [ ] unknown-hold-kind - Held under a kind this reader does not know (repo: sample) (kind: ship) (hold: some other reason) (hold-kind: load)
+- [ ] unknown-hold-kind - Held under a kind this reader does not know (repo: sample) (kind: ship) (hold: some other reason) (hold-kind: bogus)
 
 ## Done
 - [x] done-comma - Done Comma Task https://github.com/kunchenguid/firstmate/pull/42 (repo: gamma, merged 2026-07-09) (kind: ship)
@@ -869,10 +869,11 @@ EOF
     .backlog.records[] | select(.id == "structurally-future")
     | .deferred_marker == true and .captain_actionable == false
   ' >/dev/null || fail "a future hold did not carry the presentation marker"
-  # An unrecognized kind fails toward showing the row, never toward hiding it.
+  # A kind outside the closed tasks-axi set reaches the record verbatim and
+  # fails toward showing the row, never toward hiding it.
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "unknown-hold-kind")
-    | .deferred_marker == false
+    | .hold_kind == "bogus" and .deferred_marker == false
   ' >/dev/null || fail "a hold kind outside the set-aside set was marked deferred"
   # Marked-deferred and captain-actionable are disjoint across the whole backlog,
   # which is what lets every decision renderer skip a deferral filter entirely.

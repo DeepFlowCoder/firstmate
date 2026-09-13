@@ -38,8 +38,12 @@
 # never has to be read as either "nothing queued" or "some of it hidden" - the
 # disclosure says which. A set-aside row carrying a future hold-until is not
 # withheld; it renders as its dated gate.
-# --all-decisions and --all-queued are both purely additive: they only lift the
-# count bound and, for --all-queued, the set-aside filter.
+# Neither --all-decisions nor --all-queued widens the decision candidate set:
+# the first lifts only the count bound, the second only the set-aside filter.
+# Lifting the count bound is not additive across sections, though - the rendered
+# decisions slice is itself what withholds a row from Underway, so a row
+# truncated out of the default slice leaves its live worker's Underway line when
+# --all-decisions pulls it into decisions_open.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
