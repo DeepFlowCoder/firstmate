@@ -232,18 +232,20 @@ EOF
 # everything is exactly as wrong as one that frees nothing: a blocker completed
 # and pruned must release its dependents, and a blocker that is still pending -
 # live in the backlog, or archived while still unchecked - must keep holding
-# them. A blocker in neither file resolves nothing and is reported, so the gap
-# is counted instead of being found by manual audit.
+# them. A blocker in neither file resolves nothing and is counted instead of
+# being found by manual audit, while main_inventory stays valid, because that
+# state is also how a deliberate dependency outside the task system is written.
 test_pruned_done_blocker_resolves_from_the_archive() {
   local home fakebin out
   home=$(make_home pruned-blocker)
   cat > "$home/data/backlog.md" <<'EOF'
 ## Queued
 - [ ] freed - Waits on completed and pruned work blocked-by: landed (repo: alpha) (kind: ship)
-- [ ] still-held - Waits on live work blocked-by: pending (repo: alpha) (kind: ship)
+- [ ] still-held - Waits on live work blocked-by: live-only (repo: alpha) (kind: ship)
 - [ ] held-by-archived-queued - Waits on work pruned while queued blocked-by: shelved (repo: alpha) (kind: ship)
 - [ ] held-by-reused-id - Waits on a live row whose id was archived too blocked-by: pending (repo: alpha) (kind: ship)
 - [ ] held-by-nothing - Waits on an id nobody has blocked-by: vanished (repo: alpha) (kind: ship)
+- [ ] live-only - Live blocker the archive has never seen (repo: alpha) (kind: ship)
 - [ ] pending - Live blocker still queued (repo: alpha) (kind: ship)
 
 ## Done
@@ -262,15 +264,15 @@ EOF
         and .unresolved_blocker_ids == []
         and .unknown_blocker_ids == [])
     and (.backlog.records[] | select(.id == "still-held")
-      | .unresolved_blocker_ids == ["pending"] and .unknown_blocker_ids == [])
+      | .unresolved_blocker_ids == ["live-only"] and .unknown_blocker_ids == [])
     and (.backlog.records[] | select(.id == "held-by-archived-queued")
       | .unresolved_blocker_ids == ["shelved"] and .unknown_blocker_ids == [])
     and (.backlog.records[] | select(.id == "held-by-reused-id")
       | .unresolved_blocker_ids == ["pending"] and .unknown_blocker_ids == [])
     and (.backlog.records[] | select(.id == "held-by-nothing")
       | .unresolved_blocker_ids == ["vanished"] and .unknown_blocker_ids == ["vanished"])
-    and .main_inventory.valid == false
-    and .main_inventory.reason == "current backlog item is blocked by an id in neither the backlog nor the archive"
+    and .main_inventory.valid == true
+    and .main_inventory.reason == null
     and .main_inventory.unknown_blocker_count == 1
     and .main_inventory.unknown_blockers == [{id:"held-by-nothing", blocker:"vanished"}]
   ' >/dev/null || fail "pruned-blocker resolution or the unknown-blocker count was wrong: $out"
@@ -282,11 +284,11 @@ EOF
   cat > "$home/data/backlog.md" <<'EOF'
 ## Queued
 - [ ] freed - Waits on completed and pruned work blocked-by: landed (repo: alpha) (kind: ship)
-- [ ] still-held - Waits on live work blocked-by: pending (repo: alpha) (kind: ship)
+- [ ] still-held - Waits on live work blocked-by: live-only (repo: alpha) (kind: ship)
 - [ ] held-by-archived-queued - Waits on work pruned while queued blocked-by: shelved (repo: alpha) (kind: ship)
 
 ## Done
-- [x] pending - Live blocker, now landed (repo: alpha) (kind: ship) (done 2026-07-23)
+- [x] live-only - Live blocker, now landed (repo: alpha) (kind: ship) (done 2026-07-23)
 EOF
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
@@ -310,6 +312,38 @@ EOF
     and (.backlog.records[] | select(.id == "still-held") | .unresolved_blocker_ids == [])
     and .main_inventory.unknown_blocker_count == 2
   ' >/dev/null || fail "an absent archive was not read as an empty one: $out"
+
+  # Retention appends each archive block to the end of the file, so an id pruned
+  # while queued and later archived again as done lands with its pending copy
+  # first. That copy is still pending work, so it has to keep holding whichever
+  # side of the completed copy it sits on; a rule that only holds in one of the
+  # two orderings is the last archived copy winning, not every copy counting.
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] held-by-twice-archived - Waits on an id archived twice blocked-by: twice (repo: alpha) (kind: ship)
+
+## Done
+EOF
+  for order in pending-first completed-first; do
+    if [ "$order" = "pending-first" ]; then
+      cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [ ] twice - Pruned while still queued (repo: alpha) (kind: ship)
+- [x] twice - A later run under the same id (repo: alpha) (kind: ship) (done 2026-07-23)
+EOF
+    else
+      cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [x] twice - A later run under the same id (repo: alpha) (kind: ship) (done 2026-07-23)
+- [ ] twice - Pruned while still queued (repo: alpha) (kind: ship)
+EOF
+    fi
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+    printf '%s' "$out" | jq -e '
+      .backlog.records[] | select(.id == "held-by-twice-archived")
+      | .unresolved_blocker_ids == ["twice"] and .unknown_blocker_ids == []
+    ' >/dev/null || fail "archive order $order released a dependent whose blocker still has a pending copy: $out"
+  done
   pass "a completed blocker pruned into the archive frees its dependents while pending ones still hold"
 }
 

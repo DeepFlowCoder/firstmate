@@ -58,9 +58,10 @@
 #     unknown_blockers[],unknown_blocker_count} - main-home current-inventory
 #     checks shared with secondmate_home_summary_json (orphan structured
 #     in-flight ids with no state/<id>.meta, and unstructured current backlog
-#     rows), plus the integrity check for current rows blocked by an id in
-#     neither the backlog nor the archive, each such pair kept as
-#     {id,blocker}. Does not invent live tasks; meta remains truth for
+#     rows) decide valid and reason. unknown_blockers keeps every current row
+#     blocked by an id in neither the backlog nor the archive as {id,blocker},
+#     for disclosure only: it is counted, never a validity reason.
+#     Does not invent live tasks; meta remains truth for
 #     workers. Bearings maps failures into omitted[] disclosure (and a Charted
 #     Next gate line) rather than silent empty Underway.
 #   secondmate_current: {records[],total,shown,truncated} - bounded current summaries
@@ -318,14 +319,16 @@ first_pr_url_in_file() {  # <file>
 # Every archived id mapped to whether the archive records it as completed. Only a
 # checked row counts as done: retention can also archive rows pruned from Queued
 # or In flight, and those are still pending work whose dependents must keep
-# waiting. An id archived more than once is done only when every copy is, the
-# same rule the backlog's own repeated ids follow.
+# waiting. An id archived more than once is done only when every copy is, so an
+# already computed false has to stick: `//` would treat it as absent and let the
+# last archived copy win, which releases a dependent whose blocker was archived
+# still pending and then archived again as done.
 archive_states_json() {  # [<archive-path>] - defaults to this home's $BACKLOG_ARCHIVE
   local archive=${1:-$BACKLOG_ARCHIVE}
   [ -f "$archive" ] || { printf '{}\n'; return 0; }
   jq -Rn '[ inputs
     | capture("^[-*][[:space:]]+\\[(?<check>[ xX])\\][[:space:]]+(?<id>[^[:space:]]+)[[:space:]]+-[[:space:]]+")? ]
-    | reduce .[] as $row ({}; .[$row.id] = ((.[$row.id] // true) and ($row.check != " ")))' < "$archive"
+    | reduce .[] as $row ({}; .[$row.id] = ((.[$row.id] != false) and ($row.check != " ")))' < "$archive"
 }
 
 backlog_json() {  # [<backlog-path>] [<archive-path>] - default to this home's files
@@ -719,12 +722,15 @@ main_inventory_json() {  # <backlog-json> <tasks-json>
          | . as $record
          | $record.unknown_blocker_ids[]?
          | {id:$record.id, blocker:.} ]) as $unknown_blockers
+    # Counted and disclosed, deliberately not a validity reason: an invalid
+    # main_inventory renders a Charted Next gate row, and a blocked-by that
+    # names a dependency outside the task system is a supported, permanent
+    # state, so promoting it would spend a captain board slot forever on an
+    # alarm that asks for no action.
     | (($unstructured_current | length) == 0
-       and ($orphan_in_flight | length) == 0
-       and ($unknown_blockers | length) == 0) as $valid
+       and ($orphan_in_flight | length) == 0) as $valid
     | (if ($unstructured_current | length) > 0 then "unstructured current backlog row"
        elif ($orphan_in_flight | length) > 0 then "in-flight backlog item has no child metadata"
-       elif ($unknown_blockers | length) > 0 then "current backlog item is blocked by an id in neither the backlog nor the archive"
        else null end) as $reason
     | {
         valid:$valid,

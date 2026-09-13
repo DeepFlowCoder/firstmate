@@ -42,8 +42,9 @@
 # also leaves the in_flight row it was occupying.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
-# object (orphan structured in-flight without meta, unstructured current rows,
-# and current rows blocked by an id in neither the backlog nor its archive).
+# object (orphan structured in-flight without meta, unstructured current rows).
+# Its count of current rows blocked by an id in neither the backlog nor its
+# archive is disclosed in omitted[] without touching that validity.
 # Bearings never invents Underway rows from backlog-only ids; it discloses those
 # gaps in omitted[] and, when invalid, a Charted Next gate line so the four-section
 # chat cannot claim an empty fleet while main current state is broken.

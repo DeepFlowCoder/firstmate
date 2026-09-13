@@ -66,7 +66,10 @@ The refusal names the legitimate path rather than only forbidding one, because t
 ## Structured read surfaces
 
 `bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)`, `(hold-kind: ...)`, and `(hold-until: ...)` metadata alongside existing backlog fields.
-It resolves every repeated `blocked-by:` edge against structured Done records, keeps missing blockers unresolved, and classifies a captain hold as `captain_actionable` - waiting on the captain now - only when it is not yet done, unblocked, and due, whatever kind its row carries and whichever section it sits in.
+It resolves every repeated `blocked-by:` edge against the structured Done records of both `data/backlog.md` and `data/done-archive.md`, so retention pruning a completed blocker cannot leave its dependents held.
+Only a checked archive row counts as completed, because retention can archive still-pending rows too, and the backlog wins wherever both files carry the same id.
+A blocker id in neither file resolves nothing and keeps holding its dependent, and is additionally recorded in `unknown_blocker_ids` and counted in `main_inventory.unknown_blocker_count` for disclosure, explicitly not as a `main_inventory` invalidity reason.
+It classifies a captain hold as `captain_actionable` - waiting on the captain now - only when it is not yet done, unblocked, and due, whatever kind its row carries and whichever section it sits in.
 A captain hold on work already in flight is as actionable as a queued one, and keeps its `held` role; only its blockers and its `hold-until` date can hold it back.
 It also emits a presentation-only `deferred_marker` when a hold's reason or body carries an explicit SUPERSEDED / NOT REQUIRED / DEFERRED marker.
 Its secondmate-home summary classifies an actionable captain hold as `captain_decision` and preserves blocked or deferred captain holds as queued work in the owning home.
