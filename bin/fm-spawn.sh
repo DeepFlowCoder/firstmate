@@ -146,8 +146,8 @@
 #   A fresh crewmate or scout dispatch also refuses when free space on this
 #   home's filesystem is below the configured threshold, because work dispatched
 #   onto a nearly full volume is destroyed rather than delayed. That case is the
-#   guard's entire scope: a --relaunch, a --secondmate, and a remote launch never
-#   consult it. FM_SPAWN_ALLOW_LOW_DISK=1 dispatches this one spawn anyway, and
+#   dispatch refusal's entire scope: a --relaunch, a --secondmate, and a remote
+#   launch never consult it. FM_SPAWN_ALLOW_LOW_DISK=1 dispatches this one spawn anyway, and
 #   config/disk-space-min-gb=0 - or FM_DISK_SPACE_MIN_GB=0 for one run - retires
 #   the guard; bin/fm-disk-space-lib.sh owns the threshold and the measurement.
 #   A slot whose only deviation is a stale submodule gitlink is refused by that

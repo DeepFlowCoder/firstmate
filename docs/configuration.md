@@ -203,7 +203,7 @@ When free space cannot be measured, the check stays silent and never refuses a s
 The check covers one filesystem, the one holding this home's `state/`, `data/`, and temporary files; it is not a per-volume audit, so a worktree pool or `TMPDIR` on another volume is not covered.
 Each home reads its own file, and the setting is not part of secondmate inherited configuration, because a secondmate can sit on another volume or another host.
 That is also why no secondmate launch consults the guard: the volume a primary can measure is not the one such a home writes to.
-For the same reason `FM_DISK_SPACE_MIN_GB` and `FM_SPAWN_ALLOW_LOW_DISK` are cleared on that launch, so the dispatches the secondmate later makes from its own home are decided by that home rather than by whatever the primary was started with.
+For the same reason `FM_DISK_SPACE_MIN_GB`, `FM_DISK_SPACE_WARN_GB`, and `FM_SPAWN_ALLOW_LOW_DISK` are cleared on that launch, so the dispatches the secondmate later makes from its own home are decided by that home rather than by whatever the primary was started with.
 [`bin/fm-disk-space-lib.sh`](../bin/fm-disk-space-lib.sh)'s header owns the exact measurement, parsing, and wording.
 
 ## Update source (config/update-remote)
@@ -880,7 +880,7 @@ FM_SUPERVISOR_TARGET=              # optional supervisor pane target override; t
 FM_INJECT_SKIP=heartbeat           # |-prefixes force-self-handled bypassing classification; empty disables
 FM_ESCALATE_BATCH_SECS=90          # buffer window for batched escalation digests; 0 = flush immediately
 FM_MAX_DEFER_SECS=300              # max buffered escalation age before retry plus wedge alarm; 0 disables
-FM_WEDGE_ALARM_CHANNEL=            # override config/wedge-alarm with one active-alert directive for the wedge alarm; off|auto|osascript|herdr|command:<cmd>; absent = auto (macOS -> an OS notification)
+FM_WEDGE_ALARM_CHANNEL=            # override config/wedge-alarm with one active-alert directive for the wedge and disk alarms; off|auto|osascript|herdr|command:<cmd>; absent = auto (macOS -> an OS notification)
 FM_WEDGE_ALARM_EXEC=              # notifier seam: route every channel (osascript, herdr, command:) through this command as `<cmd> <channel> <summary>`; "discard" fires nothing; unset in production; the daemon defaults it to "discard" when sourced so no test posts a real notification (docs/wedge-alarm.md)
 FM_WEDGE_ALARM_TIMEOUT_SECS=10    # maximum seconds for each osascript, herdr, override, or command: notifier before its watchdog terminates it and continues to the next channel; invalid or zero values use 10
 FM_INJECT_FAIL_SLEEP=30            # seconds to back off when the supervisor pane is unavailable
