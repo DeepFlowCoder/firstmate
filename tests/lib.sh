@@ -248,7 +248,10 @@ fm_test_reap_orphans
 # escalating to it keeps the wait bounded whatever the worker does with
 # SIGTERM, and a wedged worker becomes a bounded test failure instead of a
 # silent suite hang. FM_TEST_REAP_ESCALATED records whether that escalation was
-# needed, so a test can assert on it rather than infer it from timing.
+# needed, so a test can assert on it rather than infer it from timing, and the
+# escalation also names the pid on stderr: the real damage is the EXIT cleanup a
+# SIGKILL skips, and a silent kill would only trade a silent hang for a silent
+# kill. Stderr rather than stdout, so it cannot be read as an ok/not-ok line.
 #
 # A tick is 0.02s, not the 0.1s the other waits in this suite use, because this
 # one runs on the healthy path: the watcher suites reap well over a hundred
@@ -256,7 +259,7 @@ fm_test_reap_orphans
 # most of a tenth of a second for a worker that was already gone.
 
 FM_TEST_REAP_TICK_SECONDS=0.02
-FM_TEST_REAP_GRACE_TICKS=${FM_TEST_REAP_GRACE_TICKS:-250}
+FM_TEST_REAP_GRACE_TICKS=250
 FM_TEST_REAP_ESCALATED=0
 
 is_live_non_zombie() {  # <pid>
@@ -283,6 +286,8 @@ reap() {  # <pid> [grace-ticks]
   done
   # shellcheck disable=SC2034 # Read by the sourcing test file, not by this library.
   FM_TEST_REAP_ESCALATED=1
+  printf 'reap: pid %s ignored SIGTERM and was SIGKILLed, so its EXIT cleanup did not run\n' \
+    "$pid" >&2
   kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   return 0

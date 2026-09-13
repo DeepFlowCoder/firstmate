@@ -57,8 +57,7 @@ test_fixture_root_gone_after_sigterm() {
   [ -s "$dirfile" ] || fail "the child never published its fixture root before the wait timed out"
   child_dir=$(cat "$dirfile")
   assert_present "$child_dir" "the child's fixture root did not exist before it was signaled"
-  kill -TERM "$pid"
-  wait "$pid" 2>/dev/null
+  reap "$pid"
   assert_absent "$child_dir" \
     "fm_test_tmproot's fixture root survived SIGTERM to its owning process"
   pass "fm_test_tmproot cleans up its fixture root on SIGTERM"
@@ -138,8 +137,7 @@ test_orphan_sweep_respects_fixture_ownership() {
     "the orphan reaper removed an old fixture root whose owning process was still alive"
   assert_present "$fresh_dir" \
     "the orphan reaper removed a fresh marked fixture root it does not own yet"
-  kill -TERM "$pid"
-  wait "$pid" 2>/dev/null
+  reap "$pid"
   assert_absent "$active_dir" \
     "the active fixture root survived its owning process's teardown"
   rm -rf "$fresh_dir"
@@ -499,11 +497,16 @@ test_assert_line_refuses_what_it_cannot_compare() {
 REAP_HARNESS_OUT=
 
 run_reap_harness() {  # <mode: honors|swallows> -> rc, sets REAP_HARNESS_OUT
-  local mode=$1 harness script out ready pid tries
+  local mode=$1 harness script out ready child_tmp pid tries
   harness=$(fm_test_tmproot "fm-test-reap-$mode")
   script="$harness/harness.sh"
   out="$harness/out"
   ready="$harness/ready"
+  # Its own TMPDIR, for the reason run_teardown_child documents below: the child
+  # sources tests/lib.sh, which mktemps a cleanup registry there, and this child
+  # can be SIGKILLed past its own teardown when it overruns the budget.
+  child_tmp="$harness/tmp"
+  mkdir -p "$child_tmp" || fail "could not create the reap harness child's TMPDIR"
   cat > "$script" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -522,14 +525,20 @@ while [ ! -s "$ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
 [ -s "$ready" ] || { printf 'ready=no\n'; exit 1; }
 # The polite signal first, and its outcome is reported rather than assumed: a
 # "swallows" case that did not actually swallow would prove nothing about reap.
+# The outcome is polled for the full budget rather than sampled after a fixed
+# sleep: bash defers a terminating signal until the foreground sleep it is in
+# finishes, so a loaded runner can leave an honoring worker alive well past any
+# margin a fixed sleep could pick. A worker that really swallows the signal
+# never dies, so it still reports swallowed=yes once the budget expires.
 kill -TERM "$child" 2>/dev/null || true
-sleep 0.5
+i=0
+while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do sleep 0.05; i=$((i + 1)); done
 if is_live_non_zombie "$child"; then printf 'swallowed=yes\n'; else printf 'swallowed=no\n'; fi
 reap "$child" 25
 printf 'returned=yes escalated=%s\n' "$FM_TEST_REAP_ESCALATED"
 if kill -0 "$child" 2>/dev/null; then printf 'gone=no\n'; else printf 'gone=yes\n'; fi
 SH
-  bash "$script" "$LIB" "$mode" "$ready" > "$out" 2>&1 &
+  TMPDIR="$child_tmp" bash "$script" "$LIB" "$mode" "$ready" > "$out" 2>&1 &
   pid=$!
   tries=0
   while [ "$tries" -lt 300 ]; do
