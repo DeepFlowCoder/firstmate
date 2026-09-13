@@ -1791,17 +1791,19 @@ test_pipeline_moved_head_still_reports_the_real_step() {
 # newest-first arbitration still decides whether that verdict is the current one.
 test_pipeline_moved_head_reports_a_finished_runs_verdict() {
   reset_fakes
-  local d submitted short out
+  local d submitted out
   d=$(new_case moved-head-terminal)
   make_repo_on_branch "$d/wt" fm/feat-moved-d
   submitted=$(git -C "$d/wt" rev-parse HEAD)
-  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/moved-d.meta" "window=fm:fm-moved-d" "worktree=$d/wt" "kind=ship" "harness=claude"
   printf 'working: implementing\n' > "$d/state/moved-d.status"
   FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/feat-moved-d f0f0f0f0f0f0f0f0 "$submitted" completed)
 outcome: passed"
-  FM_FAKE_RUNS_LIST="  completed  fm/feat-moved-d ${short}  2026-09-12 17:12"
+  # The branch's newest row carries the pipeline-advanced head, which is the only
+  # shape a row can have once the pipeline has pushed: a sha this worktree cannot
+  # resolve at all.
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-moved-d f0f0f0f0  2026-09-12 17:12"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" moved-d
   out=$(run_crew_state "$d" moved-d)

@@ -91,17 +91,27 @@ fm_nm_head_resolvable() {  # <worktree> <head>
   git -C "$1" rev-parse --verify --quiet "$2^{commit}" >/dev/null 2>&1
 }
 
+# The sole owner of the `branch_sync:` block-scoping rule: in captured
+# `axi status` TOON $1, the first `$2:` scalar anywhere inside that block.
+# The block runs from its own header line to the next top-level key, and every
+# line belonging to it is indented, which is what the indentation clause
+# matches - so a same-named key in another top-level block can never answer.
+# Empty when the block is absent or carries no such key.
+fm_nm_branch_sync_field() {  # <toon-output> <key>
+  local s
+  s=$(printf '%s\n' "$1" \
+    | sed -n "/^[[:space:]]*branch_sync:[[:space:]]*\$/,/^[^[:space:]][^:]*:/s/^[[:space:]]\{1,\}$2:[[:space:]]*\(.*\)/\1/p" \
+    | head -1)
+  fm_nm_strip_quotes "$s"
+}
+
 # branch_sync.state from captured `axi status` TOON $1: the scalar directly
 # under the top-level `branch_sync:` block. The first `state:` inside the
 # block is the direct child (the nested local/pipeline/target/remote
 # sub-blocks carry no `state:` key). Empty when the block is absent: no run
 # on the current branch, another branch's run, or a CLI without branch sync.
 fm_nm_branch_sync_state() {  # <toon-output>
-  local s
-  s=$(printf '%s\n' "$1" \
-    | sed -n '/^[[:space:]]*branch_sync:[[:space:]]*$/,/^[^[:space:]][^:]*:/s/^[[:space:]]\{1,\}state:[[:space:]]*\(.*\)/\1/p' \
-    | head -1)
-  fm_nm_strip_quotes "$s"
+  fm_nm_branch_sync_field "$1" state
 }
 
 # 0 if the run in captured `axi status` TOON $1 is still in flight: no
@@ -129,18 +139,16 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
 }
 
 # branch_sync.pipeline.submitted_head from captured `axi status` TOON $1: the sha
-# the crew handed the pipeline when it started this run. Scoped to the
-# branch_sync block exactly as fm_nm_branch_sync_state is; `submitted_head`
-# appears only inside that block's nested `pipeline:` record, so no second
-# indentation rule is needed to reach it. Empty when the block, the nested
-# record, or the field is absent, and empty when no run is bound to the branch
-# (the field is then rendered as "").
+# the crew handed the pipeline for the run currently bound to THE BRANCH.
+# BRANCH-scoped, not run-scoped: the value comes from the branch_sync block,
+# exactly as fm_nm_run_is_pipeline_owned_active reads its own field, so when
+# `axi status` hands back a branch's older terminal run while a live successor
+# holds the binding, this reader answers for the successor and not for the run
+# rendered in the `run:` block. No stronger inference may be built on it.
+# Empty when the block, the nested `pipeline:` record, or the field is absent,
+# and empty when no run is bound to the branch (rendered as "").
 fm_nm_branch_sync_submitted_head() {  # <toon-output>
-  local s
-  s=$(printf '%s\n' "$1" \
-    | sed -n '/^[[:space:]]*branch_sync:[[:space:]]*$/,/^[^[:space:]][^:]*:/s/^[[:space:]]\{1,\}submitted_head:[[:space:]]*\(.*\)/\1/p' \
-    | head -1)
-  fm_nm_strip_quotes "$s"
+  fm_nm_branch_sync_field "$1" submitted_head
 }
 
 # The binding that survives the pipeline MOVING the branch head. Measured
@@ -155,17 +163,22 @@ fm_nm_branch_sync_submitted_head() {  # <toon-output>
 # no-mistakes delivery, not a fault, and it left a crew with an open pull request
 # and running checks unreadable for the whole monitor phase.
 #
-# 0 if the run in captured `axi status` TOON $2 records a submitted head that is
-# EXACTLY worktree $1's current commit. Exactly, deliberately: the submitted head
-# is the code identity this run was started from, so equality says the run came
-# out of this worktree and nothing weaker is accepted in its place. A branch name
-# reused by a later task fails it (that worktree is at its own commit), a
-# rewritten or locally-advanced tip fails it (the worktree has moved off the
-# submitted sha), and an absent or empty field fails it - each leaving the strict
-# head rule the only way to bind. What this binding does NOT discriminate is an
-# aborted run from the live run that replaced it, because both report the same
-# submitted head; the callers' newest-first runs-list arbitration owns that
-# question for every verdict it reports, so this binding never decides it.
+# 0 if captured `axi status` TOON $2 records, for its BRANCH, a submitted head
+# that is EXACTLY worktree $1's current commit. Exactly, deliberately: the
+# submitted head is the code identity the branch's bound run was started from, so
+# equality says that run came out of this worktree and nothing weaker is accepted
+# in its place. A branch name reused by a later task fails it (that worktree is at
+# its own commit), a rewritten or locally-advanced tip fails it (the worktree has
+# moved off the submitted sha), and an absent or empty field fails it - each
+# leaving the strict head rule the only way to bind.
+#
+# The signal is branch-scoped, so what it establishes is that THIS BRANCH's work
+# came out of THIS worktree, never which run the `run:` block happens to render.
+# Two things follow, and neither is this function's to decide: an aborted run and
+# the live run that replaced it report the same submitted head, and `axi status`
+# can hand back an older terminal run while its live successor holds the binding.
+# The callers' newest-first runs-list arbitration owns that question for every
+# verdict it reports, so this binding never decides it.
 #
 # It complements the pipeline-owned exemption rather than replacing it: that one
 # answers while the daemon declares it owns the branch, and this one answers once
