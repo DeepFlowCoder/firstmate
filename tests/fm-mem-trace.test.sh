@@ -67,19 +67,17 @@ test_rejects_bad_arguments() {
     *) fail "an unknown argument was not named back" ;;
   esac
 
-  # Neither the matched process name nor the output path is configurable: the
-  # trace matches shellcheck exactly and writes only to stdout, so a matcher
-  # that silently finds nothing and a file copy that a shutdown never produces
-  # are both gone rather than documented.
-  for gone in "--match" "--out"; do
-    rc=0
-    out=$(fm_run_timed "$BOUND" "$TRACE" "$gone" value 2>&1) || rc=$?
-    [ "$rc" -eq 2 ] || fail "$gone exited $rc, expected 2"
-    case "$out" in
-      *"unknown argument"*"$gone"*) : ;;
-      *) fail "$gone was not refused as an unknown argument: $out" ;;
-    esac
-  done
+  # Not a duplicate of the --nonsense case above: this one guards against
+  # --match coming back. A configurable matcher can miss silently and report
+  # procs=0 while ShellCheck holds gigabytes, so its return would restore an
+  # instrument that can lie, which is the defect - not the extra option.
+  rc=0
+  out=$(fm_run_timed "$BOUND" "$TRACE" --match shellcheck 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "--match exited $rc, expected 2"
+  case "$out" in
+    *"unknown argument"*"--match"*) : ;;
+    *) fail "--match was not refused as an unknown argument: $out" ;;
+  esac
 
   pass "fm-mem-trace.sh refuses bad arguments before it samples anything"
 }

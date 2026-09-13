@@ -12,6 +12,10 @@
 # for the directive rather than from a list, so a root bounded in future is
 # covered the day it is written, and it asks bin/fm-lint.sh itself which files
 # are canonical rather than restating the globs.
+#
+# EDITING THIS FILE: restating here any rule bin/fm-lint.sh already owns - which
+# directories are canonical, what counts as a lint root - makes this test fail
+# on a legitimate change to that rule. It has happened twice. Derive it.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -37,7 +41,7 @@ fm_resolve_dir_var() {  # <var> <containing-file>
 }
 
 test_bounded_imports_stay_inside_the_canonical_set() {
-  local roots_list total=0 checked=0 runtime=0
+  local roots_list total=0 checked=0 other=0
   # The canonical set, from the consumer that defines it. CI=true selects the
   # full set rather than the branch's changed subset, which is what the
   # boundary invariant is about.
@@ -73,29 +77,37 @@ test_bounded_imports_stay_inside_the_canonical_set() {
       if [ -n "$var" ] && dir=$(fm_resolve_dir_var "$var" "$file"); then
         resolved=${dir#./}
         [ -z "$resolved" ] || [ "$resolved" = "." ] && resolved=$rest || resolved="$resolved/$rest"
-        [ -f "$ROOT/$resolved" ] \
-          || fail "$file:$((line + 1)): bounded import resolves to a missing file: $target -> $resolved"
-        printf '%s\n' "$roots_list" | grep -qxF "$resolved" \
-          || fail "$file:$((line + 1)): bounded import is analysed nowhere - $resolved is not a canonical lint root: $target"
-        checked=$((checked + 1))
+        # Only a shell module can be a lint root, so only a shell module can be
+        # left unanalysed. Sourcing a data file bounds nothing and is not a
+        # coverage hole, however its directory was spelled.
+        case "$resolved" in
+          *.sh)
+            [ -f "$ROOT/$resolved" ] \
+              || fail "$file:$((line + 1)): bounded import resolves to a missing file: $target -> $resolved"
+            printf '%s\n' "$roots_list" | grep -qxF "$resolved" \
+              || fail "$file:$((line + 1)): bounded import is analysed nowhere - $resolved is not a canonical lint root: $target"
+            checked=$((checked + 1))
+            ;;
+          *) other=$((other + 1)) ;;
+        esac
       else
-        # Not repo-anchored. A runtime path is legitimate, but something that
+        # Not repo-anchored. A data path is legitimate, but something that
         # names a shell module through an unknown directory variable is the
         # same silent hole this test exists to close.
         case "$target" in
           */*.sh)
             fail "$file:$((line + 1)): bounded import names a shell module through an unresolvable directory: $target" ;;
         esac
-        runtime=$((runtime + 1))
+        other=$((other + 1))
       fi
     done < <(grep -Fn "$DIRECTIVE" "$file" | cut -d: -f1)
   done < <(grep -Frl "$DIRECTIVE" "$ROOT/bin" "$ROOT/tests" | sed "s|^$ROOT/||" | LC_ALL=C sort)
 
   [ "$total" -gt 0 ] || fail "found no $DIRECTIVE directives to check; the scan is not finding them"
-  [ "$((checked + runtime))" -eq "$total" ] \
-    || fail "classified $((checked + runtime)) of $total directives; some were skipped unseen"
+  [ "$((checked + other))" -eq "$total" ] \
+    || fail "classified $((checked + other)) of $total directives; some were skipped unseen"
 
-  pass "every repo-anchored bounded import is a canonical lint root ($checked of $total; $runtime runtime paths)"
+  pass "every resolvable bounded shell module is a canonical lint root ($checked of $total; $other non-module paths)"
 }
 
 test_bounded_imports_stay_inside_the_canonical_set
