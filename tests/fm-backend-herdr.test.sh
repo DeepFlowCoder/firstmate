@@ -627,6 +627,20 @@ test_registered_agent_with_ambiguous_process_info_stays_alive() {
   pass "fm_backend_herdr_agent_state: only positive bare-shell proof overrides a registered agent"
 }
 
+test_registered_agent_with_non_shell_foreground_stays_alive() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-non-shell-foreground"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":123,"foreground_process_group_id":123,"foreground_processes":[{"pid":123,"name":"pi","argv":["pi"]}]}}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p2' "$ROOT" )
+  [ "$out" = alive ] \
+    || fail "a non-shell foreground process carrying the shell pid must not be downgraded to a bare shell, got '$out'"
+  pass "fm_backend_herdr_agent_state: pid identity alone never proves a bare shell"
+}
+
 test_create_task_refuses_when_any_duplicate_label_is_live() {
   local dir log resp fb out status
   dir="$TMP_ROOT/dup-mixed-live"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4498,6 +4512,7 @@ test_create_task_refuses_duplicate_label
 test_create_task_refuses_duplicate_label_when_agent_live
 test_registered_agent_at_bare_shell_is_dead
 test_registered_agent_with_ambiguous_process_info_stays_alive
+test_registered_agent_with_non_shell_foreground_stays_alive
 test_create_task_refuses_when_any_duplicate_label_is_live
 test_create_task_closes_and_replaces_dead_pane_husk
 test_create_task_closes_and_replaces_no_agent_husk
