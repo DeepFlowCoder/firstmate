@@ -366,6 +366,7 @@ Resume fleet supervision immediately after the decision lands.
 
 Judge validation by the currently attributed run step through `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
 Act on the `state:` word that read prints instead of translating a run word yourself: `fm_nm_verdict_state` in `bin/fm-nm-run-lib.sh` owns what each run word means, and an abort states no verdict about the work, so a cancelled run never reads as failed.
+A failed run is a verdict about that run and not about the work, and the copy the pipeline discards with it holds no commit the task branch does not already have, so never report work lost without first checking that the branch's own commits are still there and that no later run has already resumed them.
 A parked approval or fix-review state requires the worker to follow the active gate help; `unknown` means nothing established the state and the detail says why, so check rather than reading it as failed or idle.
 A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership outside the supersession sequence above; steer it back to the gate response flow.
 The worker reports the PR when CI first becomes green rather than waiting for merge monitoring to finish.
