@@ -154,8 +154,57 @@ To reprofile one root's own cost on Linux:
   shellcheck --norc --external-sources -- bin/fm-teardown.sh >/dev/null
 ```
 
-## What this evidence does not decide
+## What the lane runs now, and what it measures
 
-It establishes the defect and the lever, not the remedy.
-Every way of bringing `bin/fm-teardown.sh` inside a hosted runner that this page measured - turning off extended analysis, stopping source following, or moving to a machine with more memory - trades away lint coverage or money, so the choice is not the measurement's to make.
-Splitting the lane across runners is the one candidate the evidence positively rules out: with a single root above the machine's RAM, more runners only relocate the failure.
+The remedy applied is the narrow one: the roots whose followed source graph made extended analysis explode stop that analysis at their imported **production** modules, with `# shellcheck source=/dev/null`.
+Every module so bounded is itself a canonical root of the same run, so it is still analysed in full - on its own, where it costs what it costs.
+Seven roots carry the boundary: `bin/fm-teardown.sh`, `bin/fm-send.sh`, `bin/fm-watch.sh`, `bin/fm-backlog-handoff.sh`, `bin/fm-procevent-remote-reply.sh`, `tests/fm-pending-reply.test.sh`, `tests/fm-remote-reply.test.sh`.
+The two test roots keep following `tests/lib.sh`: the harness is 18 KiB, imports nothing further, and is not what made them expensive.
+
+Per root, same flags, before against after (run 34740352782):
+
+| root | before | after |
+| --- | --- | --- |
+| `bin/fm-teardown.sh` | 7413 MiB / 230.7 s | **477 MiB / 3.0 s** |
+| `tests/fm-pending-reply.test.sh` | 7137 MiB / 115.7 s | 2449 MiB / 26.6 s |
+| `bin/fm-send.sh` | 3865 MiB / 37.0 s | 160 MiB / 0.7 s |
+| `bin/fm-watch.sh` | 3570 MiB / 29.9 s | 324 MiB / 1.6 s |
+| `bin/fm-backlog-handoff.sh` | 3861 MiB / 39.4 s | 106 MiB / 0.7 s |
+| `tests/fm-remote-reply.test.sh` | 3271 MiB / 29.7 s | 67 MiB / 0.3 s |
+| `bin/fm-procevent-remote-reply.sh` | 3005 MiB / 33.9 s | 100 MiB / 0.5 s |
+
+The whole lane, same job, same file set, traced end to end (run 34741641068, exit 0):
+
+| | before | after |
+| --- | --- | --- |
+| peak ShellCheck RSS | 7223 MiB | **2574 MiB** |
+| lowest MemAvailable | 91 MiB | **4595 MiB** |
+| swap consumed | all 3072 MiB | **none** |
+| wall | 994 s to the shutdown; 1185-1270 s when green | **464 s** |
+| outcome | exit 143, no verdict | exit 0, a real verdict |
+
+Peak memory falls to 32% of the machine, the lane never touches swap, and it finishes in under a third of the time a green run used to take.
+
+### What the boundary costs
+
+Not nothing, and the cost is visible rather than hidden.
+Cutting the follow means ShellCheck can no longer see a sourced module's use of a name, which produces false positives it used to suppress.
+The full set on this repo is twelve, all confirmed as boundary artefacts against the real consumer, each carrying a comment that names it:
+
+- `bin/fm-teardown.sh`: one `SC2034` on `FM_LOCK_LOG_PREFIX`, which `fm_lock_log` in `bin/fm-lock-lib.sh` reads.
+- `tests/fm-pending-reply.test.sh`: eight `SC2329` on stubs that `bin/fm-pending-reply-lib.sh` calls back into, and two `SC2031` on `FM_FROMFIRST_MARK`, which that library defines.
+
+No diagnostic was lost: every other root reports exactly what it reported before, and the lane's verdict is clean.
+What is given up is cross-module dataflow *within these seven roots* - the modules themselves keep full analysis at their own roots.
+
+### What was rejected, and why
+
+- **More runners.** Ruled out by measurement above: a single root above the machine's RAM cannot be partitioned into fitting.
+- **`--extended-analysis=false` in CI.** Would work (725 MiB for the worst root) but pays for two bad roots with the whole fleet's dataflow coverage.
+- **Dropping `--external-sources` globally.** Same objection, repo-wide, plus SC1091 noise on every root.
+- **A larger runner.** Costs money and leaves the 238 s single-root wall in place; it hides the symptom.
+
+### The guard this rests on
+
+Nothing here stops a *new* root from growing a source graph large enough to cross the line again, and this page is the reason the next occurrence is cheap to diagnose rather than a night's work: the trace reproduces the curve in one run, and the per-root profile names the file in ten minutes.
+A root that starts approaching these numbers belongs on the same boundary.
