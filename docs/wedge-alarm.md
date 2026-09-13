@@ -1,9 +1,10 @@
-# Away-mode injection wedge alarm
+# Active alarm channels
 
 The away-mode sub-supervisor (`bin/fm-supervise-daemon.sh`) buffers escalations and injects them into Firstmate's own pane.
 When injection cannot confirm a submit past `FM_MAX_DEFER_SECS`, `inject_wedge_alarm` raises a loud, rate-limited alarm so the stall never stays invisible.
+The in-session disk watch uses the same channels when free space crosses its refusal floor, before it attempts to write the wake to the filling volume.
 The active alert is pane-independent because a tmux status-line flash has no cross-backend equivalent and cannot reach an unattended captain reliably.
-The durable marker and tmux flash remain as additional signals.
+The away-mode durable marker and tmux flash, and the disk watch's ordinary wake-queue row, remain as additional signals.
 
 ## Channels
 
@@ -19,7 +20,8 @@ It lists channel directives, one per non-empty, non-comment line, and every list
 - `command:<cmd>` runs `<cmd>` through `sh -c` with the alarm summary as `$1` and on stdin, allowing delivery to a phone or pager service.
 
 An absent `config/wedge-alarm` behaves as `auto`, which is default-on on macOS.
-This is deliberate because the alarm fires only after a genuine max-defer wedge and is rate-limited to at most once per max-defer window.
+The away-mode alarm fires only after a genuine max-defer wedge and is rate-limited to at most once per max-defer window.
+The disk alarm fires only on a downward transition across the refusal floor and rearms silently after recovery.
 
 That default is a floor, not a delivery guarantee, and a home that relies on it alone can be alerted and never know.
 `osascript` exits 0 whether the banner is presented or the OS suppresses it, so a home with no `command:` directive records a fired alarm in the daemon log with no evidence that anything reached a person.

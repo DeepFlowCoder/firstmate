@@ -12,6 +12,7 @@
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "DISK_SPACE: <n.n> GB free on <home> (threshold <n> GB[ from <source>])" or
 #                 "DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB",
+#                 "DISK_SPACE: invalid <config/disk-space-warn-gb|FM_DISK_SPACE_WARN_GB> - <reason>; warning at the default <n> GB",
 #                 "GH_BASE_REPO: could not write <key> in <repo>; unnamed gh and
 #                 gh-axi queries there can answer for a different repository -
 #                 make .git/config writable ... and rerun session start",
@@ -54,14 +55,18 @@
 #          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
-#          A DISK_SPACE line means free space on this home's filesystem is below
-#          the configured threshold; above it, and when the space cannot be
-#          measured, the check is silent. bin/fm-disk-space-lib.sh owns the
-#          threshold, its config/disk-space-min-gb and FM_DISK_SPACE_MIN_GB
-#          overrides, and the wording, which bin/fm-spawn.sh shares when it
-#          refuses a fresh crewmate or scout dispatch: this line and that
-#          refusal are the guard's only two surfaces, so the liveness sweep's
-#          secondmate respawn below is never refused by it.
+#          A DISK_SPACE report line means free space on this home's filesystem is
+#          below the configured refusal threshold; above it, and when the space
+#          cannot be measured, the report is silent. A DISK_SPACE invalid line
+#          reports a rejected threshold source instead and does not mean space is
+#          low. bin/fm-disk-space-lib.sh owns both thresholds, their
+#          config/disk-space-min-gb and FM_DISK_SPACE_MIN_GB plus
+#          config/disk-space-warn-gb and FM_DISK_SPACE_WARN_GB overrides, and the
+#          wording, which bin/fm-spawn.sh shares when it refuses a fresh crewmate
+#          or scout dispatch and bin/fm-watch.sh shares for the in-session watch:
+#          the session-start report, that refusal, and the in-session watch are
+#          the guard's three surfaces, so the liveness sweep's secondmate respawn
+#          below is never refused by it.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
@@ -1306,6 +1311,9 @@ disk_space_detect() {
   fi
   if [ -n "$FM_DISK_SPACE_CONFIG_ERROR" ]; then
     echo "DISK_SPACE: $FM_DISK_SPACE_CONFIG_ERROR"
+  fi
+  if [ -n "$FM_DISK_SPACE_WARN_CONFIG_ERROR" ]; then
+    echo "DISK_SPACE: $FM_DISK_SPACE_WARN_CONFIG_ERROR"
   fi
 }
 

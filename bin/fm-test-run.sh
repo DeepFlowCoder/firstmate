@@ -1132,6 +1132,12 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' real-herdr-gated
       ;;
+    bin/fm-watch.sh)
+      # The watcher also owns the in-session disk watch, whose only coverage is
+      # fm-disk-space.test.sh over in session-bootstrap.
+      printf '%s\n' watcher-wake-lock
+      printf '%s\n' session-bootstrap
+      ;;
     bin/fm-watch*|bin/fm-wake*|bin/fm-inactive-reconcile.sh|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
@@ -1162,8 +1168,10 @@ families_for_changed_path() {
       printf '%s\n' session-bootstrap
       ;;
     bin/fm-disk-space-lib.sh)
-      # The free-space guard has one owner and two consumers: the session-start
-      # report and the dispatch refusal.
+      # The free-space guard has one owner and three consumers: the
+      # session-start report, the dispatch refusal, and the watcher's in-session
+      # disk watch - the last of which fm-disk-space.test.sh drives through a
+      # real watcher, so session-bootstrap covers it too.
       printf '%s\n' session-bootstrap
       printf '%s\n' backend-dispatch
       ;;

@@ -47,17 +47,18 @@ export FM_GATE_REFUSE_BYPASS=1
 export FM_CAPTAIN_ANSWER_BYPASS=1
 
 # Retire the free-disk-space guard (bin/fm-disk-space-lib.sh) for the same
-# reason. It covers exactly two surfaces, and the suites that source this library
-# drive both: a fresh crewmate or scout dispatch through the real fm-spawn (the
-# backend-dispatch suites) and the session-start line the fm-bootstrap suites
-# assert silence on. Fixture homes live on the developer's or the runner's real
-# filesystem, so with the guard live those suites would refuse or print purely
-# because of how full that machine happened to be - the same commit passing or
-# failing by time of day. Nothing else needs this: the guard does not run on a
-# relaunch, a secondmate, or a remote launch at all. 0 is the captain's own off
-# switch, not a test-only escape hatch, so the guard's real behavior is
-# untouched, and tests/fm-disk-space.test.sh pins this value per run so it still
-# drives the real guard end to end.
+# reason. It covers exactly three surfaces, and the suites that source this
+# library drive all of them: a fresh crewmate or scout dispatch through the real
+# fm-spawn (the backend-dispatch suites), the session-start line the
+# fm-bootstrap suites assert silence on, and the watcher's per-poll in-session
+# disk watch (the watcher suites, which run a real fm-watch against a fixture
+# home). Fixture homes live on the developer's or the runner's real filesystem,
+# so with the guard live those suites would refuse or print purely because of
+# how full that machine happened to be - the same commit passing or failing by
+# time of day. Those three are the whole of it: nothing else in bin/ reads the
+# guard. 0 is the captain's own off switch, not a test-only escape hatch, so the
+# guard's real behavior is untouched, and tests/fm-disk-space.test.sh pins this
+# value per run so it still drives the real guard end to end.
 export FM_DISK_SPACE_MIN_GB=0
 
 # Resolve the repo root from this library's own location. Consumed by sourcing

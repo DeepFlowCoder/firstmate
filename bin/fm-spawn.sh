@@ -146,8 +146,8 @@
 #   A fresh crewmate or scout dispatch also refuses when free space on this
 #   home's filesystem is below the configured threshold, because work dispatched
 #   onto a nearly full volume is destroyed rather than delayed. That case is the
-#   guard's entire scope: a --relaunch, a --secondmate, and a remote launch never
-#   consult it. FM_SPAWN_ALLOW_LOW_DISK=1 dispatches this one spawn anyway, and
+#   dispatch refusal's entire scope: a --relaunch, a --secondmate, and a remote
+#   launch never consult it. FM_SPAWN_ALLOW_LOW_DISK=1 dispatches this one spawn anyway, and
 #   config/disk-space-min-gb=0 - or FM_DISK_SPACE_MIN_GB=0 for one run - retires
 #   the guard; bin/fm-disk-space-lib.sh owns the threshold and the measurement.
 #   A slot whose only deviation is a stale submodule gitlink is refused by that
@@ -969,6 +969,8 @@ if [ "$DISK_GUARD_IN_SCOPE" -eq 1 ] && [ -z "${FM_SPAWN_ALLOW_LOW_DISK:-}" ] \
   # already appears to say exactly that. The library owns the sentence.
   [ -z "$FM_DISK_SPACE_CONFIG_ERROR" ] \
     || DISK_REFUSAL="$DISK_REFUSAL ($FM_DISK_SPACE_CONFIG_ERROR)"
+  [ -z "$FM_DISK_SPACE_WARN_CONFIG_ERROR" ] \
+    || DISK_REFUSAL="$DISK_REFUSAL ($FM_DISK_SPACE_WARN_CONFIG_ERROR)"
   echo "$DISK_REFUSAL" >&2
   exit 1
 fi
@@ -2993,7 +2995,7 @@ if [ "$KIND" = secondmate ]; then
   # Reuse the single frozen decision from the carrier resolution above so the
   # injected carrier and this on/off snapshot are guaranteed to agree.
   #
-  # FM_DISK_SPACE_MIN_GB= and FM_SPAWN_ALLOW_LOW_DISK= are isolation BETWEEN
+  # FM_DISK_SPACE_MIN_GB=, FM_DISK_SPACE_WARN_GB= and FM_SPAWN_ALLOW_LOW_DISK= are isolation BETWEEN
   # HOMES, not a carve-out in the disk guard: the launched secondmate is itself a
   # primary, and its OWN fresh crewmate and scout dispatches are squarely inside
   # that guard's scope. This prefix is typed into the pane as literal text, so
@@ -3001,9 +3003,9 @@ if [ "$KIND" = secondmate ]; then
   # export in the captain's shell rc would otherwise reach every secondmate pane
   # and retire that home's guard on a volume this primary never measured. The
   # launches the guard deliberately skips are excluded by the scope condition
-  # above and by nothing here, so deleting these two tokens narrows no scope; it
+  # above and by nothing here, so deleting these three tokens narrows no scope; it
   # only disables a child home's guard silently.
-  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_DISK_SPACE_MIN_GB= FM_SPAWN_ALLOW_LOW_DISK= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
+  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_DISK_SPACE_MIN_GB= FM_DISK_SPACE_WARN_GB= FM_SPAWN_ALLOW_LOW_DISK= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
 fi
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"

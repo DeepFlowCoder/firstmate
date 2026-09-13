@@ -103,6 +103,15 @@
 #   check: rejected unauthenticated PR poll retirement receipts: <paths>
 #                          invalid pending retirements were preserved without
 #                          running a check or removing poll artifacts
+#   check: disk space low: <n.n> GB free on <home> (...)
+#                          free space crossed the warning threshold, which only
+#                          warns and changes nothing about what is dispatched
+#   check: disk space critical: <n.n> GB free on <home> (...)
+#                          free space crossed the refusal floor, so a fresh
+#                          crewmate or scout dispatch is already being refused;
+#                          this one also fires the out-of-band alarm
+#                          (disk_space_tick owns both, and reports only the
+#                          TRANSITION, never one wake per poll)
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
 #   check: inactive-outcome bounded poll-loop reconciliation found a suspicious
@@ -122,6 +131,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 mkdir -p "$STATE"
 
 # The native event fast-path and only its true dependencies have one narrow
@@ -167,6 +177,17 @@ mkdir -p "$STATE"
 # gate and the wake emission (inbox_steer_check below).
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# The free-space thresholds and the one tier classifier every disk surface
+# reads. A small leaf library with no dependencies of its own.
+# shellcheck source=bin/fm-disk-space-lib.sh
+. "$SCRIPT_DIR/fm-disk-space-lib.sh"
+# Out-of-band alert channels (config/wedge-alarm), shared with the away-mode
+# daemon. The watcher has exactly one alarm condition, so it names its title and
+# its logger once here rather than per call.
+WEDGE_ALARM_TITLE="firstmate: disk space CRITICAL"
+WEDGE_ALARM_LOG_FN=triage_log
+# shellcheck source=bin/fm-wedge-alarm-lib.sh
+. "$SCRIPT_DIR/fm-wedge-alarm-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -217,6 +238,15 @@ FM_PROCEVENT_BIN="${FM_PROCEVENT_BIN:-$SCRIPT_DIR/fm-procevent.sh}"
 HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
 case "$HOME_SUMMARY_INTERVAL" in
   ''|*[!0-9]*|0) HOME_SUMMARY_INTERVAL=300 ;;
+esac
+# Seconds between in-session free-space reads. One `df -Pk` on one filesystem is
+# cheaper than work this loop already does every cycle, so the cadence is not
+# there to save the measurement - it bounds how often a still-unwritable
+# state directory can be retried. A minute is far finer than the fastest fall
+# ever measured here (about 15 GB an hour), so the tier is never learned late.
+DISK_INTERVAL=${FM_DISK_INTERVAL:-60}
+case "$DISK_INTERVAL" in
+  ''|*[!0-9]*|0) DISK_INTERVAL=60 ;;
 esac
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
@@ -1135,6 +1165,78 @@ age_of() {  # seconds since file mtime; "due immediately" if missing
   echo $(( now - m ))
 }
 
+# How bad a tier is, so a fall can be told from a recovery without spelling out
+# every pair. Anything unrecognized reads as the healthy tier, which errs toward
+# reporting the next fall rather than swallowing it.
+disk_space_tier_rank() {  # <tier>
+  case "$1" in
+    floor) printf '2\n' ;;
+    warn) printf '1\n' ;;
+    *) printf '0\n' ;;
+  esac
+}
+
+# In-session free-space watch: the only disk surface that looks while a session
+# is running. The session-start report and the dispatch refusal both look only
+# at a moment firstmate chose, and the volume fills in between - measured three
+# times in one week, the worst 49 GB to 1.2 GB with the fleet mid-flight and
+# nothing said, because the consumer was an OS background daemon that no
+# accounting of firstmate's own work would ever have predicted.
+#
+# Edge-triggered, never level-triggered. Only a transition to a WORSE tier is
+# reported, so a volume that sits low for a whole day costs one wake instead of
+# one per poll, and recovering upward is silent: it rearms the marker so the
+# next fall is reported again, and says nothing, because a dispatch re-reads the
+# disk for itself anyway.
+#
+# The order inside the floor branch is the whole point and is not incidental.
+# The out-of-band alarm fires FIRST, before anything touches the disk, because
+# the durable wake queue lives on the very volume that is filling: the measured
+# failure was this watcher dying on its own unwritable markers, with segfaults
+# and "illegal instruction" as the only visible symptoms and nothing anywhere
+# saying "disk". An alert that must be written down before it can be delivered
+# is an alert that fails in exactly the case it exists for. Everything after it
+# keeps the ordinary contract - an unwritable queue still stops this watcher -
+# and the alarm having already left the machine is what makes that survivable.
+disk_space_tick() {
+  local tier previous summary reason
+  if ! fm_disk_space_tier "$FM_HOME" "$CONFIG" >/dev/null; then
+    # Unmeasurable steps aside rather than reporting a number nobody has, the
+    # same way the dispatch refusal does.
+    touch "$STATE/.last-disk-check"
+    return 0
+  fi
+  tier=$FM_DISK_SPACE_TIER
+  if [ "$tier" = retired ]; then
+    touch "$STATE/.last-disk-check"
+    rm -f "$STATE/.disk-space-tier"
+    return 0
+  fi
+  previous=$(cat "$STATE/.disk-space-tier" 2>/dev/null || printf 'ok')
+  if [ "$(disk_space_tier_rank "$tier")" -le "$(disk_space_tier_rank "$previous")" ]; then
+    touch "$STATE/.last-disk-check"
+    printf '%s' "$tier" > "$STATE/.disk-space-tier" 2>/dev/null || true
+    return 0
+  fi
+  if [ "$tier" = floor ]; then
+    summary=$(fm_disk_space_summary "$FM_HOME") \
+      || summary="free space below the refusal floor on $FM_HOME"
+    wedge_alarm_notify "$summary - new work will not be dispatched" \
+      "$FM_WAKE_QUEUE"
+    reason="check: disk space critical: $summary - new work will not be dispatched"
+  else
+    summary=$(fm_disk_space_warn_summary "$FM_HOME") \
+      || summary="free space below the warning threshold on $FM_HOME"
+    reason="check: disk space low: $summary"
+  fi
+  [ -z "$FM_DISK_SPACE_WARN_CONFIG_ERROR" ] \
+    || reason="$reason ($FM_DISK_SPACE_WARN_CONFIG_ERROR)"
+  touch "$STATE/.last-disk-check"
+  fm_wake_append check disk-space "$reason" || exit 1
+  printf '%s' "$tier" > "$STATE/.disk-space-tier" 2>/dev/null || true
+  wake "$reason"
+}
+
 # Layer 2 + 3 signal scan: status files and turn-end markers.
 # Each file is compared against its persisted reported signature in .seen-* rather
 # than mtime-vs-a-startup-touch, so signals that land while no watcher is running
@@ -1660,6 +1762,13 @@ while :; do
   # Liveness beacon for fm-guard.sh: a fresh mtime here means a watcher is
   # alive. Supervision scripts warn when this goes stale with tasks in flight.
   touch "$STATE/.last-watcher-beat"
+
+  # Ahead of everything else in the cycle, because it is the one condition that
+  # can take the rest of the cycle - and this watcher - down with it, and
+  # because it is cheap enough that nothing has to be starved to run it.
+  if [ "$(age_of "$STATE/.last-disk-check")" -ge "$DISK_INTERVAL" ]; then
+    disk_space_tick
+  fi
 
   if [ "$(age_of "$STATE/home-summary.json")" -ge "$HOME_SUMMARY_INTERVAL" ]; then
     home_summary_refresh_detached
