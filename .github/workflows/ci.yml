@@ -10,16 +10,16 @@ permissions:
   contents: read
 
 # THROWAWAY MEASUREMENT BRANCH. Do not merge this file.
-# Per-root ShellCheck peak RSS across the whole canonical set, eight runners.
+# Which ShellCheck lever drives the two pathological roots' peak RSS.
 jobs:
   lint:
-    name: Lint ${{ matrix.shard }}
+    name: Lint ${{ matrix.mode }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        mode: [baseline, no-extended, no-external, neither]
     steps:
       - uses: actions/checkout@v6
       - name: Install pinned ShellCheck
@@ -27,23 +27,30 @@ jobs:
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Profile every root in this shard on its own
+      - name: Profile the expensive roots under one lever setting
         env:
-          FM_LINT_SHARD: ${{ matrix.shard }}of${{ strategy.job-total }}
+          MODE: ${{ matrix.mode }}
         run: |
           set -eu
-          echo "machine_total_mib=$(awk '/^MemTotal:/{printf "%.0f", $2/1024}' /proc/meminfo)"
-          bin/fm-lint.sh --list-files --shard "$FM_LINT_SHARD" > "$RUNNER_TEMP/roots"
-          echo "shard_roots=$(wc -l < "$RUNNER_TEMP/roots")"
-          while IFS= read -r root; do
-            [ -n "$root" ] || continue
-            /usr/bin/time -f "root_peak_mib=%M wall=%e" -o "$RUNNER_TEMP/t" \
-              shellcheck --norc --external-sources -- "$root" >/dev/null 2>&1 || true
-            # %M is KiB on GNU time; report MiB so the numbers compare directly
-            # with the whole-machine trace.
-            awk -v r="$root" '
-              /root_peak_mib=/ {
+          case "$MODE" in
+            baseline)    args="--norc --external-sources" ;;
+            no-extended) args="--norc --external-sources --extended-analysis=false" ;;
+            no-external) args="--norc" ;;
+            neither)     args="--norc --extended-analysis=false" ;;
+          esac
+          echo "mode=$MODE args=$args"
+          for root in bin/fm-teardown.sh tests/fm-pending-reply.test.sh \
+                      bin/fm-send.sh bin/fm-backlog-handoff.sh bin/fm-spawn.sh; do
+            /usr/bin/time -f "peak=%M wall=%e" -o "$RUNNER_TEMP/t" \
+              shellcheck $args -- "$root" >"$RUNNER_TEMP/out" 2>&1 || true
+            awk -v r="$root" -v m="$MODE" '
+              /peak=/ {
                 split($1, a, "="); split($2, b, "=")
-                printf "ROOTCOST %.0f %s %s\n", a[2] / 1024, b[2], r
+                printf "LEVER %s %.0f %s %s\n", m, a[2] / 1024, b[2], r
               }' "$RUNNER_TEMP/t"
-          done < "$RUNNER_TEMP/roots"
+          done
+          echo "--- diagnostics count under $MODE for the two worst roots ---"
+          for root in bin/fm-teardown.sh tests/fm-pending-reply.test.sh; do
+            n=$(shellcheck $args --format=gcc -- "$root" 2>/dev/null | wc -l || true)
+            echo "FINDINGS $MODE $n $root"
+          done
