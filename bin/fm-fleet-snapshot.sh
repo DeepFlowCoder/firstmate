@@ -59,9 +59,10 @@
 #     checks shared with secondmate_home_summary_json (orphan structured
 #     in-flight ids with no state/<id>.meta, and unstructured current backlog
 #     rows) decide valid and reason. unknown_blockers keeps one {id,blocker}
-#     pair per blocked-by id in neither the backlog nor the archive, so a row
-#     waiting on several such ids contributes one entry each and
-#     unknown_blocker_count counts ids rather than rows.
+#     pair per blocked-by reference to an id in neither the backlog nor the
+#     archive, so unknown_blocker_count counts references: neither rows nor
+#     distinct ids, since one row can name several phantom ids and one phantom
+#     id can hold several rows.
 #     For disclosure only: it is counted, never a validity reason.
 #     Does not invent live tasks; meta remains truth for
 #     workers. Bearings maps failures into omitted[] disclosure (and a Charted
@@ -324,7 +325,10 @@ first_pr_url_in_file() {  # <file>
 # waiting. An id archived more than once is done only when every copy is, so an
 # already computed false has to stick: `//` would treat it as absent and let the
 # last archived copy win, which releases a dependent whose blocker was archived
-# still pending and then archived again as done.
+# still pending and then archived again as done. That every-copy rule is this
+# archive map's own; how the backlog map below treats an id repeated inside
+# data/backlog.md is pre-existing behavior this change does not touch, and is
+# tracked separately.
 archive_states_json() {  # [<archive-path>] - defaults to this home's $BACKLOG_ARCHIVE
   local archive=${1:-$BACKLOG_ARCHIVE}
   [ -f "$archive" ] || { printf '{}\n'; return 0; }

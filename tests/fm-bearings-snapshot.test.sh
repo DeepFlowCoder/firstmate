@@ -1887,10 +1887,16 @@ EOF
 # silent: a renamed or mistyped field path yields no line at all and the count
 # goes back to being discoverable only by manual audit. The disclosure is
 # deliberately not an invalidity, so no (main-inventory) gate row may appear.
-# One row here carries two unknown ids and one archived-completed blocker, so
-# the id count and the affected-row count differ: the surface must report 2 for
-# a single row, which is what keeps the wording honest for the consolidation row
-# the card names as its worst case, waiting on six blockers at once.
+# The count is per (row, blocked-by id) reference, and this fixture separates
+# all three numbers so no assertion can confuse them: 4 references spread over
+# 3 rows naming 2 distinct phantom ids. One row carries two unknown ids, and one
+# phantom id is shared by three rows - the second shape being the card's own
+# worst case, one completed blocker holding six tasks, which a distinct-id count
+# would collapse to 1 and hide.
+# The last two rows pin reason attribution: blocked_reason is row-level, so it
+# renders only when the row had exactly one blocked-by token. On a multi-token
+# row it would explain the unresolved blocker with a reason written about the
+# already-completed one.
 test_main_unknown_blocker_is_disclosed_without_invalidating_inventory() {
   local home fakebin json canonical
   home=$(make_home main-unknown-blocker)
@@ -1899,6 +1905,10 @@ test_main_unknown_blocker_is_disclosed_without_invalidating_inventory() {
 ## Queued
 - [ ] gate-unknown - Waits on two ids nobody has blocked-by: vanished blocked-by: ghost blocked-by: landed (repo: firstmate) (kind: ship)
 - [ ] gate-archived - Waits on completed pruned work blocked-by: landed (repo: firstmate) (kind: ship)
+- [ ] gate-shared-a - Also waits on the shared phantom blocked-by: ghost (repo: firstmate) (kind: ship)
+- [ ] gate-shared-b - Also waits on the shared phantom blocked-by: ghost (repo: firstmate) (kind: ship)
+- [ ] gate-one-reason - Waits on a live blocker blocked-by: gate-archived - gate-archived owes a handoff (repo: firstmate) (kind: ship)
+- [ ] gate-multi-reason - Waits on live and pruned work blocked-by: gate-archived blocked-by: landed - landed is done (repo: firstmate) (kind: ship)
 
 ## Done
 EOF
@@ -1912,18 +1922,27 @@ EOF
   printf '%s' "$canonical" | jq -e '
     .main_inventory.valid == true
       and .main_inventory.reason == null
-      and .main_inventory.unknown_blocker_count == 2
+      and .main_inventory.unknown_blocker_count == 4
       and .main_inventory.unknown_blockers == [{id:"gate-unknown", blocker:"vanished"},
-                                               {id:"gate-unknown", blocker:"ghost"}]
-      and ([.main_inventory.unknown_blockers[].id] | unique | length) == 1
+                                               {id:"gate-unknown", blocker:"ghost"},
+                                               {id:"gate-shared-a", blocker:"ghost"},
+                                               {id:"gate-shared-b", blocker:"ghost"}]
+      and ([.main_inventory.unknown_blockers[].id] | unique | length) == 3
+      and ([.main_inventory.unknown_blockers[].blocker] | unique | length) == 2
   ' >/dev/null || fail "canonical main inventory mis-scored the unknown blockers: $canonical"
   json=$(run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
-    (.omitted | any(.surface == "main current backlog blocked-by id(s) in neither the backlog nor the archive: 2"))
+    (.omitted | any(.surface == "main current backlog blocked-by reference(s) to an id in neither the backlog nor the archive: 4"))
       and ([.gates[].id] | index("(main-inventory)") | not)
       and (.gates | any(.id == "gate-unknown" and .blocked_by == "vanished,ghost"))
       and (.gates | any(.id == "gate-archived" and .blocked_by == "-"))
-  ' >/dev/null || fail "unknown blockers were not disclosed per id, or they spent a gate row: $json"
+      and (.gates | any(.id == "gate-shared-a" and .blocked_by == "ghost"))
+      and (.gates | any(.id == "gate-shared-b" and .blocked_by == "ghost"))
+      and (.gates | any(.id == "gate-one-reason" and .blocked_by == "gate-archived"
+                        and .reason == "gate-archived owes a handoff"))
+      and (.gates | any(.id == "gate-multi-reason" and .blocked_by == "gate-archived"
+                        and .reason == "-"))
+  ' >/dev/null || fail "unknown blockers were not disclosed per reference, or a reason was misattributed: $json"
   pass "main unknown blocker is disclosed in omitted without invalidating inventory"
 }
 

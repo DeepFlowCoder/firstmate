@@ -43,10 +43,13 @@
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
-# Its count of blocked-by ids in neither the backlog nor its archive is
-# disclosed in omitted[] without touching that validity. That value counts ids,
-# not rows: one consolidation row waiting on several pruned or external ids
-# contributes one per id, so naming rows there would report an inflated count.
+# Its count of blocked-by references to an id in neither the backlog nor its
+# archive is disclosed in omitted[] without touching that validity. That value
+# counts references, one per (row, blocked-by id) pair, so it names neither
+# rows nor distinct ids: one row waiting on several phantom ids contributes one
+# per id, and one completed blocker holding six rows contributes six. The card
+# names that second shape as its worst case, so collapsing to distinct ids
+# would hide the very spread this check exists to surface.
 # Bearings never invents Underway rows from backlog-only ids; it discloses those
 # gaps in omitted[] and, when invalid, a Charted Next gate line so the four-section
 # chat cannot claim an empty fleet while main current state is broken.
@@ -440,6 +443,16 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson candidate_prs "$CANDIDATE_PRS" '
   def trunc($n): if . == null then null else
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
+  # blocked_reason is a single ROW-level field: it belongs to whichever
+  # blocked-by token carried a " - reason" suffix, which need not be the one
+  # still holding the row. Attaching it to a row with several tokens would
+  # assert that the unresolved blocker holds the row for a reason that
+  # describes a different, possibly already completed, blocker. Only a
+  # single-token row can attribute it unambiguously; elsewhere an empty reason
+  # misleads nobody and a wrong one does.
+  def blocked_reason_of($r):
+    if (($r.blocked_by_ids // []) | length) == 1 then ($r.blocked_reason // null)
+    else null end;
   def round_robin_landed($n):
     . as $groups
     | [range(0; (($groups | map(length) | max) // 0)) as $i
@@ -560,8 +573,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | {id, title:(.title | trunc(60)),
             blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
             reason:((if (.hold_until // null) != null and .hold_until > $today
-                     then ("until " + .hold_until + ": " + (.hold_reason // .blocked_reason // "-"))
-                     else (.hold_reason // .blocked_reason // "-") end) | trunc(40)),owner:"(main)",
+                     then ("until " + .hold_until + ": " + (.hold_reason // blocked_reason_of(.) // "-"))
+                     else (.hold_reason // blocked_reason_of(.) // "-") end) | trunc(40)),owner:"(main)",
             repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]
      + [ (.secondmate_current.records // [])[] as $m
          | select($m.provenance.selected == "structured-home")
@@ -572,8 +585,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | {id,title:(.title | trunc(60)),
             blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
             reason:((if (.hold_until // null) != null and .hold_until > $today
-                     then ("until " + .hold_until + ": " + (.hold_reason // .blocked_reason // "-"))
-                     else (.hold_reason // .blocked_reason // "-") end) | trunc(40)),owner:$m.id,
+                     then ("until " + .hold_until + ": " + (.hold_reason // blocked_reason_of(.) // "-"))
+                     else (.hold_reason // blocked_reason_of(.) // "-") end) | trunc(40)),owner:$m.id,
             repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]) as $gates_all
   | ([ .scout_reports[]
        | . as $r
@@ -623,7 +636,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         ((($snap.main_inventory.unstructured_current_count // 0)) as $n
          | if $n > 0 then {surface:("main unstructured current backlog row(s): \($n)"), reveal:"inspect main data/backlog.md In flight and Queued free-form rows"} else empty end),
         ((($snap.main_inventory.unknown_blocker_count // 0)) as $n
-         | if $n > 0 then {surface:("main current backlog blocked-by id(s) in neither the backlog nor the archive: \($n)"), reveal:"inspect main data/backlog.md blocked-by: ids against data/done-archive.md"} else empty end),
+         | if $n > 0 then {surface:("main current backlog blocked-by reference(s) to an id in neither the backlog nor the archive: \($n)"), reveal:"inspect main data/backlog.md blocked-by: ids against data/done-archive.md"} else empty end),
         (if $all_in_flight == 0 and ($in_flight_all | length) > $in_flight_n then {surface:("in_flight showing \($in_flight_n) of \($in_flight_all | length)"), reveal:"--all-in-flight"} else empty end),
         (if $all_secondmates == 0 and ($secondmates_all | length) > $secondmates_n then {surface:("secondmates showing \($secondmates_n) of \($secondmates_all | length)"), reveal:"--all-secondmates"} else empty end),
         (if (($snap.secondmate_current.truncated // 0) > 0) then {surface:("registered secondmates omitted by snapshot bound: \($snap.secondmate_current.truncated)"), reveal:"raise FM_SNAPSHOT_SECONDMATES"} else empty end),

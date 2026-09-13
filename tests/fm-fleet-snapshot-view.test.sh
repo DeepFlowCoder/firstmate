@@ -942,6 +942,7 @@ test_view_resolves_blocked_by_through_the_archive() {
 - [ ] freed-row - Freed Row blocked-by: landed (repo: alpha) (kind: ship)
 - [ ] held-row - Held Row (repo: alpha) (kind: ship) blocked-by: pending - waits on pending
 - [ ] multi-row - Multi Row blocked-by: pending blocked-by: landed (repo: alpha) (kind: ship)
+- [ ] multi-reason-row - Multi Reason Row blocked-by: pending blocked-by: landed - landed is done (repo: alpha) (kind: ship)
 - [ ] pending - Pending Blocker (repo: alpha) (kind: ship)
 
 ## Done
@@ -962,6 +963,10 @@ EOF
     "view should name the still-queued blocker on a row waiting for several tasks"
   assert_not_contains "$view" "| multi-row | Multi Row | alpha | ship | landed" \
     "view must not name the archived blocker just because it is the last token on the row"
+  assert_contains "$view" "| multi-reason-row | Multi Reason Row | alpha | ship | pending |" \
+    "view should drop a row-level reason it cannot attribute to the blocker it names"
+  assert_not_contains "$view" "| multi-reason-row | Multi Reason Row | alpha | ship | pending - landed is done" \
+    "view must not explain a live blocker with the reason written about the archived one"
   pass "fleet view resolves the blocked-by column through the archive"
 }
 

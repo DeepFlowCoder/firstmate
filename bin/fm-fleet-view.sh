@@ -63,13 +63,20 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
   # and it made the fleet view and the bearings board disagree about which
   # blocker holds the same row. An unstructured row carries no
   # unresolved_blocker_ids and keeps the raw form.
+  # blocked_reason is likewise row-level, belonging to whichever token carried a
+  # " - reason" suffix, so it is attached only when the row had exactly one
+  # blocked-by token and that token is the unresolved one. Otherwise it would
+  # explain an unresolved blocker with a reason written about a different,
+  # possibly already completed, one.
   def blocker($r):
     if ($r.unresolved_blocker_ids // null) == null then
       (if ($r.blocked_by // "") == "" then "-"
        elif ($r.blocked_reason // "") == "" then $r.blocked_by
        else "\($r.blocked_by) - \($r.blocked_reason)" end)
     elif ($r.unresolved_blocker_ids | length) == 0 then "-"
-    elif ($r.blocked_reason // "") == "" then ($r.unresolved_blocker_ids | join(","))
+    elif ($r.blocked_reason // "") == ""
+         or ((($r.blocked_by_ids // []) | length) != 1)
+      then ($r.unresolved_blocker_ids | join(","))
     else "\($r.unresolved_blocker_ids | join(",")) - \($r.blocked_reason)" end;
   def backlog_row($r):
     "| \($r.id // "-") | \(dash($r.title // $r.raw)) | \(dash($r.repo)) | \(dash($r.kind)) | \(blocker($r)) | \(dash($r.pr_url // $r.report_path // $r.local_note)) |";
