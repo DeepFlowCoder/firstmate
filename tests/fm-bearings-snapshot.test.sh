@@ -1043,7 +1043,7 @@ EOF
 
 # The collapsed captain-call contract: any due, unblocked captain-held task is
 # Captain's Call whatever its kind; a date-deferred hold is a dated gate until
-# due; a prose-deferred hold leaves the default views with a disclosure; and
+# due; a structurally parked hold leaves the default views with a disclosure; and
 # Recently Landed excludes only what closed while still held for the captain.
 test_collapsed_captain_call_deferral_and_landed() {
   local home fakebin json
@@ -1056,7 +1056,7 @@ test_collapsed_captain_call_deferral_and_landed() {
 - [ ] work-gate - Captain-gated ship work (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
 - [ ] later-call - Deferred captain call (repo: firstmate) (kind: captain) (hold: revisit with the captain) (hold-kind: captain) (hold-until: 2026-08-01)
 - [ ] due-call - Due captain call (repo: firstmate) (kind: captain) (hold: overdue captain choice) (hold-kind: captain) (hold-until: 2026-07-11)
-- [ ] parked-call - Prose-parked captain call (repo: firstmate) (kind: ship) (hold: DEFERRED by captain revisit later) (hold-kind: captain)
+- [ ] parked-call - Structurally parked call (repo: firstmate) (kind: ship) (hold: captain revisit later) (hold-kind: parked)
 - [ ] external-gate - Externally held work (repo: firstmate) (kind: ship) (hold: upstream release pending) (hold-kind: external)
 
 ## Done
@@ -1077,14 +1077,14 @@ EOF
       and (.gates | any(.[]; .id == "external-gate"))
       and (.landed | any(.[]; .id == "shipped-work"))
       and (.landed | any(.[]; .id == "answered-call") | not)
-      and (.omitted | any(.[]; .surface | startswith("captain holds marked deferred")))
+      and (.omitted | any(.[]; .reveal == "--all-queued" and (.surface | test("1$"))))
   ' >/dev/null || fail "the collapsed captain-call projection is wrong: $json"
   json=$(run "$home" "$fakebin" --json --all-decisions --all-queued)
   printf '%s' "$json" | jq -e '
-    (.decisions_open | any(.[]; .id == "parked-call"))
-      and (.gates | any(.[]; .id == "parked-call") | not)
-  ' >/dev/null || fail "--all-decisions must reveal the prose-deferred call: $json"
-  pass "captain-held tasks of any kind reach Captain's Call, deferral is honored, and landed excludes answered calls"
+    (.decisions_open | any(.[]; .id == "parked-call") | not)
+      and (.gates | any(.[]; .id == "parked-call"))
+  ' >/dev/null || fail "--all-queued must reveal the structurally parked call as a gate: $json"
+  pass "captain-held tasks of any kind reach Captain's Call, structured deferral is honored, and landed excludes answered calls"
 }
 
 # The captain holding work that is ALREADY UNDER WAY is the most urgent call
