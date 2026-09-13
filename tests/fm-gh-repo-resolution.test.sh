@@ -206,10 +206,10 @@ test_a_non_repository_is_an_answer_not_a_crash() {
 
 # --- the sweep --------------------------------------------------------------
 
-test_sweep_covers_the_home_and_its_project_clones() {
+test_sweep_covers_the_home_checkout_only() {
   local home out
   home="$TMP_ROOT/home$$"
-  mkdir -p "$home/projects/alpha" "$home/projects/beta" "$home/projects/plain"
+  mkdir -p "$home/projects/alpha" "$home/projects/beta"
   git -C "$home" init -q
   git -C "$home" remote add origin https://github.com/DeepFlowCoder/firstmate.git
   git -C "$home" remote add upstream https://github.com/kunchenguid/firstmate.git
@@ -221,23 +221,77 @@ test_sweep_covers_the_home_and_its_project_clones() {
   out=$(FM_ROOT_OVERRIDE="$home" FM_HOME="$home" "$BASE_REPO" sweep)
   printf '%s' "$out" | grep -q 'DeepFlowCoder/firstmate' \
     || fail "the sweep must cover the home's own checkout, which is where the session summary reported another repository's work: $out"
-  printf '%s' "$out" | grep -q 'DeepFlowCoder/alpha' || fail "the sweep must cover project clones: $out"
-  printf '%s' "$out" | grep -q 'DeepFlowCoder/beta' || fail "the sweep must read an ssh remote too: $out"
   [ "$(pins_of "$home")" = "remote.origin.gh-resolved base" ] || fail "the home checkout must end up pinned"
-  [ "$(pins_of "$home/projects/beta")" = "remote.origin.gh-resolved base" ] || fail "beta must end up pinned"
 
-  # A plain directory under projects/ resolves, through git's upward discovery,
-  # to the ENCLOSING repository, so treating it as a clone would act on the home
-  # under a project's name. It must be passed over, and it must stay a plain
-  # directory.
-  printf '%s' "$out" | grep -q 'projects/plain' \
-    && fail "a plain directory under projects/ must never be reported as a pinned clone: $out"
-  [ ! -e "$home/projects/plain/.git" ] \
-    || fail "the sweep must never turn a plain directory into a repository"
+  # A project clone is NOT the sweep's to pin: bin/fm-spawn.sh settles every
+  # clone the fleet works in, and the base repository also decides where an
+  # unnamed pull request is opened, so pinning a clone the fleet never enters
+  # could redirect somebody's contribution away from the parent it was meant for.
+  # Asserted as genuinely unpinned, not merely unreported, so the case cannot
+  # pass while the write still happens.
+  [ -z "$(pins_of "$home/projects/alpha")" ] \
+    || fail "a project clone must not be pinned by the sweep: $(pins_of "$home/projects/alpha")"
+  [ -z "$(pins_of "$home/projects/beta")" ] \
+    || fail "a project clone must not be pinned by the sweep: $(pins_of "$home/projects/beta")"
+  printf '%s' "$out" | grep -q 'DeepFlowCoder/alpha' \
+    && fail "the sweep must not report a project clone it does not touch: $out"
 
   out=$(FM_ROOT_OVERRIDE="$home" FM_HOME="$home" "$BASE_REPO" sweep)
-  [ -z "$out" ] || fail "a converged fleet must sweep silently, got: $out"
-  pass "fm-gh-base-repo.sh: the sweep covers the home and its clone roots, then goes quiet"
+  [ -z "$out" ] || fail "a converged home must sweep silently, got: $out"
+  pass "fm-gh-base-repo.sh: the sweep pins this home's own checkout, leaves project clones alone, then goes quiet"
+}
+
+test_sweep_passes_over_a_home_that_is_not_its_own_clone_root() {
+  local enclosing home out
+  # git discovery walks UP, so a home that is a plain directory inside another
+  # repository resolves to the enclosing one. Pinning that would write into a
+  # repository the operator never named.
+  enclosing="$TMP_ROOT/enclosing$$"
+  home="$enclosing/nested-home"
+  mkdir -p "$home"
+  git -C "$enclosing" init -q
+  git -C "$enclosing" remote add origin https://github.com/DeepFlowCoder/enclosing.git
+
+  out=$(FM_ROOT_OVERRIDE="$home" "$BASE_REPO" sweep)
+  [ -z "$out" ] || fail "a home that is not its own clone root must be passed over, got: $out"
+  [ -z "$(pins_of "$enclosing")" ] \
+    || fail "the enclosing repository must never be pinned under the home's name: $(pins_of "$enclosing")"
+  [ ! -e "$home/.git" ] || fail "the sweep must never turn a plain directory into a repository"
+  pass "fm-gh-base-repo.sh: a home nested inside another repository is passed over, not pinned as its parent"
+}
+
+test_sweep_reports_a_write_that_did_not_go_through() {
+  local home out
+  home="$TMP_ROOT/readonly$$"
+  mkdir -p "$home"
+  git -C "$home" init -q
+  git -C "$home" remote add origin https://github.com/DeepFlowCoder/firstmate.git
+  # git rewrites config through a lock file it creates BESIDE it, so the
+  # directory is what has to be unwritable; a read-only config file alone is
+  # replaced by the rename and the write succeeds.
+  chmod a-w "$home/.git" || fail "could not drop write permission on the case git dir"
+  # A process that can write it anyway (root) cannot stage this failure at all,
+  # and a case that silently proves nothing is worse than one that says so.
+  if : 2>/dev/null >"$home/.git/.write-probe"; then
+    rm -f "$home/.git/.write-probe"
+    chmod u+w "$home/.git" 2>/dev/null || true
+    pass "fm-gh-base-repo.sh: skipped the unwritable-config case, this process writes into a read-only directory"
+    return 0
+  fi
+
+  out=$(FM_ROOT_OVERRIDE="$home" "$BASE_REPO" sweep) \
+    || { chmod u+w "$home/.git" 2>/dev/null || true; fail "the sweep must still exit 0 when a pin fails"; }
+  chmod u+w "$home/.git" 2>/dev/null || true
+  # A pin that fails in silence is the worst outcome available: the fix looks
+  # applied, is not, and this checkout is the one whose start-up summary labels
+  # another repository's work with this repository's name.
+  case "$out" in
+    failed:*gh-resolved*) ;;
+    *) fail "a failed pin must be reported, naming the write that did not go through, got: '${out:-<silence>}'" ;;
+  esac
+  printf '%s' "$out" | grep -q "$home" \
+    || fail "a failed pin must name the repository it could not write: $out"
+  pass "fm-gh-base-repo.sh: a pin that could not be written is reported, never passed over in silence"
 }
 
 # --- naming a repository ----------------------------------------------------
@@ -288,6 +342,8 @@ test_every_existing_pin_is_considered_not_only_the_first
 test_a_single_remote_clone_is_pinned_too
 test_a_non_github_forge_is_reported_not_guessed
 test_a_non_repository_is_an_answer_not_a_crash
-test_sweep_covers_the_home_and_its_project_clones
+test_sweep_covers_the_home_checkout_only
+test_sweep_passes_over_a_home_that_is_not_its_own_clone_root
+test_sweep_reports_a_write_that_did_not_go_through
 test_slug_accepts_the_spellings_git_writes
 test_slug_refuses_what_only_resembles_github

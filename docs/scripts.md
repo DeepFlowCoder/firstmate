@@ -131,7 +131,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-lock-lib.sh`         | Shared "is this git lock provably abandoned?" proof used by teardown and fleet-sync   |
 | `fm-forge-remote-lib.sh` | Single owner of which remote is the forge and which branch that forge itself calls default, so landing and up-to-date guards never measure against a clone of somebody's working copy |
 | `fm-gh-repo-lib.sh`      | Single owner of which GitHub repository a query answers for: the `owner/repo` spelling that names one, and the forge pin that settles a query naming none |
-| `fm-gh-base-repo.sh`     | Pin one repository's implicit GitHub base repository to its forge, or sweep this home's checkout and its project clones, reporting only what changed |
+| `fm-gh-base-repo.sh`     | Pin one repository's implicit GitHub base repository to its forge, or sweep this home's own checkout, reporting only a real change or a failed write |
 | `fm-config-inherit-lib.sh` | Shared primary-to-secondmate inherited local-material propagation and config-reread delivery |
 | `fm-trace-context-lib.sh` | Native W3C trace-context propagation for firstmate spawns (default-off)              |
 | `fm-tasks-axi-lib.sh`    | Shared backlog-backend selector and `tasks-axi` compatibility probe                  |

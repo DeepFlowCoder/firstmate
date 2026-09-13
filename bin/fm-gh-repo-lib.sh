@@ -82,6 +82,19 @@
 # skipped because it looked unnecessary at the time is exactly how this defect
 # arrives.
 #
+# The base repository is not read-only state: it also decides where an unnamed
+# CREATE lands, so pinning the forge moves an unnamed `gh pr create` as well as
+# an unnamed `pr view`. For this fleet that is the wanted answer - the forge is
+# where the work lands - but it is why the session-start sweep in
+# bin/fm-bootstrap.sh covers this home's own checkout ONLY: in a
+# fork-and-contribute project, opening against the parent is the whole point, and
+# a sweep is not entitled to redirect somebody's pull request.
+#
+# A forge on a GitHub Enterprise host is named by no slug here, so callers that
+# need one read as "no answer" rather than asking blind. That is an accepted cost
+# and it fails on the safe side: bin/fm-teardown.sh refuses to release work
+# instead of releasing it against a repository it could not name.
+#
 # This library answers WHICH repository. bin/fm-pr-lib.sh remains the single owner
 # of parsing a canonical pull-request URL into its provider-tagged identity, a
 # stricter question over a narrower input, and bin/fm-forge-pr-state-lib.sh

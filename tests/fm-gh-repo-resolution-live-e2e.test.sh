@@ -16,6 +16,12 @@
 #      implicitly resolved repository instead. This is why every caller in the
 #      fleet must pass the owner/repo spelling: a URL looks like naming the
 #      repository and is not, and there is no error to notice.
+#   3. gh-axi HONOURS --repo on `pr list --head`, which is the shape
+#      bin/fm-teardown.sh's landing test uses. Fact 2 proves --repo has a
+#      silent-drop failure mode, and a dropped flag there would let a branch-name
+#      collision hand teardown another repository's merged pull request - on
+#      which teardown releases the work. A different subcommand is a different
+#      surface, so it is measured rather than inferred from `pr view`.
 #
 # It also re-measures the defect itself: in a clone with two GitHub remotes and no
 # pin, an unnamed query answers for the OTHER repository.
@@ -131,5 +137,37 @@ fi
 GOT=$(cd "$PINNED" && gh pr view "$NUMBER" --repo "https://github.com/$THEIRS" --json title -q .title 2>/dev/null)
 [ "$GOT" = "$THEIRS_TITLE" ] \
   || note "gh no longer accepts a URL-shaped --repo either; got '$GOT'"
+
+# --- 5. --repo is honoured on `pr list`, teardown's own call shape ------------
+# bin/fm-teardown.sh's pr_number_from_branch asks
+# `pr list --state all --head <branch> --limit 1 --repo <slug>` and parses the
+# leading number. The portable suite cannot prove this: its fake gh-axi
+# dispatches on the subcommand and ignores every flag, so it passes whether the
+# flag is honoured, rejected, or dropped.
+axi_list_number() {  # <dir> <branch> [<args>...]
+  local dir=$1 branch=$2; shift 2
+  (cd "$dir" && gh-axi pr list --state all --head "$branch" --limit 1 "$@" 2>/dev/null) \
+    | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1
+}
+
+# The head branch of OURS#NUMBER, so the two repositories are asked a question
+# that genuinely has different answers rather than one this file invented.
+HEAD_BRANCH=$(gh pr view "$NUMBER" --repo "$OURS" --json headRefName -q .headRefName 2>/dev/null)
+[ -n "$HEAD_BRANCH" ] \
+  || fail "could not read the head branch of $OURS#$NUMBER; the pr list probe needs one"
+note "listing by head branch $HEAD_BRANCH"
+
+OURS_LIST=$(axi_list_number "$LAB" "$HEAD_BRANCH" --repo "$OURS")
+THEIRS_LIST=$(axi_list_number "$LAB" "$HEAD_BRANCH" --repo "$THEIRS")
+[ -n "$OURS_LIST" ] \
+  || fail "pr list --repo $OURS found no pull request for $HEAD_BRANCH; the probe cannot measure anything"
+[ "$OURS_LIST" != "$THEIRS_LIST" ] \
+  || fail "pr list answers identically for both repositories at $HEAD_BRANCH ('$OURS_LIST'), so this probe would pass vacuously; pick another pull request"
+pass "gh-axi: --repo decides what pr list answers ($OURS -> '$OURS_LIST', $THEIRS -> '${THEIRS_LIST:-none}')"
+
+GOT=$(axi_list_number "$PINNED" "$HEAD_BRANCH")
+[ "$GOT" = "$OURS_LIST" ] \
+  || fail "an unnamed pr list in a pinned clone must answer for $OURS ('$OURS_LIST'); got '${GOT:-none}'"
+pass "pinned: an unnamed pr list answers for this fleet's own repository, as teardown's landing test needs"
 
 pass "live gh repository-resolution guard complete"

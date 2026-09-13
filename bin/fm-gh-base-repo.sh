@@ -5,7 +5,7 @@
 # bin/fm-gh-repo-lib.sh owns WHY and the exact rule, including which remote is
 # pinned, why an existing pin is never overwritten, and why naming another
 # repository explicitly keeps working. This script is that rule's executable
-# surface: one repository at a time, or a sweep over everything this home reaches.
+# surface: one repository at a time, or a sweep over this home's own checkout.
 #
 # Usage: fm-gh-base-repo.sh pin <repo-dir>
 #          Pin one repository. Prints "<outcome>: <detail>" - pinned, unchanged,
@@ -13,23 +13,23 @@
 #          reported outcome, not a failure: there is no repository to guess at.
 #          bin/fm-gh-repo-lib.sh owns what each outcome means.
 #        fm-gh-base-repo.sh sweep
-#          Pin this home's own firstmate checkout and every clone root under its
-#          projects dir. Prints one "pinned: <detail>" line per repository that
-#          CHANGED and nothing else, so a converged fleet is silent and
-#          bin/fm-bootstrap.sh can relay a real change as a BOOTSTRAP_INFO fact.
-#          Exits 0.
+#          Pin this home's own firstmate checkout, and only it. Prints one
+#          "pinned: <detail>" line when it CHANGED and one "failed: <detail>"
+#          line when the write did not go through, and nothing otherwise, so a
+#          converged home is silent and bin/fm-bootstrap.sh can relay a real
+#          change as a BOOTSTRAP_INFO fact and a real failure as an actionable
+#          one. A pin that fails silently is the worst outcome available here:
+#          the fix looks applied, is not, and the session summary keeps naming
+#          the wrong repository forever. Exits 0.
 #
 # Every path here is offline and idempotent: it resolves remotes already
-# configured and writes at most one git config key per repository, so a session
-# that runs the sweep on every start converges once and stays silent afterwards.
-# The sweep writes into project clones for the same reason bin/fm-fleet-sync.sh
-# does, and like it, it never touches a working tree, a branch, or a commit.
+# configured and writes at most one git config key, so a session that runs the
+# sweep on every start converges once and stays silent afterwards. It never
+# touches a working tree, a branch, or a commit.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-FM_HOME="${FM_HOME:-$FM_ROOT}"
-PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 
 # shellcheck source=bin/fm-forge-remote-lib.sh
 . "$SCRIPT_DIR/fm-forge-remote-lib.sh"
@@ -53,22 +53,35 @@ case "${1-}" in
     printf '%s: %s\n' "${answer%%$'\t'*}" "${answer#*$'\t'}"
     ;;
   sweep)
-    # The home's own checkout first: it is the repository whose session-start
-    # summary reported another repository's issues and pull requests under this
-    # repository's name, which is the symptom an operator actually sees.
-    for dir in "$FM_ROOT" "$PROJECTS"/*; do
-      [ -d "$dir" ] || continue
-      # A clone root only. git discovery walks up, so a plain nested directory
-      # would otherwise resolve to - and be pinned as - the enclosing repository.
-      top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || continue
-      top_real=$(cd "$top" 2>/dev/null && pwd -P) || continue
-      dir_real=$(cd "$dir" 2>/dev/null && pwd -P) || continue
-      [ "$top_real" = "$dir_real" ] || continue
-      answer=$(pin_one "$dir")
+    # This home's own checkout, and only it. It is the repository whose
+    # session-start summary reported another repository's issues and pull
+    # requests under this repository's name, which is the symptom an operator
+    # actually sees.
+    #
+    # A project clone is deliberately NOT swept. bin/fm-spawn.sh settles every
+    # clone the fleet actually works in - a task worktree is a linked worktree,
+    # so that pin lands in the clone's own shared config - and pinning a clone
+    # the fleet never spawns into would decide something that is not this rule's
+    # to decide: the base repository also governs where an unnamed publish goes,
+    # so in a fork-and-contribute project it would redirect a pull request away
+    # from the parent it was meant for. What is given up is the operator's own
+    # ad-hoc unnamed call in a clone the fleet has never entered, where AGENTS.md
+    # already says to name the repository.
+    #
+    # A clone root only. git discovery walks up, so a home that is itself a plain
+    # directory inside another repository would otherwise resolve to - and be
+    # pinned as - the enclosing one.
+    if [ -d "$FM_ROOT" ] \
+      && top=$(git -C "$FM_ROOT" rev-parse --show-toplevel 2>/dev/null) \
+      && top_real=$(cd "$top" 2>/dev/null && pwd -P) \
+      && root_real=$(cd "$FM_ROOT" 2>/dev/null && pwd -P) \
+      && [ "$top_real" = "$root_real" ]; then
+      answer=$(pin_one "$FM_ROOT")
       case "$answer" in
         pinned$'\t'*) printf 'pinned: %s\n' "${answer#*$'\t'}" ;;
+        failed$'\t'*) printf 'failed: %s\n' "${answer#*$'\t'}" ;;
       esac
-    done
+    fi
     ;;
   -h | --help | help)
     usage

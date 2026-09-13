@@ -23,7 +23,12 @@ Every measurement reads public pull-request metadata only; nothing is created, e
 
 ## Where the pin is applied, and the one gap that remains
 
-A repository is pinned from two places, both offline and idempotent: the session-start convergence sweep in [`bin/fm-bootstrap.sh`](../../bin/fm-bootstrap.sh), which covers this home's own checkout and every clone root under its projects dir, and [`bin/fm-spawn.sh`](../../bin/fm-spawn.sh), which settles a task worktree before the worker that will query GitHub exists.
+A repository is pinned from two places, both offline and idempotent: the session-start convergence sweep in [`bin/fm-bootstrap.sh`](../../bin/fm-bootstrap.sh), which covers this home's own checkout and nothing else, and [`bin/fm-spawn.sh`](../../bin/fm-spawn.sh), which settles a task worktree before the worker that will query GitHub exists.
+
+Project clones are deliberately outside the sweep's scope.
+A task worktree is a linked worktree, so the spawn pin lands in the clone's own shared config and every clone the fleet actually works in is settled anyway.
+A clone the fleet has never entered is left alone on purpose, because the base repository also decides where an unnamed `gh pr create` lands: in a fork-and-contribute project, opening against the parent is the point, and a session-start sweep is not entitled to redirect it.
+What that gives up is the operator's own ad-hoc unnamed call in such a clone, where [`AGENTS.md`](../../AGENTS.md) already instructs naming the repository.
 
 The spawn pin is what closes the dangerous path, because a worker's own `gh-axi` call is the one query no guard reviews.
 One gap is deliberately left open and is cosmetic: a brand-new clone's very first session can still print a tool's own start-up summary before firstmate's sweep has run, since hook ordering between separate tools is not something firstmate controls.
@@ -110,6 +115,61 @@ gh pr view 44 --repo https://github.com/kunchenguid/firstmate --json title -q .t
 
 ```
 feat: add opencode server backend
+```
+
+## `--repo` is honoured on `pr list`, the call teardown's landing test makes
+
+Recorded 2026-09-13, same environment.
+
+[`bin/fm-teardown.sh`](../../bin/fm-teardown.sh)'s `pr_number_from_branch` asks `gh-axi pr list --state all --head <branch> --limit 1 --repo <slug>`.
+That is a different subcommand from the `pr view` measured above, and the section before this one shows `--repo` has a silent-drop failure mode, so it is measured rather than assumed: if the flag were dropped here, a branch-name collision could hand teardown another repository's merged pull request, and teardown releases work on a merged pull request.
+
+The branch is the head branch of this fleet's own pull request #44, `fm/fm-autoarm-stop-no-se-ejecuta`.
+Naming each repository gives two different answers, so the flag decides:
+
+```sh
+gh-axi pr list --state all --head fm/fm-autoarm-stop-no-se-ejecuta --limit 1 --repo DeepFlowCoder/firstmate
+```
+
+```
+count: 1 of 1 total
+pull_requests[1]{number,title,state,author,draft,review}:
+  44,"fix(bin): separate an unowned home from one another session holds",merged,DeepFlowCoder,no,none
+```
+
+```sh
+gh-axi pr list --state all --head fm/fm-autoarm-stop-no-se-ejecuta --limit 1 --repo kunchenguid/firstmate
+```
+
+```
+count: 0
+pull_requests: []
+```
+
+The defect reproduces on `pr list` too. In a clone with both remotes and no pin, the unnamed call answers for the other repository - here, that this branch has no pull request at all:
+
+```sh
+git init -q . && git remote add origin https://github.com/DeepFlowCoder/firstmate.git
+git remote add upstream https://github.com/kunchenguid/firstmate.git
+gh-axi pr list --state all --head fm/fm-autoarm-stop-no-se-ejecuta --limit 1
+```
+
+```
+count: 0
+pull_requests: []
+```
+
+After the pin, the unnamed call answers for this fleet's repository:
+
+```sh
+git config remote.origin.gh-resolved base
+gh-axi pr list --state all --head fm/fm-autoarm-stop-no-se-ejecuta --limit 1
+```
+
+```
+count: 1 of 1 total
+pull_requests[1]{number,title,state,author,draft,review}:
+  44,"fix(bin): separate an unowned home from one another session holds",merged,DeepFlowCoder,no,none
 ```
 
 ## The pin needs no host allowlist
