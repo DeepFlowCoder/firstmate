@@ -81,6 +81,10 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# Which forge check values count as a pass is not this wrapper's rule to spell.
+# shellcheck source=bin/fm-pr-fitness-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-pr-fitness-lib.sh"
 
 # Bounds (overridable for tests / large fleets).
 FM_BEARINGS_LANDED=${FM_BEARINGS_LANDED:-6}
@@ -261,6 +265,57 @@ gh_bounded() {  # <args...>
     env GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 gh "$@"
 }
 
+# Field separators for the per-pull-request verdict readings folded below.
+PR_TAB=$(printf '\t')
+PR_NL='
+'
+
+# Render a whole repo's pull requests in one pass, one line per pull request:
+#   <number><TAB><reading><TAB><reading>...
+# where each reading is one check in the form fm_pr_fitness_rollup folds. The
+# first field after the number is always empty, so a pull request carrying no
+# check at all still produces a line and still reaches the fold, which reads it
+# as none rather than leaving it unanswered.
+#
+# @tsv is what holds that framing: it escapes a tab or a newline inside a forge
+# value instead of letting it break the line and fabricate a reading of its own.
+#
+# A sentinel stands in for any value the forge left empty or null, so no field is
+# lost to the fold's word split, and an entry this cannot recognise as either
+# form is rendered as a check run carrying both sentinels - which the owner folds
+# as failing, because an entry that says nothing readable is not a pass. The same
+# sentinel reading is what `try ... catch` renders for a pull request whose entry
+# errors the render, so one unreadable pull request reads failing on its own
+# rather than dragging every other pull request in the repo down with it.
+#
+# __typename is expected in practice on a rollup entry, and the two shape tests
+# behind it exist because a legacy status context arriving without one would
+# otherwise be classified as a check run, read UNKNOWN/NONE, and report a healthy
+# delivery as failing. Nobody has verified against GitHub's API that such an
+# entry cannot arrive: __typename is a GraphQL meta-field present here only
+# because the gh CLI's selection set asks for it, which is a property of that
+# client and not a documented provider guarantee. Remove the two shape tests only
+# once someone verifies that against the API and cites the verification here.
+pr_checks_reading() {  # <gh pr list JSON array>
+  printf '%s' "${1:-[]}" | jq -r '
+    def word($v; $fallback):
+      ($v | tostring) as $s | if $s == "" or $s == "null" then $fallback else $s end;
+    def reading:
+      (if (.__typename | tostring) == "StatusContext" then "context"
+       elif (.__typename | tostring) == "CheckRun" then "run"
+       elif (has("status") or has("conclusion")) then "run"
+       elif (has("state") or has("context")) then "context"
+       else "run" end) as $kind
+      | if $kind == "context"
+        then "context \(word(.state; "UNKNOWN"))"
+        else "run \(word(.status; "UNKNOWN")) \(word(.conclusion; "NONE"))"
+        end;
+    .[]
+    | [(.number | tostring), ""]
+      + [ try ((.statusCheckRollup // [])[] | reading) catch "run UNKNOWN NONE" ]
+    | @tsv' 2>/dev/null
+}
+
 if [ "$INCLUDE_PRS" = 1 ]; then
   if ! command -v gh >/dev/null 2>&1; then
     PR_STATUS='unavailable (gh not found)'
@@ -294,20 +349,32 @@ EOF
         --json number,title,url,headRefName,reviewDecision,mergeable,statusCheckRollup 2>/dev/null) \
         || { nwarn=$((nwarn + 1)); continue; }
       [ -n "$out" ] || out='[]'
-      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" '
-        [ .[] | {
+      # Fold each pull request's checks through bin/fm-pr-fitness-lib.sh before
+      # the rows are built, so the summary below is that owner's verdict rather
+      # than a second spelling of the pass lists that can drift from it.
+      pr_verdicts=
+      while IFS= read -r pr_line; do
+        [ -n "$pr_line" ] || continue
+        pr_num=${pr_line%%"$PR_TAB"*}
+        pr_reading=${pr_line#*"$PR_TAB"}
+        pr_verdicts="$pr_verdicts$pr_num$PR_TAB$(printf '%s' "${pr_reading//$PR_TAB/$PR_NL}" | fm_pr_fitness_rollup)
+"
+      done <<EOF
+$(pr_checks_reading "$out")
+EOF
+      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --arg verdicts "$pr_verdicts" --argjson limit "$FM_BEARINGS_PR_LIMIT" '
+        ($verdicts | split("\n") | map(select(length > 0) | split("\t"))
+          | map({key: .[0], value: .[1]}) | from_entries) as $verdict
+        | [ .[] | {
           num:(.number|tostring),
           repo:$repo,
           task:(if (.headRefName // "" | startswith("fm/")) then (.headRefName | ltrimstr("fm/")) else "-" end),
           url:(.url // "-"),
           review:(.reviewDecision // "none"),
           mergeable:(.mergeable // "UNKNOWN"),
-          checks:(
-            (.statusCheckRollup // []) as $c
-            | if ($c|length) == 0 then "none"
-              elif any($c[]; (.conclusion // .state // "") as $s | ($s=="FAILURE" or $s=="ERROR" or $s=="TIMED_OUT" or $s=="CANCELLED" or $s=="ACTION_REQUIRED")) then "failing"
-              elif any($c[]; ((.status // "") != "COMPLETED") and ((.state // "") != "SUCCESS")) then "pending"
-              else "passing" end)
+          # A pull request the fold above did not reach is not reported as
+          # passing; absence of a verdict is never a pass on any path here.
+          checks:($verdict[(.number|tostring)] // "failing")
         } ] as $rows | {returned:($rows | length), rows:$rows[:$limit]}') || { nwarn=$((nwarn + 1)); continue; }
       returned=$(printf '%s' "$repo_result" | jq '.returned')
       repo_rows=$(printf '%s' "$repo_result" | jq '.rows')
