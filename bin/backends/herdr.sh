@@ -1856,9 +1856,52 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
   [ "$presence" = dead ]
 }
 
+# fm_backend_herdr_pane_shell_only: true (0) only when `pane process-info`
+# POSITIVELY proves <pane_id> is sitting at its own bare shell prompt with
+# nothing else running in it. Every other outcome - an unparseable or missing
+# response, a pane_id that does not round-trip, an absent or non-numeric
+# shell_pid, an empty process list, or any foreground process that is not the
+# shell itself - returns 1, so this probe can only ever CONFIRM emptiness and
+# never manufacture it.
+#
+# This is the second source `agent get` needs. Herdr's agent registry is fed by
+# the agent's own lifecycle hooks, so an agent that dies without firing its stop
+# hook (measured: pi killed by an API error) leaves `agent_status: idle`
+# registered forever, and screen detection cannot correct it either - a known
+# agent sitting at a shell prompt falls back to `idle` by design
+# (`agent explain` -> fallback_reason default_known_agent_idle_fallback).
+# The process table cannot be fooled that way: an agent that is running IS the
+# pane's foreground process, and an agent that is gone leaves the shell as the
+# only thing in the foreground process group.
+#
+# Verified against real herdr 0.8.2 in an isolated lab session (2026-09-13):
+# a pane at its zsh prompt reports foreground_process_group_id == shell_pid with
+# a single foreground process whose pid is that same shell_pid, while the same
+# pane running `sleep 120` reports a different process group and the `sleep`
+# process - and `agent get` reports `idle` in BOTH cases.
+fm_backend_herdr_pane_shell_only() {  # <session> <pane_id>
+  local session=$1 pane_id=$2 out verdict
+  out=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane_id" 2>/dev/null) || return 1
+  verdict=$(printf '%s' "$out" | jq -r --arg pane "$pane_id" '
+    (.result.process_info // empty) as $p
+    | if ($p | type) != "object" then "no"
+      elif ($p.pane_id // "") != $pane then "no"
+      elif ($p.shell_pid | type) != "number" then "no"
+      elif ($p.foreground_process_group_id | type) != "number" then "no"
+      elif $p.foreground_process_group_id != $p.shell_pid then "no"
+      elif ($p.foreground_processes | type) != "array" then "no"
+      elif ($p.foreground_processes | length) == 0 then "no"
+      elif ([$p.foreground_processes[] | select((.pid // null) == $p.shell_pid)] | length)
+           != ($p.foreground_processes | length) then "no"
+      else "yes"
+      end
+  ' 2>/dev/null) || return 1
+  [ "$verdict" = yes ]
+}
+
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
-# dead|no-agent|live|unknown, purely from the JSON body of two read-only
-# calls - never from process exit status, since a business-logic "not found"
+# dead|no-agent|live|unknown, purely from the JSON body of read-only calls -
+# never from process exit status, since a business-logic "not found"
 # response is a normal, expected outcome here, not a call failure (real herdr
 # 0.7.1 exits 1 for it; the canned-response test fakes exit 0; parsing only
 # the JSON keeps this function correct against either).
@@ -1868,19 +1911,29 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              reaped it - verified empirically: killing a pane's shell pid
 #              on a live server makes herdr immediately drop both the pane
 #              and its tab from `pane get`/`tab list`).
-#   no-agent - `pane get` succeeds (the pane structurally exists) but `agent
-#              get` responds with error code agent_not_found: nothing is
-#              registered in it - exactly what a herdr session-layout restore
-#              produces (verified empirically: `session stop` + fresh `herdr
-#              server` restart leaves the pane alive, agent_status "unknown",
-#              agent get -> agent_not_found - docs/herdr-backend.md "ID
-#              stability across a server restart"), and what a future
+#   no-agent - nothing is running in a pane that structurally exists. Two
+#              routes reach it, and they mean the same thing to every caller.
+#              Either `pane get` succeeds but `agent get` responds with error
+#              code agent_not_found - exactly what a herdr session-layout
+#              restore produces (verified empirically: `session stop` + fresh
+#              `herdr server` restart leaves the pane alive, agent_status
+#              "unknown", agent get -> agent_not_found - docs/herdr-backend.md
+#              "ID stability across a server restart"), and what a future
 #              `resume_agents_on_restore = false` restore would produce too
-#              (a plain shell, never an agent).
+#              (a plain shell, never an agent). Or `agent get` still reports a
+#              registration while fm_backend_herdr_pane_shell_only proves the
+#              pane is back at its bare shell prompt: a PHANTOM registration
+#              left behind by an agent that died without firing its stop hook.
+#              Both are agent-less panes holding no conversation, so both are
+#              replaceable; routing them to one state keeps a single notion of
+#              truth rather than a second state machine.
 #   live     - `agent get` succeeds and reports a real agent_status (working,
-#              idle, done, or blocked - any registered value). An idle or
+#              idle, done, or blocked - any registered value) and the process
+#              corroboration did not positively contradict it. An idle or
 #              blocked agent is still a genuine, still-registered agent, not
 #              a restored husk, so it is never a close-and-replace candidate.
+#              An unreadable or ambiguous `pane process-info` leaves this
+#              verdict untouched: corroboration only ever downgrades on proof.
 #   unknown  - anything else: an unparseable/unexpected response from either
 #              call, or a `pane get` success whose own echoed pane_id does not
 #              round-trip (guards against misreading a herdr response shape
@@ -1905,7 +1958,15 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
   fi
   status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
   case "$status" in
-    working|idle|done|blocked) printf 'live' ;;
+    working|idle|done|blocked)
+      # The registry claims an agent. Believe it only if the pane's own
+      # process table does not positively prove otherwise.
+      if fm_backend_herdr_pane_shell_only "$session" "$pane_id"; then
+        printf 'no-agent'
+      else
+        printf 'live'
+      fi
+      ;;
     *) printf 'unknown' ;;
   esac
 }

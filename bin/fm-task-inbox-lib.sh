@@ -20,6 +20,17 @@
 # bounded schedule, and a worker that never acknowledges surfaces through the
 # ordinary stale wake into stuck-crewmate-recovery.
 #
+# That "ringing it again is free" only holds while an AGENT is reading the
+# terminal. A pane whose agent is gone is a shell, and a shell does not read a
+# line - it RUNS it. Measured 2026-08-31 on a task whose worker had died: the
+# doorbell was typed into the bare zsh prompt and executed four times, leaving
+# `zsh: command not found: Firstmate` in a real worktree. Nothing was destroyed
+# only because the constant line happens to begin with a word that is not a
+# command, which makes the current wording the sole thing standing between a
+# re-ring and arbitrary execution on the captain's machine. So the ring asks the
+# backend whether anyone is reading before it types, and a positively dead or
+# missing endpoint is never written to.
+#
 # Layout under <state-dir>:
 #   <task>.inbox/NNN.msg       one durable steer, numeric sequence, atomic rename
 #   <task>.inbox/handled/      the worker's `mv` here IS the acknowledgement
@@ -255,20 +266,33 @@ fm_task_inbox_doorbell_line() {  # <record-path>
     "$abs" "$abs"
 }
 
-# Ring the doorbell, best-effort: one advisory composer pre-check, then the
-# backend's submit machinery with a minimal retry budget, verdict discarded.
+# Ring the doorbell, best-effort: a reader check, one advisory composer
+# pre-check, then the backend's submit machinery with a minimal retry budget,
+# verdict discarded.
 # Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
-# (the watcher re-rings later), 2 the backend send failed. No return value is
-# delivery proof; the acknowledgement move is the only delivery signal.
-# The skip is deliberately narrow: only an exact `pending` verdict defers,
-# because there our Enter could submit someone's real half-typed content.
-# `pending-unproven` and `unknown` still ring - the worst outcome is a garbled
-# CONSTANT line the worker recovers semantically, while skipping on ambiguous
-# verdicts would starve a harness whose idle screen the classifier cannot
-# positively identify (that classifier is advisory here by design).
+# (the watcher re-rings later), 2 the backend send failed, 3 skipped because the
+# backend positively classifies the endpoint as having no agent to read it. No
+# return value is delivery proof; the acknowledgement move is the only delivery
+# signal.
+# The composer skip is deliberately narrow: only an exact `pending` verdict
+# defers, because there our Enter could submit someone's real half-typed
+# content. `pending-unproven` and `unknown` still ring - the worst outcome is a
+# garbled CONSTANT line the worker recovers semantically, while skipping on
+# ambiguous verdicts would starve a harness whose idle screen the classifier
+# cannot positively identify (that classifier is advisory here by design).
+# The reader check is narrow in the same direction, but it is a SAFETY gate
+# rather than an etiquette one, so it refuses on proof instead of deferring on
+# doubt. It asks fm_backend_agent_alive, whose `dead` is exactly the set of
+# positively classified agent-less states (dead and missing); every ambiguous or
+# unreadable read, and every backend with no recovery-grade classifier at all
+# (zellij, orca, cmux), reports `unknown` and rings exactly as before. So this
+# can never quietly stop steering a live worker. What it stops is typing into a
+# pane that has already been proven to be a shell.
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
-  local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
+  local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict astate
   line=$(fm_task_inbox_doorbell_line "$rec")
+  astate=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null) || astate=unknown
+  [ "$astate" != dead ] || return 3
   cstate=$(fm_backend_composer_state "$backend" "$target" "$label" 2>/dev/null) || cstate=unknown
   case "$cstate" in
     pending) return 1 ;;
