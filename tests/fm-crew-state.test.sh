@@ -1719,10 +1719,12 @@ outcome: failed"
 # the sha the crew handed the pipeline, which IS this worktree's commit.
 # docs/verification/run-attribution.md records the exact measured output.
 #
-# The fixture's branch_sync state is a measured word that is deliberately not
-# `pipeline_owned`, which is all these cases need of it: the incident proved the
-# state was not that one, because the lane exemption would otherwise have bound
-# the run and there would have been no blind read to fix.
+# The fixture's branch_sync state is `merged_remote_retained`, the word the
+# verification record measured on this very run. Only one property of it is
+# load-bearing: it is not `pipeline_owned`, so fm_nm_run_is_pipeline_owned_active
+# does not fire and the submitted-head rule is what actually binds. The incident
+# proved the state was not `pipeline_owned`, because the lane exemption would
+# otherwise have bound the run and there would have been no blind read to fix.
 run_with_moved_head() {  # <branch> <advanced-head> <submitted-head> [<status>]
   cat <<EOF
 run:
@@ -1738,7 +1740,7 @@ run:
     rebase,completed,0,2319
     ci,running,0,0
 branch_sync:
-  state: ambiguous_context
+  state: merged_remote_retained
   changed: false
   local:
     branch: $1
@@ -1833,6 +1835,49 @@ test_foreign_submitted_head_is_still_refused() {
   assert_not_contains "$out" "source: run-step" "a submitted head this worktree never had must not bind"
   assert_contains "$out" "source: status-log" "falls back to the durable record instead"
   pass "a run whose submitted head is foreign to this worktree is still refused"
+}
+
+# Direction 2, the laxity half: the submitted-head rule is EXACT equality, and a
+# submitted head this worktree CAN resolve but is not sitting on must still be
+# refused. The unresolvable fixture above cannot pin this, because every ancestry
+# weakening refuses an sha that is not a git object here and stays green. These
+# two cases are the ones that catch a weakening, one per direction of near-miss:
+# with the worktree behind the submitted head, accepting "local HEAD is an
+# ancestor of the submitted head" would bind it; with the worktree ahead of it,
+# accepting the reverse ancestry would bind it. Both are the laxity the captain
+# ruled out, so both must read as a refusal.
+test_a_resolvable_but_unequal_submitted_head_is_refused() {
+  reset_fakes
+  local d behind ahead out
+  d=$(new_case moved-head-unequal)
+  make_repo_on_branch "$d/wt" fm/feat-moved-e
+  behind=$(git -C "$d/wt" rev-parse HEAD)
+  git -C "$d/wt" commit -q --allow-empty -m advanced
+  ahead=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/moved-e.meta" "window=fm:fm-moved-e" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/moved-e.status"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+
+  # The worktree advanced past the submitted head: local work outside the run.
+  FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/feat-moved-e f0f0f0f0f0f0f0f0 "$behind")"
+  arm_idle_record "$d/state" moved-e
+  out=$(run_crew_state "$d" moved-e)
+  assert_not_contains "$out" "source: run-step" \
+    "a submitted head this worktree has advanced past must not bind"
+  assert_contains "$out" "source: status-log" "falls back to the durable record instead"
+
+  # The worktree sits behind a submitted head it can still resolve: a rewound or
+  # rewritten local tip, with the submitted commit still in the object store.
+  git -C "$d/wt" reset -q --hard "$behind"
+  FM_FAKE_AXI_STATUS="$(run_with_moved_head fm/feat-moved-e f0f0f0f0f0f0f0f0 "$ahead")"
+  arm_idle_record "$d/state" moved-e
+  out=$(run_crew_state "$d" moved-e)
+  assert_not_contains "$out" "source: run-step" \
+    "a submitted head this worktree is behind must not bind either"
+  assert_contains "$out" "source: status-log" "falls back to the durable record instead"
+  pass "a resolvable submitted head that is not this worktree's commit is refused"
 }
 
 # Direction 2, the adversarial half: the branch gate outranks the new signal. A
@@ -3289,6 +3334,7 @@ test_pipeline_owned_terminal_run_not_exempt
 test_pipeline_moved_head_still_reports_the_real_step
 test_pipeline_moved_head_reports_a_finished_runs_verdict
 test_foreign_submitted_head_is_still_refused
+test_a_resolvable_but_unequal_submitted_head_is_refused
 test_other_branch_run_is_refused_despite_a_matching_submitted_head
 test_missing_run_head_falls_back_to_current_state
 test_cancelled_run_superseded_by_live_run_reports_the_live_run

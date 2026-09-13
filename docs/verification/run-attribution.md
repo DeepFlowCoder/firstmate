@@ -25,14 +25,15 @@ The run's own store row, with the submitted head and the head it ended up report
 
 ```sh
 sqlite3 -readonly ~/.no-mistakes/state.sqlite \
-  "select substr(head_sha,1,10), substr(submitted_head_sha,1,10), worktree_dir from runs where id = '01M2B9NKDQJ6801HS98CK2AKMW';"
+  "select substr(head_sha,1,10), substr(submitted_head_sha,1,10) from runs where id = '01M2B9NKDQJ6801HS98CK2AKMW';"
 ```
 
 ```
-8acc107b97|44115a8750|/Users/ramongarcia/.no-mistakes/worktrees/14f712cb403a/01M2B9NKDQJ6801HS98CK2AKMW
+8acc107b97|44115a8750
 ```
 
-The crew worktree was at `44115a8750`, which is what the crew submitted; the run reports `8acc107b97`, which the pipeline's own `rebase` and fix commits produced in the managed worktree named above and pushed to the remote.
+The same row's `worktree_dir` is the pipeline's own managed worktree, `~/.no-mistakes/worktrees/<repo-id>/<run-id>`, not the crew worktree.
+The crew worktree was at `44115a8750`, which is what the crew submitted; the run reports `8acc107b97`, which the pipeline's own `rebase` and fix commits produced in that managed worktree and pushed to the remote.
 Nothing fetches that sha back into the crew worktree, so while the run is in flight it is not a git object there at all - which is why the head rule's ancestry clause, written for exactly these pipeline commits, cannot be evaluated and `fm_nm_head_resolvable` reads the run as unknown attribution.
 
 ## `axi status` carries the submitted head that does bind
