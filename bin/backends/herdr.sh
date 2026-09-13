@@ -951,9 +951,10 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
 # to a 0.7.x release, and occurs once per leftover workspace at session start
 # rather than once per task teardown; the exact prior-tab restore bounds it.
 # Refusing that close below the floor would leak workspaces that nothing else
-# removes and block teardown because fm-teardown treats an unconfirmed close as
-# a hard stop. That cleanup is therefore authorized containment rather than a
-# second gate, and the spawn-time gate remains the floor's sole owner.
+# removes, because teardown releases a confirmed agent-less husk's records but
+# still leaves its bare pane behind. That cleanup is therefore authorized
+# containment rather than a second gate, and the spawn-time gate remains the
+# floor's sole owner.
 
 # fm_backend_herdr_workspace_move_capable: verify that one guarded raw
 # workspace.move request is possible in <session>: python3 for the transport,

@@ -124,8 +124,14 @@ Any ambiguity, unsupported or failed move, or unproved shell falls back to the p
 Ordinary non-projected task removal serializes through the same session lock, applies the same focus-safe plan when its close would empty a non-focused workspace, keeps the legitimate plain close when the target is the active tab, and refuses an unlocked close if the lock cannot be acquired.
 Task cleanup acquires that session lock before the task's isolated copy is returned, so a contended lock refuses up front while the copy, every durable record, and the endpoint are all intact for a plain rerun.
 Forced secondmate cleanup recursively preflights every Herdr child endpoint and acquires every affected named-session lock before mutating any child, then retains each child's durable identity unless that exact pane returns structured not-found after its close.
-Durable task records are erased only once the exact pane is confirmed gone through its structured presence: after every close path, only a structured not-found response counts as gone, while a present or unknown result retains every record with a visible, retryable error.
-Missing or malformed endpoint identity and missing confirmation machinery are ambiguity, never proof of a gone pane, and refuse record removal the same way.
+Durable task records are erased once the exact pane is confirmed gone through its structured presence: after every close path, only a structured not-found response counts as gone.
+A pane can outlive its own agent, though, and a close that cannot run leaves one behind: when the target is the captain's active tab the focus-preserving close refuses without ever issuing a close, so that pane can never become gone and a rerun is provably identical.
+A still-present pane therefore also releases its records when its own `agent get` positively answers agent_not_found, the same confirmed-husk proof restored-layout recovery already treats as recovery-grade dead, because a pane that outlived its agent carries no worker that could be lost with it.
+That release is never silent: it names the leftover bare pane and prints the manual close path - focus another tab and rerun cleanup - so a clean removal and a removal with a husk left behind never read alike.
+A registered agent, an unreadable or unexpected agent response, and an unknown presence all retain every record with a visible, retryable error, so an unreadable state is never mistaken for an absent agent.
+Missing or malformed endpoint identity and missing confirmation machinery are ambiguity, never proof of a gone pane or of an absent agent, and refuse record removal the same way.
+One post-close agent read serves both the records and that pane's presentation journal, so the two verdicts cannot disagree about the same pane.
+Unlanded-work protection is a separate, earlier gate and is unaffected by either verdict.
 If lock, snapshot, pane identity, or restoration is ambiguous, cleanup warns and preserves the journal for manual inspection.
 
 Recovery is deliberately conservative and presentation-only.

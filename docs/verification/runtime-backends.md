@@ -647,6 +647,25 @@ ok - forced secondmate teardown retains Herdr child identity until exact pane di
 ok - forced teardown retains a nested secondmate home and its grandchild's Herdr identity when the grandchild close is unconfirmed
 ```
 
+The fixture was re-run on 2026-09-13 for the pane that outlives its own agent.
+A pane whose tab is the captain's active tab refuses the focus-preserving close without issuing one, so the presence gate alone held every durable record forever across repeated runs; the release now turns on the pane's own `agent get` answer, which `fm_backend_herdr_pane_agent_state` already classified against real Herdr, so this boundary needs no new vendor evidence:
+
+```sh
+tests/fm-teardown.test.sh
+```
+
+Observed output:
+
+```text
+ok - herdr teardown releases every durable record when the pane outlived its agent on the captain's active tab
+ok - herdr teardown still retains every record when the unclosed pane holds a live agent
+ok - herdr teardown releases records only for a positively confirmed agent-less pane, never for an unreadable agent state
+```
+
+The third case is the boundary that matters: it drives the confirmed-husk answer apart from both an unparseable agent response and a structured non-`agent_not_found` error, and asserts the divergence itself, so collapsing an unreadable state into a confirmed husk turns it red rather than silently vacuous.
+Verified by mutation on the same date: widening the release to accept the unknown agent state failed the case with `an unreadable agent state was treated exactly like a confirmed husk ('0 released')` and a nonzero suite exit.
+The whole file passed at 77 checks with none failing.
+
 ### Composer and operational input
 
 Real captures verified these active distinctions:

@@ -2172,6 +2172,177 @@ test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
   pass "herdr projection teardown surfaces failed focus restoration without turning confirmed cleanup into a hard failure"
 }
 
+# The unclosable-active-tab case: the pane's tab is the one the captain is
+# looking at, so the focus-preserving close refuses (closing the active tab
+# cannot preserve focus), no close is ever issued, and the pane can never
+# become gone by rerunning. The pane's own agent registration is then the ONLY
+# thing separating "the agent exited and left a bare shell" from "a worker may
+# still be in there", so FM_FAKE_HERDR_AGENT_MODE selects that one answer and
+# nothing else about the fixture changes:
+#   not-found   - structured agent_not_found: a positively confirmed husk
+#   unreadable  - a response that does not parse at all
+#   error-other - a structured error that is NOT agent_not_found
+#   live        - a registered agent reporting a real status
+configure_herdr_projection_active_tab_husk_case() {  # <case-dir>
+  local case_dir=$1 token=AbCdEfGhIjKlMnOpQrStUv
+  sed -i.bak 's/^window=.*/window=fmtest:w1:p2/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' \
+    'backend=herdr' \
+    'herdr_session=fmtest' \
+    'herdr_workspace_id=w1' \
+    'herdr_tab_id=w1:t2' \
+    'herdr_pane_id=w1:p2' >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' \
+    'version=1' \
+    'task_id=task-x1' \
+    "projection_id=$token" > "$case_dir/state/task-x1.herdr-presentation"
+  cat > "$case_dir/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >> "${FM_FAKE_HERDR_LOG:?}"
+case "${1:-} ${2:-}" in
+  "workspace list")
+    printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t2","label":"firstmate/task-x1 · p:AbCdEfGhIjKlMnOpQrStUv","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":false}]}}'
+    ;;
+  "tab list")
+    case "$*" in
+      *"--workspace w1"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t2","focused":true}]}}' ;;
+      *"--workspace w2"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","focused":true}]}}' ;;
+      *) printf '%s\n' '{"result":{"tabs":[]}}' ;;
+    esac
+    ;;
+  "status --json")
+    printf '%s\n' '{"server":{"running":true}}'
+    ;;
+  "session list")
+    printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}'
+    ;;
+  "pane close")
+    : > "${FM_FAKE_HERDR_CLOSED:?}"
+    ;;
+  "pane get")
+    if [ -e "${FM_FAKE_HERDR_CLOSED:?}" ]; then
+      printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
+      exit 1
+    fi
+    printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}'
+    ;;
+  "agent get")
+    case "${FM_FAKE_HERDR_AGENT_MODE:-not-found}" in
+      live)
+        printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}'
+        ;;
+      unreadable)
+        printf '%s\n' 'herdr: could not reach the agent supervisor' >&2
+        exit 1
+        ;;
+      error-other)
+        printf '%s\n' '{"error":{"code":"internal"}}' >&2
+        exit 1
+        ;;
+      *)
+        printf '%s\n' '{"error":{"code":"agent_not_found"}}' >&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/herdr"
+}
+
+# Run the unclosable-active-tab fixture once under <agent-mode> and echo
+# "<exit-code> <records>" where <records> is released or retained, so a caller
+# can compare two modes without duplicating the teardown invocation.
+herdr_active_tab_outcome() {  # <case-name> <agent-mode>
+  local name=$1 mode=$2 case_dir rc=0
+  case_dir=$(make_case "$name")
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_active_tab_husk_case "$case_dir"
+  : > "$case_dir/herdr.log"
+  FM_FAKE_HERDR_LOG="$case_dir/herdr.log" FM_FAKE_HERDR_CLOSED="$case_dir/closed" \
+    FM_FAKE_HERDR_AGENT_MODE="$mode" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  if [ -e "$case_dir/state/task-x1.meta" ]; then
+    printf '%s retained' "$rc"
+  else
+    printf '%s released' "$rc"
+  fi
+}
+
+test_herdr_teardown_releases_records_for_an_agentless_pane_on_the_active_tab() {
+  local case_dir log closed
+  case_dir=$(make_case herdr-active-tab-husk)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_active_tab_husk_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; : > "$log"
+
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-active-tab-husk: teardown could not complete for a pane whose agent had exited"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-active-tab-husk: an agent-less pane still retained the durable task metadata forever"
+  [ ! -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "herdr-active-tab-husk: an agent-less pane still retained the presentation journal forever"
+  [ ! -e "$closed" ] \
+    || fail "herdr-active-tab-husk: cleanup closed the captain's active tab instead of leaving it"
+  assert_grep "no agent" "$case_dir/stderr" \
+    "herdr-active-tab-husk: teardown did not say the leftover pane was left behind"
+  pass "herdr teardown releases every durable record when the pane outlived its agent on the captain's active tab"
+}
+
+test_herdr_teardown_still_refuses_when_a_live_agent_survives_the_close() {
+  local case_dir log closed rc
+  case_dir=$(make_case herdr-live-agent-refuses)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_active_tab_husk_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; : > "$log"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_AGENT_MODE=live \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-live-agent-refuses: teardown erased records for a pane still holding a live agent"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-live-agent-refuses: a live agent's durable endpoint metadata was erased"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "herdr-live-agent-refuses: a live agent's presentation journal was retired"
+  assert_grep "not confirmed gone" "$case_dir/stderr" \
+    "herdr-live-agent-refuses: teardown did not explain why the records were retained"
+  pass "herdr teardown still retains every record when the unclosed pane holds a live agent"
+}
+
+# The edge the husk release turns on: "this pane provably has no agent" must
+# never be reached by "this pane's agent state could not be read". Collapsing
+# them would release the records of a worker that may still be alive, which is
+# the one way this fix could become the focus-destroying option it replaced.
+# Both unreadable shapes are asserted, so no single response string is the only
+# thing holding the boundary, and the DIVERGENCE from the confirmed-husk verdict
+# is asserted directly so the case cannot go quietly vacuous.
+test_herdr_teardown_separates_a_confirmed_husk_from_an_unreadable_agent_state() {
+  local husk unreadable other
+  husk=$(herdr_active_tab_outcome herdr-divergence-husk not-found)
+  unreadable=$(herdr_active_tab_outcome herdr-divergence-unreadable unreadable)
+  other=$(herdr_active_tab_outcome herdr-divergence-error-other error-other)
+
+  [ "$husk" = "0 released" ] \
+    || fail "herdr-divergence: a positively confirmed agent-less pane did not release its records (got '$husk')"
+  [ "$unreadable" != "$husk" ] \
+    || fail "herdr-divergence: an unreadable agent state was treated exactly like a confirmed husk ('$unreadable')"
+  [ "$other" != "$husk" ] \
+    || fail "herdr-divergence: a non-agent_not_found error was treated exactly like a confirmed husk ('$other')"
+  case "$unreadable" in
+    0\ *) fail "herdr-divergence: an unreadable agent state let teardown report success" ;;
+    *\ released) fail "herdr-divergence: an unreadable agent state released the durable records" ;;
+  esac
+  case "$other" in
+    0\ *) fail "herdr-divergence: a non-agent_not_found error let teardown report success" ;;
+    *\ released) fail "herdr-divergence: a non-agent_not_found error released the durable records" ;;
+  esac
+  pass "herdr teardown releases records only for a positively confirmed agent-less pane, never for an unreadable agent state"
+}
+
 # --- Fix 1: conclude/abort the task's own parked no-mistakes run before the
 # worker is removed - including the runs-list corroboration that keeps an old
 # terminal run from masking this branch's live one into a silent teardown - and
@@ -3189,6 +3360,9 @@ test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconf
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
+test_herdr_teardown_releases_records_for_an_agentless_pane_on_the_active_tab
+test_herdr_teardown_still_refuses_when_a_live_agent_survives_the_close
+test_herdr_teardown_separates_a_confirmed_husk_from_an_unreadable_agent_state
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
