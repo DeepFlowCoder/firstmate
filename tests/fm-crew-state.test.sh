@@ -3120,6 +3120,8 @@ EOF
   assert_not_contains "$out" "state: working" "a run that has already failed is not work in progress"
   assert_contains "$out" "state: failed" "a failed run is reported as failed"
   assert_contains "$out" "source: run-step" "the failure is still a run-step verdict"
+  assert_contains "$out" "the work is not lost" \
+    "the superseding failed run still reassures the work is not lost"
   pass "an active reading superseded by a failed run reports failed"
 }
 
