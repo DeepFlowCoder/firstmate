@@ -3000,12 +3000,30 @@ elif [ "$BACKEND" = herdr ]; then
 elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
-if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
-    rm -f "$HERDR_PRESENTATION_JOURNAL"
-  else
-    echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
+# One post-close read of the recorded pane's agent registration, shared by the
+# journal retirement and the endpoint gate below so the two can never disagree
+# about the same pane. When the journal is a retire candidate its endpoint is
+# asserted equal to $T above, so this single read covers both.
+TEARDOWN_HERDR_PANE_AGENT_STATE=
+if [ "$BACKEND" = herdr ] && [ -n "$TEARDOWN_HERDR_PANE" ]; then
+  fm_backend_source herdr || true
+  if declare -F fm_backend_herdr_pane_agent_state >/dev/null 2>&1; then
+    TEARDOWN_HERDR_PANE_AGENT_STATE=$(fm_backend_herdr_pane_agent_state \
+      "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE")
   fi
+fi
+if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
+  # A pane that outlived its agent is as retirable as a gone one: the journal
+  # exists to bind a projected pane to a live task, and a bare shell pane binds
+  # nothing. Every other state still retains the journal.
+  case "$TEARDOWN_HERDR_PANE_AGENT_STATE" in
+    dead|no-agent)
+      rm -f "$HERDR_PRESENTATION_JOURNAL"
+      ;;
+    *)
+      echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
+      ;;
+  esac
 elif [ "$BACKEND" = herdr ] \
      && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
   echo "warning: herdr presentation journal for $ID remains quarantined; no workspace cleanup was attempted" >&2
@@ -3016,6 +3034,19 @@ fi
 # the locked close. Only a structured not-found proves the pane gone; unknown
 # presence, missing or malformed endpoint identity, and missing confirmation
 # machinery all refuse.
+#
+# A pane can outlive its own agent, though - an exited agent or a server-layout
+# restore leaves the pane alive as a bare shell - and when that pane is also the
+# captain's active tab, the focus-preserving close refuses without ever issuing
+# a close, so the pane can never become gone and rerunning is provably
+# identical. That used to hold every durable record forever. A pane whose
+# `agent get` positively answers agent_not_found carries no worker that could be
+# lost with it, so cleanup releases the records and names the bare pane it left
+# behind instead. Only that positive answer qualifies: a registered agent, an
+# unreadable state, and an unexpected response are all still refusals, because
+# treating an unreadable state as a husk would release a possibly live worker's
+# records. Unlanded work is a separate, earlier gate and is unaffected either
+# way.
 if [ "$BACKEND" = herdr ]; then
   fm_backend_source herdr || true
   if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then
@@ -3023,8 +3054,12 @@ if [ "$BACKEND" = herdr ]; then
     exit 1
   fi
   if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
-    echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
-    exit 1
+    if [ "$TEARDOWN_HERDR_PANE_AGENT_STATE" != no-agent ]; then
+      echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
+      exit 1
+    fi
+    echo "warning: herdr pane $T for $ID has no agent and could not be closed, so it stays open as a bare shell; releasing every durable task record because no worker can be lost with it" >&2
+    echo "warning: to close that leftover pane too, focus a different tab and rerun teardown for $ID" >&2
   fi
 fi
 if [ "$KIND" = secondmate ]; then
