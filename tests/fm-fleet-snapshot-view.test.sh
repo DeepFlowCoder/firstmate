@@ -928,6 +928,12 @@ test_view_renders_snapshot() {
 # unresolved_blocker_ids, so the fleet view must agree with it rather than print
 # the raw token, and a blocker that is genuinely still pending must keep showing
 # with its reason suffix so the column does not go uniformly blank.
+# The multi-blocker row is the case that proves the raw token was never right:
+# bin/fm-fleet-snapshot.sh parses blocked_by with a greedy `.*blocked-by:`
+# prefix, so it holds the LAST token on the row regardless of state. Here that
+# last token is the completed and pruned one, so rendering the raw token would
+# name the archived blocker while the still-queued one is what actually holds
+# the row - and the captain's board would name the other id for the same row.
 test_view_resolves_blocked_by_through_the_archive() {
   local home fakebin view
   home=$(make_home view-archived-blocker)
@@ -935,6 +941,7 @@ test_view_resolves_blocked_by_through_the_archive() {
 ## Queued
 - [ ] freed-row - Freed Row blocked-by: landed (repo: alpha) (kind: ship)
 - [ ] held-row - Held Row (repo: alpha) (kind: ship) blocked-by: pending - waits on pending
+- [ ] multi-row - Multi Row blocked-by: pending blocked-by: landed (repo: alpha) (kind: ship)
 - [ ] pending - Pending Blocker (repo: alpha) (kind: ship)
 
 ## Done
@@ -951,6 +958,10 @@ EOF
     "view must not send the reader to an id pruned out of the backlog"
   assert_contains "$view" "| held-row | Held Row | alpha | ship | pending - waits on pending |" \
     "view should keep printing a blocker that is genuinely still pending, with its reason"
+  assert_contains "$view" "| multi-row | Multi Row | alpha | ship | pending |" \
+    "view should name the still-queued blocker on a row waiting for several tasks"
+  assert_not_contains "$view" "| multi-row | Multi Row | alpha | ship | landed" \
+    "view must not name the archived blocker just because it is the last token on the row"
   pass "fleet view resolves the blocked-by column through the archive"
 }
 
