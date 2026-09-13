@@ -235,8 +235,38 @@ Kimi was not installed on the verification machine; its bordered shape is pinned
 This guard is the refresh command after an upgrade to any matrix-covered harness; rerun it and update the versions above rather than trusting this table across releases.
 Known staleness: on 2026-08-23 the steering-inbox doorbell run observed grok 1.0.5's idle composer classifying `unknown` (and sometimes pending-family), never `empty`, so the grok row above is stale for 1.0.5 and owes a refresh; steering is unaffected because the send path's composer check is advisory, but empty-requiring consumers (away-daemon injection, spawn readiness) should not trust the 1.0.0 grok result.
 Cursor is deliberately outside this cursor-anchored empty-composer matrix because its terminal cursor is parked outside the composer; tmux's Cursor-specific, process-identity-gated cursorless fallback is covered by the [Cursor Agent CLI](#cursor-agent-cli) section's separate live evidence and drift guard.
-
 `zellij action dump-screen --pane-id <id> --ansi` was verified at zellij 0.44.0 to preserve ANSI styling (real Claude Code rendered inside a zellij pane dumped `ESC[m` `❯` U+00A0 for its idle composer row), which is the capability the zellij composer classifier reads.
+
+### Claude's titled task rule
+
+Claude draws its current task title inside the rule directly above its `❯` composer, and a separator rule used to have to be nothing but `─`.
+A titled top rule with a plain bottom rule therefore matched no shape at all, and the lone closing rule below the glyph row tripped the unpaired-separator guard, so a provably empty claude composer classified `unknown`.
+Measured on 2026-09-13 on macOS arm64 against a live claude primary pane on herdr 0.8.2, before and after the tolerance landed:
+
+```sh
+. bin/fm-backend.sh; . bin/backends/herdr.sh
+fm_backend_composer_state herdr <primary-pane>
+fm_backend_herdr_composer_identity <primary-pane>
+```
+
+```text
+before: composer=unknown
+after:  composer=empty identity=[claude	working]
+```
+
+The pane's rendered composer region at the time of the measurement, ANSI stripped:
+
+```text
+───────────── Armar el lavhish de bearings ──
+❯<U+00A0>
+─────────────────────────────────────────────
+  Opus 5 | Context: 36% used
+```
+
+The consequence of the `unknown` verdict was total, not intermittent: the same home's `state/.supervise-daemon.log` covered 2026-09-08 to 2026-09-12 across three daemon lifetimes and held 2142 `inject deferred: supervisor composer not confirmed-empty (state=unknown)` lines, zero successful injections, and 115 max-defer wedge alarms.
+The fresh harness the live matrix guard launches has no current task and so draws a plain rule, which is why the matrix above stayed green through it; `tests/fm-composer-matrix-live-e2e.test.sh` section 1b now embeds a title in the pane's own captured rule row and requires both forms to classify `empty`.
+That section needs tmux, which the home this was measured on does not install, so the tmux-side refresh is owed on a machine that has it.
+The rule's width floor counts the opening and closing runs together rather than requiring eight consecutive glyphs, because a title long relative to the pane width leaves neither run eight glyphs wide on its own.
 
 ## Steering-inbox doorbell
 

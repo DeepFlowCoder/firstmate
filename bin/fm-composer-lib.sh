@@ -61,8 +61,11 @@
 #   left-bar   - opencode: rows prefixed by a heavy left bar `┃` with no
 #                closing border, holding the idle hint, blank rows, and a
 #                mode/model footer line.
-#   separated  - pi: content rows between two solid horizontal `─` rules, no
-#                glyph and no side border. Provable only with a live agent
+#   separated  - pi: content rows between two horizontal `─` rules, no glyph
+#                and no side border. Either rule may carry a TITLE embedded in
+#                it, the same tolerance the bordered shape grants a titled
+#                border; claude draws its current task title in the rule above
+#                its own composer. Provable only with a live agent
 #                identity reporting an idle/done pi (herdr `agent
 #                get`; the tmux foreground-process probe), because a blank
 #                region between two transcript rules is otherwise exactly the
@@ -571,17 +574,46 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 # exact positive proof they require (`empty`), so unrecognized future verdicts
 # fail safe by default.
 
-# _fm_composer_pi_separator_row: a solid pi separator - nothing but `─`, at
-# least 8 columns wide. The width floor is a literal substring test so it is
-# byte-exact in every locale.
+# _fm_composer_pi_separator_row: a separator rule - at least 8 `─` glyphs in
+# total, either solid or carrying one embedded TITLE. The width floor and every
+# glyph test are literal substring removals so they are byte-exact in every
+# locale.
+#
+# The title tolerance is the same one _fm_composer_titled_bottom_ok grants a
+# bordered composer's titled border: the rule still opens and closes the row,
+# so the title is embedded IN the rule rather than replacing it. Requiring
+# exactly one embedded run - an opening rule, a title carrying no `─` of its
+# own, and a closing rule - is what keeps a real border row or a two-shape row
+# out. The floor counts the opening and closing runs TOGETHER, because a title
+# long relative to the pane width leaves neither run 8 glyphs wide on its own -
+# an 80-column pane with a 70-character title opens its rule with 6.
+#
+# It is load-bearing, not cosmetic (task fm-afk-digest-atascado). Claude draws
+# its current task title in the rule directly ABOVE its `❯` composer. Without
+# the tolerance that rule is not a separator, the pair never forms, and the
+# lone closing rule BELOW the glyph row trips the unpaired-separator guard in
+# _fm_composer_select_cursorless - so a provably empty claude composer reads
+# `unknown`. Measured on the captain's own primary pane: 2142 consecutive
+# away-mode injections deferred over five days with zero deliveries.
+# Recognizing the pair hands the row to _fm_composer_classify_bare_pi_overlap,
+# which still requires the agent glyph or a live idle/done pi identity before
+# anything reads `empty`, so this widens shape SELECTION only.
 _fm_composer_pi_separator_row() {  # <trimmed-row>
-  local row=$1
+  local row=$1 middle open=0 close=0
   [ -n "$row" ] || return 1
-  [ -z "${row//─/}" ] || return 1
   case "$row" in
-    *────────*) return 0 ;;
+    ─*─) ;;
+    *) return 1 ;;
   esac
-  return 1
+  middle=$row
+  while [ "${middle#─}" != "$middle" ]; do middle=${middle#─}; open=$((open + 1)); done
+  if [ -n "$middle" ]; then
+    while [ "${middle%─}" != "$middle" ]; do middle=${middle%─}; close=$((close + 1)); done
+    case "$middle" in
+      *─*) return 1 ;;
+    esac
+  fi
+  [ $((open + close)) -ge 8 ]
 }
 
 # Row-scan results are returned through FM_COMPOSER_SCAN_* globals (bash 3.2
@@ -630,9 +662,10 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
       '┗'*'┛') kind=bottom; family=heavy ;;
       '+'*'+') kind=ascii; family=ascii ;;
     esac
-    # Pi separator rows: a solid `─` rule at least 8 columns wide. A separator
-    # closes the preceding candidate and immediately opens the next, so an
-    # earlier transcript rule can never outrank the live bottom composer pair.
+    # Pi separator rows: recognized by _fm_composer_pi_separator_row. A
+    # separator closes the preceding candidate and immediately opens the next,
+    # so an earlier transcript rule can never outrank the live bottom composer
+    # pair.
     if _fm_composer_pi_separator_row "$trimmed"; then
       FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=$row
       if [ "$pi_open" -ge 0 ]; then
