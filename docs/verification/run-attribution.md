@@ -2,9 +2,12 @@
 
 Audience: maintainer verification.
 
-This record supports one active guarantee: on the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work.
+This record supports two active guarantees that rest on the same fact - that the pipeline works in its own managed worktree and never in the crew's:
 
-[`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, and the submitted-head binding.
+- On the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work.
+- A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work.
+
+[`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, and the submitted-head binding - and, for the second guarantee, why the `failed` phrase reads as it does.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns how an attributed run becomes a reported state.
 
 The guarantee is scoped to that path deliberately, because the submitted head is only carried by the `axi status` output.
@@ -101,3 +104,82 @@ Three facts the attribution rules depend on are present in that one output:
 - `branch_sync.state` is not `pipeline_owned` here, so the lane exemption does not cover this case and the submitted-head binding is what reaches the run.
 
 `no-mistakes axi sync --check` renders the same `branch_sync` block and is the read-only way to inspect it without asking for the run.
+
+## A failed run discards its worktree and no commit with it
+
+Recorded 2026-09-13 against runs measured on 2026-09-09, on Darwin 24.6.0 (arm64) with git 2.54.0.
+The runs are `01M238R9XKMRKRKYKJRS7X0BWH` (failed) and its successor `01M242NA3GYJB5RB0BQ8ZWMWTB` (completed), both on branch `fm/fm-hold-en-vuelo-invisible` of `DeepFlowCoder/firstmate`.
+
+The failed run died on a transport error, not on anything it found in the work.
+Its own log records the reviewer's last words and the step's verdict:
+
+```sh
+tail -5 ~/.no-mistakes/logs/01M238R9XKMRKRKYKJRS7X0BWH/review.log
+```
+
+```
+I'll review the changes. Let me start by reading the history and diff.API Error: Connection closed mid-response. The response above may be incomplete.
+claude exited pid=13003 error=claude exited: exit status 1:
+
+
+error: agent review: claude exited: exit status 1:
+```
+
+The reviewer was one sentence into its reply, so the run carried four completed review rounds and lost none of their commits to this.
+
+The store keeps no marker distinguishing that from a review the agent finished and failed:
+
+```sh
+sqlite3 -readonly ~/.no-mistakes/state.sqlite \
+  "select step_name, status, error from step_results
+    where run_id = '01M238R9XKMRKRKYKJRS7X0BWH' and status != 'pending';"
+```
+
+```
+intent|completed|
+rebase|completed|
+review|failed|agent review: claude exited: exit status 1:
+```
+
+The managed copy is gone, which is what the deletion in the report referred to:
+
+```sh
+sqlite3 -readonly ~/.no-mistakes/state.sqlite \
+  "select id, status, substr(head_sha,1,10), quote(worktree_dir) from runs
+    where id in ('01M238R9XKMRKRKYKJRS7X0BWH','01M242NA3GYJB5RB0BQ8ZWMWTB');"
+ls -A ~/.no-mistakes/worktrees/*/
+```
+
+```
+01M238R9XKMRKRKYKJRS7X0BWH|failed|7a652568b2|NULL
+01M242NA3GYJB5RB0BQ8ZWMWTB|completed|2950442b90|NULL
+
+/Users/ramongarcia/.no-mistakes/worktrees/14f712cb403a/:
+
+/Users/ramongarcia/.no-mistakes/worktrees/6b4d6d3ca42a/:
+```
+
+Each per-repo directory lists no entries at all, so neither run's copy is on disk, and a run's `worktree_dir` is back to `NULL` whichever way it finished.
+What survives that deletion is every commit the run had made, because those commits were never only in the discarded copy.
+The two `git` commands below answer only from a checkout of the repository, so run them there rather than beside the store:
+
+```sh
+git branch -a --contains 7a652568b2
+git merge-base --is-ancestor 7a652568b2 2950442b90 && echo ancestor
+```
+
+```
+  remotes/no-mistakes/fm/fm-hold-en-vuelo-invisible
+  remotes/origin/fm/fm-hold-en-vuelo-invisible
+ancestor
+```
+
+The failed run's head is still a commit, still on the branch's remote, and still an ancestor of the head its successor completed on.
+Nothing was lost, and the session that read the failed run and the missing copy as destroyed work reported a loss to the captain that had not happened.
+
+The cost the failure did carry is repetition, which is a different claim and a real one.
+The failed run ran from `created_at` 1788963727 to `updated_at` 1788990324, seven hours and twenty-three minutes, and its log shows the review reaching `round 4` and a following user-fix round.
+Its successor started nine minutes later and its `review.log` starts again at `round 1`.
+
+To refresh this section, take any run the store lists as `failed`, confirm its `worktree_dir` is back to `NULL` and no copy of it remains under `~/.no-mistakes/worktrees/`, then confirm from a checkout that `git cat-file -t <head_sha>` still answers `commit`.
+The guarantee fails the day that last command stops answering, which is the day a discarded copy would start costing commits.
