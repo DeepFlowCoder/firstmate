@@ -184,10 +184,11 @@ The guarantee fails the day that last command stops answering, which is the day 
 The check before reporting work lost has a second half - that no later run already resumed the work - and a later run is found by date, without its id being known in advance:
 
 ```sh
-ls -t ~/.no-mistakes/logs/ | grep -n 01M238R9XKMRKRKYKJRS7X0BWH
+ls -t ~/.no-mistakes/logs/ | grep -n -e 01M238R9XKMRKRKYKJRS7X0BWH -e 01M242NA3GYJB5RB0BQ8ZWMWTB
 ```
 
 ```
+52:01M242NA3GYJB5RB0BQ8ZWMWTB
 53:01M238R9XKMRKRKYKJRS7X0BWH
 ```
 
