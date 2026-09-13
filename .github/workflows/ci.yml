@@ -22,33 +22,31 @@ jobs:
   # job that dies is the job that eats the machine, and Lint is the only lane
   # here that holds gigabytes.
   #
-  # Measured on this repo at 344 roots (macOS, ShellCheck 0.11.0, telemetry from
-  # bin/fm-lint.sh --telemetry): with two workers, 3.45 GiB peak in one worker
-  # and 6.40 GiB summed across the two. That sum adds two maxima that need not
-  # fall at the same instant, so it is an upper bound rather than a proven
-  # concurrent footprint - but a 3.45 GiB worker plus a second one anywhere near
-  # it is the whole of the 7 GiB a private-repo ubuntu-latest runner has, before
-  # the runner agent and the OS get theirs.
-  #
   # So this lane runs one worker: bin/fm-lint.sh defaults FM_LINT_JOBS to 1 when
   # GITHUB_ACTIONS or CI is true, and to 2 everywhere else. Both orders lint the
   # same two shards and produce byte-identical diagnostics and the same verdict,
-  # so the only thing that changes is what the run holds at once. Same repo,
-  # same host, one worker: 3.43 GiB peak and a 1097s wall, against 3.45 GiB and
-  # 1323s for two. Halving the concurrency did not cost wall there - it saved it,
-  # because two multi-gigabyte ShellCheck processes spend more on contention than
-  # they win on parallelism. Read worker_rss_sum with care under one worker: 6.99
-  # GiB is two sequential maxima added together, and the two never coexist.
+  # so the only thing that changes is what the run holds at once.
   #
-  # Bounding the ShellCheck process instead of the worker count was measured and
-  # rejected, not overlooked. Handing ShellCheck at most 32 roots per process
-  # rather than a whole shard of 172 left the peak at 3.45 GiB - unchanged - and
-  # cost 37% more user CPU (1267s against 922s). The peak is not one pathological
-  # root either: profiled one at a time, the worst root on this repo is 2.25 GiB
-  # (tests/fm-pending-reply.test.sh) and only four exceed 1 GiB, so even a
-  # process-per-root floor of ~2.25 GiB would still be two-thirds of the way to
-  # today's peak at several times the CPU. Concurrency is the only lever here
-  # with a measured effect.
+  # THAT IS NOT ENOUGH, AND THIS LANE IS STILL EXPECTED TO DIE. Measured on the
+  # runner itself rather than on macOS, one worker is already more than the
+  # machine can hold: a single ShellCheck reached 7223 MiB on a runner with
+  # 7942 MiB of RAM, drained all 3072 MiB of swap, and took the shutdown signal
+  # (run 34737337424). The whole of it is two roots - bin/fm-teardown.sh alone
+  # costs 7407 MiB and tests/fm-pending-reply.test.sh 7093 MiB, against a median
+  # root of 83 MiB - so the defect reproduces by linting ONE file with these
+  # exact flags, with no shards and no worker pool involved.
+  #
+  # Read the earlier macOS figures in this repo's history with that in mind:
+  # they understated the runner's peak by more than half, and the reading that
+  # concurrency was the only lever with a measured effect followed from them.
+  # Splitting the roots across separate runners was measured and RULED OUT: an
+  # eight-way split left two shards at 7175 and 7261 MiB, surviving on 134 and
+  # 58 MiB of available memory, which relocates the failure instead of removing
+  # it. What does move the number is the pair of flags together - extended
+  # analysis over the followed source graph - each of which is cheap alone.
+  # docs/verification/lint-lane-memory.md owns the curves, the per-root table,
+  # the flag comparison, and the one-file reproduction. The remedy is a coverage
+  # or cost tradeoff and is the captain's call, not settled here.
   #
   # Signal exits stay unambiguous either way: bin/fm-lint.sh installs its own
   # traps so HUP/INT/TERM leave as 129/130/143 with "interrupted ... no lint

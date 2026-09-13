@@ -935,10 +935,14 @@ test_ci_runs_one_shellcheck_at_a_time() {
   # shutdown signal" (exit 143). Run 33471424345 pinned the cause - the Lint job
   # 99741795200 took the signal at 10m39s while all fifteen other jobs in that
   # same run went green, so nothing was reclaiming the runner out from under an
-  # innocent job. Lint is simply the lane that eats the machine: measured at 344
-  # roots, one worker peaks at 3.45 GiB and two of them sum to 6.40 GiB on a
-  # runner that has 7 GiB. Under CI the two shards must therefore run one at a
-  # time, while a developer machine keeps both.
+  # innocent job. Lint is simply the lane that eats the machine, so under CI the
+  # two shards must run one at a time, while a developer machine keeps both.
+  #
+  # That is what this test pins, and it remains correct. It is NOT a claim that
+  # one worker makes the lane fit: measured on the runner, one worker alone
+  # reached 7223 MiB of a 7942 MiB machine and the lane still dies. The earlier
+  # macOS figures that read as "one worker fits" understated the runner by more
+  # than half; docs/verification/lint-lane-memory.md owns the current numbers.
   #
   # Concurrency is observable at the process boundary, so a recording ShellCheck
   # on PATH answers it without reading fm-lint.sh: each stub instance registers
