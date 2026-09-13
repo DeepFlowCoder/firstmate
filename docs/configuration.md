@@ -184,7 +184,7 @@ A malformed value from either source is reported and the default threshold still
 The report names which source was rejected, so `0 GB` written where `0` was meant does not read as a retired guard that keeps refusing.
 The value is that single number and nothing else, so a second line appended with `>>` where `>` was meant is reported as malformed rather than concatenated into a threshold nobody wrote.
 
-While the session is running, the watcher reads the same filesystem once a minute and reports only transitions into a worse tier through the ordinary wake queue.
+While the session is running, the watcher reads the same filesystem at `FM_DISK_INTERVAL` (default once a minute) and reports only transitions into a worse tier through the ordinary wake queue.
 The advisory tier defaults to three times the effective refusal floor, so the default 5 GB floor warns first at 15 GB.
 The local, gitignored `config/disk-space-warn-gb` file overrides that warning threshold with one whole number of gigabytes strictly above the refusal floor, and `FM_DISK_SPACE_WARN_GB` overrides the file for one run.
 Set the warning threshold to `0` to retire only the advisory tier; setting the refusal floor to `0` retires the whole guard.
@@ -787,6 +787,7 @@ FM_GUARD_READ_ONLY=0    # internal/read-only guard mode: keep alarms but suppres
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the guarded operation WILL still run.'   # banner continuation line; fm-send.sh overrides it to name the requested message specifically
 FM_POLL=15              # seconds between watcher poll cycles
 FM_HOME_SUMMARY_INTERVAL=300   # seconds before a live watcher refreshes this home's state/home-summary.json even without a status signal; invalid or zero values use 300
+FM_DISK_INTERVAL=60     # seconds between in-session free-space reads; invalid or zero values use 60
 FM_HOME_SUMMARY_TIMEOUT=60     # seconds bounding the complete best-effort home-summary refresh, including lock acquisition, validation, atomic publication, and worker-side failure logging; invalid or zero values use 60
 FM_HOME_SUMMARY_ERROR_LOG_MAX_BYTES=65536   # approximate size cap for state/.home-summary-refresh.log before it is trimmed to the newest 200 lines; invalid or zero values use 65536
 FM_HOME_SUMMARY_FAILURE_REPORT=2   # recorded publication failures since the ledger's own last publication before session start reports a HOME_SUMMARY line; invalid or zero values use 2

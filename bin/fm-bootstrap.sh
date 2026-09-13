@@ -1307,6 +1307,9 @@ disk_space_detect() {
   if [ -n "$FM_DISK_SPACE_CONFIG_ERROR" ]; then
     echo "DISK_SPACE: $FM_DISK_SPACE_CONFIG_ERROR"
   fi
+  if [ -n "$FM_DISK_SPACE_WARN_CONFIG_ERROR" ]; then
+    echo "DISK_SPACE: $FM_DISK_SPACE_WARN_CONFIG_ERROR"
+  fi
 }
 
 detect_local_config() {

@@ -665,6 +665,7 @@ run_watcher() {  # <home> <avail> [min_gb] [initial_avail]
   FM_STATE_OVERRIDE="$home/state" \
   FM_CONFIG_OVERRIDE="$home/config" \
   FM_WEDGE_ALARM_LOG="$home/alarm.log" \
+  FM_WEDGE_ALARM_CHANNEL=osascript \
   FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
   FM_HOME_SUMMARY_INTERVAL=999999 \
     "$WATCH" > "$out" 2>/dev/null &
@@ -800,6 +801,8 @@ test_watcher_reports_the_crossing_not_every_poll() {
     || fail "a volume that merely stayed low was reported again: $second"
   [ "$(queued_disk_wakes "$home")" = 1 ] \
     || fail "staying low queued a second report: $(queued_disk_wakes "$home") rows"
+  [ -f "$home/state/.last-disk-check" ] \
+    || fail "the silent second watch never measured: no .last-disk-check marker"
   pass "the watch reports a crossing, never one report per poll"
 }
 
@@ -831,10 +834,13 @@ test_zero_threshold_retires_the_in_session_watch() {
   local home out
   home=$(new_home watch-retired)
   printf '0\n' > "$home/config/disk-space-min-gb"
+  rm -f "$home/state/.last-disk-check"
   out=$(run_watcher "$home" "$DF_LOW")
   [ -z "$out" ] || fail "a retired guard still reported in session: $out"
   [ -z "$(recorded_tier "$home")" ] \
     || fail "a retired guard left a tier behind: [$(recorded_tier "$home")]"
+  [ -f "$home/state/.last-disk-check" ] \
+    || fail "the retired watch never measured: no .last-disk-check marker"
   pass "a retired guard is retired in session too"
 }
 
@@ -863,7 +869,31 @@ test_warning_threshold_below_the_floor_is_rejected() {
     *"warning threshold 15 GB"*) : ;;
     *) fail "a warning threshold below the floor was adopted instead of rejected: ${out:-<silence>}" ;;
   esac
+  case "$out" in
+    *"invalid config/disk-space-warn-gb"*) : ;;
+    *) fail "the rejected warning threshold was not surfaced in session: ${out:-<silence>}" ;;
+  esac
   pass "a warning threshold at or below the refusal floor falls back to the default"
+}
+
+# The same rejection is surfaced on the other two surfaces, not only in the
+# watcher: bootstrap reports it at session start and the spawn refusal names it.
+test_warning_threshold_below_the_floor_is_surfaced() {
+  local home out rc=0
+  home=$(new_home warn-degenerate-surfaced)
+  printf '3\n' > "$home/config/disk-space-warn-gb"
+  out=$(run_bootstrap "$home" "$DF_TWELVE_GB")
+  case "$out" in
+    *"invalid config/disk-space-warn-gb"*) : ;;
+    *) fail "bootstrap hid the rejected warning threshold: ${out:-<no output>}" ;;
+  esac
+  out=$(run_spawn "$home" warn-degenerate-a1 "$DF_LOW") || rc=$?
+  [ "$rc" -ne 0 ] || fail "the spawn fixture unexpectedly succeeded"
+  case "$out" in
+    *"invalid config/disk-space-warn-gb"*) : ;;
+    *) fail "the spawn refusal hid the rejected warning threshold: $out" ;;
+  esac
+  pass "a rejected warning threshold is surfaced at bootstrap and at refusal"
 }
 
 # Retiring the warning alone leaves the floor guarding. The two numbers are
@@ -928,5 +958,6 @@ test_recovery_is_silent_and_rearms
 test_zero_threshold_retires_the_in_session_watch
 test_configured_warning_threshold_moves_the_verdict
 test_warning_threshold_below_the_floor_is_rejected
+test_warning_threshold_below_the_floor_is_surfaced
 test_zero_warning_threshold_retires_only_the_warning
 test_unmeasurable_filesystem_is_silent_in_session

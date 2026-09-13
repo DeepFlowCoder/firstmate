@@ -1222,13 +1222,15 @@ disk_space_tick() {
     summary=$(fm_disk_space_summary "$FM_HOME") \
       || summary="free space below the refusal floor on $FM_HOME"
     wedge_alarm_notify "$summary - new work will not be dispatched" \
-      "$STATE/.wake-queue"
+      "$FM_WAKE_QUEUE"
     reason="check: disk space critical: $summary - new work will not be dispatched"
   else
     summary=$(fm_disk_space_warn_summary "$FM_HOME") \
       || summary="free space below the warning threshold on $FM_HOME"
     reason="check: disk space low: $summary"
   fi
+  [ -z "$FM_DISK_SPACE_WARN_CONFIG_ERROR" ] \
+    || reason="$reason ($FM_DISK_SPACE_WARN_CONFIG_ERROR)"
   touch "$STATE/.last-disk-check"
   fm_wake_append check disk-space "$reason" || exit 1
   printf '%s' "$tier" > "$STATE/.disk-space-tier" 2>/dev/null || true
