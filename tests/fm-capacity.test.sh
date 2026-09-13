@@ -105,18 +105,17 @@ grok_window_exhausted_provider() {
 EOF
 }
 
-# balance_exhausted_provider <id> - a prepaid purse spent. No reset will fix it;
-# only the captain paying will.
-balance_exhausted_provider() {
+# exhausted_provider <id> - allowance spent with no reset hour reported. This is
+# the honest shape for a spent prepaid balance: quota-axi 0.1.29 exposes no
+# verified signal that separates it from a spent window whose reset is missing,
+# so the policy reports it as `exhausted`, never as a guessed "recharge".
+exhausted_provider() {
   cat <<EOF
 {"provider":"$1",
  "state":{"status":"fresh","stale":false},
- "credits":{"remaining":0,"unlimited":false,"unit":"usd"},
- "windows":[{"id":"credits","label":"credits","kind":"credits","percentRemaining":0}],
+ "windows":[],
  "quotaSemantics":{"status":"known","effectiveAvailability":[
-   {"scope":"all_models","status":"known","effectivePercentRemaining":0,
-    "boundedBy":["credits"],"limitingWindowIds":["credits"],
-    "runway":{"status":"exhausted_now","limitingWindowId":"credits"}}]}}
+   {"scope":"all_models","status":"known","effectivePercentRemaining":0}]}}
 EOF
 }
 
@@ -188,7 +187,7 @@ run_guard() {
 
 home=$(fresh_home all-spent)
 snapshot "$home/snap.json" \
-  "$(balance_exhausted_provider deepseek)" \
+  "$(exhausted_provider deepseek)" \
   "$(window_exhausted_provider codex)" \
   "$(credential_provider kimi)"
 out=$(run_guard "$home" 2 "$home/snap.json" report)
@@ -203,39 +202,41 @@ out=$(run_guard "$home" 2 "$home/snap.json" report)
 [ -z "$out" ] || fail "a healthy fleet must be silent, got: $out"
 pass "a healthy fleet keeps the guard silent"
 
-# === the three causes =======================================================
+# === the causes =============================================================
 #
 # They are separate because the REMEDY is separate. A guard that said only "you
-# are running out" would leave the captain to work out which of three unrelated
-# actions to take, so each cause has to reach the report in its own words.
+# are running out" would leave the captain to work out which action to take, so
+# each cause has to reach the report in its own words. There is no "balance"
+# cause because quota-axi exposes no verified signal for it (see the policy's
+# header), so a spent allowance with no reset is the honest `exhausted` case.
 
 home=$(fresh_home causes)
 snapshot "$home/snap.json" \
-  "$(balance_exhausted_provider deepseek)" \
+  "$(exhausted_provider deepseek)" \
   "$(window_exhausted_provider codex)" \
   "$(credential_provider grok)"
 out=$(run_guard "$home" 2 "$home/snap.json" report)
-assert_contains "$out" "deepseek out of balance - recharge" "a spent purse must ask the captain to recharge"
+assert_contains "$out" "deepseek allowance spent, with no reset reported" "a spent allowance with no reset must not be guessed as a recharge"
 assert_contains "$out" "codex out of window until 2026-09-16T01:26Z" "a spent window must name the hour it returns"
 assert_contains "$out" "grok sign-in required" "an unusable credential must ask the captain to sign in"
 assert_contains "$out" "(grok login)" "quota-axi's own remedy command must survive into the report"
-pass "the three causes each reach the report with their own remedy"
+pass "each cause reaches the report with its own remedy"
 
-# A spent window and a spent purse must never be reported as each other: one
-# clears itself at a named hour and the other never does without the captain.
-assert_not_contains "$out" "deepseek out of window" "a spent purse must not be reported as a window"
-assert_not_contains "$out" "codex out of balance" "a spent window must not be reported as a purse"
-pass "balance and window exhaustion are not confused for each other"
+# A spent allowance with no reset and a spent window must never be reported as
+# each other: one names the hour it returns and the other does not.
+assert_not_contains "$out" "deepseek out of window" "a spent allowance with no reset must not be reported as a window"
+assert_not_contains "$out" "codex allowance spent" "a spent window must not be reported as a no-reset allowance"
+pass "a no-reset allowance and a spent window are not confused for each other"
 
 # A provider that reports a constant zero credits purse next to a real time
-# window (Grok does this) is a spent WINDOW, not a spent balance: the captain
-# waits for the named reset rather than recharging a purse that reads the same
-# zero when healthy.
+# window (Grok and codex both do this) is a spent WINDOW: the credits purse is
+# never headroom and is ignored entirely, so the captain waits for the named
+# reset rather than recharging a purse that reads the same zero when healthy.
 home=$(fresh_home grok-window)
 snapshot "$home/snap.json" "$(grok_window_exhausted_provider grok)"
 out=$(run_guard "$home" 2 "$home/snap.json" report)
-assert_contains "$out" "grok out of window until 2026-09-16T01:26Z" "a spent time window must beat a constant zero credits purse"
-assert_not_contains "$out" "grok out of balance" "the constant zero purse must not be read as a spent balance"
+assert_contains "$out" "grok out of window until 2026-09-16T01:26Z" "a spent time window must win over a constant zero credits purse"
+assert_not_contains "$out" "grok allowance spent" "a spent window must not be read as a no-reset allowance"
 pass "a constant zero credits purse does not hide a spent time window"
 
 # === uncertainty is not a cause =============================================
@@ -320,9 +321,9 @@ out=$(run_guard "$home" 2 "$home/snap.json" check)
 pass "a moving percentage alone does not re-report"
 
 # A genuinely new cause is news again.
-snapshot "$home/snap.json" "$(credential_provider grok)" "$(balance_exhausted_provider claude)"
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(exhausted_provider claude)"
 out=$(run_guard "$home" 2 "$home/snap.json" check)
-assert_contains "$out" "claude out of balance" "a new cause must re-report"
+assert_contains "$out" "claude allowance spent" "a new cause must re-report"
 pass "a genuinely changed fleet reports again"
 
 # Recovery is silent, but it must re-arm: the record is cleared so the next
@@ -347,6 +348,21 @@ assert_contains "$out" "1 of 2 provider lanes dispatchable" "session start must 
 out=$(run_guard "$home" 2 "$home/snap.json" check)
 [ -z "$out" ] || fail "the watcher must not repeat what session start just reported, got: $out"
 pass "session start reports an already-suppressed shape and does not double up with the watcher"
+
+# A failed session-start report must clear the record, not preserve it: if the
+# fleet stays degraded across the session boundary and the next report's read
+# fails, the stale digest must not suppress the watcher's next successful check.
+home=$(fresh_home report-failure-clears)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+run_guard "$home" 2 "$home/snap.json" report >/dev/null
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "capacity unknown" "a failed report must still say the guard went blind"
+assert_absent "$home/state/.capacity" "a failed report must clear the stale record"
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+assert_contains "$out" "1 of 2 provider lanes dispatchable" "the watcher must re-report after a failed report cleared the record"
+pass "a failed report clears the record so the watcher re-reports"
 
 # === the threshold ==========================================================
 

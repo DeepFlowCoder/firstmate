@@ -242,6 +242,10 @@ action_report() {
   if ! acquire_snapshot report || ! classify; then
     [ -z "$SNAPSHOT_PROBLEM" ] || printf 'capacity unknown - %s\n' "$SNAPSHOT_PROBLEM"
     [ -z "$MIN_LANES_PROBLEM" ] || printf '%s\n' "$MIN_LANES_PROBLEM"
+    # A failed read leaves no verdict to record. Clear any stale digest so the
+    # watcher's next successful check is not suppressed against a shape this
+    # session never actually reported.
+    record_clear
     return 0
   fi
   if [ -n "$VERDICT_LINE" ]; then

@@ -22,24 +22,32 @@
 // WHY JSON RATHER THAN THE DEFAULT TOON. AGENTS.md section 4 has the AGENT read
 // quota-axi's default TOON at a dispatch intake, because TOON is the compact
 // surface a model pays tokens for. This is a script, it pays no tokens, and it
-// needs one fact TOON renders away: `windows[].kind`, which is what separates an
-// exhausted prepaid balance (the captain recharges) from an exhausted time
-// window (the captain waits, and wants the hour). Reading the documented machine
+// classifies on structural facts the TOON flattens away: the credential fault
+// (`state.status`, `state.authStatus`, `state.reason`) and the exact reset hour
+// of a spent window (`windows[].resetsAt`). Reading the documented machine
 // surface for a structural fact is not a departure from that rule; inferring the
-// same fact from a rendered window id would be exactly the fragile string
+// same fact from a rendered window label would be exactly the fragile string
 // matching this repo's guidelines tell us to avoid.
 //
-// THE THREE CAUSES ARE NOT COSMETIC. They exist because the remedy differs, and
-// a guard that says only "you are running out" leaves the captain to work out
-// which of three unrelated actions to take:
+// THE CAUSES ARE NOT COSMETIC. They exist because the remedy differs, and a
+// guard that says only "you are running out" leaves the captain to work out
+// which action to take:
 //
-//   balance     a prepaid allowance is spent           -> the captain recharges
 //   window      a time-cycle allowance is spent        -> wait for the reset,
 //                                                         which is named
 //   credential  the local credential is unusable       -> the captain signs in
+//   exhausted   the allowance is spent but no reset    -> recharge if prepaid,
+//               hour is reported                         or check the provider
+//
+// There is deliberately NO "balance" cause. quota-axi 0.1.29 exposes no
+// producer-verified signal that separates a spent prepaid balance from a spent
+// time window: `windows[].kind` is only ever model/session/weekly (never
+// "credits"), and `credits.remaining: 0` is a constant for codex and grok that
+// is never headroom (docs/verification/dispatch-auth.md). A spent allowance with
+// no named reset therefore reads as `exhausted`, never as a guessed "recharge".
 //
 // A provider that establishes none of those is `unconfirmed`, never folded into
-// one of the three. AGENTS.md section 4 is explicit that unmeasurable headroom,
+// one of them. AGENTS.md section 4 is explicit that unmeasurable headroom,
 // a missing auth source, or unmodeled authentication is disclosed uncertainty
 // and never a credential escalation, so only a STRUCTURAL auth fact
 // (`state.status`, `state.authStatus`, `state.reason`) is read as `credential`.
@@ -75,7 +83,7 @@ const FINITE_RUNWAY = new Set(["exhausted_now", "projected_exhaustion"]);
 
 // Report order, so one snapshot always renders the same sentence: what you can
 // still dispatch on, then the causes in the order they cost the captain effort.
-const CAUSE_ORDER = ["dispatchable", "balance", "window", "credential", "exhausted", "unconfirmed"];
+const CAUSE_ORDER = ["dispatchable", "window", "credential", "exhausted", "unconfirmed"];
 
 const MAX_LINE = 1000;
 
@@ -153,22 +161,6 @@ function boundingWindows(provider, scopes) {
   // the provider reported rather than concluding from an empty set.
   const bounded = ids.size === 0 ? windows : windows.filter((w) => ids.has(w.id));
   return bounded.length > 0 ? bounded : windows;
-}
-
-/**
- * A prepaid balance is spent. quota-axi models it two ways: a bounding window
- * of kind `credits` at zero, or a provider-level credit purse that is not
- * unlimited and has nothing left. The purse reading is trusted only when the
- * spent set holds no time window, because some providers (Grok) report a
- * constant `credits.remaining: 0` next to a real time window - a spent window
- * must take precedence, since only it names a reset the captain can wait for.
- */
-function balanceSpent(provider, exhausted) {
-  if (exhausted.some((w) => w.kind === "credits")) return true;
-  if (exhausted.some((w) => w.kind !== "credits")) return false;
-  const credits = provider.credits;
-  if (!credits || credits.unlimited === true) return false;
-  return percent(credits.remaining) === 0;
 }
 
 /**
@@ -271,11 +263,11 @@ function classifyProvider(provider) {
 
   if (zeroed) {
     const spent = exhausted.length > 0 ? exhausted : readable;
-    if (balanceSpent(provider, spent)) return { id, cause: "balance", stale };
     const resetsAt = earliestReset(spent);
     if (resetsAt !== null) return { id, cause: "window", stale, resetsAt };
-    // Spent, with nothing saying whether it comes back on a clock or on a
-    // payment. Naming that is more useful than guessing one of the two.
+    // Spent, with no reset hour reported. quota-axi exposes no verified signal
+    // that separates a spent prepaid balance from a spent window whose reset is
+    // missing, so this stays `exhausted` rather than guessing "recharge".
     return { id, cause: "exhausted", stale };
   }
 
@@ -293,8 +285,6 @@ function describe(lane) {
       const reset = lane.resetsAt ? ` before its ${lane.resetsAt} reset` : "";
       return `${lane.id} ${lane.remaining}% left${ends}${window}${reset}${staleNote}`;
     }
-    case "balance":
-      return `${lane.id} out of balance - recharge${staleNote}`;
     case "window":
       return `${lane.id} out of window until ${lane.resetsAt}${staleNote}`;
     case "credential": {
@@ -302,7 +292,7 @@ function describe(lane) {
       return `${lane.id} sign-in required${remedy}${staleNote}`;
     }
     case "exhausted":
-      return `${lane.id} allowance spent, with no reset or balance reported${staleNote}`;
+      return `${lane.id} allowance spent, with no reset reported${staleNote}`;
     default:
       return `${lane.id} unconfirmed${lane.detail ? ` (${lane.detail})` : ""}${staleNote}`;
   }

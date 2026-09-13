@@ -193,6 +193,22 @@ These discriminator strings are un-owned vendor UI text.
 `bin/fm-vendor-auth-probe.sh` pins the verified version, reports `versionVerified=no` when the running CLI differs, and classifies any unrecognized first line as `indeterminate` rather than authenticated.
 Re-run the two commands above and update this section and the pinned version together when the vendor CLI changes.
 
+## Fleet capacity classification facts
+
+Verified 2026-09-13 against quota-axi 0.1.29 schema 5, captured from `quota-axi --json`.
+
+`bin/fm-capacity-policy.mjs` classifies a spent provider into the causes whose remedies differ, and it must not invent a cause the producer does not expose.
+These are the verified structural facts that classification rests on:
+
+- `windows[].kind` is only ever `model`, `session`, or `weekly`.
+  There is no `credits` kind, so a window's kind never separates a spent prepaid balance from a spent time window.
+- A provider-level `credits` object appears only for `codex` (`{"remaining":0,"unlimited":false,"unit":"credits"}`) and reads the same zero while that provider's weekly window is at 84%, matching the Grok note above on a healthy account.
+  `credits.remaining: 0` is therefore never headroom and never evidence of a spent balance.
+- A spent time window is `percentRemaining: 0` with a `resetsAt`; a credential fault is `state.status === "auth_required"` or `state.authStatus === "unusable"` (or a slug in the policy's `AUTH_REASON_FAULTS` set).
+- quota-axi 0.1.29 exposes no signal that separates "balance exhausted (recharge)" from a spent allowance with no reset reported, so the capacity policy reports that shape as `exhausted` rather than guessing `balance`.
+
+The policy's own header owns the classification contract and its wording; this record only pins the producer facts that contract reads.
+
 ## Regression coverage
 
 `tests/fm-vendor-auth-probe.test.sh` drives the real script against a fake vendor CLI that records every invocation's argv and anything readable on stdin.
