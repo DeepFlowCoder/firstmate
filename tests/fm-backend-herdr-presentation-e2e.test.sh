@@ -1431,6 +1431,13 @@ assert_no_projection_mutation_since "$START" "agent-free duplicate-token recover
 lab workspace get "$DUP1_WSID" >/dev/null 2>&1 || fail "duplicate-token recovery removed the first quarantined workspace"
 lab workspace get "$DUP2_WSID" >/dev/null 2>&1 || fail "duplicate-token recovery removed the second quarantined workspace"
 
+# A genuine live agent is simulated by a real non-shell foreground process
+# (the process-table corroboration), not by a bare shell with a hook
+# registration - that shape is now correctly classified as agent-less, so the
+# flat-fallback refusal below needs a real foreground process to stay live.
+herdr_test_live_foreground "$HERDR_LAB_SESSION" "$DUP1_PANE" "sleep 300" \
+  || fail "could not place a live foreground process in the duplicate-live-agent risk fixture"
+
 lab pane report-agent "$DUP1_PANE" --source fm-projection-e2e --agent test-agent --state idle >/dev/null \
   || fail "could not register the duplicate-live-agent risk fixture"
 START=$(log_line_count)
