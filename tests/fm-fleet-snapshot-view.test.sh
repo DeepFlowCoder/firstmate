@@ -223,6 +223,130 @@ EOF
   pass "a home summary carries repo on landed work and since on queued work"
 }
 
+# Retention keeps only the most recent Done rows in the backlog and moves the
+# rest to data/done-archive.md. Reading blockers out of the backlog alone turned
+# every pruned blocker into a permanent phantom hold: the dependent kept a
+# blocked-by pointing at an id the reader could no longer find, so it never
+# showed up as ready to start and nobody could even check it without opening the
+# archive by hand. Both directions are proved here, because a reader that frees
+# everything is exactly as wrong as one that frees nothing: a blocker completed
+# and pruned must release its dependents, and a blocker that is still pending -
+# live in the backlog, or archived while still unchecked - must keep holding
+# them. A blocker in neither file resolves nothing and is counted instead of
+# being found by manual audit, while main_inventory stays valid, because that
+# state is also how a deliberate dependency outside the task system is written.
+test_pruned_done_blocker_resolves_from_the_archive() {
+  local home fakebin out
+  home=$(make_home pruned-blocker)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] freed - Waits on completed and pruned work blocked-by: landed (repo: alpha) (kind: ship)
+- [ ] still-held - Waits on live work blocked-by: live-only (repo: alpha) (kind: ship)
+- [ ] held-by-archived-queued - Waits on work pruned while queued blocked-by: shelved (repo: alpha) (kind: ship)
+- [ ] held-by-reused-id - Waits on a live row whose id was archived too blocked-by: pending (repo: alpha) (kind: ship)
+- [ ] held-by-nothing - Waits on an id nobody has blocked-by: vanished (repo: alpha) (kind: ship)
+- [ ] live-only - Live blocker the archive has never seen (repo: alpha) (kind: ship)
+- [ ] pending - Live blocker still queued (repo: alpha) (kind: ship)
+
+## Done
+EOF
+  cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [x] landed - Completed then pruned (repo: alpha) (kind: ship) (done 2026-07-22)
+- [ ] shelved - Pruned while still queued (repo: alpha) (kind: ship)
+- [x] pending - An older completed run under the same id (repo: alpha) (kind: ship) (done 2026-06-02)
+EOF
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "freed")
+      | .blocked_by_ids == ["landed"]
+        and .unresolved_blocker_ids == []
+        and .unknown_blocker_ids == [])
+    and (.backlog.records[] | select(.id == "still-held")
+      | .unresolved_blocker_ids == ["live-only"] and .unknown_blocker_ids == [])
+    and (.backlog.records[] | select(.id == "held-by-archived-queued")
+      | .unresolved_blocker_ids == ["shelved"] and .unknown_blocker_ids == [])
+    and (.backlog.records[] | select(.id == "held-by-reused-id")
+      | .unresolved_blocker_ids == ["pending"] and .unknown_blocker_ids == [])
+    and (.backlog.records[] | select(.id == "held-by-nothing")
+      | .unresolved_blocker_ids == ["vanished"] and .unknown_blocker_ids == ["vanished"])
+    and .main_inventory.valid == true
+    and .main_inventory.reason == null
+    and .main_inventory.unknown_blocker_count == 1
+    and .main_inventory.unknown_blockers == [{id:"held-by-nothing", blocker:"vanished"}]
+  ' >/dev/null || fail "pruned-blocker resolution or the unknown-blocker count was wrong: $out"
+
+  # Counterfactual, so neither half can go quietly vacuous: land the live blocker
+  # and drop the row whose blocker never existed. Every remaining hold must clear
+  # except the one whose blocker sits archived but unchecked, and the integrity
+  # check must fall silent.
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] freed - Waits on completed and pruned work blocked-by: landed (repo: alpha) (kind: ship)
+- [ ] still-held - Waits on live work blocked-by: live-only (repo: alpha) (kind: ship)
+- [ ] held-by-archived-queued - Waits on work pruned while queued blocked-by: shelved (repo: alpha) (kind: ship)
+
+## Done
+- [x] live-only - Live blocker, now landed (repo: alpha) (kind: ship) (done 2026-07-23)
+EOF
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "freed") | .unresolved_blocker_ids == [])
+    and (.backlog.records[] | select(.id == "still-held") | .unresolved_blocker_ids == [])
+    and (.backlog.records[] | select(.id == "held-by-archived-queued")
+      | .unresolved_blocker_ids == ["shelved"])
+    and .main_inventory.valid == true
+    and .main_inventory.reason == null
+    and .main_inventory.unknown_blocker_count == 0
+    and .main_inventory.unknown_blockers == []
+  ' >/dev/null || fail "landing the live blocker did not clear its hold, or the count did not fall silent: $out"
+
+  # An absent archive is the ordinary state of a home that has never pruned, and
+  # it must read as "nothing completed there", never as an error or a free pass.
+  rm "$home/data/done-archive.md"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.backlog.records[] | select(.id == "freed")
+      | .unresolved_blocker_ids == ["landed"] and .unknown_blocker_ids == ["landed"])
+    and (.backlog.records[] | select(.id == "still-held") | .unresolved_blocker_ids == [])
+    and .main_inventory.unknown_blocker_count == 2
+  ' >/dev/null || fail "an absent archive was not read as an empty one: $out"
+
+  # Retention appends each archive block to the end of the file, so an id pruned
+  # while queued and later archived again as done lands with its pending copy
+  # first. That copy is still pending work, so it has to keep holding whichever
+  # side of the completed copy it sits on; a rule that only holds in one of the
+  # two orderings is the last archived copy winning, not every copy counting.
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] held-by-twice-archived - Waits on an id archived twice blocked-by: twice (repo: alpha) (kind: ship)
+
+## Done
+EOF
+  for order in pending-first completed-first; do
+    if [ "$order" = "pending-first" ]; then
+      cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [ ] twice - Pruned while still queued (repo: alpha) (kind: ship)
+- [x] twice - A later run under the same id (repo: alpha) (kind: ship) (done 2026-07-23)
+EOF
+    else
+      cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [x] twice - A later run under the same id (repo: alpha) (kind: ship) (done 2026-07-23)
+- [ ] twice - Pruned while still queued (repo: alpha) (kind: ship)
+EOF
+    fi
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+    printf '%s' "$out" | jq -e '
+      .backlog.records[] | select(.id == "held-by-twice-archived")
+      | .unresolved_blocker_ids == ["twice"] and .unknown_blocker_ids == []
+    ' >/dev/null || fail "archive order $order released a dependent whose blocker still has a pending copy: $out"
+  done
+  pass "a completed blocker pruned into the archive frees its dependents while pending ones still hold"
+}
+
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
 test_main_inventory_orphan_and_unstructured_disclosure() {
@@ -798,6 +922,54 @@ test_view_renders_snapshot() {
   pass "fleet view renders the snapshot without secondmate peek guidance"
 }
 
+# The Blocked By column is the surface the card's second consequence lands on:
+# a reader who sees "waits for X" with X pruned out of the backlog cannot check
+# it by hand. bin/fm-bearings-snapshot.sh already resolves this column through
+# unresolved_blocker_ids, so the fleet view must agree with it rather than print
+# the raw token, and a blocker that is genuinely still pending must keep showing
+# with its reason suffix so the column does not go uniformly blank.
+# The multi-blocker row is the case that proves the raw token was never right:
+# bin/fm-fleet-snapshot.sh parses blocked_by with a greedy `.*blocked-by:`
+# prefix, so it holds the LAST token on the row regardless of state. Here that
+# last token is the completed and pruned one, so rendering the raw token would
+# name the archived blocker while the still-queued one is what actually holds
+# the row - and the captain's board would name the other id for the same row.
+test_view_resolves_blocked_by_through_the_archive() {
+  local home fakebin view
+  home=$(make_home view-archived-blocker)
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] freed-row - Freed Row blocked-by: landed (repo: alpha) (kind: ship)
+- [ ] held-row - Held Row (repo: alpha) (kind: ship) blocked-by: pending - waits on pending
+- [ ] multi-row - Multi Row blocked-by: pending blocked-by: landed (repo: alpha) (kind: ship)
+- [ ] multi-reason-row - Multi Reason Row blocked-by: pending blocked-by: landed - landed is done (repo: alpha) (kind: ship)
+- [ ] pending - Pending Blocker (repo: alpha) (kind: ship)
+
+## Done
+EOF
+  cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [x] landed - Completed then pruned (repo: alpha) (kind: ship) (done 2026-07-22)
+EOF
+  fakebin=$(make_fakebin "$home")
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+  assert_contains "$view" "| freed-row | Freed Row | alpha | ship | - |" \
+    "view should not print a blocker the archive already records as completed"
+  assert_not_contains "$view" "| freed-row | Freed Row | alpha | ship | landed" \
+    "view must not send the reader to an id pruned out of the backlog"
+  assert_contains "$view" "| held-row | Held Row | alpha | ship | pending - waits on pending |" \
+    "view should keep printing a blocker that is genuinely still pending, with its reason"
+  assert_contains "$view" "| multi-row | Multi Row | alpha | ship | pending |" \
+    "view should name the still-queued blocker on a row waiting for several tasks"
+  assert_not_contains "$view" "| multi-row | Multi Row | alpha | ship | landed" \
+    "view must not name the archived blocker just because it is the last token on the row"
+  assert_contains "$view" "| multi-reason-row | Multi Reason Row | alpha | ship | pending |" \
+    "view should drop a row-level reason it cannot attribute to the blocker it names"
+  assert_not_contains "$view" "| multi-reason-row | Multi Reason Row | alpha | ship | pending - landed is done" \
+    "view must not explain a live blocker with the reason written about the archived one"
+  pass "fleet view resolves the blocked-by column through the archive"
+}
+
 test_view_renders_dead_secondmate_agent_status() {
   local home fakebin view
   home=$(make_home dead-secondmate)
@@ -998,6 +1170,7 @@ test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_landed_and_queued_carry_repo_and_since
 test_main_inventory_orphan_and_unstructured_disclosure
+test_pruned_done_blocker_resolves_from_the_archive
 test_normalized_roles_and_plural_blocker_readiness
 test_in_flight_captain_hold_is_actionable_under_the_same_two_guards
 test_home_summary_captain_hold_survives_a_live_child_worker
@@ -1011,6 +1184,7 @@ test_parked_scout_decision_stays_pending
 test_scout_reports_include_teardown_reports
 test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
+test_view_resolves_blocked_by_through_the_archive
 test_view_renders_dead_secondmate_agent_status
 
 # Last statement of the suite, so a consumer can tell "every registered case

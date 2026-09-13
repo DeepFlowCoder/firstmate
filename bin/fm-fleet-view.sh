@@ -52,10 +52,27 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     else $t.actions.watch end;
   def task_row($t):
     "| \($t.id) | \($t.current_state.state) / \($t.current_state.source) | \($t.kind) | \(dash($t.backlog.repo // $t.project)) | \($t.backend) | \(endpoint_of($t)) | \(artifact($t)) | \(path_of($t)) | \(action_of($t)) |";
+  # blocked_by is not "the blocker holding this row": bin/fm-fleet-snapshot.sh
+  # parses it with a greedy `.*blocked-by:` prefix, so it is the LAST token on
+  # the row whatever state that token is in. A single-blocker row rendered right
+  # by coincidence, never because the raw token tracked what was holding it.
+  # The snapshot owns resolution and bin/fm-bearings-snapshot.sh already reads
+  # unresolved_blocker_ids for this same column, so this one reads it too: on a
+  # row waiting for several tasks the raw token can name one that already
+  # completed and was pruned, which is the harm this reader exists to remove,
+  # and it made the fleet view and the bearings board disagree about which
+  # blocker holds the same row.
+  # blocked_reason is likewise row-level, belonging to whichever token carried a
+  # " - reason" suffix, so it is attached only when the row had exactly one
+  # blocked-by token and that token is the unresolved one. Otherwise it would
+  # explain an unresolved blocker with a reason written about a different,
+  # possibly already completed, one.
   def blocker($r):
-    if ($r.blocked_by // "") == "" then "-"
-    elif ($r.blocked_reason // "") == "" then $r.blocked_by
-    else "\($r.blocked_by) - \($r.blocked_reason)" end;
+    if (($r.unresolved_blocker_ids // []) | length) == 0 then "-"
+    elif ($r.blocked_reason // "") == ""
+         or ((($r.blocked_by_ids // []) | length) != 1)
+      then ($r.unresolved_blocker_ids | join(","))
+    else "\($r.unresolved_blocker_ids | join(",")) - \($r.blocked_reason)" end;
   def backlog_row($r):
     "| \($r.id // "-") | \(dash($r.title // $r.raw)) | \(dash($r.repo)) | \(dash($r.kind)) | \(blocker($r)) | \(dash($r.pr_url // $r.report_path // $r.local_note)) |";
 

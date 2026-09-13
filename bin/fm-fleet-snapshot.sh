@@ -18,9 +18,16 @@
 #     Structured rows preserve captain-hold metadata such as hold_kind,
 #     hold_reason, and hold_until when tasks-axi emits it. They also carry
 #     normalized current_role, requires_child_metadata, blocked_by_ids,
-#     unresolved_blocker_ids, captain_actionable, and deferred_marker fields.
-#     Repeated blocker tokens remain ordered; a blocker resolves only when its
-#     structured record is Done, and missing ids stay open.
+#     unresolved_blocker_ids, unknown_blocker_ids, captain_actionable, and
+#     deferred_marker fields.
+#     Repeated blocker tokens remain ordered; a blocker resolves when its
+#     structured record is Done, in the backlog or in data/done-archive.md, so
+#     retention pruning a completed blocker cannot leave its dependents held.
+#     The backlog wins wherever both files carry the id, and only a checked
+#     archive row counts, because retention can archive pending rows too.
+#     A blocker id in neither file resolves nothing and stays open, and is also
+#     listed in unknown_blocker_ids so the gap is reported rather than silently
+#     holding work or silently releasing it.
 #     captain_actionable means "waiting on the captain now": not yet done, held
 #     for the captain, unblocked, and due (no hold_until, or hold_until at or
 #     before the observation date, matching tasks-axi's own date-gate rule).
@@ -47,10 +54,17 @@
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
 #   scout_reports[]: present data/<id>/report.md pointers.
-#   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
-#     main-home current-inventory checks shared with secondmate_home_summary_json
-#     (orphan structured in-flight ids with no state/<id>.meta, and unstructured
-#     current backlog rows). Does not invent live tasks; meta remains truth for
+#   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count,
+#     unknown_blockers[],unknown_blocker_count} - main-home current-inventory
+#     checks shared with secondmate_home_summary_json (orphan structured
+#     in-flight ids with no state/<id>.meta, and unstructured current backlog
+#     rows) decide valid and reason. unknown_blockers keeps one {id,blocker}
+#     pair per blocked-by reference to an id in neither the backlog nor the
+#     archive, so unknown_blocker_count counts references: neither rows nor
+#     distinct ids, since one row can name several phantom ids and one phantom
+#     id can hold several rows.
+#     For disclosure only: it is counted, never a validity reason.
+#     Does not invent live tasks; meta remains truth for
 #     workers. Bearings maps failures into omitted[] disclosure (and a Charted
 #     Next gate line) rather than silent empty Underway.
 #   secondmate_current: {records[],total,shown,truncated} - bounded current summaries
@@ -88,6 +102,11 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 BACKLOG="$DATA/backlog.md"
+# Retention moves older Done rows out of the backlog and into this archive, so
+# blocker resolution has to read both files or every pruned blocker turns into a
+# permanent phantom hold over its dependents. Both paths mirror `.tasks.toml`'s
+# markdown backend, which owns them.
+BACKLOG_ARCHIVE="$DATA/done-archive.md"
 SNAPSHOT_NOW=${FM_SNAPSHOT_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 if [ -n "${FM_SNAPSHOT_NOW_EPOCH:-}" ]; then
   SNAPSHOT_EPOCH=$FM_SNAPSHOT_NOW_EPOCH
@@ -300,15 +319,35 @@ first_pr_url_in_file() {  # <file>
   grep -Eo 'https?://[^[:space:])"]+/pull/[0-9]+' "$1" 2>/dev/null | head -1
 }
 
-backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
-  local backlog=${1:-$BACKLOG}
+# Every archived id mapped to whether the archive records it as completed. Only a
+# checked row counts as done: retention can also archive rows pruned from Queued
+# or In flight, and those are still pending work whose dependents must keep
+# waiting. An id archived more than once is done only when every copy is, so an
+# already computed false has to stick: `//` would treat it as absent and let the
+# last archived copy win, which releases a dependent whose blocker was archived
+# still pending and then archived again as done. That every-copy rule is this
+# archive map's own; how the backlog map below treats an id repeated inside
+# data/backlog.md is pre-existing behavior this change does not touch, and is
+# tracked separately.
+archive_states_json() {  # [<archive-path>] - defaults to this home's $BACKLOG_ARCHIVE
+  local archive=${1:-$BACKLOG_ARCHIVE}
+  [ -f "$archive" ] || { printf '{}\n'; return 0; }
+  jq -Rn '[ inputs
+    | capture("^[-*][[:space:]]+\\[(?<check>[ xX])\\][[:space:]]+(?<id>[^[:space:]]+)[[:space:]]+-[[:space:]]+")? ]
+    | reduce .[] as $row ({}; .[$row.id] = ((.[$row.id] != false) and ($row.check != " ")))' < "$archive"
+}
+
+backlog_json() {  # [<backlog-path>] [<archive-path>] - default to this home's files
+  local backlog=${1:-$BACKLOG} archive=${2:-$BACKLOG_ARCHIVE} archived
   if [ ! -f "$backlog" ]; then
     jq -n --arg path "$backlog" '{path:$path,present:false,records:[]}'
     return 0
   fi
+  archived=$(archive_states_json "$archive") || return 1
 
   # shellcheck disable=SC2094
-  jq -Rn --arg path "$backlog" --arg today "$SNAPSHOT_TODAY" '
+  jq -Rn --arg path "$backlog" --arg today "$SNAPSHOT_TODAY" \
+    --argjson archived_ids "$archived" '
     def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
     def section_state:
       if . == "In flight" then "in_flight"
@@ -427,13 +466,21 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
         else . end)
     | .records as $records
     | (reduce ($records[] | select(.structured)) as $record ({};
-         .[$record.id] = ((.[$record.id] // true) and ($record.state == "done")))) as $resolved_ids
+         .[$record.id] = ((.[$record.id] // true) and ($record.state == "done")))) as $backlog_ids
+    # The backlog wins wherever both files carry an id: a row still present here
+    # is live work, whatever an older archived copy of the same id says.
+    | ($archived_ids * $backlog_ids) as $resolved_ids
     | .records |= map(
         if .structured then
           . as $record
           | .unresolved_blocker_ids = [
               $record.blocked_by_ids[] as $blocker
               | select($resolved_ids[$blocker] != true)
+              | $blocker
+            ]
+          | .unknown_blocker_ids = [
+              $record.blocked_by_ids[] as $blocker
+              | select($resolved_ids[$blocker] == null)
               | $blocker
             ]
           | .current_role =
@@ -676,6 +723,16 @@ main_inventory_json() {  # <backlog-json> <tasks-json>
     | ([ $owned_in_flight[]
          | select(.id as $id | [$tasks[].id] | index($id) | not)
          | .id ]) as $orphan_in_flight
+    | ([ $backlog.records[]?
+         | select((.state == "in_flight" or .state == "queued") and .structured)
+         | . as $record
+         | $record.unknown_blocker_ids[]?
+         | {id:$record.id, blocker:.} ]) as $unknown_blockers
+    # Counted and disclosed, deliberately not a validity reason: an invalid
+    # main_inventory renders a Charted Next gate row, and a blocked-by that
+    # names a dependency outside the task system is a supported, permanent
+    # state, so promoting it would spend a captain board slot forever on an
+    # alarm that asks for no action.
     | (($unstructured_current | length) == 0
        and ($orphan_in_flight | length) == 0) as $valid
     | (if ($unstructured_current | length) > 0 then "unstructured current backlog row"
@@ -685,7 +742,9 @@ main_inventory_json() {  # <backlog-json> <tasks-json>
         valid:$valid,
         reason:$reason,
         orphan_in_flight:$orphan_in_flight,
-        unstructured_current_count:($unstructured_current | length)
+        unstructured_current_count:($unstructured_current | length),
+        unknown_blockers:$unknown_blockers,
+        unknown_blocker_count:($unknown_blockers | length)
       }'
 }
 

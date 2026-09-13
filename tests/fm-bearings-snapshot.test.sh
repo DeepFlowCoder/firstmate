@@ -1352,6 +1352,7 @@ write_large_fixture() {  # <home> <count>
   local home=$1 count=$2 i id
   : > "$home/data/backlog.md"
   printf '## Queued\n' >> "$home/data/backlog.md"
+  printf '## Archived 2026-07-22\n' > "$home/data/done-archive.md"
   i=1
   while [ "$i" -le "$count" ]; do
     id="dead-$i"
@@ -1359,6 +1360,13 @@ write_large_fixture() {  # <home> <count>
     printf '# Report\n' > "$home/data/$id/report.md"
     printf -- '- [ ] gate-%s - Gate %s blocked-by: task-%s (repo: repo-%s) (kind: ship)\n' "$i" "$i" "$i" "$i" >> "$home/data/backlog.md"
     printf -- '- [ ] decision-%s - Decision %s (repo: repo-%s) (kind: captain) (hold: captain choice pending) (hold-kind: captain)\n' "$i" "$i" "$i" >> "$home/data/backlog.md"
+    # Each blocker is completed work retention has already pruned out of the
+    # backlog. This fixture is about section caps, so its rows must not also
+    # trip the backlog-integrity check for a blocker id no file accounts for,
+    # and the archive is where a landed blocker legitimately lives. A pending
+    # row here instead would land in Queued and inflate the gate count itself.
+    printf -- '- [x] task-%s - Blocker %s (repo: repo-%s) (kind: ship) (done 2026-07-22)\n' \
+      "$i" "$i" "$i" >> "$home/data/done-archive.md"
     fm_write_meta "$home/state/$id.meta" \
       "window=firstmate:fm-$id" \
       "worktree=$home/projects/$id" \
@@ -1873,6 +1881,78 @@ EOF
   pass "main unstructured current is disclosed while structured siblings still project"
 }
 
+# The integrity check is the card's second half, and omitted[] is where the
+# captain actually reads it, so it needs the same by-name pin its two sibling
+# main_inventory disclosures already carry. Without one the expression fails
+# silent: a renamed or mistyped field path yields no line at all and the count
+# goes back to being discoverable only by manual audit. The disclosure is
+# deliberately not an invalidity, so no (main-inventory) gate row may appear.
+# The count is per (row, blocked-by id) reference, and this fixture separates
+# all three numbers so no assertion can confuse them: 4 references spread over
+# 3 rows naming 2 distinct phantom ids. One row carries two unknown ids, and one
+# phantom id is shared by three rows - the second shape being the card's own
+# worst case, one completed blocker holding six tasks, which a distinct-id count
+# would collapse to 1 and hide.
+# The last three rows pin reason attribution, whose rule has two halves that
+# only work together: blocked_reason renders when the row named exactly one
+# blocked-by token AND that token is the one still holding the row. A
+# multi-token row would otherwise explain its unresolved blocker with a reason
+# written about the already-completed one, and a row the archive just freed
+# would keep a reason saying why it waits beside a blocker column reading "-".
+# That second shape is the whole population this task is about, so it is the one
+# most likely to reach the captain.
+test_main_unknown_blocker_is_disclosed_without_invalidating_inventory() {
+  local home fakebin json canonical
+  home=$(make_home main-unknown-blocker)
+  : > "$home/data/secondmates.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] gate-unknown - Waits on two ids nobody has blocked-by: vanished blocked-by: ghost blocked-by: landed (repo: firstmate) (kind: ship)
+- [ ] gate-archived - Waits on completed pruned work blocked-by: landed (repo: firstmate) (kind: ship)
+- [ ] gate-shared-a - Also waits on the shared phantom blocked-by: ghost (repo: firstmate) (kind: ship)
+- [ ] gate-shared-b - Also waits on the shared phantom blocked-by: ghost (repo: firstmate) (kind: ship)
+- [ ] gate-one-reason - Waits on a live blocker blocked-by: gate-archived - gate-archived owes a handoff (repo: firstmate) (kind: ship)
+- [ ] gate-multi-reason - Waits on live and pruned work blocked-by: gate-archived blocked-by: landed - landed is done (repo: firstmate) (kind: ship)
+- [ ] gate-freed-reason - Waited on pruned work blocked-by: landed - waits for the landed API shape (repo: firstmate) (kind: ship)
+
+## Done
+EOF
+  cat > "$home/data/done-archive.md" <<'EOF'
+## Archived 2026-07-22
+- [x] landed - Completed then pruned (repo: firstmate) (kind: ship) (done 2026-07-22)
+EOF
+  fakebin=$(make_fakebin "$home")
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    .main_inventory.valid == true
+      and .main_inventory.reason == null
+      and .main_inventory.unknown_blocker_count == 4
+      and .main_inventory.unknown_blockers == [{id:"gate-unknown", blocker:"vanished"},
+                                               {id:"gate-unknown", blocker:"ghost"},
+                                               {id:"gate-shared-a", blocker:"ghost"},
+                                               {id:"gate-shared-b", blocker:"ghost"}]
+      and ([.main_inventory.unknown_blockers[].id] | unique | length) == 3
+      and ([.main_inventory.unknown_blockers[].blocker] | unique | length) == 2
+  ' >/dev/null || fail "canonical main inventory mis-scored the unknown blockers: $canonical"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.omitted | any(.surface == "main current backlog blocked-by reference(s) to an id in neither the backlog nor the archive: 4"))
+      and ([.gates[].id] | index("(main-inventory)") | not)
+      and (.gates | any(.id == "gate-unknown" and .blocked_by == "vanished,ghost"))
+      and (.gates | any(.id == "gate-archived" and .blocked_by == "-"))
+      and (.gates | any(.id == "gate-shared-a" and .blocked_by == "ghost"))
+      and (.gates | any(.id == "gate-shared-b" and .blocked_by == "ghost"))
+      and (.gates | any(.id == "gate-one-reason" and .blocked_by == "gate-archived"
+                        and .reason == "gate-archived owes a handoff"))
+      and (.gates | any(.id == "gate-multi-reason" and .blocked_by == "gate-archived"
+                        and .reason == "-"))
+      and (.gates | any(.id == "gate-freed-reason" and .blocked_by == "-"
+                        and .reason == "-"))
+  ' >/dev/null || fail "unknown blockers were not disclosed per reference, or a reason was misattributed: $json"
+  pass "main unknown blocker is disclosed in omitted without invalidating inventory"
+}
+
 test_main_orphan_counterfactual_meta_clears_inventory_warning() {
   local home fakebin json_before json_after
   home=$(make_home main-orphan-counterfactual)
@@ -2280,6 +2360,7 @@ test_captains_call_anti_leak
 test_open_decisions_carry_their_project
 test_main_orphan_in_flight_is_disclosed_not_invented
 test_main_unstructured_current_is_disclosed_with_structured_sibling
+test_main_unknown_blocker_is_disclosed_without_invalidating_inventory
 test_main_orphan_counterfactual_meta_clears_inventory_warning
 test_mixed_secondmate_roles_partial_state_and_captain_readiness
 test_main_captain_readiness_matches_secondmate_projection
