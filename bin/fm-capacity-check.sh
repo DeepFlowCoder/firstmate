@@ -116,7 +116,7 @@ MIN_LANES=$MIN_LANES_DEFAULT
 MIN_LANES_PROBLEM=
 
 resolve_min_lanes() {
-  local source= value= reason=
+  local source='' value='' reason=''
   MIN_LANES=$MIN_LANES_DEFAULT
   MIN_LANES_PROBLEM=
   if [ -n "${FM_CAPACITY_MIN_LANES:-}" ]; then

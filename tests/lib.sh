@@ -61,6 +61,18 @@ export FM_CAPTAIN_ANSWER_BYPASS=1
 # value per run so it still drives the real guard end to end.
 export FM_DISK_SPACE_MIN_GB=0
 
+# Retire the fleet capacity guard (bin/fm-capacity-check.sh) for the same reason,
+# and for one more. Its session-start surface runs in the fm-bootstrap suites,
+# which assert silence, and left live it would print or not print purely
+# according to which providers the developer or the CI runner happened to be
+# signed in to - the same commit passing or failing by time of day. The extra
+# reason is cost: unretired, it would run the real quota-axi, which talks to
+# vendors, in every suite that reaches a session start. 0 is the captain's own
+# off switch, not a test-only escape hatch, so the guard's real behavior is
+# untouched, and tests/fm-capacity.test.sh pins this value per run so it still
+# drives the real guard end to end.
+export FM_CAPACITY_MIN_LANES=0
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
