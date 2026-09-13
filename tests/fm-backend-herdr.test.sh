@@ -587,6 +587,36 @@ test_create_task_refuses_duplicate_label_when_agent_live() {
   pass "fm_backend_herdr_create_task: a same-labeled tab with a live (even idle) registered agent still refuses exactly as before"
 }
 
+test_registered_agent_at_bare_shell_is_dead() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/phantom-agent"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":123,"foreground_process_group_id":123,"foreground_processes":[{"pid":123,"name":"zsh","argv":["zsh"]}]}}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p2' "$ROOT" )
+  [ "$out" = dead ] \
+    || fail "a hook-registered agent whose pane is back at its bare shell must be dead, got '$out'"
+  assert_contains "$(cat "$log")" $'agent\x1fget\x1fw1:p2' "the phantom check skipped Herdr's registered-agent source"
+  assert_contains "$(cat "$log")" $'pane\x1fprocess-info\x1f--pane\x1fw1:p2' "the phantom check did not corroborate the registry against the pane process table"
+  pass "fm_backend_herdr_agent_state: a stale lifecycle-hook registration cannot keep a bare-shell pane alive"
+}
+
+test_registered_agent_with_ambiguous_process_info_stays_alive() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/agent-process-ambiguous"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+  printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/2.out"
+  printf '{"error":{"code":"internal_error","message":"process table unavailable"}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p2' "$ROOT" )
+  [ "$out" = alive ] \
+    || fail "an unreadable corroboration must not manufacture a dead agent and license a duplicate, got '$out'"
+  pass "fm_backend_herdr_agent_state: only positive bare-shell proof overrides a registered agent"
+}
+
 test_create_task_refuses_when_any_duplicate_label_is_live() {
   local dir log resp fb out status
   dir="$TMP_ROOT/dup-mixed-live"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4456,6 +4486,8 @@ test_label_collision_startup_workspace_leaves_live_tab_alone
 test_prune_refuses_a_working_agent_pane_defense_in_depth
 test_create_task_refuses_duplicate_label
 test_create_task_refuses_duplicate_label_when_agent_live
+test_registered_agent_at_bare_shell_is_dead
+test_registered_agent_with_ambiguous_process_info_stays_alive
 test_create_task_refuses_when_any_duplicate_label_is_live
 test_create_task_closes_and_replaces_dead_pane_husk
 test_create_task_closes_and_replaces_no_agent_husk

@@ -20,16 +20,10 @@
 # bounded schedule, and a worker that never acknowledges surfaces through the
 # ordinary stale wake into stuck-crewmate-recovery.
 #
-# That "ringing it again is free" only holds while an AGENT is reading the
-# terminal. A pane whose agent is gone is a shell, and a shell does not read a
-# line - it RUNS it. Measured 2026-08-31 on a task whose worker had died: the
-# doorbell was typed into the bare zsh prompt and executed four times, leaving
-# `zsh: command not found: Firstmate` in a real worktree. Nothing was destroyed
-# only because the constant line happens to begin with a word that is not a
-# command, which makes the current wording the sole thing standing between a
-# re-ring and arbitrary execution on the captain's machine. So the ring asks
+# That "ringing it again is free" only holds while an agent is reading the
+# terminal. A bare shell executes a submitted line, so the ring asks
 # fm_backend_pane_is_bare_shell (bin/fm-backend.sh) whether the endpoint would
-# EXECUTE what it is sent, and never types into one that would.
+# execute what it is sent and never types into one that would.
 #
 # Layout under <state-dir>:
 #   <task>.inbox/NNN.msg       one durable steer, numeric sequence, atomic rename
@@ -364,6 +358,10 @@ fm_task_inbox_due_action() {  # <state-dir> <task-id>
   IFS=$(printf '\t') read -r rec_base count last <<EOF
 $ladder
 EOF
+  if [ "$(cat "$dir/.escalated" 2>/dev/null || true)" = "$base" ]; then
+    printf 'quiet'
+    return 0
+  fi
   if [ "$rec_base" != "$base" ]; then
     # A different (or first) oldest message: the previous ladder is stale.
     count=0
@@ -372,10 +370,6 @@ EOF
   fi
   case "$count" in ''|*[!0-9]*) count=0 ;; esac
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  if [ "$(cat "$dir/.escalated" 2>/dev/null || true)" = "$base" ]; then
-    printf 'quiet'
-    return 0
-  fi
   max=$(fm_task_inbox_ring_max)
   if [ "$count" -ge "$max" ]; then
     printf 'escalate %s %s' "$oldest" "$count"

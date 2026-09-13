@@ -1865,20 +1865,11 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 # never manufacture it.
 #
 # This is the second source `agent get` needs. Herdr's agent registry is fed by
-# the agent's own lifecycle hooks, so an agent that dies without firing its stop
-# hook (measured: pi killed by an API error) leaves `agent_status: idle`
-# registered forever, and screen detection cannot correct it either - a known
-# agent sitting at a shell prompt falls back to `idle` by design
-# (`agent explain` -> fallback_reason default_known_agent_idle_fallback).
-# The process table cannot be fooled that way: an agent that is running IS the
-# pane's foreground process, and an agent that is gone leaves the shell as the
-# only thing in the foreground process group.
-#
-# Verified against real herdr 0.8.2 in an isolated lab session (2026-09-13):
-# a pane at its zsh prompt reports foreground_process_group_id == shell_pid with
-# a single foreground process whose pid is that same shell_pid, while the same
-# pane running `sleep 120` reports a different process group and the `sleep`
-# process - and `agent get` reports `idle` in BOTH cases.
+# lifecycle hooks, so an agent that dies without firing its stop hook can leave
+# `agent_status: idle` registered indefinitely. The process table cannot retain
+# that stale claim: an agent-less pane returns to its shell as the only member
+# of the foreground process group. The dated real-Herdr evidence is recorded in
+# docs/verification/runtime-backends.md under "Steering-inbox doorbell".
 fm_backend_herdr_pane_shell_only() {  # <session> <pane_id>
   local session=$1 pane_id=$2 out verdict
   out=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane_id" 2>/dev/null) || return 1
