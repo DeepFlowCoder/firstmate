@@ -906,6 +906,36 @@ fm_backend_agent_alive() {  # <backend> <target>
   esac
 }
 
+# fm_backend_pane_is_bare_shell: the single contract for "typing into this
+# endpoint would be executed rather than read". True (0) ONLY when the backend
+# positively proves the endpoint's foreground is its own interactive shell and
+# nothing else. Every other outcome - a running process of any kind, an
+# unreadable or ambiguous probe, or a backend that cannot answer at all -
+# returns 1, so this can only ever confirm the hazard and never invent it.
+#
+# It deliberately asks a NARROWER question than fm_backend_agent_state. That
+# classifier answers "is a verified harness agent running here", which depends
+# on how each vendor names its own process and so can be wrong in BOTH
+# directions when a release changes that name. This one answers "is a shell
+# sitting at a prompt here", which no harness release can change: a pane
+# running something is not a shell prompt whether or not we can name what it is
+# running. A caller that must not execute text on the captain's machine wants
+# this question, because a false `alive` here is harmless (the write proceeds
+# exactly as it did before) while a false `dead` from the liveness classifier
+# would silently stop steering a live worker.
+#
+# Only backends that own a structural foreground-process read implement it.
+# zellij, orca, and cmux answer 1 (unproven) and keep their existing behavior.
+fm_backend_pane_is_bare_shell() {  # <backend> <target>
+  local backend=$1 target=$2
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux) fm_backend_tmux_pane_is_bare_shell "$target" ;;
+    herdr) fm_backend_herdr_pane_is_bare_shell "$target" ;;
+    *) return 1 ;;
+  esac
+}
+
 # --- native event push (backend-extensible) ---------------------------------
 #
 # The watcher's event-wait splice (bin/fm-watch.sh) is backend-agnostic: it asks

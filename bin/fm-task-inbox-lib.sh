@@ -27,9 +27,9 @@
 # `zsh: command not found: Firstmate` in a real worktree. Nothing was destroyed
 # only because the constant line happens to begin with a word that is not a
 # command, which makes the current wording the sole thing standing between a
-# re-ring and arbitrary execution on the captain's machine. So the ring asks the
-# backend whether anyone is reading before it types, and a positively dead or
-# missing endpoint is never written to.
+# re-ring and arbitrary execution on the captain's machine. So the ring asks
+# fm_backend_pane_is_bare_shell (bin/fm-backend.sh) whether the endpoint would
+# EXECUTE what it is sent, and never types into one that would.
 #
 # Layout under <state-dir>:
 #   <task>.inbox/NNN.msg       one durable steer, numeric sequence, atomic rename
@@ -266,33 +266,34 @@ fm_task_inbox_doorbell_line() {  # <record-path>
     "$abs" "$abs"
 }
 
-# Ring the doorbell, best-effort: a reader check, one advisory composer
+# Ring the doorbell, best-effort: a shell-prompt check, one advisory composer
 # pre-check, then the backend's submit machinery with a minimal retry budget,
 # verdict discarded.
 # Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
 # (the watcher re-rings later), 2 the backend send failed, 3 skipped because the
-# backend positively classifies the endpoint as having no agent to read it. No
-# return value is delivery proof; the acknowledgement move is the only delivery
-# signal.
+# backend PROVED the endpoint is a bare shell prompt, which would execute the
+# line instead of reading it. No return value is delivery proof; the
+# acknowledgement move is the only delivery signal.
 # The composer skip is deliberately narrow: only an exact `pending` verdict
 # defers, because there our Enter could submit someone's real half-typed
 # content. `pending-unproven` and `unknown` still ring - the worst outcome is a
 # garbled CONSTANT line the worker recovers semantically, while skipping on
 # ambiguous verdicts would starve a harness whose idle screen the classifier
 # cannot positively identify (that classifier is advisory here by design).
-# The reader check is narrow in the same direction, but it is a SAFETY gate
+# The shell check is narrow in the same direction, but it is a SAFETY gate
 # rather than an etiquette one, so it refuses on proof instead of deferring on
-# doubt. It asks fm_backend_agent_alive, whose `dead` is exactly the set of
-# positively classified agent-less states (dead and missing); every ambiguous or
-# unreadable read, and every backend with no recovery-grade classifier at all
-# (zellij, orca, cmux), reports `unknown` and rings exactly as before. So this
-# can never quietly stop steering a live worker. What it stops is typing into a
-# pane that has already been proven to be a shell.
+# doubt. It deliberately asks fm_backend_pane_is_bare_shell ("would this be
+# executed?") rather than the liveness classifier ("is a known agent running?"),
+# because only the first question is about the hazard. A harness release that
+# renames its own process can make the liveness classifier report a live worker
+# dead, and answering THAT question here would silently stop steering it; a pane
+# running an unrecognized process is still not a shell prompt, so this question
+# survives the same drift. Every unproven, unreadable, or unanswerable case
+# rings exactly as before.
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
-  local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict astate
+  local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
   line=$(fm_task_inbox_doorbell_line "$rec")
-  astate=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null) || astate=unknown
-  [ "$astate" != dead ] || return 3
+  ! fm_backend_pane_is_bare_shell "$backend" "$target" 2>/dev/null || return 3
   cstate=$(fm_backend_composer_state "$backend" "$target" "$label" 2>/dev/null) || cstate=unknown
   case "$cstate" in
     pending) return 1 ;;
@@ -389,10 +390,14 @@ EOF
 }
 
 # Advance the ladder after a delivery attempt. A failed ring or a composer-
-# protected skip still consumes budget so neither a dead pane nor permanently
-# blocked composer can retry silently forever. A concurrently removed inbox is
-# a successful no-op; otherwise failure means the caller must surface the
-# unwritable ladder while the record remains unhandled.
+# protected skip still consumes budget so neither an unreachable pane nor a
+# permanently blocked composer can retry silently forever. A ring suppressed
+# because the endpoint was PROVEN to be a bare shell prompt is NOT a ladder
+# attempt: that fact is already established, so the caller surfaces it at once
+# and marks the ladder escalated instead of spending budget rediscovering it.
+# A concurrently removed inbox is a successful no-op; otherwise failure means
+# the caller must surface the unwritable ladder while the record remains
+# unhandled.
 fm_task_inbox_record_ring() {  # <state-dir> <task-id> <record-path>
   local dir base ladder rec_base count last
   dir=$(fm_task_inbox_dir "$1" "$2")

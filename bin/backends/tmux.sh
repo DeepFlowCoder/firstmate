@@ -346,6 +346,35 @@ EOF
   esac
 }
 
+# fm_backend_tmux_pane_is_bare_shell: the tmux half of
+# fm_backend_pane_is_bare_shell (bin/fm-backend.sh owns that contract). True (0)
+# only when the window is confirmed present in its own session inventory AND its
+# foreground process group is readable, non-empty, and made of nothing but
+# shells. A window the inventory does not list is never answered from a raw
+# pane read, because tmux serves an absent target from the client's active
+# window instead of failing and would otherwise describe some unrelated pane.
+fm_backend_tmux_pane_is_bare_shell() {  # <target>
+  local target=$1 session window windows foreground name seen=0
+  case "$target" in
+    *:*:*|'':*|*:'') return 1 ;;
+    *:*) ;;
+    *) return 1 ;;
+  esac
+  session=${target%%:*}
+  window=${target#*:}
+  windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null) || return 1
+  printf '%s\n' "$windows" | grep -Fqx "$window" || return 1
+  foreground=$(fm_backend_tmux_foreground_comms "$target")
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    seen=1
+    [ "$(fm_backend_tmux_classify_process_name "$name")" = shell ] || return 1
+  done <<EOF
+$foreground
+EOF
+  [ "$seen" -eq 1 ]
+}
+
 # Backward-compatible three-state view for callers that only need a yes/no
 # agent verdict. The detailed state contract is owned by fm_backend_agent_state.
 fm_backend_tmux_agent_alive() {  # <target>

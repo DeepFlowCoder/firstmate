@@ -436,6 +436,30 @@ inbox_steer_check() {  # <window> <task>
     ring)
       ring_rc=0
       fm_task_inbox_ring "$(window_backend "$w")" "$w" "$rec" "$(window_label "$w")" || ring_rc=$?
+      # A 3 means the backend POSITIVELY classified this endpoint as having no
+      # agent to read the line, so the doorbell was not typed into it (a pane
+      # with no agent is a shell, and a shell runs what it is sent -
+      # bin/fm-task-inbox-lib.sh owns that reasoning). Spending two more ladder
+      # attempts would only delay a fact already proven, and the escalate
+      # branch's wording - "with an idle pane" - would then misname a pane that
+      # is not idle but empty. Surface it once, accurately, and mark the ladder
+      # escalated so due_action goes quiet until the record is handled or the
+      # endpoint gets a worker again.
+      if [ "$ring_rc" = 3 ]; then
+        triage_log "steer-inbox delivery attempt: $task ${rec##*/} result=3 (no agent reading the endpoint)"
+        if [ ! -d "${rec%/*}" ] || [ ! -f "$rec" ]; then
+          fm_task_inbox_due_action "$STATE" "$task" >/dev/null || true
+          return 0
+        fi
+        reason="stale: $w (undeliverable firstmate instruction: $rec cannot be rung because $w has no agent reading it - the endpoint holds a shell, not a worker, so the line was deliberately not typed into it; the record stays durable for a replacement worker)"
+        fm_wake_append stale "$w" "$reason" || exit 1
+        if ! fm_task_inbox_record_escalated "$STATE" "$task" "$rec"; then
+          echo "error: stale wake was queued for $task but its inbox escalation marker could not be written" >&2
+          exit 1
+        fi
+        wake "$reason"
+        return 0
+      fi
       if ! fm_task_inbox_record_ring "$STATE" "$task" "$rec"; then
         if [ ! -f "$rec" ]; then
           fm_task_inbox_due_action "$STATE" "$task" >/dev/null || true

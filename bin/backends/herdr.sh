@@ -1899,6 +1899,15 @@ fm_backend_herdr_pane_shell_only() {  # <session> <pane_id>
   [ "$verdict" = yes ]
 }
 
+# fm_backend_herdr_pane_is_bare_shell: the herdr half of
+# fm_backend_pane_is_bare_shell (bin/fm-backend.sh owns that contract), taking
+# the adapter's "<session>:<pane_id>" target form. An unparseable target proves
+# nothing and returns 1.
+fm_backend_herdr_pane_is_bare_shell() {  # <target>
+  fm_backend_herdr_parse_target "$1" || return 1
+  fm_backend_herdr_pane_shell_only "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"
+}
+
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
 # dead|no-agent|live|unknown, purely from the JSON body of read-only calls -
 # never from process exit status, since a business-logic "not found"
