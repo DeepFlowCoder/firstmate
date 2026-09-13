@@ -43,7 +43,7 @@ Board answers are acted on later under the normal authority rules; this skill's 
    A parent event or bounded terminal contradiction is fallback evidence, never authority over readable structured home state.
    A decision is simply a task held for the captain (`captain-hold-lifecycle`); every due, unblocked captain-held task appears under `decisions_open`, whatever its kind.
    A captain hold deferred by date sits under `gates` with its `until <date>:` reason until it is due.
-   A queued item held under the structured `parked` or `future` kind leaves default `gates`, contributes to a counted `omitted` disclosure, and returns with `--all-queued`; a future `hold-until` date keeps it visible as a dated gate instead.
+   A queued item held under the structured `parked` kind leaves default `gates`, contributes to a counted `omitted` disclosure, and returns with `--all-queued`; a `future`-kind row is date-deferred, so it renders as a dated gate while its `hold-until` date is ahead and surfaces once the date arrives.
    Never infer set-aside state from words in a title, reason, or body, and never apply the set-aside filter to `decisions_open`; every due, unblocked captain hold remains visible and `--all-decisions` only lifts its count bound.
    Do not scrape reports, visual-review artifacts, raw status-event tails, or visible conversation history to supplement current state.
    A queued item under `gates` only becomes "next work" when its blocker is gone and its time/date gate has arrived.

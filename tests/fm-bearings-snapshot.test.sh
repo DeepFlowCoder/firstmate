@@ -1010,7 +1010,8 @@ test_default_view_filters_by_structured_state_not_row_prose() {
 - [ ] canon-marca - Mark the E316 (repo: bitagora) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED as a marker) (hold-kind: captain)
 - [ ] canon-marca-gated - Mark the E316 phase two blocked-by: blocker-live (repo: bitagora) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED as a marker) (hold-kind: captain)
 - [ ] really-parked - Genuinely set-aside work (repo: bitagora) (kind: ship) (hold: replaced by canon-marca) (hold-kind: parked)
-- [ ] parked-but-dated - Set aside until a date (repo: bitagora) (kind: ship) (hold: after launch) (hold-kind: future) (hold-until: 2099-01-01)
+- [ ] future-dated - Deferred to a future date (repo: bitagora) (kind: ship) (hold: after launch) (hold-kind: future) (hold-until: 2099-01-01)
+- [ ] future-due - Date-deferred work whose date has arrived (repo: bitagora) (kind: ship) (hold: start after launch) (hold-kind: future) (hold-until: 2020-01-01)
 
 ## Done
 EOF
@@ -1027,10 +1028,13 @@ EOF
     (.gates | any(.[]; .id == "really-parked") | not)
       and (.decisions_open | any(.[]; .id == "really-parked") | not)
   ' >/dev/null || fail "a structurally set-aside row must stay hidden by default: $json"
-  # A set-aside row carrying a future date is a dated gate, not a hidden row.
+  # A future-kind row carrying a still-ahead date is a dated gate, not hidden.
   printf '%s' "$json" | jq -e '
-    .gates[] | select(.id == "parked-but-dated") | .reason | startswith("until 2099-01-01:")
-  ' >/dev/null || fail "a dated set-aside row must render as its dated gate: $json"
+    .gates[] | select(.id == "future-dated") | .reason | startswith("until 2099-01-01:")
+  ' >/dev/null || fail "a future-kind row with an ahead date must render as its dated gate: $json"
+  # A future-kind row whose date has arrived surfaces, it is not set-aside.
+  printf '%s' "$json" | jq -e '.gates | any(.[]; .id == "future-due")' >/dev/null \
+    || fail "a future-kind row whose date arrived was hidden: $json"
   printf '%s' "$json" | jq -e '
     [.omitted[] | select(.reveal == "--all-queued")] as $d
     | ($d | length) == 1 and ($d[0].surface | test("1$"))

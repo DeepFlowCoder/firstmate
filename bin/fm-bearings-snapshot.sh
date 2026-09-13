@@ -31,13 +31,13 @@
 # actionable and renders as a Charted Next gate with its date, or, when its row
 # is already in flight, as its live worker's Underway line while one is running
 # under it.
-# Charted Next withholds one class of row by default: a queued item held under a
-# set-aside hold kind, which the canonical snapshot marks with deferred_marker
+# Charted Next withholds one class of row by default: a queued item held under
+# the parked hold kind, which the canonical snapshot marks with deferred_marker
 # read from that kind's own field. That withholding is always disclosed in
 # omitted[] with its count and revealed by --all-queued, so an empty gates list
 # never has to be read as either "nothing queued" or "some of it hidden" - the
-# disclosure says which. A set-aside row carrying a future hold-until is not
-# withheld; it renders as its dated gate.
+# disclosure says which. A future-kind row is date-deferred, never withheld:
+# it renders as its dated gate while the date is ahead and surfaces once due.
 # Neither --all-decisions nor --all-queued widens the decision candidate set:
 # the first lifts only the count bound, the second only the set-aside filter.
 # Lifting the count bound is not additive across sections, though - the rendered
@@ -78,7 +78,7 @@
 #   --all-secondmates include every aggregated secondmate record
 #   --all-landed     include every landed record from every home (default: bounded)
 #   --all-reports    include the full scout-report inventory (default: relevant only)
-#   --all-queued     include set-aside queued items (default: dropped, counted)
+#   --all-queued     include parked queued items (default: dropped, counted)
 #   --all-recorded-prs include every locally recorded PR
 #   --all-unhealthy  include every unhealthy endpoint
 #   --all-pr-repos   query every discovered repository under --include-prs
@@ -174,11 +174,11 @@ Opt-in surfaces: --fields bodies|paths|actions|endpoints, --all-in-flight,
   --all-unhealthy, --all-pr-repos, --include-prs (adds candidate_prs).
 decisions_open is never narrowed by a deferral filter: every due, unblocked captain
   hold reaches it, so --all-decisions only lifts the count bound.
-gates withholds queued items held under a set-aside hold kind (deferred_marker,
+gates withholds queued items held under the parked hold kind (deferred_marker,
   read from the canonical snapshot's structured hold kind and never from row prose).
   Each default run discloses that withholding in omitted[] with its count, and
-  --all-queued reveals the rows. A set-aside row with a future hold-until is not
-  withheld: it renders as its dated gate.
+  --all-queued reveals the rows. A future-kind row is date-deferred, never
+  withheld: it renders as its dated gate while ahead and surfaces once due.
 Raise FM_BEARINGS_PR_LIMIT to expand per-repository open-PR results.
 EOF
 }
@@ -462,9 +462,10 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   # board and the fleet view each used to do separately and disagree about.
   # The one place the default gates view decides to withhold a row, so the
   # omitted[] count below counts exactly what was dropped. deferred_marker is
-  # the structured set-aside hint derived once by bin/fm-fleet-snapshot.sh from
-  # the hold kind field, never a word found in row prose. A set-aside row that
-  # also carries a future hold-until still renders, as its dated gate line.
+  # the structured parked hint derived once by bin/fm-fleet-snapshot.sh from
+  # the hold kind field, never a word found in row prose. A future-kind row is
+  # date-deferred, never withheld: it renders as its dated gate line while its
+  # date is ahead and surfaces once due.
   def gate_deferred_hidden:
     (.deferred_marker == true)
     and (((.hold_until // null) == null) or (.hold_until <= $today));

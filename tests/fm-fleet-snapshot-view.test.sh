@@ -779,7 +779,7 @@ test_backlog_tasks_axi_forms_and_overrides() {
 - [ ] captain-gated-work - Captain-gated ship work (repo: sample) (kind: ship) (hold: captain go pending) (hold-kind: captain)
 - [ ] prose-mentions-marker - Captain call whose reason discusses the word (repo: sample) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED and NOT REQUIRED as markers) (hold-kind: captain)
 - [ ] structurally-parked - Genuinely set-aside work (repo: sample) (kind: ship) (hold: replaced by captain-gated-work) (hold-kind: parked)
-- [ ] structurally-future - Set aside for later (repo: sample) (kind: ship) (hold: after launch) (hold-kind: future)
+- [ ] structurally-future - Date-deferred work (repo: sample) (kind: ship) (hold: after launch) (hold-kind: future)
 - [ ] unknown-hold-kind - Held under a kind this reader does not know (repo: sample) (kind: ship) (hold: some other reason) (hold-kind: bogus)
 
 ## Done
@@ -860,15 +860,16 @@ EOF
     .backlog.records[] | select(.id == "prose-mentions-marker")
     | .captain_actionable == true and .deferred_marker == false
   ' >/dev/null || fail "a captain hold whose reason discusses the marker words was marked deferred"
-  # The other direction: a structurally set-aside row still carries the marker.
+  # The other direction: a structurally parked row still carries the marker,
+  # while a future-kind row does not (it is date-deferred, not set aside).
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "structurally-parked")
     | .deferred_marker == true and .captain_actionable == false
   ' >/dev/null || fail "a parked hold did not carry the presentation marker"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "structurally-future")
-    | .deferred_marker == true and .captain_actionable == false
-  ' >/dev/null || fail "a future hold did not carry the presentation marker"
+    | .deferred_marker == false and .captain_actionable == false
+  ' >/dev/null || fail "a future hold was marked deferred instead of date-deferred"
   # A kind outside the closed tasks-axi set reaches the record verbatim and
   # fails toward showing the row, never toward hiding it.
   printf '%s' "$out" | jq -e '
