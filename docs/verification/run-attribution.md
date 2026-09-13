@@ -184,15 +184,12 @@ The guarantee fails the day that last command stops answering, which is the day 
 The check before reporting work lost has a second half - that no later run already resumed the work - and a later run is found by date, without its id being known in advance:
 
 ```sh
-ls -t ~/.no-mistakes/logs/ | grep -B3 01M238R9XKMRKRKYKJRS7X0BWH
+ls -t ~/.no-mistakes/logs/ | grep -n 01M238R9XKMRKRKYKJRS7X0BWH
 ```
 
 ```
-01M24S69DZA26A7Q5D5XD099CR
-01M24MGWFM1W5M2RD295ZGFBQK
-01M242NA3GYJB5RB0BQ8ZWMWTB
-01M238R9XKMRKRKYKJRS7X0BWH
+53:01M238R9XKMRKRKYKJRS7X0BWH
 ```
 
-The listing is newest first, so every run that started after the failed one sits above it, and the successor that resumed this branch, `01M242NA3GYJB5RB0BQ8ZWMWTB`, is the row directly above it.
+The listing is newest first, so every run that started after the failed one sits on an earlier line than it; here the failed run is line 53, and the successor that resumed this branch, `01M242NA3GYJB5RB0BQ8ZWMWTB`, is the row directly above it at line 52.
 Its own `review.log` then says what it resumed - here, `round 1` on the same branch.
