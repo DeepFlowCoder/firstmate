@@ -24,13 +24,15 @@
 #      gets its one repost
 set -u
 
-# Source analysis stops at the imported modules below. Each one is itself a
-# canonical root of this same lint run, so following it from here re-analyses
-# it inside this root's program rather than covering anything the run would
-# otherwise miss. On this root that re-analysis is not free: it is what made a
-# single ShellCheck process cost more memory than a CI runner has, measured in
-# docs/verification/lint-lane-memory.md. Same boundary the test roots use.
-# shellcheck source=/dev/null
+# The test harness stays followed; the production modules below do not. Each
+# production module is itself a canonical root of this same lint run, so
+# following one from here re-analyses it inside this root's program rather than
+# covering anything the run would otherwise miss - and on this root that
+# re-analysis is what made a single ShellCheck process cost more memory than a
+# CI runner has (docs/verification/lint-lane-memory.md). tests/lib.sh is the
+# harness, not a production module: it is 18 KiB, imports nothing further, and
+# defines names this file uses directly, so it stays followed.
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-marker-lib.sh"

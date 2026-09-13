@@ -309,6 +309,9 @@ CONTROL_LOCK_HELD=1
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never tear
 # down a worktree (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
+# Read by fm_lock_log in bin/fm-lock-lib.sh, which this root no longer follows
+# (see the source boundary above), so ShellCheck cannot see the consumer.
+# shellcheck disable=SC2034
 FM_LOCK_LOG_PREFIX=teardown
 
 META="$STATE/$ID.meta"
