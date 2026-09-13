@@ -196,9 +196,9 @@ fm_pr_fitness_rollup() {
       esac
     fi
     case "$verdict" in
-      failing) worst=failing ;;
+      pass) if [ "$worst" = none ]; then worst=passing; fi ;;
       running) if [ "$worst" != failing ]; then worst=pending; fi ;;
-      *) if [ "$worst" = none ]; then worst=passing; fi ;;
+      *) worst=failing ;;
     esac
   done
   printf '%s' "$worst"

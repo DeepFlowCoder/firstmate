@@ -265,35 +265,55 @@ gh_bounded() {  # <args...>
     env GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 gh "$@"
 }
 
-# Field separator for the per-pull-request verdict reading folded below.
+# Field separators for the per-pull-request verdict readings folded below.
 PR_TAB=$(printf '\t')
+PR_NL='
+'
 
-# Render one pull request's statusCheckRollup as the reading fm_pr_fitness_rollup
-# folds, and echo that owner's summary word (none, failing, pending, passing).
+# Render a whole repo's pull requests in one pass, one line per pull request:
+#   <number><TAB><reading><TAB><reading>...
+# where each reading is one check in the form fm_pr_fitness_rollup folds. The
+# first field after the number is always empty, so a pull request carrying no
+# check at all still produces a line and still reaches the fold, which reads it
+# as none rather than leaving it unanswered.
+#
+# @tsv is what holds that framing: it escapes a tab or a newline inside a forge
+# value instead of letting it break the line and fabricate a reading of its own.
 #
 # A sentinel stands in for any value the forge left empty or null, so no field is
 # lost to the fold's word split, and an entry this cannot recognise as either
 # form is rendered as a check run carrying both sentinels - which the owner folds
-# as failing, because an entry that says nothing readable is not a pass.
-# GitHub supplies __typename on a rollup entry, and the two shape tests behind it
-# are what keep a reading that carries no __typename classifiable - without them
-# such an entry would fall to the same default and read as failing wholesale.
-pr_checks_verdict() {  # <statusCheckRollup JSON array>
-  local reading
-  reading=$(printf '%s' "${1:-[]}" | jq -r '
+# as failing, because an entry that says nothing readable is not a pass. The same
+# sentinel reading is what `try ... catch` renders for a pull request whose entry
+# errors the render, so one unreadable pull request reads failing on its own
+# rather than dragging every other pull request in the repo down with it.
+#
+# __typename is expected in practice on a rollup entry, and the two shape tests
+# behind it exist because a legacy status context arriving without one would
+# otherwise be classified as a check run, read UNKNOWN/NONE, and report a healthy
+# delivery as failing. Nobody has verified against GitHub's API that such an
+# entry cannot arrive: __typename is a GraphQL meta-field present here only
+# because the gh CLI's selection set asks for it, which is a property of that
+# client and not a documented provider guarantee. Remove the two shape tests only
+# once someone verifies that against the API and cites the verification here.
+pr_checks_reading() {  # <gh pr list JSON array>
+  printf '%s' "${1:-[]}" | jq -r '
     def word($v; $fallback):
       ($v | tostring) as $s | if $s == "" or $s == "null" then $fallback else $s end;
-    .[]
-    | (if (.__typename | tostring) == "StatusContext" then "context"
+    def reading:
+      (if (.__typename | tostring) == "StatusContext" then "context"
        elif (.__typename | tostring) == "CheckRun" then "run"
        elif (has("status") or has("conclusion")) then "run"
        elif (has("state") or has("context")) then "context"
        else "run" end) as $kind
-    | if $kind == "context"
-      then "context \(word(.state; "UNKNOWN"))"
-      else "run \(word(.status; "UNKNOWN")) \(word(.conclusion; "NONE"))"
-      end' 2>/dev/null) || { printf 'failing'; return 0; }
-  printf '%s' "$reading" | fm_pr_fitness_rollup
+      | if $kind == "context"
+        then "context \(word(.state; "UNKNOWN"))"
+        else "run \(word(.status; "UNKNOWN")) \(word(.conclusion; "NONE"))"
+        end;
+    .[]
+    | [(.number | tostring), ""]
+      + [ try ((.statusCheckRollup // [])[] | reading) catch "run UNKNOWN NONE" ]
+    | @tsv' 2>/dev/null
 }
 
 if [ "$INCLUDE_PRS" = 1 ]; then
@@ -333,12 +353,14 @@ EOF
       # the rows are built, so the summary below is that owner's verdict rather
       # than a second spelling of the pass lists that can drift from it.
       pr_verdicts=
-      while IFS="$PR_TAB" read -r pr_num pr_rollup; do
-        [ -n "$pr_num" ] || continue
-        pr_verdicts="$pr_verdicts$pr_num$PR_TAB$(pr_checks_verdict "$pr_rollup")
+      while IFS= read -r pr_line; do
+        [ -n "$pr_line" ] || continue
+        pr_num=${pr_line%%"$PR_TAB"*}
+        pr_reading=${pr_line#*"$PR_TAB"}
+        pr_verdicts="$pr_verdicts$pr_num$PR_TAB$(printf '%s' "${pr_reading//$PR_TAB/$PR_NL}" | fm_pr_fitness_rollup)
 "
       done <<EOF
-$(printf '%s' "$out" | jq -rc '.[] | "\(.number)\t\(.statusCheckRollup // [])"' 2>/dev/null)
+$(pr_checks_reading "$out")
 EOF
       repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --arg verdicts "$pr_verdicts" --argjson limit "$FM_BEARINGS_PR_LIMIT" '
         ($verdicts | split("\n") | map(select(length > 0) | split("\t"))
