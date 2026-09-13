@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for tests/lib.sh's own shared helpers: the fixture-tempdir
 # helper (fm_test_tmproot / fm_test_cleanup / fm_test_reap_orphans), the
+# bounded background-process reaper (reap / is_live_non_zombie), the
 # verdict-preserving EXIT trap a test file with its own teardown installs
 # through fm_test_exit_trap, and the whole-line matcher assert_line.
 #
@@ -10,8 +11,10 @@
 # that exact pattern and assert the fixture root is actually gone once the
 # owning process's guarded teardown has run - on a normal exit and on a
 # terminating signal - plus that a stale marked fixture from a killed prior
-# run gets reaped on the next source. Nothing here inspects tests/lib.sh's
-# source text; it only observes filesystem state around the real helper.
+# run gets reaped on the next source. The reap cases work the same way, driving
+# real workers and observing process state rather than inferring from timing.
+# Nothing here inspects tests/lib.sh's source text; it only observes the state
+# the real helpers leave behind.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -57,8 +60,7 @@ test_fixture_root_gone_after_sigterm() {
   [ -s "$dirfile" ] || fail "the child never published its fixture root before the wait timed out"
   child_dir=$(cat "$dirfile")
   assert_present "$child_dir" "the child's fixture root did not exist before it was signaled"
-  kill -TERM "$pid"
-  wait "$pid" 2>/dev/null
+  reap "$pid"
   assert_absent "$child_dir" \
     "fm_test_tmproot's fixture root survived SIGTERM to its owning process"
   pass "fm_test_tmproot cleans up its fixture root on SIGTERM"
@@ -138,8 +140,7 @@ test_orphan_sweep_respects_fixture_ownership() {
     "the orphan reaper removed an old fixture root whose owning process was still alive"
   assert_present "$fresh_dir" \
     "the orphan reaper removed a fresh marked fixture root it does not own yet"
-  kill -TERM "$pid"
-  wait "$pid" 2>/dev/null
+  reap "$pid"
   assert_absent "$active_dir" \
     "the active fixture root survived its owning process's teardown"
   rm -rf "$fresh_dir"
@@ -350,6 +351,15 @@ CHILD
   child_root=$(cat "$dirfile")
 
   kill -TERM "$pid"
+  tries=0
+  while is_live_non_zombie "$pid" && [ "$tries" -lt 200 ]; do
+    sleep 0.05
+    tries=$((tries + 1))
+  done
+  if is_live_non_zombie "$pid"; then
+    reap "$pid"
+    fail "the signalled child was still running after SIGTERM and had to be killed"
+  fi
   rc=0
   wait "$pid" 2>/dev/null || rc=$?
   [ "$rc" -eq 143 ] || fail "the signalled child exited $rc instead of the conventional SIGTERM status 143"
@@ -480,8 +490,146 @@ test_assert_line_refuses_what_it_cannot_compare() {
   pass "assert_line refuses loudly when it cannot complete the comparison"
 }
 
+# --- the bounded background-process reaper ----------------------------------
+#
+# reap has to answer one question: what happens when the worker does not die on
+# SIGTERM? That is not hypothetical. A worker whose signal trap bash fails to
+# parse keeps running, because bash prints the parse error and carries on, and
+# the unbounded `kill; wait` reap replaces then blocked on a process that was
+# never going to exit - measured as CI shards that went silent for the rest of
+# their 20-minute cap right after one such swallowed SIGTERM.
+#
+# Both cases run the reap inside a SEPARATE process that this suite polls to
+# completion and kills hard if it overruns, so a reap that failed to return can
+# only fail this test, never hang the suite that is defending against hangs.
+# The swallowing worker ignores SIGTERM outright, which puts reap in front of
+# the same observable condition a failed trap parse produces: the signal was
+# delivered and the process is still running. The honouring worker traps TERM
+# from inside a one-second sleep, so reap has to wait out the deferral that
+# governs what every real call site costs, and a grace window too short for that
+# fails the case instead of passing it.
+
+REAP_HARNESS_OUT=
+REAP_HARNESS_WORKER=
+
+run_reap_harness() {  # <mode: honors|swallows> -> rc, sets REAP_HARNESS_OUT/_WORKER
+  local mode=$1 harness script out ready pidfile child_tmp pid tries rc=0
+  harness=$(fm_test_tmproot "fm-test-reap-$mode")
+  script="$harness/harness.sh"
+  out="$harness/out"
+  ready="$harness/ready"
+  pidfile="$harness/worker-pid"
+  # Its own TMPDIR, for the reason run_teardown_child documents above: the child
+  # sources tests/lib.sh, which mktemps a cleanup registry there, and this child
+  # can be SIGKILLed past its own teardown when it overruns the budget.
+  child_tmp="$harness/tmp"
+  mkdir -p "$child_tmp" || fail "could not create the reap harness child's TMPDIR"
+  cat > "$script" <<'SH'
+#!/usr/bin/env bash
+set -u
+# shellcheck source=/dev/null
+. "$1"
+mode=$2
+ready=$3
+pidfile=$4
+# Both workers bound their own loop at about a minute. In "swallows" mode the
+# worker ignores SIGTERM by construction, and an overrunning harness gets
+# SIGKILLed before it reaps the worker, so an unbounded loop there would orphan a
+# spinning process that nothing in this suite collects and no SIGTERM can stop.
+#
+# The "honors" worker traps TERM and sleeps a whole second per iteration, which
+# is what makes its case mean anything: bash defers a TRAPPED signal until the
+# command running in the foreground finishes, so the trap body cannot run until
+# that second is up. Reap is called right after the worker reports ready, so it
+# meets a deferral of very nearly the full second and its grace window has to
+# span it. With no trap the kernel would kill the worker outright and the window
+# would never be exercised at all.
+swallow_spin='printf r > "$1"; i=0; while [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done'
+honor_spin='printf r > "$1"; i=0; while [ "$i" -lt 60 ]; do sleep 1; i=$((i + 1)); done'
+if [ "$mode" = swallows ]; then
+  bash -c "trap '' TERM; $swallow_spin" _ "$ready" &
+else
+  bash -c "trap 'exit 0' TERM; $honor_spin" _ "$ready" &
+fi
+child=$!
+printf '%s\n' "$child" > "$pidfile"
+i=0
+while [ ! -s "$ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+[ -s "$ready" ] || { printf 'ready=no\n'; exit 1; }
+if [ "$mode" = swallows ]; then
+  # The polite signal first, and its outcome is reported rather than assumed: a
+  # "swallows" case that did not actually swallow would prove nothing about reap.
+  kill -TERM "$child" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 20 ] && is_live_non_zombie "$child"; do sleep 0.05; i=$((i + 1)); done
+  if is_live_non_zombie "$child"; then printf 'swallowed=yes\n'; else printf 'swallowed=no\n'; fi
+  reap "$child"
+else
+  # No signal of our own and no wait for one: reap is handed a LIVE worker mid
+  # sleep, so its grace window is what has to outlast bash's deferral and let the
+  # worker's own TERM trap run.
+  if is_live_non_zombie "$child"; then printf 'live=yes\n'; else printf 'live=no\n'; fi
+  reap "$child"
+fi
+printf 'returned=yes escalated=%s\n' "$FM_TEST_REAP_ESCALATED"
+if kill -0 "$child" 2>/dev/null; then printf 'gone=no\n'; else printf 'gone=yes\n'; fi
+SH
+  TMPDIR="$child_tmp" bash "$script" "$LIB" "$mode" "$ready" "$pidfile" > "$out" 2>&1 &
+  pid=$!
+  tries=0
+  while [ "$tries" -lt 300 ]; do
+    is_live_non_zombie "$pid" || break
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  if is_live_non_zombie "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+    rc=124
+  fi
+  wait "$pid" 2>/dev/null || true
+  REAP_HARNESS_OUT=$(cat "$out" 2>/dev/null || true)
+  REAP_HARNESS_WORKER=$(cat "$pidfile" 2>/dev/null || true)
+  return "$rc"
+}
+
+test_reap_returns_on_a_worker_that_swallows_sigterm() {
+  local rc=0
+  run_reap_harness swallows || rc=$?
+  [ "$rc" -ne 124 ] \
+    || fail "reap never returned on a worker that swallowed SIGTERM: $REAP_HARNESS_OUT"
+  assert_contains "$REAP_HARNESS_OUT" 'swallowed=yes' \
+    "the worker died on the plain SIGTERM, so this case proves nothing about reap"
+  assert_contains "$REAP_HARNESS_OUT" 'returned=yes escalated=1' \
+    "reap returned without escalating past the SIGTERM the worker had ignored"
+  assert_contains "$REAP_HARNESS_OUT" 'gone=yes' \
+    "reap returned while the worker it was asked to stop was still running"
+  [ -n "$REAP_HARNESS_WORKER" ] \
+    || fail "the harness never published the worker pid the escalation has to name"
+  assert_contains "$REAP_HARNESS_OUT" "pid $REAP_HARNESS_WORKER" \
+    "the escalation never named the process it SIGKILLed"
+  assert_contains "$REAP_HARNESS_OUT" 'EXIT cleanup did not run' \
+    "the escalation never said the SIGKILLed worker's EXIT cleanup had been skipped"
+  pass "reap escalates past a swallowed SIGTERM, says what it killed, and returns"
+}
+
+test_reap_does_not_escalate_on_a_worker_that_honors_sigterm() {
+  local rc=0
+  run_reap_harness honors || rc=$?
+  [ "$rc" -ne 124 ] \
+    || fail "reap never returned on a worker that honors SIGTERM: $REAP_HARNESS_OUT"
+  assert_contains "$REAP_HARNESS_OUT" 'live=yes' \
+    "the worker was already gone when reap was called, so its grace window went untested"
+  assert_contains "$REAP_HARNESS_OUT" 'returned=yes escalated=0' \
+    "reap reached for SIGKILL instead of waiting out a worker that honors SIGTERM"
+  assert_contains "$REAP_HARNESS_OUT" 'gone=yes' \
+    "reap returned while the worker it was asked to stop was still running"
+  pass "reap waits out bash's signal deferral rather than SIGKILLing past a TERM trap"
+}
+
 test_fixture_root_gone_after_normal_exit
 test_fixture_root_gone_after_sigterm
+test_reap_returns_on_a_worker_that_swallows_sigterm
+test_reap_does_not_escalate_on_a_worker_that_honors_sigterm
 test_cleanup_registry_resists_precreation
 test_fixture_registration_failure_rolls_back_root
 test_orphan_sweep_respects_fixture_ownership

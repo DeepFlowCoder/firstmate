@@ -174,7 +174,7 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# reap comes from tests/lib.sh, which owns its bound.
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -3789,8 +3789,7 @@ STUB
   pid=$!
   wait_poll_cycle "$state" "$pid" 300 \
     || fail "the watcher exited instead of completing a cycle with a crashing reconcile: $(cat "$out")"
-  kill -TERM "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  reap "$pid"
 
   [ -s "$out" ] \
     && fail "a crashing process-event repair woke firstmate instead of being recorded: $(cat "$out")"
