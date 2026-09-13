@@ -322,6 +322,21 @@ fm_nm_runs_parse_row() {  # <row>
 # declared a wait was reported "state: failed - run cancelled", which a session
 # can act on by relaunching or tearing down finished work. It maps to `unknown`
 # so the caller keeps looking at evidence that can actually answer.
+#
+# `failed` is the sibling misreading, one step further out: the word is a verdict
+# about the RUN, and the mistake is hearing it as a verdict about the WORK. A run
+# that fails clears its own managed worktree, and that deletion looks like
+# destroyed work while destroying nothing - the pipeline never works in the crew's
+# worktree (the submitted-head binding above is the same fact from the other
+# side), so the copy it discards holds no commit the branch does not already have.
+# Measured 2026-09-09 on run 01M238R9XKMRKRKYKJRS7X0BWH, whose review agent died
+# mid-response on a transport error: its head is still reachable from the branch's
+# remote and is an ancestor of the head its successor run completed on, and what
+# the failure actually cost was repetition, not work. `failed` therefore stays a
+# failure - the run really did fail - and only the phrase below carries the
+# disconfirming fact, because the session that read the bare word reported
+# destroyed work to the captain and was wrong. The measurement is recorded in
+# docs/verification/run-attribution.md.
 fm_nm_verdict_state() {  # <run-word>
   case "${1:-}" in
     passed|checks-passed|completed) printf 'done' ;;
@@ -355,7 +370,7 @@ fm_nm_verdict_detail() {  # <run-word>
     passed)         printf 'run passed' ;;
     checks-passed)  printf 'checks green: PR ready for review' ;;
     completed)      printf 'run completed' ;;
-    failed)         printf 'run failed' ;;
+    failed)         printf 'run failed (a failed run is not lost work)' ;;
     cancelled)      printf 'run cancelled (an abort is not a verdict on the work)' ;;
     ci)             printf 'ci running' ;;
     '')             printf 'run active' ;;
