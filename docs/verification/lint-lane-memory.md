@@ -218,6 +218,10 @@ The 48 `# shellcheck source=bin/<lib>.sh` directives replaced across the seven r
 With `source=/dev/null` it never does, and that breakage now surfaces only at runtime or in the behavior suite.
 This is accepted, not overlooked: ShellCheck has no way to verify a path without following it, and following it is the cost this boundary exists to avoid.
 
+Losing `SC1091` also removes the only diagnostic that reacted to a *bad* bounded import, and the boundary's whole coverage claim rests on the imports being good: each one must resolve to a file that is itself a canonical root of the same run, or that module is analysed nowhere and the lane still exits 0 with nothing to report.
+That is no longer left to the convention the comments describe. `tests/fm-lint-source-boundary.test.sh` enforces it in the test lane, at no cost to the Lint lane: it finds the bounded imports by scanning for the directive rather than from a list, so a root bounded later is covered the day it is written, resolves each import, and fails naming the file, the line, and the target if it is missing or outside the canonical set `bin/fm-lint.sh --list-files` reports.
+A directive that does not bound an import, or one that names a module through a directory it cannot resolve, fails there too rather than being passed over.
+
 No diagnostic was lost: every other root reports exactly what it reported before, and the lane's verdict is clean.
 What is given up is cross-module dataflow *within these seven roots* - the modules themselves keep full analysis at their own roots.
 
