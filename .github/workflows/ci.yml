@@ -9,8 +9,8 @@ on:
 permissions:
   contents: read
 
-# THROWAWAY MEASUREMENT BRANCH. Every job but Lint is stripped so a measurement
-# run costs eight runners instead of twenty-three. Do not merge this file.
+# THROWAWAY MEASUREMENT BRANCH. Do not merge this file.
+# Per-root ShellCheck peak RSS across the whole canonical set, eight runners.
 jobs:
   lint:
     name: Lint ${{ matrix.shard }}
@@ -27,35 +27,23 @@ jobs:
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Install pinned actionlint
-        run: |
-          set -eu
-          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Run lint shard under a whole-machine memory and time trace
+      - name: Profile every root in this shard on its own
         env:
           FM_LINT_SHARD: ${{ matrix.shard }}of${{ strategy.job-total }}
         run: |
           set -eu
-          mkdir -p "$RUNNER_TEMP/fm-mem"
-          echo "shard_roots=$(bin/fm-lint.sh --list-files --shard "$FM_LINT_SHARD" | wc -l)"
-          bin/fm-mem-trace.sh --interval 10 \
-            --out "$RUNNER_TEMP/fm-mem/mem-trace.log" &
-          trace_pid=$!
-          rc=0
-          bin/fm-lint.sh --shard "$FM_LINT_SHARD" \
-            --telemetry "$RUNNER_TEMP/fm-mem/lint-telemetry.tsv" || rc=$?
-          kill "$trace_pid" 2>/dev/null || true
-          wait "$trace_pid" 2>/dev/null || true
-          echo "lint_exit=$rc"
-          exit "$rc"
-      - name: Machine state after lint shard
-        if: always()
-        run: |
-          set -eu
-          free -m
-          cat /proc/pressure/memory || echo "no PSI"
-          echo "--- kernel OOM evidence, if any ---"
-          sudo dmesg 2>/dev/null | grep -iE 'out of memory|oom-kill|oom_reaper|killed process' || echo "no kernel OOM lines"
-          echo "--- lint telemetry ---"
-          cat "$RUNNER_TEMP/fm-mem/lint-telemetry.tsv" 2>/dev/null || echo "no telemetry written"
+          echo "machine_total_mib=$(awk '/^MemTotal:/{printf "%.0f", $2/1024}' /proc/meminfo)"
+          bin/fm-lint.sh --list-files --shard "$FM_LINT_SHARD" > "$RUNNER_TEMP/roots"
+          echo "shard_roots=$(wc -l < "$RUNNER_TEMP/roots")"
+          while IFS= read -r root; do
+            [ -n "$root" ] || continue
+            /usr/bin/time -f "root_peak_mib=%M wall=%e" -o "$RUNNER_TEMP/t" \
+              shellcheck --norc --external-sources -- "$root" >/dev/null 2>&1 || true
+            # %M is KiB on GNU time; report MiB so the numbers compare directly
+            # with the whole-machine trace.
+            awk -v r="$root" '
+              /root_peak_mib=/ {
+                split($1, a, "="); split($2, b, "=")
+                printf "ROOTCOST %.0f %s %s\n", a[2] / 1024, b[2], r
+              }' "$RUNNER_TEMP/t"
+          done < "$RUNNER_TEMP/roots"
