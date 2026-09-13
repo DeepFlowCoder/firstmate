@@ -3042,13 +3042,15 @@ fi
 # captain's active tab, the focus-preserving close refuses without ever issuing
 # a close, so the pane can never become gone and rerunning is provably
 # identical. That used to hold every durable record forever. A pane whose
-# `agent get` positively answers agent_not_found carries no worker that could be
-# lost with it, so cleanup releases the records and names the bare pane it left
-# behind instead. Only that positive answer qualifies: a registered agent, an
-# unreadable state, and an unexpected response are all still refusals, because
-# treating an unreadable state as a husk would release a possibly live worker's
-# records. Unlanded work is a separate, earlier gate and is unaffected either
-# way.
+# fm_backend_herdr_pane_agent_state positively confirms `no-agent` carries no
+# worker that could be lost with it - either `agent get` answers agent_not_found,
+# or a stale hook registration is overridden by a pane process-table read
+# proving the pane is back at its bare shell - so cleanup releases the records
+# and names the bare pane it left behind instead. Only that positive proof
+# qualifies: a registered agent whose pane is not proven bare, an unreadable
+# state, and an unexpected response are all still refusals, because treating an
+# unreadable state as a husk would release a possibly live worker's records.
+# Unlanded work is a separate, earlier gate and is unaffected either way.
 if [ "$BACKEND" = herdr ]; then
   fm_backend_source herdr || true
   if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then

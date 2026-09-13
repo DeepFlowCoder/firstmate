@@ -117,10 +117,35 @@ pass "real herdr: interrupt refuses when herdr's own agent registry reports no a
 
 herdr pane report-agent "$PANE_ID" --source fm-control-smoke --agent fm-control-smoke-agent \
   --state idle --session "$SESSION" >/dev/null 2>&1 \
-  || fail "could not register a live agent on the task pane"
+  || fail "could not register an agent on the task pane"
+
+# A hook-fed registration is only trusted while the pane's own process table
+# does not prove it back at a bare shell. This pane IS a bare shell, so the
+# phantom registration must read dead - the exact false-alive defect the
+# corroborating classifier exists to close. The proof only fires once the
+# freshly-created shell settles into a sleeping state (a still-running shell
+# proves nothing either way), so wait for that positive proof first.
+SETTLED=0
+for _ in $(seq 1 100); do
+  if fm_backend_herdr_pane_shell_only "$SESSION" "$PANE_ID"; then
+    SETTLED=1; break
+  fi
+  sleep 0.1
+done
+[ "$SETTLED" = 1 ] || fail "the bare-shell pane never settled into a provably idle shell"
 
 STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
-[ "$STATE" = alive ] || fail "herdr should classify a registered agent as alive, got '$STATE'"
+[ "$STATE" = dead ] || fail "a hook registration on a bare-shell pane must read dead (phantom), got '$STATE'"
+pass "real herdr: a stale lifecycle-hook registration on a bare shell is classified dead, not alive"
+
+# A genuinely live agent is simulated by a real non-shell foreground process
+# that ignores SIGINT (so the interrupt below cancels without stopping it),
+# which the process-table corroboration keeps alive.
+herdr_test_live_foreground "$SESSION" "$PANE_ID" "trap '' INT; exec sleep 300" \
+  || fail "could not place a live non-shell foreground process in the task pane"
+
+STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
+[ "$STATE" = alive ] || fail "herdr should classify a registered agent backed by a real foreground process as alive, got '$STATE'"
 
 OUT=$(run_control hsmoke interrupt) || fail "interrupt against a registered agent should succeed: $OUT"
 case "$OUT" in
@@ -134,9 +159,10 @@ herdr pane get "$PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
 [ -d "$WT" ] || fail "the control plane must never remove the task's local copy"
 pass "real herdr: no control verb removed the endpoint or the task's local copy"
 
-# Last, because it deliberately types a harness command into a pane that hosts
-# a plain shell: the registered agent cannot actually be stopped that way, and
-# the control plane must say so rather than report a stop it did not achieve.
+# Last, because it deliberately types a harness command into a pane whose
+# agent is only a phantom hook registration plus a foreground process: the
+# registered agent cannot actually be stopped that way, and the control plane
+# must say so rather than report a stop it did not achieve.
 if OUT=$(run_control hsmoke exit 2>&1); then
   fail "exit should fail closed when the agent does not stop: $OUT"
 fi

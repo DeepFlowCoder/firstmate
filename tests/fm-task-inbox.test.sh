@@ -85,11 +85,19 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    [ -n "${FM_FAKE_TMUX_WINDOWS:-}" ] && printf '%s\n' "$FM_FAKE_TMUX_WINDOWS"
+    exit 0 ;;
 esac
 exit 0
 SH
-  chmod +x "$fb/tmux"
+  cat > "$fb/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -n "${FM_FAKE_PS_FOREGROUND:-}" ] && printf '%s\n' "$FM_FAKE_PS_FOREGROUND"
+exit 0
+SH
+  chmod +x "$fb/tmux" "$fb/ps"
   make_fake_crew_state "$fb" >/dev/null
   printf '%s\n' "$fb"
 }
@@ -382,6 +390,31 @@ test_watcher_rerings_idle_pane_quietly() {
   pass "watcher: an unhandled aged message on an idle pane re-rings without waking firstmate, and the ack silences it"
 }
 
+test_watcher_never_rings_a_bare_shell() {
+  local dir state out log pid rec rings action
+  dir=$(setup_watch_case bare-shell)
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "please continue")
+  age_path "$rec"
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_FAKE_TMUX_WINDOWS=fm-t1 \
+    FM_FAKE_PS_FOREGROUND='123 123 123 zsh' \
+    FM_TASK_INBOX_RING_MAX=99
+  pid=$!
+  wait_watcher_gone "$pid" \
+    || { kill "$pid" 2>/dev/null; fail "the watcher did not surface the agent-less endpoint promptly"; }
+  rings=$(grep -cF 'Firstmate instruction waiting' "$log" || true)
+  [ "$rings" = 0 ] \
+    || fail "the watcher typed a doorbell into a bare shell, where it would execute: $(cat "$log")"
+  grep -qF 'has no agent reading it' "$state/.wake-queue" \
+    || fail "the watcher did not queue a stale wake naming the agent-less endpoint: $(cat "$state/.wake-queue" 2>/dev/null)"
+  [ -f "$rec" ] || fail "the undeliverable instruction did not remain durable for a replacement worker"
+  action=$(FM_TASK_INBOX_GRACE_SECS=0 inbox_lib "$state" fm_task_inbox_due_action "$state" t1)
+  [ "$action" = quiet ] || fail "the agent-less endpoint was not escalated exactly once, got: $action"
+  pass "watcher: a bare shell is never rung and escalates immediately for worker recovery"
+}
+
 test_watcher_waits_on_busy_pane() {
   local dir state out log pid rec
   dir=$(setup_watch_case busywait)
@@ -506,6 +539,7 @@ test_ladder_writes_ignore_vanished_inbox
 test_fire_and_forget_records_never_enter_the_ladder
 test_ring_ladder_policy
 test_watcher_rerings_idle_pane_quietly
+test_watcher_never_rings_a_bare_shell
 test_watcher_waits_on_busy_pane
 test_watcher_quiet_on_healthy_inbox
 test_watcher_ack_silences_unwritable_ladder

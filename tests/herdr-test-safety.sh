@@ -40,6 +40,53 @@ herdr_forget_inherited_pane() {
   unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH HERDR_SESSION
 }
 
+# herdr_test_live_foreground: give <pane> a long-lived NON-shell foreground
+# process so the pane is no longer provably a bare shell. This is the live-agent
+# fixture for the phantom-downgrade classifier
+# (fm_backend_herdr_pane_agent_state): a hook-registered agent on a bare shell
+# is now correctly classified no-agent/dead, so a "live" agent must be backed
+# by a real foreground process that is not the pane's own shell.
+#
+# <command> is typed into the pane's own shell. Use a plain "sleep 300" for a
+# fixture that only has to stay alive, or "trap '' INT; exec sleep 300" when
+# the fixture must survive a Ctrl-C (the interrupt path's postcondition).
+# Returns 0 once the foreground process is observed to be a non-shell; returns
+# 1 on a timeout or on any failure to deliver the command.
+#
+# Requires fm_backend_herdr_cli and fm_backend_herdr_send_text_line, so call it
+# only after the caller has sourced bin/backends/herdr.sh.
+herdr_test_live_foreground() {  # <session> <pane> <command>
+  local session=$1 pane=$2 command=$3 info name ready_samples=0
+  for _ in $(seq 1 100); do
+    info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null || true)
+    if printf '%s' "$info" | jq -e '
+      .result.process_info as $process
+      | ($process.foreground_processes | length == 1)
+        and ($process.foreground_processes[0].pid == $process.shell_pid)
+    ' >/dev/null 2>&1; then
+      ready_samples=$((ready_samples + 1))
+      [ "$ready_samples" -ge 10 ] && break
+    else
+      ready_samples=0
+    fi
+    sleep 0.1
+  done
+  [ "$ready_samples" -ge 10 ] || return 1
+  fm_backend_herdr_send_text_line "$session:$pane" "$command" >/dev/null 2>&1 || return 1
+  for _ in $(seq 1 100); do
+    info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null || true)
+    name=$(printf '%s' "$info" | jq -r '.result.process_info.foreground_processes[0].name // empty' 2>/dev/null)
+    if [ -n "$name" ]; then
+      case "$name" in
+        sh|bash|zsh|dash|ksh|fish) ;;
+        *) return 0 ;;
+      esac
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
 herdr_refuse_if_default() { # <session>
   fm_herdr_lab_refuse_if_default "$1"
 }

@@ -162,7 +162,13 @@ pass "fixed: the workspace holds exactly the 2 replacement tabs after both respa
 # Register a real agent (herdr's own native registration primitive) on one of
 # the freshly-respawned panes, then confirm a further same-labeled spawn
 # attempt refuses exactly as before - the husk fix must never touch a pane
-# that actually has something registered in it.
+# that actually has something registered in it. A genuine live agent is
+# simulated by a real non-shell foreground process (the process-table
+# corroboration); a bare shell with a hook registration is now correctly
+# classified as an agent-less husk, not a live agent.
+
+herdr_test_live_foreground "$SESSION" "$NEW_CREW_PANE_ID" "sleep 300" \
+  || fail "could not place a live foreground process in the respawned crewmate-shaped pane"
 
 herdr pane report-agent "$NEW_CREW_PANE_ID" --source fm-respawn-e2e --agent fm-respawn-live-agent --state idle --session "$SESSION" >/dev/null 2>&1 \
   || fail "could not register a live agent on the respawned crewmate-shaped pane"

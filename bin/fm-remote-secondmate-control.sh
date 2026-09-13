@@ -224,6 +224,7 @@ cmd_send() {
   case "$ring_rc" in
     1) printf 'notice: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at %s\n' "$rec" >&2 ;;
     2) printf 'notice: doorbell did not reach %s; the steer is durably recorded at %s\n' "$REMOTE_ENDPOINT_TARGET" "$rec" >&2 ;;
+    3) printf 'notice: doorbell not rung because %s is sitting at a shell prompt, where the line would be executed instead of read; the steer is durably recorded at %s and waits there for a worker\n' "$REMOTE_ENDPOINT_TARGET" "$rec" >&2 ;;
   esac
 }
 

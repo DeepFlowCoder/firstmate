@@ -126,9 +126,9 @@ Task cleanup acquires that session lock before the task's isolated copy is retur
 Forced secondmate cleanup recursively preflights every Herdr child endpoint and acquires every affected named-session lock before mutating any child, then retains each child's durable identity unless that exact pane returns structured not-found after its close.
 Durable task records are erased once the exact pane is confirmed gone through its structured presence: after every close path, only a structured not-found response counts as gone.
 A pane can outlive its own agent, though, and a close that cannot run leaves one behind: when the target is the captain's active tab the focus-preserving close refuses without ever issuing a close, so that pane can never become gone and a rerun is provably identical.
-A still-present pane therefore also releases its records when its own `agent get` positively answers agent_not_found, the same confirmed-husk proof restored-layout recovery already treats as recovery-grade dead, because a pane that outlived its agent carries no worker that could be lost with it.
+A still-present pane therefore also releases its records when the shared Herdr agent-state classifier positively confirms it is agent-less - `agent get` answering agent_not_found, or a stale lifecycle-hook registration overridden by a pane process-table read proving the pane is back at its bare shell - the same confirmed-husk proof restored-layout recovery already treats as recovery-grade dead, because a pane that outlived its agent carries no worker that could be lost with it.
 That release is never silent: it names the leftover bare pane and prints the manual close path - focus another tab and rerun cleanup - so a clean removal and a removal with a husk left behind never read alike.
-A registered agent, an unreadable or unexpected agent response, and an unknown presence all retain every record with a visible, retryable error, so an unreadable state is never mistaken for an absent agent.
+A registered agent whose pane is not positively proven bare, an unreadable or unexpected agent response, and an unknown presence all retain every record with a visible, retryable error, so an unreadable state is never mistaken for an absent agent.
 Missing or malformed endpoint identity and missing confirmation machinery are ambiguity, never proof of a gone pane or of an absent agent, and refuse record removal the same way.
 One post-close agent read serves both the records and that pane's presentation journal, so the two verdicts cannot disagree about the same pane.
 Unlanded-work protection is a separate, earlier gate and is unaffected by either verdict.
@@ -272,7 +272,9 @@ Create replaces only a confidently dead or no-agent husk, creates the replacemen
 This prevents closing the workspace's last tab before a replacement exists.
 
 The generic Herdr agent-liveness probe reuses the same classifier.
-A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
+A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, and an unexpected read becomes `unreadable`.
+A registered agent normally becomes `alive`, but a pane process-table read that positively proves the pane is back at its bare shell overrides that stale registration to `dead`.
+This second source closes the lifecycle-hook failure where an agent exits without publishing its stop event and Herdr otherwise retains `agent_status: idle` indefinitely.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
 
 The session-start sweep uses this probe.
