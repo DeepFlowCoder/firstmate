@@ -25,21 +25,21 @@
 # backlog roles, unresolved blockers, and captain actionability. It never infers
 # decisions from report or visual-review prose or reimplements snapshot semantics.
 # Captain's Call is captain actionability itself: every due, unblocked task held
-# for the captain, whatever its kind. A captain hold deferred by date
-# (hold-until in the future) is not actionable and renders as a Charted Next
-# gate with its date, or, when its row is already in flight, as its live
-# worker's Underway line while one is running under it; a row the canonical
-# snapshot marks prose-deferred (deferred_marker) leaves the default decisions
-# and gates views and is disclosed in omitted[], revealed by --all-decisions /
-# --all-queued, unless an in-flight live worker owns its Underway line instead.
-# That omitted[] count of marked holds reports what the default decisions view
-# withholds, and only a counted row with a live worker running under it is
-# guaranteed to render anywhere else: such an in-flight hold still renders
-# in_flight, while a marked hold with no live worker under it renders in no
-# default section at all.
-# --all-decisions is correspondingly not purely additive for this home: it widens
-# the main decision set itself, so each marked hold it reveals in decisions_open
-# also leaves the in_flight row it was occupying.
+# for the captain, whatever its kind. Nothing narrows that set further, so a
+# live captain call cannot be filtered out of the view the captain reads to
+# find one. A captain hold deferred by date (hold-until in the future) is not
+# actionable and renders as a Charted Next gate with its date, or, when its row
+# is already in flight, as its live worker's Underway line while one is running
+# under it.
+# Charted Next withholds one class of row by default: a queued item held under a
+# set-aside hold kind, which the canonical snapshot marks with deferred_marker
+# read from that kind's own field. That withholding is always disclosed in
+# omitted[] with its count and revealed by --all-queued, so an empty gates list
+# never has to be read as either "nothing queued" or "some of it hidden" - the
+# disclosure says which. A set-aside row carrying a future hold-until is not
+# withheld; it renders as its dated gate.
+# --all-decisions and --all-queued are both purely additive: they only lift the
+# count bound and, for --all-queued, the set-aside filter.
 #
 # Main-home inventory validity comes from the canonical snapshot's main_inventory
 # object (orphan structured in-flight without meta, unstructured current rows).
@@ -74,7 +74,7 @@
 #   --all-secondmates include every aggregated secondmate record
 #   --all-landed     include every landed record from every home (default: bounded)
 #   --all-reports    include the full scout-report inventory (default: relevant only)
-#   --all-queued     include superseded queued items (default: dropped)
+#   --all-queued     include set-aside queued items (default: dropped, counted)
 #   --all-recorded-prs include every locally recorded PR
 #   --all-unhealthy  include every unhealthy endpoint
 #   --all-pr-repos   query every discovered repository under --include-prs
@@ -168,12 +168,13 @@ For every registered secondmate, readable structured facts from its own home are
 Opt-in surfaces: --fields bodies|paths|actions|endpoints, --all-in-flight,
   --all-decisions, --all-secondmates, --all-landed, --all-reports, --all-queued, --all-recorded-prs,
   --all-unhealthy, --all-pr-repos, --include-prs (adds candidate_prs).
---all-decisions widens this home's decision set rather than only unbounding it: a
-  prose-deferred captain hold it reveals in decisions_open also leaves in_flight when
-  a live worker was carrying that row. The omitted[] count of marked holds counts
-  such a row too, so it names what the default decisions view withholds, and only a
-  counted row with a live worker under it is guaranteed to render elsewhere; a marked
-  hold with none renders in no default section.
+decisions_open is never narrowed by a deferral filter: every due, unblocked captain
+  hold reaches it, so --all-decisions only lifts the count bound.
+gates withholds queued items held under a set-aside hold kind (deferred_marker,
+  read from the canonical snapshot's structured hold kind and never from row prose).
+  Each default run discloses that withholding in omitted[] with its count, and
+  --all-queued reveals the rows. A set-aside row with a future hold-until is not
+  withheld: it renders as its dated gate.
 Raise FM_BEARINGS_PR_LIMIT to expand per-repository open-PR results.
 EOF
 }
@@ -455,6 +456,14 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   # unresolved_blocker_reason for the reason when it is attributable to one of
   # them. Neither is re-derived here from the raw row text, which is what this
   # board and the fleet view each used to do separately and disagree about.
+  # The one place the default gates view decides to withhold a row, so the
+  # omitted[] count below counts exactly what was dropped. deferred_marker is
+  # the structured set-aside hint derived once by bin/fm-fleet-snapshot.sh from
+  # the hold kind field, never a word found in row prose. A set-aside row that
+  # also carries a future hold-until still renders, as its dated gate line.
+  def gate_deferred_hidden:
+    (.deferred_marker == true)
+    and (((.hold_until // null) == null) or (.hold_until <= $today));
   def round_robin_landed($n):
     . as $groups
     | [range(0; (($groups | map(length) | max) // 0)) as $i
@@ -488,8 +497,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | select(.endpoint.exists == false or .endpoint.agent_alive == "dead")
          | {id:($m.id + "/" + .id),backend:"secondmate-home",target:(.endpoint.target // "-"),exists:.endpoint.exists,agent:.endpoint.agent_alive} ]) as $unhealthy_all
   | ([ (.secondmate_current.records // [])[]
-       | ([.decisions_open[]? | select(.source == "backlog" and .verb == "captain-hold"
-            and .deferred_marker != true)]) as $captain_holds
+       | ([.decisions_open[]? | select(.source == "backlog" and .verb == "captain-hold")]) as $captain_holds
        | ([.holds[]? | select(.source == "backlog")]) as $backlog_holds
        | . + {
            bearings_captain_holds:$captain_holds,
@@ -521,9 +529,15 @@ MODEL=$(printf '%s' "$SNAP" | jq \
           provenance:.provenance.selected,freshness:.freshness.status,
           age_seconds:.freshness.age_seconds,contradiction:(.contradiction // false),
           reason:(.current.reason // "-")} ]) as $secondmates_all
+  # No deferral filter here, and none on the secondmate decisions below. A
+  # captain hold and a set-aside hold are different hold kinds, so an
+  # actionable captain call is never marked deferred; a filter for it could
+  # only ever drop a row that had been misread as set aside. Deferring a
+  # captain call structurally means giving it a hold-until date, which
+  # captain_actionable already gates on, or re-holding it under a kind that no
+  # longer names the captain - either way it leaves this set on its own.
   | ([ .backlog.records[]
-       | select(.structured and .captain_actionable == true)
-       | select(($all_decisions == 1) or (.deferred_marker != true)) ]) as $main_captain_decisions
+       | select(.structured and .captain_actionable == true) ]) as $main_captain_decisions
   | ((if $all_decisions == 1 then $main_captain_decisions
       else $main_captain_decisions[:$decisions_n] end) | map(.id)) as $main_decision_ids
   | ([ .tasks[]
@@ -546,15 +560,9 @@ MODEL=$(printf '%s' "$SNAP" | jq \
             repo:((.repo // null) | trunc(120))} ]
      + [ (.secondmate_current.records // [])[] as $m | $m.decisions_open[]?
          | select(.source == "backlog" and .verb == "captain-hold")
-         | select(($all_decisions == 1) or (.deferred_marker != true))
          | {id:($m.id + "/" + .id),key,verb,
             summary:(((.summary // .id) + ": " + (.reason // "captain decision pending")) | trunc(90)),owner:$m.id,
             repo:((.repo // null) | trunc(120))} ]) as $decisions_all
-  | ([ .backlog.records[]
-         | select(.structured and .captain_actionable == true and .deferred_marker == true) ]
-     + [ (.secondmate_current.records // [])[] | .decisions_open[]?
-         | select(.source == "backlog" and .verb == "captain-hold" and .deferred_marker == true) ]
-     | length) as $decisions_marked_deferred
   | ((if (.main_inventory.valid == false) then
         [{id:"(main-inventory)",
           title:((.main_inventory.reason // "main inventory invalid") | trunc(60)),
@@ -562,7 +570,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
           reason:"main inventory",
           owner:"(main)",
           repo:null,
-          since:null}]
+          since:null,
+          deferred_hidden:false}]
       else [] end)
      + [ .backlog.records[]
          | . as $record
@@ -570,26 +579,31 @@ MODEL=$(printf '%s' "$SNAP" | jq \
              (.state == "queued" or
               (.state == "in_flight" and .current_role == "held" and ($working_ids | index($record.id) | not))))
          | select(.captain_actionable != true)
-         | select(($all_queued == 1) or (.deferred_marker != true)
-                  or ((.hold_until // null) != null and .hold_until > $today))
          | {id, title:(.title | trunc(60)),
             blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
             reason:((if (.hold_until // null) != null and .hold_until > $today
                      then ("until " + .hold_until + ": " + (.hold_reason // .unresolved_blocker_reason // "-"))
                      else (.hold_reason // .unresolved_blocker_reason // "-") end) | trunc(40)),owner:"(main)",
-            repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]
+            repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40)),
+            deferred_hidden:gate_deferred_hidden} ]
      + [ (.secondmate_current.records // [])[] as $m
          | select($m.provenance.selected == "structured-home")
          | $m.queued[]?
          | select(.captain_actionable != true)
-         | select(($all_queued == 1) or (.deferred_marker != true)
-                  or ((.hold_until // null) != null and .hold_until > $today))
          | {id,title:(.title | trunc(60)),
             blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
             reason:((if (.hold_until // null) != null and .hold_until > $today
                      then ("until " + .hold_until + ": " + (.hold_reason // .unresolved_blocker_reason // "-"))
                      else (.hold_reason // .unresolved_blocker_reason // "-") end) | trunc(40)),owner:$m.id,
-            repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]) as $gates_all
+            repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40)),
+            deferred_hidden:gate_deferred_hidden} ]) as $gates_candidates
+  # One candidate set, one predicate, two readings of it: what the default view
+  # renders and what it withheld. Derived together so the disclosed count can
+  # never drift from the rows actually dropped.
+  | ([ $gates_candidates[] | select(.deferred_hidden) ] | length) as $gates_marked_deferred
+  | ([ $gates_candidates[]
+       | select(($all_queued == 1) or (.deferred_hidden | not))
+       | del(.deferred_hidden) ]) as $gates_all
   | ([ .scout_reports[]
        | . as $r
        | select(($all_reports == 1) or (($rel_ids | index($r.id)) != null))
@@ -628,7 +642,11 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         (if $f_actions then empty else {surface:"watch/steer actions", reveal:"--fields actions"} end),
         (if $f_endpoints then empty else {surface:"healthy endpoint detail", reveal:"--fields endpoints"} end),
         (if $all_reports == 1 then empty else {surface:"full scout-report inventory", reveal:"--all-reports"} end),
-        (if $all_queued == 1 then empty else {surface:"superseded or prose-deferred queued items", reveal:"--all-queued"} end),
+        # Counted and conditional, because the whole point of this line is to
+        # keep an empty gates list from reading as "nothing is waiting" when it
+        # actually means "some of it is hidden". An uncounted line that printed
+        # on every run said neither, so it could not distinguish the two.
+        (if $all_queued == 0 and $gates_marked_deferred > 0 then {surface:("queued item(s) held under a set-aside kind: \($gates_marked_deferred)"), reveal:"--all-queued"} else empty end),
         (if $all_landed == 0 and ($per_home_capped | length) > ($done | length) then {surface:("landed showing \($done | length) of \($per_home_capped | length)" + (($done | map(.home_id) | unique | map(select(. != "(main)")) | length) as $k | if $k > 0 then " (incl. \($k) secondmate home(s))" else "" end)), reveal:"--all-landed"} else empty end),
         (if $all_landed == 0 and $home_cap_dropped > 0 then {surface:("landed per-home capped at \($landed_per_home_n) for \($home_cap_dropped) home(s)"), reveal:"--all-landed"} else empty end),
         (if (($snap.secondmate_landed.unreadable // []) | length) > 0 then {surface:("secondmate home(s) with unreadable backlog: \(($snap.secondmate_landed.unreadable // []) | length)"), reveal:"inspect the listed secondmate home backlogs"} else empty end),
@@ -648,7 +666,6 @@ MODEL=$(printf '%s' "$SNAP" | jq \
         (([($snap.secondmate_current.records // [])[] | select(.parent_event.activity_scan.input_truncated == true or .parent_event.activity_scan.retained_truncated == true)] | length) as $n | if $n > 0 then {surface:("secondmate parent activity evidence truncated for \($n) record(s)"), reveal:"raise FM_SNAPSHOT_PARENT_ACTIVITY_LINES, FM_SNAPSHOT_PARENT_ACTIVITY_BYTES, or FM_SNAPSHOT_PARENT_ACTIVITIES"} else empty end),
         (([($snap.secondmate_current.records // [])[] | select(.parent_event.activity_scan.available == false)] | length) as $n | if $n > 0 then {surface:("secondmate parent activity evidence unavailable for \($n) record(s)"), reveal:"inspect the parent status logs"} else empty end),
         (if $all_decisions == 0 and ($decisions_all | length) > $decisions_n then {surface:("decisions_open showing \($decisions_n) of \($decisions_all | length)"), reveal:"--all-decisions"} else empty end),
-        (if $all_decisions == 0 and $decisions_marked_deferred > 0 then {surface:("captain holds marked deferred or superseded: \($decisions_marked_deferred)"), reveal:"--all-decisions"} else empty end),
         (if $all_queued == 0 and ($gates_all | length) > $gates_n then {surface:("gates showing \($gates_n) of \($gates_all | length)"), reveal:"--all-queued"} else empty end),
         (if $all_reports == 0 and ($reports_all | length) > $reports_n then {surface:("reports showing \($reports_n) of \($reports_all | length)"), reveal:"--all-reports"} else empty end),
         (if $all_recorded_prs == 0 and ($recorded_prs_all | length) > $recorded_prs_n then {surface:("recorded_prs showing \($recorded_prs_n) of \($recorded_prs_all | length)"), reveal:"--all-recorded-prs"} else empty end),
