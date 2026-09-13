@@ -3,9 +3,10 @@
 #
 # WHY THIS EXISTS. Every external-network call a session start makes used to run
 # BEFORE the digest printed, on a hook that blocks session initialization: `gh
-# auth status`, the secondmate liveness and convergence sweeps (per-secondmate
-# remote probes, which bootstrap runs concurrently), pending remote
-# handoff delivery, and the fleet-sync fetch of every project clone. None of
+# auth status`, the fleet capacity check, the secondmate liveness and
+# convergence sweeps (per-secondmate remote probes, which bootstrap runs
+# concurrently), pending remote handoff delivery, and the fleet-sync fetch of
+# every project clone. None of
 # those calls is individually bounded, so one unreachable host could consume the
 # whole FM_SESSION_START_TIMEOUT budget and truncate the digest outright, turning
 # a slow network into a startup that never printed the work queue at all.
@@ -45,8 +46,8 @@
 #          Launch the detached worker and return immediately. Single-flight: a
 #          worker already running for the same lock owner is left alone. A new
 #          owner gets a distinct generation. --locked 1 asks
-#          for the mutating sweeps as well as the read-only probe; --locked 0
-#          asks for the probe only. --harvest-pid names the session-start process
+#          for the mutating sweeps as well as the read-only probes; --locked 0
+#          asks for the probes only. --harvest-pid names the session-start process
 #          that will try to print the result inline, so the worker can tell
 #          whether a wake is still needed.
 #        fm-startup-network.sh run --locked <0|1>
@@ -85,8 +86,9 @@
 #   .startup-network.timings  per-step elapsed times for the last run, in
 #                             bin/fm-timing-lib.sh's tab-separated format: the
 #                             stage total, one record per network phase (gh auth,
-#                             secondmate liveness, secondmate convergence, handoff
-#                             delivery, fleet sync), one per secondmate for the
+#                             capacity, secondmate liveness, secondmate
+#                             convergence, handoff delivery, fleet sync), one per
+#                             secondmate for the
 #                             remote-touching steps (id and host), and one per
 #                             project clone. Published for a timed-out or failed
 #                             run too, where a partial record is the answer.

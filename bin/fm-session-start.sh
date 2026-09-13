@@ -19,7 +19,7 @@
 # standalone with unchanged default behavior - other flows (fm-bootstrap.sh
 # install <tools> after consent, /updatefirstmate, the afk daemon, existing
 # tests) still call them directly. The one seam this script needed -
-# bootstrap running its detect-only diagnostics without its five mutating
+# bootstrap running its detect-only diagnostics without its six mutating
 # sweeps - is an opt-in FM_BOOTSTRAP_DETECT_ONLY=1 flag on fm-bootstrap.sh
 # itself (default unset/0 = unchanged behavior), not a fork.
 #
@@ -30,9 +30,10 @@
 #                       mutating step runs.
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
 #                       when this session actually holds the lock. Detect-only
-#                       diagnostics always run. Bootstrap's five MUTATING sweeps
+#                       diagnostics always run. Bootstrap's six MUTATING sweeps
 #                       (secondmate convergence, secondmate liveness, pending remote
-#                       handoff retry, X-mode artifact writes, fleet sync) also run only when
+#                       handoff retry, X-mode artifact writes, fleet sync, and
+#                       keeping the capacity poll armed) also run only when
 #                       locked; the four network sweeps run in the deferred
 #                       stage rather than this synchronous bootstrap section.
 #   3. inactive outcomes + wake-drain - runs the local bounded inactive-outcome
@@ -65,8 +66,9 @@
 # entire FM_SESSION_START_TIMEOUT and truncate the digest, so a slow network
 # could cost the work queue itself.
 # So no step between here and the last line below makes an external-network
-# call. The five that did - `gh auth status`, secondmate liveness, secondmate
-# convergence, pending remote handoff delivery, and the fleet-sync fetch - are
+# call. The six that did - `gh auth status`, the fleet capacity check,
+# secondmate liveness, secondmate convergence, pending remote handoff delivery,
+# and the fleet-sync fetch - are
 # started as one detached bounded worker right after the lock (step 1) and
 # harvested at step 7 without ever blocking on it. bin/fm-startup-network.sh
 # owns that stage and its safety argument; bin/fm-bootstrap.sh remains the owner
@@ -113,10 +115,11 @@
 # check, the harness override, crew-dispatch validation, tasks-axi and quota-axi
 # tool checks, and tasks-axi availability - none of which mutate shared state
 # and all of which are safe to compute without verified lock ownership.
-# It deliberately skips the network-only GitHub-auth probe because a read-only
-# session has no dispatch, spawn, steer, or merge action for that verdict to gate.
-# Only projection cleanup, the five bootstrap mutating sweeps, and wake-queue
-# presentation are skipped.
+# It deliberately skips the network probes (GitHub auth and fleet capacity)
+# because a read-only session has no dispatch, spawn, steer, or merge action for
+# an auth verdict to gate, and it starts no network worker to carry a capacity
+# report. Only projection cleanup, the six bootstrap mutating sweeps, and
+# wake-queue presentation are skipped.
 # The context and fleet-state digests
 # below are always read-only, so they run unconditionally in both modes.
 #
@@ -188,9 +191,10 @@
 #   --reemit  This process ALREADY took the helm at its own startup and has
 #             only lost its context (a /clear or a compaction). Skip the
 #             mutating sweeps that startup already reconciled - the stale Herdr
-#             projection cleanup and bootstrap's five mutating sweeps (fleet
+#             projection cleanup and bootstrap's six mutating sweeps (fleet
 #             sync, secondmate convergence and liveness,
-#             pending remote handoff retry, X-mode artifact writes) - and
+#             pending remote handoff retry, X-mode artifact writes, keeping the
+#             capacity poll armed) - and
 #             re-emit the rest. Wake-queue presentation is NOT skipped: queued
 #             records are this turn's work queue, they arrived after startup,
 #             and a session that owns the lock is exactly the session that must
@@ -659,7 +663,7 @@ if [ "$READ_ONLY" -eq 0 ]; then
   # front of it. Step 7 harvests whatever it has finished, without ever waiting.
   # --reemit passes --locked 0 for the same reason it runs bootstrap detect-only:
   # this process already ran the mutating sweeps at its own startup, so only the
-  # read-only GitHub-auth probe is owed. A read-only session starts nothing at
+  # read-only probes (GitHub auth and fleet capacity) are owed. A read-only session starts nothing at
   # all: it holds no mutation authority for the sweeps, and it must not spawn,
   # steer, or merge anyway, so it has no action left for an auth verdict to gate.
   NETWORK_STAGE_LOCKED=1
