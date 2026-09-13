@@ -444,9 +444,9 @@ EOF
       and (.backlog.records[] | select(.id == "orphan")
         | .current_role == "worker" and .requires_child_metadata == true)
       and (.backlog.records[] | select(.id == "captain-run")
-        | .blocked_by == "review"
-          and .blocked_by_ids == ["worker", "review"]
+        | .blocked_by_ids == ["worker", "review"]
           and .unresolved_blocker_ids == ["worker", "review"]
+          and .unresolved_blocker_reason == null
           and .captain_actionable == false)
   ' >/dev/null || fail "normalized role or plural blocker fields were wrong: $out"
 
@@ -466,9 +466,9 @@ EOF
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "captain-run")
-    | .blocked_by == "review"
-      and .blocked_by_ids == ["worker", "review"]
+    | .blocked_by_ids == ["worker", "review"]
       and .unresolved_blocker_ids == ["review"]
+      and .unresolved_blocker_reason == null
       and .captain_actionable == false
   ' >/dev/null || fail "one completed blocker did not leave exactly one unresolved id: $out"
 
@@ -487,9 +487,9 @@ EOF
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "captain-run")
-    | .blocked_by == "review"
-      and .blocked_by_ids == ["worker", "review"]
+    | .blocked_by_ids == ["worker", "review"]
       and .unresolved_blocker_ids == []
+      and .unresolved_blocker_reason == null
       and .captain_actionable == true
   ' >/dev/null || fail "completed blockers did not make the captain hold actionable: $out"
 
@@ -827,9 +827,10 @@ EOF
     .backlog.records[] | select(.id == "blocked-reason")
     | .title == "Blocked Reason"
       and .repo == "beta"
-      and .blocked_by == "queued-comma"
-      and .blocked_reason == "waits on queued-comma"
-  ' >/dev/null || fail "blocked suffix did not parse into title and reason"
+      and .blocked_by_ids == ["queued-comma"]
+      and .unresolved_blocker_ids == ["queued-comma"]
+      and .unresolved_blocker_reason == "waits on queued-comma"
+  ' >/dev/null || fail "blocked suffix did not parse into title and attributed reason"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "sample-decision-route")
     | .title == "Choose sample route"
@@ -924,16 +925,16 @@ test_view_renders_snapshot() {
 
 # The Blocked By column is the surface the card's second consequence lands on:
 # a reader who sees "waits for X" with X pruned out of the backlog cannot check
-# it by hand. bin/fm-bearings-snapshot.sh already resolves this column through
-# unresolved_blocker_ids, so the fleet view must agree with it rather than print
-# the raw token, and a blocker that is genuinely still pending must keep showing
-# with its reason suffix so the column does not go uniformly blank.
-# The multi-blocker row is the case that proves the raw token was never right:
-# bin/fm-fleet-snapshot.sh parses blocked_by with a greedy `.*blocked-by:`
-# prefix, so it holds the LAST token on the row regardless of state. Here that
-# last token is the completed and pruned one, so rendering the raw token would
-# name the archived blocker while the still-queued one is what actually holds
-# the row - and the captain's board would name the other id for the same row.
+# it by hand. The column reads the answer bin/fm-fleet-snapshot.sh derives once
+# for every screen, so it agrees with the bearings board by construction, and a
+# blocker that is genuinely still pending must keep showing with its reason
+# suffix so the column does not go uniformly blank.
+# The multi-blocker rows keep proving the cases the old per-screen derivation
+# got wrong: the archived blocker is the LAST token on those rows, so a reader
+# that fell back to raw row text would name a completed id while the
+# still-queued one is what actually holds the row, and would explain the live
+# blocker with a reason written about the archived one.
+# tests/fm-bearings-snapshot.test.sh owns the three-screen agreement itself.
 test_view_resolves_blocked_by_through_the_archive() {
   local home fakebin view
   home=$(make_home view-archived-blocker)

@@ -18,8 +18,8 @@
 #     Structured rows preserve captain-hold metadata such as hold_kind,
 #     hold_reason, and hold_until when tasks-axi emits it. They also carry
 #     normalized current_role, requires_child_metadata, blocked_by_ids,
-#     unresolved_blocker_ids, unknown_blocker_ids, captain_actionable, and
-#     deferred_marker fields.
+#     unresolved_blocker_ids, unknown_blocker_ids, unresolved_blocker_reason,
+#     captain_actionable, and deferred_marker fields.
 #     Repeated blocker tokens remain ordered; a blocker resolves when its
 #     structured record is Done, in the backlog or in data/done-archive.md, so
 #     retention pruning a completed blocker cannot leave its dependents held.
@@ -28,6 +28,15 @@
 #     A blocker id in neither file resolves nothing and stays open, and is also
 #     listed in unknown_blocker_ids so the gap is reported rather than silently
 #     holding work or silently releasing it.
+#     unresolved_blocker_ids answers "which ids hold this row" and
+#     unresolved_blocker_reason answers "why", attributed here once so that no
+#     renderer pairs a blocker with a reason again. The reason is present only
+#     when the row named exactly one blocker and that blocker is still
+#     unresolved; with several blockers the row-level reason belongs to no
+#     identifiable one and is dropped. There is deliberately no raw row-level
+#     blocked_by or blocked_reason on the record: those were the last-token and
+#     row-scoped shapes that three separate renderers each derived wrong, so the
+#     surface no longer offers them to a fourth.
 #     captain_actionable means "waiting on the captain now": not yet done, held
 #     for the captain, unblocked, and due (no hold_until, or hold_until at or
 #     before the observation date, matching tasks-axi's own date-gate rule).
@@ -387,7 +396,7 @@ backlog_json() {  # [<backlog-path>] [<archive-path>] - default to this home's f
     def blocked_by_ids($rest):
       [ $rest | scan("blocked-by:[[:space:]]+(?<id>[^[:space:])]+)") | .[0] ]
       | reduce .[] as $id ([]; if index($id) == null then . + [$id] else . end);
-    def blocked_reason($rest):
+    def row_blocked_reason($rest):
       cap($rest; ".*blocked-by:[[:space:]]*[^[:space:])]+[[:space:]]+-[[:space:]]*(?<v>.*)$") as $reason
       | if $reason == null then null
         else ($reason | clean_title | if . == "" then null else . end)
@@ -427,9 +436,8 @@ backlog_json() {  # [<backlog-path>] [<archive-path>] - default to this home's f
              hold_reason:metadata($rest; "hold"),
              hold_kind:metadata($rest; "hold-kind"),
              hold_until:metadata($rest; "hold-until"),
-             blocked_by:cap($rest; ".*blocked-by:[[:space:]]*(?<v>[^[:space:])]+).*"),
              blocked_by_ids:blocked_by_ids($rest),
-             blocked_reason:blocked_reason($rest),
+             row_reason:row_blocked_reason($rest),
              since:metadata_word($rest; "since"),
              merged:metadata_word($rest; "merged"),
              reported:metadata_word($rest; "reported"),
@@ -483,6 +491,25 @@ backlog_json() {  # [<backlog-path>] [<archive-path>] - default to this home's f
               | select($resolved_ids[$blocker] == null)
               | $blocker
             ]
+          # The one place a blocked-by reason is attributed to a blocker, so no
+          # renderer ever has to pair them again. row_reason is a ROW-level
+          # capture: it belongs to whichever blocked-by token carried a
+          # " - reason" suffix, which need not be the token still holding the
+          # row. It is attributable under one rule with two halves that only
+          # work together: the row named exactly ONE blocker, AND that blocker
+          # is still unresolved. Drop the first half and a multi-token row
+          # explains its live blocker with a reason written about a different,
+          # possibly already completed, one. Drop the second half and a row the
+          # archive just freed keeps a reason saying why it waits beside a
+          # blocker list that correctly reads empty. Everything downstream of
+          # here sees unresolved_blocker_ids and unresolved_blocker_reason and
+          # nothing else, so the pairing cannot be got wrong a fourth time.
+          | .unresolved_blocker_reason =
+              (if ((.blocked_by_ids | length) == 1)
+                  and ((.unresolved_blocker_ids | length) == 1)
+               then (.row_reason // null)
+               else null end)
+          | del(.row_reason)
           | .current_role =
               (if .state == "in_flight" and .hold_reason != null and .hold_kind != null then "held"
                elif .state == "in_flight" and .kind == "program" then "program"
@@ -835,7 +862,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
             blocked_by:((.unresolved_blocker_ids | join(",")) | if . == "" then null else trunc(120) end),
             blocked_by_ids:(.blocked_by_ids | map(trunc(120))),
             unresolved_blocker_ids:(.unresolved_blocker_ids | map(trunc(120))),
-            reason:((.hold_reason // .blocked_reason // "blocked") | trunc(120)),source:"backlog"} ]
+            reason:((.hold_reason // .unresolved_blocker_reason // "blocked") | trunc(120)),source:"backlog"} ]
        + [ $owned_in_flight[] as $work
            | $tasks[]
            | select(.id == $work.id and (.current_state.state == "parked" or .current_state.state == "paused" or .current_state.state == "blocked"))
@@ -878,10 +905,9 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
         decisions_open:$decisions_all[:$decisions_n],
         holds:$holds_all[:$queued_n],
         queued:([$queued_all[] | {id:(.id | trunc(120)),title:(.title | trunc(120)),
-          blocked_by:((.blocked_by // null) | if . == null then null else trunc(120) end),
           blocked_by_ids:((.blocked_by_ids // []) | map(trunc(120))),
           unresolved_blocker_ids:((.unresolved_blocker_ids // []) | map(trunc(120))),
-          blocked_reason:((.blocked_reason // null) | if . == null then null else trunc(160) end),
+          unresolved_blocker_reason:((.unresolved_blocker_reason // null) | if . == null then null else trunc(160) end),
           hold_reason:((.hold_reason // null) | if . == null then null else trunc(160) end),
           hold_kind:((.hold_kind // null) | if . == null then null else trunc(40) end),
           hold_until:((.hold_until // null) | if . == null then null else trunc(40) end),

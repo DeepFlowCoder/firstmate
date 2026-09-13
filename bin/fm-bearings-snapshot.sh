@@ -449,23 +449,12 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson candidate_prs "$CANDIDATE_PRS" '
   def trunc($n): if . == null then null else
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
-  # blocked_reason is a single ROW-level field: it belongs to whichever
-  # blocked-by token carried a " - reason" suffix, which need not be the one
-  # still holding the row. It is therefore attributable under one rule with two
-  # halves that must be applied together: the row named exactly ONE blocker, AND
-  # that blocker is the one still holding the row. Drop the first half and a
-  # multi-token row explains its unresolved blocker with a reason written about
-  # a different, possibly already completed, one - which is also the only way
-  # the raw blocked-by text can leak into this cell, so the single-token
-  # requirement is what forecloses that leak rather than a lucky accident. Drop
-  # the second half and a row the archive just freed keeps a reason saying why
-  # it waits beside a blocker column that correctly reads "-". Elsewhere an
-  # empty reason misleads nobody and a wrong one does.
-  def blocked_reason_of($r):
-    if (($r.blocked_by_ids // []) | length) == 1
-       and ((($r.unresolved_blocker_ids // []) | length) == 1)
-      then ($r.blocked_reason // null)
-    else null end;
+  # The gate rows below read blocked-by state only through the two fields
+  # bin/fm-fleet-snapshot.sh derives once for every renderer:
+  # unresolved_blocker_ids for which ids hold the row, and
+  # unresolved_blocker_reason for the reason when it is attributable to one of
+  # them. Neither is re-derived here from the raw row text, which is what this
+  # board and the fleet view each used to do separately and disagree about.
   def round_robin_landed($n):
     . as $groups
     | [range(0; (($groups | map(length) | max) // 0)) as $i
@@ -586,8 +575,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | {id, title:(.title | trunc(60)),
             blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
             reason:((if (.hold_until // null) != null and .hold_until > $today
-                     then ("until " + .hold_until + ": " + (.hold_reason // blocked_reason_of(.) // "-"))
-                     else (.hold_reason // blocked_reason_of(.) // "-") end) | trunc(40)),owner:"(main)",
+                     then ("until " + .hold_until + ": " + (.hold_reason // .unresolved_blocker_reason // "-"))
+                     else (.hold_reason // .unresolved_blocker_reason // "-") end) | trunc(40)),owner:"(main)",
             repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]
      + [ (.secondmate_current.records // [])[] as $m
          | select($m.provenance.selected == "structured-home")
@@ -598,8 +587,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
          | {id,title:(.title | trunc(60)),
             blocked_by:((.unresolved_blocker_ids // []) | if length > 0 then join(",") else "-" end | trunc(120)),
             reason:((if (.hold_until // null) != null and .hold_until > $today
-                     then ("until " + .hold_until + ": " + (.hold_reason // blocked_reason_of(.) // "-"))
-                     else (.hold_reason // blocked_reason_of(.) // "-") end) | trunc(40)),owner:$m.id,
+                     then ("until " + .hold_until + ": " + (.hold_reason // .unresolved_blocker_reason // "-"))
+                     else (.hold_reason // .unresolved_blocker_reason // "-") end) | trunc(40)),owner:$m.id,
             repo:((.repo // null) | trunc(120)),since:((.since // null) | trunc(40))} ]) as $gates_all
   | ([ .scout_reports[]
        | . as $r
