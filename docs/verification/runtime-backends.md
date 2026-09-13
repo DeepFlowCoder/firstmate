@@ -395,7 +395,7 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-backend-herdr-respawn-idem-e2e.test.sh
 ```
 
-Observed guarantee: a restored no-agent tab was replaced create-before-close, while a registered live agent caused refusal.
+Observed guarantee: a restored no-agent tab, now including a stale hook registration positively proven back at its bare shell, was replaced create-before-close, while a registered agent whose pane was not positively proven bare caused refusal.
 
 ### Launcher workspace placement
 
@@ -653,7 +653,7 @@ ok - forced teardown retains a nested secondmate home and its grandchild's Herdr
 ```
 
 The fixture was re-run on 2026-09-13 for the pane that outlives its own agent.
-A pane whose tab is the captain's active tab refuses the focus-preserving close without issuing one, so the presence gate alone held every durable record forever across repeated runs; the release now turns on the pane's own `agent get` answer, which `fm_backend_herdr_pane_agent_state` already classified against real Herdr, so this boundary needs no new vendor evidence:
+A pane whose tab is the captain's active tab refuses the focus-preserving close without issuing one, so the presence gate alone held every durable record forever across repeated runs; the release now turns on the shared Herdr agent-state classifier's `no-agent` verdict - `agent get` answering agent_not_found, or a stale hook registration overridden by a pane process-table read proving the pane is back at its bare shell - which `fm_backend_herdr_pane_agent_state` already classifies, so this boundary needs no new vendor evidence:
 
 ```sh
 tests/fm-teardown.test.sh
@@ -726,7 +726,7 @@ ok - real herdr: no control verb removed the endpoint or the task's local copy
 ok - real herdr: an agent that does not stop fails closed instead of being reported as stopped
 ```
 
-The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
+The registry read through `herdr pane report-agent` is no longer the only source the shared Herdr agent-state classifier uses: a `pane process-info` read that positively proves the pane is back at its bare shell now overrides a stale registration, so the live fixture presents a real non-shell foreground process while registering an agent on a plain bare shell pane is the phantom case that downgrades to `no-agent`/`dead`, with no real agent launched.
 That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
 
 ### Away-mode transport
