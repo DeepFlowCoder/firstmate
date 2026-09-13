@@ -403,4 +403,21 @@ run_guard "$home" 2 "$home/snap.json" check >/dev/null || rc=$?
 expect_code 0 "$rc" "check must exit 0 even with no lanes left"
 pass "a fleet with no lanes left still exits 0 - this guard reports, it never refuses"
 
+# === watcher registration ===================================================
+
+# Session start does not itself provide the heartbeat; it arms the trusted
+# custom-check shim that the existing watcher runs on its normal cadence.
+# Exercise that public arm surface and the generated executable end to end so
+# the transition tests above cannot pass while the between-session wire is dead.
+home=$(fresh_home watcher-arm)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+FM_HOME="$home" "$CHECK" arm
+assert_present "$home/state/capacity.check.sh" "arm must create the watcher shim"
+assert_present "$home/state/capacity.check-trust" "arm must bind the watcher shim to trusted bytes"
+out=$(FM_CAPACITY_MIN_LANES=2 FM_CAPACITY_SNAPSHOT="$home/snap.json" "$home/state/capacity.check.sh")
+assert_contains "$out" "1 of 2 provider lanes dispatchable" "the armed watcher shim must run the real transition check"
+out=$(FM_CAPACITY_MIN_LANES=2 FM_CAPACITY_SNAPSHOT="$home/snap.json" "$home/state/capacity.check.sh")
+[ -z "$out" ] || fail "the armed watcher shim must suppress the unchanged transition, got: $out"
+pass "arm registers an executable watcher check that reports only the transition"
+
 printf 'all fm-capacity tests passed\n'

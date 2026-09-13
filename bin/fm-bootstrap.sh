@@ -13,6 +13,9 @@
 #                 "DISK_SPACE: <n.n> GB free on <home> (threshold <n> GB[ from <source>])" or
 #                 "DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB",
 #                 "DISK_SPACE: invalid <config/disk-space-warn-gb|FM_DISK_SPACE_WARN_GB> - <reason>; warning at the default <n> GB",
+#                 "CAPACITY: <n> of <n> provider lanes dispatchable (<why>): <lane>[ | <lane>]...",
+#                 "CAPACITY: capacity unknown - <reason>" or
+#                 "CAPACITY: invalid <config/capacity-min-lanes|FM_CAPACITY_MIN_LANES> - <reason>; guarding at the default <n>",
 #                 "GH_BASE_REPO: could not write <key> in <repo>; unnamed gh and
 #                 gh-axi queries there can answer for a different repository -
 #                 make .git/config writable ... and rerun session start",
@@ -67,6 +70,19 @@
 #          the session-start report, that refusal, and the in-session watch are
 #          the guard's three surfaces, so the liveness sweep's secondmate respawn
 #          below is never refused by it.
+#          A CAPACITY line means the fleet is running short of dispatchable
+#          provider lanes, or every remaining lane is projected to run out before
+#          its own reset; above the threshold the check is silent.
+#          bin/fm-capacity-check.sh owns the threshold, its
+#          config/capacity-min-lanes and FM_CAPACITY_MIN_LANES overrides, and the
+#          wording, and bin/fm-capacity-policy.mjs owns the classification behind
+#          it. It runs in the NETWORK phase because quota-axi refreshes from
+#          vendors. The guard only ever REPORTS: unlike DISK_SPACE it never
+#          refuses a dispatch, because the last remaining lane is exactly when
+#          the captain still needs to be able to work.
+#          The same locked mutable path keeps state/capacity.check.sh armed, so
+#          the watcher carries that guard between session starts - a fleet runs
+#          out DURING a session, not only before one.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
@@ -110,9 +126,10 @@
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the five MUTATING sweeps
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
 #          (secondmate_sync, secondmate_liveness_sweep,
-#          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
+#          secondmate_handoff_resume, x_mode_setup, capacity_arm, fleet_sync)
+#          while still
 #          printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
@@ -120,7 +137,7 @@
 #          the fleet lock, so a second concurrent session never race-mutates
 #          secondmate homes, pending handoff outboxes,
 #          X-mode artifacts, project clones, or repair instructions.
-#          Unset/0 (the default) runs all five sweeps - this flag is purely
+#          Unset/0 (the default) runs all six sweeps - this flag is purely
 #          additive.
 #          Set FM_BOOTSTRAP_NETWORK to split this run by whether a step talks to
 #          the network, so a session start can print its digest from local reads
@@ -1317,6 +1334,33 @@ disk_space_detect() {
   fi
 }
 
+# The fleet's remaining provider capacity, reported only when it is worth
+# acting on (bin/fm-capacity-check.sh). It sits in the NETWORK phase rather than
+# beside the other local detectors because quota-axi refreshes from vendors, and
+# AGENTS.md section 3 requires the digest itself make no external-network call -
+# so this lands in the deferred stage's NETWORK CHECKS section beside gh auth.
+#
+# Silence above the threshold is deliberate, for the reason disk_space_detect
+# gives: a routine "capacity fine" line would train the captain to skip the
+# section that carries the warning.
+capacity_detect() {
+  local line
+  while IFS= read -r line; do
+    [ -z "$line" ] || echo "CAPACITY: $line"
+  done < <("$SCRIPT_DIR/fm-capacity-check.sh" report 2>/dev/null || true)
+}
+
+# Keep the watcher's capacity poll armed. Session start reports capacity once,
+# but the fleet runs out DURING a session - that is exactly how the measured
+# incident happened - so the watcher has to carry the guard between session
+# starts. Arming is idempotent and local-only, so every locked session start can
+# call it unconditionally; a failure is left to the next session rather than
+# made into a diagnostic, because the session-start report above still covers
+# the fleet either way.
+capacity_arm() {
+  "$SCRIPT_DIR/fm-capacity-check.sh" arm >/dev/null 2>&1 || true
+}
+
 detect_local_config() {
   # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
   # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
@@ -1420,6 +1464,9 @@ if network_phase; then
   __fm_timing_stamp=$(fm_timing_now_ms)
   gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
   fm_timing_record phase gh-auth "$__fm_timing_stamp"
+  __fm_timing_stamp=$(fm_timing_now_ms)
+  capacity_detect
+  fm_timing_record phase capacity "$__fm_timing_stamp"
 fi
 local_phase && detect_local_config
 
@@ -1463,6 +1510,8 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   fi
   # x_mode_setup writes local Relay artifacts only and never leaves the machine.
   local_phase && x_mode_setup
+  # capacity_arm likewise writes only this home's own check shim.
+  local_phase && capacity_arm
   if [ -n "$fleet_sync_pid" ]; then
     wait "$fleet_sync_pid" || true
     cat "$fleet_sync_out"
