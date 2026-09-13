@@ -1860,7 +1860,35 @@ test_wedge_escalation_defers_to_a_busy_harness() {
   [ ! -e "$state/.working-since-$key" ] || fail "the live-work deferral chain outlived a real escalation"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the unreadable-harness escalation failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the unreadable-harness escalation was not queued"
-  pass "a quiet pane whose harness declares itself busy is deferred, while one whose harness stops answering still wedge-escalates"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the unreadable-harness escalation"
+
+  # Phase C: the harness answers exactly what it answered in phase A, so the only
+  # thing that changed is the completed-turn bound: no turn has ended for longer
+  # than the production FM_BUSY_TURN_MAX_SECS default. A busy signature is what a
+  # hung foreground call hides behind, so past that bound it stops being evidence
+  # and the alarm fires - the ticket's "cannot be silent forever" half, on the
+  # ordinary idle-pane path where nothing else bounds a harness that keeps
+  # declaring itself busy.
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime $(( $(date +%s) - 4000 )) "$state/thinking.turn-ended"
+  prime_turnend_seen "$state/thinking.turn-ended"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (claude-hook)' \
+    FM_STALE_ESCALATE_SECS=240 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "a busy harness with no completed turn past the bound never wedge-escalated: $(cat "$out")"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "the over-age busy-harness escalation did not print a stale wake: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the over-age busy-harness escalation did not flag a possible wedge: $(cat "$out")"
+  grep -F "rechecked on a long cadence" "$out" >/dev/null \
+    && fail "a busy verdict past the completed-turn bound was deferred onto the long recheck: $(cat "$out")"
+  [ ! -e "$state/.working-since-$key" ] || fail "a busy verdict past the completed-turn bound opened a deferral chain"
+  : > "$drain_out"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the over-age busy-harness escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the over-age busy-harness escalation was not queued"
+  pass "a quiet pane whose harness declares itself busy is deferred, while an unreadable harness and a busy one past the completed-turn bound both still wedge-escalate"
 }
 
 # --- non-terminal stale, crew NOT provably working: surfaced immediately ------
