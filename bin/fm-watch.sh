@@ -1207,13 +1207,14 @@ disk_space_tick() {
     return 0
   fi
   tier=$FM_DISK_SPACE_TIER
-  touch "$STATE/.last-disk-check"
   if [ "$tier" = retired ]; then
+    touch "$STATE/.last-disk-check"
     rm -f "$STATE/.disk-space-tier"
     return 0
   fi
   previous=$(cat "$STATE/.disk-space-tier" 2>/dev/null || printf 'ok')
   if [ "$(disk_space_tier_rank "$tier")" -le "$(disk_space_tier_rank "$previous")" ]; then
+    touch "$STATE/.last-disk-check"
     printf '%s' "$tier" > "$STATE/.disk-space-tier" 2>/dev/null || true
     return 0
   fi
@@ -1228,6 +1229,7 @@ disk_space_tick() {
       || summary="free space below the warning threshold on $FM_HOME"
     reason="check: disk space low: $summary"
   fi
+  touch "$STATE/.last-disk-check"
   fm_wake_append check disk-space "$reason" || exit 1
   printf '%s' "$tier" > "$STATE/.disk-space-tier" 2>/dev/null || true
   wake "$reason"

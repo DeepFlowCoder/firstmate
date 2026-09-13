@@ -161,18 +161,19 @@ That keeps a tmux pane nested inside herdr on the tmux transport, matching the r
 Target detection uses `FM_SUPERVISOR_TARGET`, then `$TMUX_PANE`, then `"${HERDR_SESSION:-default}:${HERDR_PANE_ID}"` under herdr, then the legacy `firstmate:0` tmux fallback with a warning.
 Selecting any other supervisor backend, including `zellij`, `orca`, or `cmux`, refuses at daemon startup instead of trying tmux injection primitives against a non-tmux pane.
 
-## Away-mode wedge alarm channels (config/wedge-alarm)
+## Active alarm channels (config/wedge-alarm)
 
-When away-mode injection wedges past `FM_MAX_DEFER_SECS`, the sub-supervisor raises a loud, rate-limited alarm.
+When away-mode injection wedges past `FM_MAX_DEFER_SECS`, or the in-session disk watch crosses its refusal floor, Firstmate raises a loud, rate-limited alarm.
 Beyond the durable `state/.subsuper-inject-wedged` marker and the tmux status-line flash, it attempts a configured backend-independent active alert that can reach the captain even when every pane and its backend status-line is unreadable.
 `config/wedge-alarm` (local, gitignored) lists channel directives, one per non-empty, non-comment line; every listed non-`off` channel fires, best-effort.
 `FM_WEDGE_ALARM_CHANNEL` overrides the file with a single directive.
 Directives are `off` (a position-independent kill switch that disables every active alert), `auto`/`default`, `osascript` (macOS Notification Center banner), `herdr` (herdr UI notification), and `command:<cmd>` (run `<cmd>` via `sh -c`, summary on `$1` and stdin).
-An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisely so a wedged away-mode primary is never silent, and it fires at most once per max-defer window after a genuine wedge.
+An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisely so a wedged away-mode primary or critical disk crossing is never silent.
+The away-mode alarm fires at most once per max-defer window, and the disk alarm fires once per downward crossing into the refusal tier.
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
 See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) for active evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
 
-## Disk space guard (config/disk-space-min-gb)
+## Disk space guard (config/disk-space-min-gb, config/disk-space-warn-gb)
 
 Firstmate checks free space on the filesystem holding this home, so a volume that is filling up is visible before it takes work down with it.
 The default threshold is **5 GB**, and the local, gitignored `config/disk-space-min-gb` file overrides it with one whole number of gigabytes.
@@ -183,9 +184,16 @@ A malformed value from either source is reported and the default threshold still
 The report names which source was rejected, so `0 GB` written where `0` was meant does not read as a retired guard that keeps refusing.
 The value is that single number and nothing else, so a second line appended with `>>` where `>` was meant is reported as malformed rather than concatenated into a threshold nobody wrote.
 
-Above the threshold nothing is printed and nothing changes.
-Below it, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, the threshold, and which source set that threshold when one is configured, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a fresh crewmate or scout.
-Those two are the guard's entire scope, stated as what it covers rather than as a list of exceptions: a `--relaunch`, a `--secondmate` launch including the liveness sweep's respawn of a dead one, and every remote launch never consult it at all.
+While the session is running, the watcher reads the same filesystem once a minute and reports only transitions into a worse tier through the ordinary wake queue.
+The advisory tier defaults to three times the effective refusal floor, so the default 5 GB floor warns first at 15 GB.
+The local, gitignored `config/disk-space-warn-gb` file overrides that warning threshold with one whole number of gigabytes strictly above the refusal floor, and `FM_DISK_SPACE_WARN_GB` overrides the file for one run.
+Set the warning threshold to `0` to retire only the advisory tier; setting the refusal floor to `0` retires the whole guard.
+A recovery is silent but rearms the watch, so the next fall reports again instead of producing one warning on every poll while the volume remains low.
+Crossing the refusal floor also uses the active channels from `config/wedge-alarm` before writing the durable wake, so a configured `command:` channel can reach a phone even when the filling volume can no longer accept watcher markers.
+
+Above the refusal floor, session start and dispatch stay silent and dispatch changes nothing.
+Below the floor, session start prints one `DISK_SPACE:` line naming the free space, the filesystem, the threshold, and which source set that threshold when one is configured, and [`bin/fm-spawn.sh`](../bin/fm-spawn.sh) refuses to dispatch a fresh crewmate or scout.
+The dispatch refusal's scope is stated as what it covers rather than as a list of exceptions: a `--relaunch`, a `--secondmate` launch including the liveness sweep's respawn of a dead one, and every remote launch never consult it at all.
 Each of those puts back or runs an agent the fleet already has instead of adding new work to this filesystem, and a remote launch lands on a volume this machine never measured.
 The refusal is deliberate: the failure this guards against is total rather than slow, since a full volume destroys in-flight validation runs and leaves firstmate unable to write even the record of its own failure.
 To dispatch anyway without changing the threshold, re-run that one spawn with `FM_SPAWN_ALLOW_LOW_DISK=1`.
@@ -763,6 +771,7 @@ FM_BACKEND=             # optional runtime backend override for new spawns; tmux
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_SPAWN_ALLOW_LOW_DISK=  # non-empty dispatches one spawn despite the low-disk refusal; see "Disk space guard"
 FM_DISK_SPACE_MIN_GB=   # optional free-space threshold override in whole gigabytes, ahead of config/disk-space-min-gb; 0 retires the guard; see "Disk space guard"
+FM_DISK_SPACE_WARN_GB=  # optional advisory threshold override in whole gigabytes, ahead of config/disk-space-warn-gb; 0 retires only the warning tier
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each Enter attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmation budget before polling agent-state after an idle baseline

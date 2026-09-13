@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # Behavior tests for the free-disk-space guard (bin/fm-disk-space-lib.sh).
 #
-# The guard has exactly two surfaces, and both are driven here through their
-# real executables: bin/fm-bootstrap.sh reports the disk in the session-start
-# output, and bin/fm-spawn.sh refuses a fresh crewmate or scout dispatch onto a
-# nearly full filesystem. A fake `df` on PATH supplies the free-space number, so
-# every case pins a verdict against a known measurement rather than the host's
-# actual disk. That number is passed explicitly into each run rather than left in
-# the shell's environment, so one case's fixture can never decide another case's
-# verdict.
+# The guard has exactly three surfaces, and all three are driven here through
+# their real executables: bin/fm-bootstrap.sh reports the disk in the
+# session-start output, bin/fm-spawn.sh refuses a fresh crewmate or scout
+# dispatch onto a nearly full filesystem, and bin/fm-watch.sh watches the volume
+# while a session is already running. A fake `df` on PATH supplies the
+# free-space number, so every case pins a verdict against a known measurement
+# rather than the host's actual disk. That number is passed explicitly into each
+# run rather than left in the shell's environment, so one case's fixture can
+# never decide another case's verdict.
+#
+# The in-session cases are the falsifier for the third surface, and they are
+# deliberately end to end: a real fm-watch.sh subprocess, already running, is
+# made to see the volume fall underneath it. Nothing about the alert is inferred
+# from reading the code. Each case asserts BOTH directions - that the alert
+# fires on the way down, and that it stays silent with space to spare and on the
+# next poll after it has already fired - because an alert that fires
+# unconditionally and an alert that never fires both pass a one-sided test.
 #
 # The scope is pinned from both sides. The launches the guard does NOT cover - a
 # relaunch, a secondmate launch including the liveness sweep's respawn, and the
@@ -35,26 +44,47 @@ set -u
 
 BOOTSTRAP="$ROOT/bin/fm-bootstrap.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
+WATCH="$ROOT/bin/fm-watch.sh"
 TMP_ROOT=$(fm_test_tmproot fm-disk-space)
+
+# The out-of-band alarm the critical tier fires posts a REAL macOS notification
+# by default. Point its notifier seam at a recorder for the whole file, the way
+# tests/wake-helpers.sh does for the daemon suites, so no case here - present or
+# future - can reach a real channel, and so the cases that assert on delivery
+# have something to read. It is installed at file scope rather than per case
+# precisely so it cannot be forgotten.
+FM_WEDGE_ALARM_RECORDER="$TMP_ROOT/wedge-alarm-recorder"
+cat > "$FM_WEDGE_ALARM_RECORDER" <<'REC'
+#!/usr/bin/env bash
+order=before-write
+[ ! -e "${FM_STATE_OVERRIDE:-}/.last-disk-check" ] || order=after-write
+printf '%s\t%s\t%s\n' "${1:-}" "${2:-}" "$order" >> "${FM_WEDGE_ALARM_LOG:-/dev/null}"
+exit 0
+REC
+chmod +x "$FM_WEDGE_ALARM_RECORDER"
+export FM_WEDGE_ALARM_EXEC="$FM_WEDGE_ALARM_RECORDER"
 
 # Free-space fixtures, in df's own 1024-block unit. `unmeasurable` makes the
 # fake df fail the way a real one does on a path it cannot stat.
 DF_PLENTY=99999999   # ~95 GB
 DF_TEN_GB=10485760
+DF_TWELVE_GB=12582912  # 12.0 GB - below the default 15 GB warning, above the floor
 DF_LOW=2000000       # 1.9 GB - below every threshold these cases configure
 
 # A fake df answering in POSIX -P form, reading the case's fixture from its own
-# environment so nothing leaks between runs.
+# environment or a per-home file so nothing leaks between runs.
 make_fake_df() {
   local fakebin=$1
   cat > "$fakebin/df" <<'SH'
 #!/usr/bin/env bash
-if [ "${FM_FAKE_DF_AVAIL_KB:-}" = unmeasurable ]; then
+avail=${FM_FAKE_DF_AVAIL_KB:-}
+[ -z "${FM_FAKE_DF_FILE:-}" ] || avail=$(cat "$FM_FAKE_DF_FILE")
+if [ "$avail" = unmeasurable ]; then
   echo "df: fake unmeasurable filesystem" >&2
   exit 1
 fi
 printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on'
-printf '%s %s %s %s %s %s\n' /dev/fake 100000000 1 "${FM_FAKE_DF_AVAIL_KB:?}" 1% /
+printf '%s %s %s %s %s %s\n' /dev/fake 100000000 1 "${avail:?}" 1% /
 exit 0
 SH
   chmod +x "$fakebin/df"
@@ -606,6 +636,270 @@ test_spawn_override_dispatches_anyway() {
   pass "FM_SPAWN_ALLOW_LOW_DISK=1 dispatches one spawn despite the low disk"
 }
 
+# --- in-session watch -------------------------------------------------------
+
+# Ticks of 0.2s a watcher may run before this helper stops it. It has to outlast
+# the watcher's bounded startup (recovery snapshot, lock acquisition) plus one
+# whole poll cycle, or a case asserting silence passes without the tick it
+# claims to have watched ever running - which is why every silence case below
+# also asserts that the watcher recorded a tier, proving the tick DID run.
+WATCH_TICKS=${FM_TEST_DISK_WATCH_TICKS:-60}
+
+# Drive a REAL fm-watch.sh with the session already open and the volume at
+# <avail>. Prints the watcher's own disk reason line, or nothing when it stayed
+# silent. The watcher exits by itself on an actionable wake; a silent one is
+# stopped once it has had a full cycle.
+run_watcher() {  # <home> <avail> [min_gb] [initial_avail]
+  local home=$1 avail=$2 min_gb=${3:-} initial=${4:-} out pid i=0 fixture=""
+  out="$home/watch.out"
+  : > "$out"
+  if [ -n "$initial" ]; then
+    fixture="$home/df-avail"
+    printf '%s\n' "$initial" > "$fixture"
+  fi
+  PATH="$home/fakebin:$PATH" \
+  FM_FAKE_DF_AVAIL_KB="$avail" \
+  FM_FAKE_DF_FILE="$fixture" \
+  FM_DISK_SPACE_MIN_GB="$min_gb" \
+  FM_HOME="$home" \
+  FM_STATE_OVERRIDE="$home/state" \
+  FM_CONFIG_OVERRIDE="$home/config" \
+  FM_WEDGE_ALARM_LOG="$home/alarm.log" \
+  FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+  FM_HOME_SUMMARY_INTERVAL=999999 \
+    "$WATCH" > "$out" 2>/dev/null &
+  pid=$!
+  if [ -n "$initial" ]; then
+    while [ "$i" -lt "$WATCH_TICKS" ]; do
+      [ -f "$home/state/.last-disk-check" ] \
+        && [ "$(recorded_tier "$home")" = ok ] \
+        && break
+      is_live_non_zombie "$pid" || break
+      sleep 0.2
+      i=$((i + 1))
+    done
+    [ -f "$home/state/.last-disk-check" ] \
+      && [ "$(recorded_tier "$home")" = ok ] \
+      || fail "the running watcher never established the ample-space baseline"
+    printf '%s\n' "$avail" > "$fixture"
+    rm -f "$home/state/.last-disk-check"
+    i=0
+  fi
+  while [ "$i" -lt "$WATCH_TICKS" ]; do
+    is_live_non_zombie "$pid" || break
+    sleep 0.2
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$pid" && reap "$pid"
+  wait "$pid" 2>/dev/null || true
+  grep '^check: disk space' "$out" 2>/dev/null || true
+}
+
+# A watcher that reported nothing must be shown to have MEASURED, or "silent" is
+# indistinguishable from "never got there". The tier it recorded is that proof.
+recorded_tier() {  # <home>
+  cat "$1/state/.disk-space-tier" 2>/dev/null || true
+}
+
+# Durable queue rows this home holds for the disk guard. The reason a watcher
+# prints is one delivery; this is what firstmate would actually find waiting,
+# and it is what distinguishes one report per crossing from one per poll.
+queued_disk_wakes() {  # <home>
+  grep -c 'check: disk space' "$1/state/.wake-queue" 2>/dev/null || true
+}
+
+# The volume falls into the warning band under a running session. The whole task
+# this covers exists because nothing looked here: the measured incident went
+# from 49 GB to 1.2 GB mid-flight with the fleet working and said nothing.
+test_watcher_reports_a_fall_into_the_warning_band() {
+  local home out
+  home=$(new_home watch-warn)
+  out=$(run_watcher "$home" "$DF_TWELVE_GB" "" "$DF_PLENTY")
+  case "$out" in
+    *"disk space low"*"12.0 GB free on $home"*) : ;;
+    *) fail "a fall into the warning band was not reported: ${out:-<silence>}" ;;
+  esac
+  case "$out" in
+    *"warning threshold 15 GB"*"refusal floor 5 GB"*) : ;;
+    *) fail "the warning names neither the threshold it crossed nor the floor ahead: $out" ;;
+  esac
+  [ "$(recorded_tier "$home")" = warn ] \
+    || fail "the watcher did not record the warning tier: [$(recorded_tier "$home")]"
+  [ ! -s "$home/alarm.log" ] \
+    || fail "the warning tier fired the out-of-band alarm, which is reserved for the floor: $(cat "$home/alarm.log")"
+  pass "a mid-session fall into the warning band is reported, and only warns"
+}
+
+# The other half, and the one that makes the case above mean anything: the same
+# fixture, the same running watcher, with room to spare.
+test_watcher_is_silent_with_space_to_spare() {
+  local home out
+  home=$(new_home watch-quiet)
+  out=$(run_watcher "$home" "$DF_PLENTY")
+  [ -z "$out" ] || fail "the watcher reported a disk problem with 95 GB free: $out"
+  [ "$(recorded_tier "$home")" = ok ] \
+    || fail "the watcher never measured, so its silence proves nothing: [$(recorded_tier "$home")]"
+  [ ! -s "$home/alarm.log" ] \
+    || fail "an out-of-band alarm fired with 95 GB free: $(cat "$home/alarm.log")"
+  pass "a watcher with space to spare measures and stays silent"
+}
+
+# Below the refusal floor, where dispatches are already being refused and the
+# captain has minutes rather than hours.
+test_watcher_reports_a_fall_below_the_floor() {
+  local home out
+  home=$(new_home watch-floor)
+  out=$(run_watcher "$home" "$DF_LOW" "" "$DF_PLENTY")
+  case "$out" in
+    *"disk space critical"*"1.9 GB free on $home"*) : ;;
+    *) fail "a fall below the refusal floor was not reported: ${out:-<silence>}" ;;
+  esac
+  case "$out" in
+    *"new work will not be dispatched"*) : ;;
+    *) fail "the report does not say what the floor actually changes: $out" ;;
+  esac
+  [ "$(recorded_tier "$home")" = floor ] \
+    || fail "the watcher did not record the floor tier: [$(recorded_tier "$home")]"
+  pass "a mid-session fall below the refusal floor is reported as critical"
+}
+
+# The floor crossing is the one case where the wake queue itself may be
+# unwritable, because it lives on the volume that is filling. The out-of-band
+# channel is the only alert that needs no disk, so it must actually be reached.
+test_floor_crossing_fires_the_out_of_band_alarm() {
+  local home
+  home=$(new_home watch-alarm)
+  run_watcher "$home" "$DF_LOW" "" "$DF_PLENTY" >/dev/null
+  [ -s "$home/alarm.log" ] \
+    || fail "the floor crossing fired no out-of-band alarm at all"
+  case "$(cat "$home/alarm.log")" in
+    *"1.9 GB free on $home"*"new work will not be dispatched"*) : ;;
+    *) fail "the alarm carried no usable summary: $(cat "$home/alarm.log")" ;;
+  esac
+  case "$(cat "$home/alarm.log")" in
+    *$'\tbefore-write') : ;;
+    *) fail "the floor crossing touched the filling volume before alerting: $(cat "$home/alarm.log")" ;;
+  esac
+  pass "a floor crossing reaches the out-of-band alarm before touching the filling volume"
+}
+
+# Edge-triggered, not level-triggered. A volume that sits low for a whole day is
+# the normal case, and a guard that reports it once per poll is one the captain
+# learns to ignore - which is the same failure as saying nothing.
+test_watcher_reports_the_crossing_not_every_poll() {
+  local home first second
+  home=$(new_home watch-edge)
+  run_watcher "$home" "$DF_TWELVE_GB" >/dev/null
+  first=$(queued_disk_wakes "$home")
+  [ "$first" = 1 ] || fail "the first crossing did not queue exactly one report: [$first]"
+  # Same volume, same band, a second running session: the tick must measure and
+  # say nothing.
+  rm -f "$home/state/.last-disk-check"
+  second=$(run_watcher "$home" "$DF_TWELVE_GB")
+  [ -z "$second" ] \
+    || fail "a volume that merely stayed low was reported again: $second"
+  [ "$(queued_disk_wakes "$home")" = 1 ] \
+    || fail "staying low queued a second report: $(queued_disk_wakes "$home") rows"
+  pass "the watch reports a crossing, never one report per poll"
+}
+
+# Recovery rearms rather than announcing itself: a dispatch re-reads the disk for
+# itself, so there is nothing for firstmate to do about a volume that got better
+# - but the next fall has to be reported again, which is what rearming buys.
+test_recovery_is_silent_and_rearms() {
+  local home out
+  home=$(new_home watch-recover)
+  run_watcher "$home" "$DF_LOW" >/dev/null
+  [ "$(recorded_tier "$home")" = floor ] || fail "the fixture never reached the floor tier"
+  rm -f "$home/state/.last-disk-check"
+  out=$(run_watcher "$home" "$DF_PLENTY")
+  [ -z "$out" ] || fail "recovering to 95 GB free was announced: $out"
+  [ "$(recorded_tier "$home")" = ok ] \
+    || fail "recovery did not rearm the watch: [$(recorded_tier "$home")]"
+  rm -f "$home/state/.last-disk-check"
+  out=$(run_watcher "$home" "$DF_LOW")
+  case "$out" in
+    *"disk space critical"*) : ;;
+    *) fail "a second fall after a recovery went unreported: ${out:-<silence>}" ;;
+  esac
+  pass "recovery is silent but rearms, so the next fall is reported again"
+}
+
+# The captain's one off switch stays one off switch: a retired guard is retired
+# in the session too, not merely at the two moments it used to be consulted.
+test_zero_threshold_retires_the_in_session_watch() {
+  local home out
+  home=$(new_home watch-retired)
+  printf '0\n' > "$home/config/disk-space-min-gb"
+  out=$(run_watcher "$home" "$DF_LOW")
+  [ -z "$out" ] || fail "a retired guard still reported in session: $out"
+  [ -z "$(recorded_tier "$home")" ] \
+    || fail "a retired guard left a tier behind: [$(recorded_tier "$home")]"
+  pass "a retired guard is retired in session too"
+}
+
+# A warning threshold the captain moved has to move the verdict, or the knob is
+# decoration. 12 GB free is below the default 15 and above a configured 10.
+test_configured_warning_threshold_moves_the_verdict() {
+  local home out
+  home=$(new_home watch-warn-config)
+  printf '10\n' > "$home/config/disk-space-warn-gb"
+  out=$(run_watcher "$home" "$DF_TWELVE_GB")
+  [ -z "$out" ] || fail "12 GB free was still warned about under a 10 GB warning threshold: $out"
+  [ "$(recorded_tier "$home")" = ok ] \
+    || fail "the configured warning threshold was not measured against: [$(recorded_tier "$home")]"
+  pass "a configured warning threshold moves the verdict"
+}
+
+# A warning at or below the refusal floor could only ever fire together with the
+# refusal it exists to precede, so it is rejected back to the default rather than
+# quietly adopted - the same treatment a malformed floor gets.
+test_warning_threshold_below_the_floor_is_rejected() {
+  local home out
+  home=$(new_home watch-warn-degenerate)
+  printf '3\n' > "$home/config/disk-space-warn-gb"
+  out=$(run_watcher "$home" "$DF_TWELVE_GB")
+  case "$out" in
+    *"warning threshold 15 GB"*) : ;;
+    *) fail "a warning threshold below the floor was adopted instead of rejected: ${out:-<silence>}" ;;
+  esac
+  pass "a warning threshold at or below the refusal floor falls back to the default"
+}
+
+# Retiring the warning alone leaves the floor guarding. The two numbers are
+# separate knobs and a captain who silences the advisory one has not asked to
+# lose the emergency one.
+test_zero_warning_threshold_retires_only_the_warning() {
+  local home out
+  home=$(new_home watch-warn-off)
+  printf '0\n' > "$home/config/disk-space-warn-gb"
+  out=$(run_watcher "$home" "$DF_TWELVE_GB")
+  [ -z "$out" ] || fail "a retired warning tier still warned: $out"
+  [ "$(recorded_tier "$home")" = ok ] || fail "the tick did not run: [$(recorded_tier "$home")]"
+  rm -f "$home/state/.last-disk-check"
+  out=$(run_watcher "$home" "$DF_LOW")
+  case "$out" in
+    *"disk space critical"*) : ;;
+    *) fail "retiring the warning also silenced the floor: ${out:-<silence>}" ;;
+  esac
+  pass "retiring the warning tier leaves the refusal floor guarding"
+}
+
+# An unmeasurable filesystem steps aside in session exactly as it does at the
+# other two surfaces: this guard protects work and never becomes its own reason
+# for a captain being unable to work.
+test_unmeasurable_filesystem_is_silent_in_session() {
+  local home out
+  home=$(new_home watch-unmeasurable)
+  out=$(run_watcher "$home" unmeasurable)
+  [ -z "$out" ] || fail "an unmeasurable filesystem was reported as a disk problem: $out"
+  [ -z "$(recorded_tier "$home")" ] \
+    || fail "an unmeasurable filesystem produced a tier: [$(recorded_tier "$home")]"
+  [ -f "$home/state/.last-disk-check" ] \
+    || fail "the watch never attempted the measurement it is supposed to have skipped"
+  pass "an unmeasurable filesystem stays silent in session and does not spin"
+}
+
 test_bootstrap_silent_above_threshold
 test_bootstrap_reports_below_threshold
 test_configured_threshold_moves_the_verdict
@@ -625,3 +919,14 @@ test_spawn_refusal_names_the_source_that_can_retire_it
 test_spawn_refusal_names_a_malformed_threshold
 test_spawn_proceeds_above_threshold
 test_spawn_override_dispatches_anyway
+test_watcher_reports_a_fall_into_the_warning_band
+test_watcher_is_silent_with_space_to_spare
+test_watcher_reports_a_fall_below_the_floor
+test_floor_crossing_fires_the_out_of_band_alarm
+test_watcher_reports_the_crossing_not_every_poll
+test_recovery_is_silent_and_rearms
+test_zero_threshold_retires_the_in_session_watch
+test_configured_warning_threshold_moves_the_verdict
+test_warning_threshold_below_the_floor_is_rejected
+test_zero_warning_threshold_retires_only_the_warning
+test_unmeasurable_filesystem_is_silent_in_session
