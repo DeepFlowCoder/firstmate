@@ -8,13 +8,12 @@
 # exhaustion shows up here as MemAvailable approaching zero, swap draining, and
 # Linux PSI memory stall time climbing.
 #
-# Every sample goes to stdout as one self-describing line, deliberately, rather
-# than only to a file: a job that is shut down mid-step never runs its artifact
-# upload, but the log lines it already streamed survive. A file copy is written
-# too when a path is given, for the runs that do finish.
+# Every sample goes to stdout as one self-describing line, deliberately, and
+# nowhere else: a job that is shut down mid-step never runs its artifact upload,
+# but the log lines it already streamed survive. Redirect if a file is wanted.
 #
 # Usage:
-#   fm-mem-trace.sh [--interval <seconds>] [--out <path>]
+#   fm-mem-trace.sh [--interval <seconds>]
 #   fm-mem-trace.sh --help
 #
 # VmHWM is reported as well as VmRSS, so a peak that falls between two samples
@@ -22,18 +21,12 @@
 set -u
 
 INTERVAL=10
-OUT=
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --interval)
       [ "$#" -ge 2 ] || { printf 'fm-mem-trace.sh: --interval requires seconds.\n' >&2; exit 2; }
       INTERVAL=$2
-      shift 2
-      ;;
-    --out)
-      [ "$#" -ge 2 ] || { printf 'fm-mem-trace.sh: --out requires a path.\n' >&2; exit 2; }
-      OUT=$2
       shift 2
       ;;
     --help|-h)
@@ -59,7 +52,6 @@ fi
 
 fm_mem_emit() {  # <line>
   printf '%s\n' "$1"
-  [ -z "$OUT" ] || printf '%s\n' "$1" >> "$OUT"
 }
 
 # One kibibyte field out of /proc/meminfo, in mebibytes.
@@ -91,8 +83,14 @@ fm_mem_disk_free() {
 # Resident size of the live ShellCheck processes: count, largest current VmRSS,
 # and largest VmHWM, all in mebibytes. VmHWM is each process's own high-water
 # mark, so a peak reached between two samples is still reported by the next one.
+#
+# Without pgrep there is no count to report, only an unknown one, so all four
+# fields read na. A zero here would be indistinguishable from a quiet machine
+# while ShellCheck held gigabytes, which is the reading this trace exists to
+# make impossible; bin/fm-lint.sh reports the same absence the same way.
 fm_mem_matched() {
   local pids pid rss hwm count=0 max_rss=0 max_hwm=0 sum_rss=0
+  command -v pgrep >/dev/null 2>&1 || { printf 'na na na na'; return 0; }
   pids=$(pgrep -x shellcheck 2>/dev/null || true)
   for pid in $pids; do
     [ -r "/proc/$pid/status" ] || continue
@@ -111,7 +109,6 @@ fm_mem_matched() {
 MEM_TOTAL=$(fm_mem_field MemTotal)
 SWAP_TOTAL=$(fm_mem_field SwapTotal)
 CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 'na')
-[ -z "$OUT" ] || : > "$OUT"
 fm_mem_emit "fm-mem-trace: format=v1 interval=${INTERVAL}s match=shellcheck mem_total_mib=${MEM_TOTAL} swap_total_mib=${SWAP_TOTAL} cpus=${CPUS}"
 fm_mem_emit "fm-mem-trace: columns t_s mem_avail_mib mem_free_mib cached_mib swap_free_mib psi_mem_some/full_avg10 psi_cpu_some/full_avg10 procs proc_max_rss_mib proc_max_hwm_mib proc_sum_rss_mib load1 disk_free_mib"
 

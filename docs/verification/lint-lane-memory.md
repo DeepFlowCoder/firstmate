@@ -140,12 +140,14 @@ That is a property of the lane's work, not of which runner it landed on, which i
 The trace is a tracked script and needs no special build:
 
 ```sh
-bin/fm-mem-trace.sh --interval 10 --out mem-trace.log &
+bin/fm-mem-trace.sh --interval 10 &
 bin/fm-lint.sh
 kill %1
 ```
 
 On a non-Linux host it prints `fm-mem-trace: unsupported platform` and takes no trace; the numbers above are Linux-only by nature.
+
+The trace writes to stdout only; redirect it if a file is wanted. It reports `na` for the four per-process fields where `pgrep` is absent, rather than a count of zero, for the same reason the header below records its matcher.
 
 The trace matches the process name `shellcheck` exactly, and that is not configurable.
 It briefly was: the instrument shipped with a `--match` option documented as a "pattern" but implemented as an exact `pgrep -x` match, so any regex passed to it would have matched nothing and reported `procs=0 proc_max_rss_mib=0` with no error, while ShellCheck held gigabytes.

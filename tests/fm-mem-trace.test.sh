@@ -11,12 +11,21 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
 
 TRACE="$ROOT/bin/fm-mem-trace.sh"
 
+# Every call below must terminate on its own. The trace's non-refusing path is
+# an infinite sampling loop, so a regressed refusal would hang a command
+# substitution instead of failing it, and the lane this file runs in does not
+# bound a single script. rc 124 is fm_run_timed's "the bound was hit", which
+# these assertions report as the failure it is.
+BOUND=20
+
 test_usage_is_readable() {
   local out
-  out=$("$TRACE" --help) || fail "--help exited non-zero"
+  out=$(fm_run_timed "$BOUND" "$TRACE" --help) || fail "--help exited non-zero"
   case "$out" in
     *"fm-mem-trace.sh"*) : ;;
     *) fail "--help did not print the usage block" ;;
@@ -30,18 +39,16 @@ test_usage_is_readable() {
 
 test_rejects_bad_arguments() {
   local rc out
-  for bad in "--interval" "--out"; do
-    rc=0
-    out=$("$TRACE" "$bad" 2>&1) || rc=$?
-    [ "$rc" -eq 2 ] || fail "$bad without a value exited $rc, expected 2"
-    case "$out" in
-      *"requires"*) : ;;
-      *) fail "$bad without a value did not say what it requires" ;;
-    esac
-  done
+  rc=0
+  out=$(fm_run_timed "$BOUND" "$TRACE" --interval 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "--interval without a value exited $rc, expected 2"
+  case "$out" in
+    *"requires"*) : ;;
+    *) fail "--interval without a value did not say what it requires" ;;
+  esac
 
   rc=0
-  out=$("$TRACE" --interval zero 2>&1) || rc=$?
+  out=$(fm_run_timed "$BOUND" "$TRACE" --interval zero 2>&1) || rc=$?
   [ "$rc" -eq 2 ] || fail "a non-numeric interval exited $rc, expected 2"
   case "$out" in
     *"whole number of seconds"*) : ;;
@@ -49,27 +56,30 @@ test_rejects_bad_arguments() {
   esac
 
   rc=0
-  out=$("$TRACE" --interval 0 2>&1) || rc=$?
+  out=$(fm_run_timed "$BOUND" "$TRACE" --interval 0 2>&1) || rc=$?
   [ "$rc" -eq 2 ] || fail "a zero interval exited $rc, expected 2"
 
   rc=0
-  out=$("$TRACE" --nonsense 2>&1) || rc=$?
+  out=$(fm_run_timed "$BOUND" "$TRACE" --nonsense 2>&1) || rc=$?
   [ "$rc" -eq 2 ] || fail "an unknown argument exited $rc, expected 2"
   case "$out" in
     *"unknown argument"*) : ;;
     *) fail "an unknown argument was not named back" ;;
   esac
 
-  # The matched process name is not configurable: a matcher that silently finds
-  # nothing reports procs=0 while ShellCheck holds gigabytes, which is the one
-  # reading this instrument exists to make impossible.
-  rc=0
-  out=$("$TRACE" --match shellcheck 2>&1) || rc=$?
-  [ "$rc" -eq 2 ] || fail "--match exited $rc, expected 2"
-  case "$out" in
-    *"unknown argument"*"--match"*) : ;;
-    *) fail "--match was not refused as an unknown argument: $out" ;;
-  esac
+  # Neither the matched process name nor the output path is configurable: the
+  # trace matches shellcheck exactly and writes only to stdout, so a matcher
+  # that silently finds nothing and a file copy that a shutdown never produces
+  # are both gone rather than documented.
+  for gone in "--match" "--out"; do
+    rc=0
+    out=$(fm_run_timed "$BOUND" "$TRACE" "$gone" value 2>&1) || rc=$?
+    [ "$rc" -eq 2 ] || fail "$gone exited $rc, expected 2"
+    case "$out" in
+      *"unknown argument"*"$gone"*) : ;;
+      *) fail "$gone was not refused as an unknown argument: $out" ;;
+    esac
+  done
 
   pass "fm-mem-trace.sh refuses bad arguments before it samples anything"
 }
