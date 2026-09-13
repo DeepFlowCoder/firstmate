@@ -50,10 +50,6 @@ if [ ! -r /proc/meminfo ]; then
   exit 0
 fi
 
-fm_mem_emit() {  # <line>
-  printf '%s\n' "$1"
-}
-
 # One kibibyte field out of /proc/meminfo, in mebibytes.
 fm_mem_field() {  # <key>
   awk -v key="$1:" '$1 == key {printf "%.0f", $2 / 1024; found = 1; exit}
@@ -109,8 +105,8 @@ fm_mem_matched() {
 MEM_TOTAL=$(fm_mem_field MemTotal)
 SWAP_TOTAL=$(fm_mem_field SwapTotal)
 CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 'na')
-fm_mem_emit "fm-mem-trace: format=v1 interval=${INTERVAL}s match=shellcheck mem_total_mib=${MEM_TOTAL} swap_total_mib=${SWAP_TOTAL} cpus=${CPUS}"
-fm_mem_emit "fm-mem-trace: columns t_s mem_avail_mib mem_free_mib cached_mib swap_free_mib psi_mem_some/full_avg10 psi_cpu_some/full_avg10 procs proc_max_rss_mib proc_max_hwm_mib proc_sum_rss_mib load1 disk_free_mib"
+printf '%s\n' "fm-mem-trace: format=v1 interval=${INTERVAL}s match=shellcheck mem_total_mib=${MEM_TOTAL} swap_total_mib=${SWAP_TOTAL} cpus=${CPUS}"
+printf '%s\n' "fm-mem-trace: columns t_s mem_avail_mib mem_free_mib cached_mib swap_free_mib psi_mem_some/full_avg10 psi_cpu_some/full_avg10 procs proc_max_rss_mib proc_max_hwm_mib proc_sum_rss_mib load1 disk_free_mib"
 
 START=$(date +%s)
 LOW_AVAIL=$MEM_TOTAL
@@ -132,6 +128,6 @@ EOF
     ''|*[!0-9]*) : ;;
     *) [ "$avail" -ge "$LOW_AVAIL" ] || LOW_AVAIL=$avail ;;
   esac
-  fm_mem_emit "fm-mem ${elapsed} ${avail} ${free} ${cached} ${swap_free} ${psi_mem} ${psi_cpu} ${procs} ${proc_max_rss} ${proc_max_hwm} ${proc_sum_rss} ${load1} ${disk_free} min_avail_mib=${LOW_AVAIL}"
+  printf '%s\n' "fm-mem ${elapsed} ${avail} ${free} ${cached} ${swap_free} ${psi_mem} ${psi_cpu} ${procs} ${proc_max_rss} ${proc_max_hwm} ${proc_sum_rss} ${load1} ${disk_free} min_avail_mib=${LOW_AVAIL}"
   sleep "$INTERVAL"
 done

@@ -223,7 +223,7 @@ What is given up is cross-module dataflow *within these seven roots* - the modul
 
 ### What was rejected, and why
 
-- **More runners.** Ruled out by measurement above: a single root above the machine's RAM cannot be partitioned into fitting.
+- **More runners.** Ruled out by measurement above: a single root above the machine's RAM cannot be partitioned into fitting. Acceptance criterion 3 - that a shutdown of *one* runner leave only *that* shard retriable rather than the whole lane - was attached to this split, and fell with it: `bin/fm-teardown.sh` alone asks for 7407 MiB on a machine with 7942 MiB, so splitting would only have changed which runner died. The need then dissolved in practice, because a full rerun now costs 464 s against the 1185-1270 s a green lane used to take, so repeating the whole lane stopped being expensive. It is set aside as unnecessary, not as impossible: if the lane ever grows again until a full rerun hurts, per-shard retriability comes back to the table.
 - **`--extended-analysis=false` in CI.** Would work (725 MiB for the worst root) but pays for two bad roots with the whole fleet's dataflow coverage.
 - **Dropping `--external-sources` globally.** Same objection, repo-wide, plus SC1091 noise on every root.
 - **A larger runner.** Costs money and leaves the 238 s single-root wall in place; it hides the symptom.
