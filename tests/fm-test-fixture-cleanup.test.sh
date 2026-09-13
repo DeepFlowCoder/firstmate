@@ -537,9 +537,9 @@ if [ "$mode" = swallows ]; then
   # "swallows" case that did not actually swallow would prove nothing about reap.
   kill -TERM "$child" 2>/dev/null || true
   i=0
-  while [ "$i" -lt 100 ] && is_live_non_zombie "$child"; do sleep 0.05; i=$((i + 1)); done
+  while [ "$i" -lt 20 ] && is_live_non_zombie "$child"; do sleep 0.05; i=$((i + 1)); done
   if is_live_non_zombie "$child"; then printf 'swallowed=yes\n'; else printf 'swallowed=no\n'; fi
-  reap "$child" 5
+  reap "$child"
 else
   # No signal of our own and no wait for one: reap is handed a LIVE worker, so
   # its grace window is what has to let that worker's own SIGTERM handling run.

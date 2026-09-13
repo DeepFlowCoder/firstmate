@@ -236,7 +236,7 @@ fm_test_reap_orphans
 # child stays visible to `kill -0` as a zombie until its parent reaps it, so a
 # plain `kill -0` poll can never see a background job die.
 #
-# reap <pid> [grace-ticks] stops a test's background process and returns.
+# reap <pid> stops a test's background process and returns.
 # Bounded on purpose: `kill` asks, it does not compel. A worker whose signal
 # trap bash fails to parse keeps running - bash prints the parse error and
 # carries on rather than dying - so the SIGTERM is swallowed and the plain
@@ -256,7 +256,7 @@ fm_test_reap_orphans
 # A worker that is already gone costs zero ticks, because the liveness check
 # runs before any sleep. The tick therefore governs only how often a still-live
 # worker is polled while the bound runs down, so it is the 0.1s the other waits
-# in these suites use, and 50 of them make the default bound five seconds.
+# in these suites use, and 50 of them make the bound five seconds.
 
 FM_TEST_REAP_TICK_SECONDS=0.1
 FM_TEST_REAP_GRACE_TICKS=50
@@ -272,23 +272,22 @@ is_live_non_zombie() {  # <pid>
   return 0
 }
 
-reap() {  # <pid> [grace-ticks]
-  local pid=$1 limit=${2:-$FM_TEST_REAP_GRACE_TICKS} i=0
+reap() {  # <pid>
+  local pid=$1 i=0
   FM_TEST_REAP_ESCALATED=0
   kill "$pid" 2>/dev/null || true
-  while [ "$i" -lt "$limit" ]; do
-    if ! is_live_non_zombie "$pid"; then
-      wait "$pid" 2>/dev/null || true
-      return 0
+  while is_live_non_zombie "$pid"; do
+    if [ "$i" -ge "$FM_TEST_REAP_GRACE_TICKS" ]; then
+      # shellcheck disable=SC2034 # Read by the sourcing test file, not by this library.
+      FM_TEST_REAP_ESCALATED=1
+      printf 'reap: pid %s ignored SIGTERM and was SIGKILLed, so its EXIT cleanup did not run\n' \
+        "$pid" >&2
+      kill -KILL "$pid" 2>/dev/null || true
+      break
     fi
     sleep "$FM_TEST_REAP_TICK_SECONDS"
     i=$((i + 1))
   done
-  # shellcheck disable=SC2034 # Read by the sourcing test file, not by this library.
-  FM_TEST_REAP_ESCALATED=1
-  printf 'reap: pid %s ignored SIGTERM and was SIGKILLed, so its EXIT cleanup did not run\n' \
-    "$pid" >&2
-  kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   return 0
 }
