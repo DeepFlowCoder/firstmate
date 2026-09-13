@@ -28,13 +28,15 @@ set -u
 DIRECTIVE='# shellcheck source='/dev/null
 
 # Repo-anchored directory variables used by bounded imports, as the location
-# they denote: the containing script's own directory, or the repo root. A
-# target led by anything else cannot be resolved by reading the file.
+# they denote. SCRIPT_DIR is the per-script convention, so it follows the
+# importing file; the library-scoped names are each set once, by one module
+# under bin/, to that module's own directory, so they denote bin/ wherever
+# they are read - including from a file that does not live there. A target
+# led by anything else cannot be resolved by reading the file.
 fm_resolve_dir_var() {  # <var> <containing-file>
   case "$1" in
-    SCRIPT_DIR|FM_BACKEND_LIB_DIR|_FM_TASK_INBOX_LIB_DIR|FM_LEASE_LIB_DIR)
-      printf '%s' "$(dirname "$2")"
-      ;;
+    SCRIPT_DIR) printf '%s' "$(dirname "$2")" ;;
+    FM_BACKEND_LIB_DIR|FM_LEASE_LIB_DIR|_FM_TASK_INBOX_LIB_DIR) printf 'bin' ;;
     ROOT|HERDR_TEST_SAFETY_DIR) printf '.' ;;
     *) return 1 ;;
   esac
