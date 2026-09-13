@@ -106,7 +106,7 @@ MEM_TOTAL=$(fm_mem_field MemTotal)
 SWAP_TOTAL=$(fm_mem_field SwapTotal)
 CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 'na')
 printf '%s\n' "fm-mem-trace: format=v1 interval=${INTERVAL}s match=shellcheck mem_total_mib=${MEM_TOTAL} swap_total_mib=${SWAP_TOTAL} cpus=${CPUS}"
-printf '%s\n' "fm-mem-trace: columns t_s mem_avail_mib mem_free_mib cached_mib swap_free_mib psi_mem_some/full_avg10 psi_cpu_some/full_avg10 procs proc_max_rss_mib proc_max_hwm_mib proc_sum_rss_mib load1 disk_free_mib"
+printf '%s\n' "fm-mem-trace: columns t_s mem_avail_mib mem_free_mib cached_mib swap_free_mib psi_mem_some/full_avg10 psi_cpu_some/full_avg10 procs proc_max_rss_mib proc_max_hwm_mib proc_sum_rss_mib load1 disk_free_mib min_avail_mib"
 
 START=$(date +%s)
 LOW_AVAIL=$MEM_TOTAL

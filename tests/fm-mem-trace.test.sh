@@ -16,12 +16,17 @@ set -u
 
 TRACE="$ROOT/bin/fm-mem-trace.sh"
 
-# Every call below must terminate on its own. The trace's non-refusing path is
-# an infinite sampling loop, so a regressed refusal would hang a command
+# The refusing calls below must terminate on their own. The trace's non-refusing
+# path is an infinite sampling loop, so a regressed refusal would hang a command
 # substitution instead of failing it, and the lane this file runs in does not
-# bound a single script. rc 124 is fm_run_timed's "the bound was hit", which
-# these assertions report as the failure it is.
+# bound a single script. For those calls rc 124 is fm_run_timed's "the bound was
+# hit", which the assertions report as the failure it is.
 BOUND=20
+
+# The sampling path never returns by design, so there the bound is the stop
+# mechanism and rc 124 is the expected outcome: long enough for --interval 1 to
+# emit several samples, short enough not to stretch the lane.
+SAMPLE_BOUND=4
 
 test_usage_is_readable() {
   local out
@@ -87,9 +92,11 @@ test_unsupported_platform_says_so() {
   # rather than exit quietly, so a log with no samples is never mistaken for a
   # machine that stayed calm. On Linux the same guarantee is the complement:
   # /proc/meminfo is readable and the run reaches its header instead.
-  local out
+  local out rc declared sample samples declared_n sample_n last
   if [ -r /proc/meminfo ]; then
-    out=$("$TRACE" --interval 1 2>&1 & pid=$!; sleep 2; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; true)
+    rc=0
+    out=$(fm_run_timed "$SAMPLE_BOUND" "$TRACE" --interval 1 2>&1) || rc=$?
+    [ "$rc" -eq 124 ] || fail "the sampling loop exited $rc rather than running until the bound"
     case "$out" in
       *"fm-mem-trace: format=v1"*) : ;;
       *) fail "a /proc host did not print the trace header: $out" ;;
@@ -98,7 +105,31 @@ test_unsupported_platform_says_so() {
       *"mem_total_mib="*) : ;;
       *) fail "the header did not report the machine's total memory" ;;
     esac
-    pass "fm-mem-trace.sh reports the machine and starts sampling where /proc exists"
+
+    # The header is printed before the loop is entered, so it says nothing about
+    # whether sampling happened. These assertions read the format=v1 stdout
+    # contract the verification page recovers runs from: at --interval 1 the
+    # bound must span several samples, and each sample must carry exactly the
+    # values the header declares. A helper that returns a short field list
+    # leaves a sample one value light, which passes any presence check.
+    samples=$(printf '%s\n' "$out" | grep -c '^fm-mem ')
+    [ "$samples" -ge 2 ] \
+      || fail "the loop emitted $samples sample lines in ${SAMPLE_BOUND}s at --interval 1: $out"
+
+    declared=$(printf '%s\n' "$out" | sed -n 's/^fm-mem-trace: columns //p' | head -1)
+    [ -n "$declared" ] || fail "the header did not declare its columns: $out"
+    sample=$(printf '%s\n' "$out" | grep '^fm-mem ' | head -1)
+    declared_n=$(printf '%s\n' "$declared" | wc -w | tr -d ' ')
+    sample_n=$(printf '%s\n' "$sample" | wc -w | tr -d ' ')
+    [ "$sample_n" -eq "$((declared_n + 1))" ] \
+      || fail "a sample carries $((sample_n - 1)) values against $declared_n declared columns: $sample"
+
+    last=${sample##* }
+    case "$last" in
+      min_avail_mib=*) : ;;
+      *) fail "the sample's trailing field is not min_avail_mib: $sample" ;;
+    esac
+    pass "fm-mem-trace.sh reports the machine and samples it where /proc exists"
   else
     out=$("$TRACE" --interval 1 2>&1) || fail "the unsupported path exited non-zero"
     case "$out" in
