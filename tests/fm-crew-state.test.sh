@@ -839,7 +839,7 @@ test_terminal_failed() {
   # inference, that the work failed with it. Both halves are asserted here so a
   # future edit cannot soften the verdict while keeping the reassurance, or drop
   # the reassurance while keeping the verdict.
-  assert_contains "$out" "a failed run is not lost work" \
+  assert_contains "$out" "the work is not lost" \
     "the failed line says the run failed without claiming the work is gone"
   pass "terminal failed run is authoritative and does not read as lost work"
 }

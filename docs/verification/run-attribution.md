@@ -2,10 +2,10 @@
 
 Audience: maintainer verification.
 
-This record supports two active guarantees that rest on the same fact - that the pipeline works in its own managed worktree and never in the crew's:
+This record supports two active guarantees about the worktree the pipeline works in, each resting on a different fact about it:
 
-- On the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work.
-- A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work.
+- On the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work. This one rests on the pipeline working in its own managed worktree and never in the crew's.
+- A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
 
 [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, and the submitted-head binding - and, for the second guarantee, why the `failed` phrase reads as it does.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns how an attributed run becomes a reported state.
@@ -147,20 +147,17 @@ The managed copy is gone, which is what the deletion in the report referred to:
 sqlite3 -readonly ~/.no-mistakes/state.sqlite \
   "select id, status, substr(head_sha,1,10), quote(worktree_dir) from runs
     where id in ('01M238R9XKMRKRKYKJRS7X0BWH','01M242NA3GYJB5RB0BQ8ZWMWTB');"
-ls -A ~/.no-mistakes/worktrees/*/
+find ~/.no-mistakes/worktrees -maxdepth 2 -type d \
+  \( -name 01M238R9XKMRKRKYKJRS7X0BWH -o -name 01M242NA3GYJB5RB0BQ8ZWMWTB \)
 ```
 
 ```
 01M238R9XKMRKRKYKJRS7X0BWH|failed|7a652568b2|NULL
 01M242NA3GYJB5RB0BQ8ZWMWTB|completed|2950442b90|NULL
-
-/Users/ramongarcia/.no-mistakes/worktrees/14f712cb403a/:
-
-/Users/ramongarcia/.no-mistakes/worktrees/6b4d6d3ca42a/:
 ```
 
-Each per-repo directory lists no entries at all, so neither run's copy is on disk, and a run's `worktree_dir` is back to `NULL` whichever way it finished.
-What survives that deletion is every commit the run had made, because those commits were never only in the discarded copy.
+The `find` names the two runs rather than listing the whole tree, so it answers for them alone whether or not other runs hold a copy there while it runs: it printed nothing, so neither run's copy is on disk, and a run's `worktree_dir` is back to `NULL` whichever way it finished.
+What survives that deletion is every commit the run had made, because the managed copy was a checkout of the same parent repository and shared its object store and its refs - removing the checkout removed no object and no ref.
 The two `git` commands below answer only from a checkout of the repository, so run them there rather than beside the store:
 
 ```sh
@@ -181,5 +178,21 @@ The cost the failure did carry is repetition, which is a different claim and a r
 The failed run ran from `created_at` 1788963727 to `updated_at` 1788990324, seven hours and twenty-three minutes, and its log shows the review reaching `round 4` and a following user-fix round.
 Its successor started nine minutes later and its `review.log` starts again at `round 1`.
 
-To refresh this section, take any run the store lists as `failed`, confirm its `worktree_dir` is back to `NULL` and no copy of it remains under `~/.no-mistakes/worktrees/`, then confirm from a checkout that `git cat-file -t <head_sha>` still answers `commit`.
+To refresh this section, take any run the store lists as `failed`, confirm its `worktree_dir` is back to `NULL` and that the `find` above, with that run's id, still prints nothing, then confirm from a checkout that `git cat-file -t <head_sha>` still answers `commit`.
 The guarantee fails the day that last command stops answering, which is the day a discarded copy would start costing commits.
+
+The check before reporting work lost has a second half - that no later run already resumed the work - and a later run is found by date, without its id being known in advance:
+
+```sh
+ls -t ~/.no-mistakes/logs/ | grep -B3 01M238R9XKMRKRKYKJRS7X0BWH
+```
+
+```
+01M24S69DZA26A7Q5D5XD099CR
+01M24MGWFM1W5M2RD295ZGFBQK
+01M242NA3GYJB5RB0BQ8ZWMWTB
+01M238R9XKMRKRKYKJRS7X0BWH
+```
+
+The listing is newest first, so every run that started after the failed one sits above it, and the successor that resumed this branch, `01M242NA3GYJB5RB0BQ8ZWMWTB`, is the row directly above it.
+Its own `review.log` then says what it resumed - here, `round 1` on the same branch.

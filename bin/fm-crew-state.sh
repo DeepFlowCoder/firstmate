@@ -967,7 +967,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         # list alone does not carry.
         if [ "$BRANCH_NEWEST_STATUS" = failed ]; then
           emit failed run-step \
-            "$(fm_nm_verdict_detail failed)${SEP}a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL)"
+            "a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($RUN_DETAIL)"
         fi
         # Any other newest status - `pending`, a terminal word belonging to a run
         # this read cannot re-attribute, a status this helper does not model -
