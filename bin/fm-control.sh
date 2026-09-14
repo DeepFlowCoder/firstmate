@@ -881,6 +881,181 @@ do_relaunch() {
   echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
 }
 
+# --- recovery from a vanished endpoint --------------------------------------
+#
+# `recover` is the named exit from the exit<->relaunch circle: an endpoint
+# whose recorded window is authoritatively GONE (agent-state `missing`, e.g.
+# after a host reboot cleared the session provider's windows) is reconciled
+# onto a NEW endpoint over the SAME task id, the SAME local copy, and the SAME
+# branch. It never tears the task down and never mints a new id.
+#
+# The durable safety boundary is publication: before anything is mutated, the
+# task's local work must already be on a published head (merge-base
+# --is-ancestor against the recorded pr_head or the branch's origin/upstream
+# counterpart). Anything local that is not published refuses, because a
+# re-dispatch that did not prove that could orphan a commit in one copy while
+# the record points at another. The recovery note then carries the branch,
+# published head, and PR into the instructions, with the explicit instruction
+# NOT to rebuild the change, before bin/fm-spawn.sh --recover-missing creates
+# the new endpoint and launches into the recorded worktree.
+
+RECOVER_BRIEF=
+RECOVER_BRIEF_PRIOR=
+
+resolve_recover_profile() {
+  PRIOR_HARNESS=$HARNESS
+  PRIOR_RECORDED_HARNESS=$RECORDED_HARNESS
+  PRIOR_MODEL=$(fm_meta_get "$META" model)
+  PRIOR_EFFORT=$(fm_meta_get "$META" effort)
+  [ -n "$PRIOR_MODEL" ] || PRIOR_MODEL=default
+  [ -n "$PRIOR_EFFORT" ] || PRIOR_EFFORT=default
+  if [ "$HARNESS_SET" = 0 ] \
+     && [ "$PRIOR_RECORDED_HARNESS" != "$PRIOR_HARNESS" ]; then
+    die "task $ID records harness '$PRIOR_RECORDED_HARNESS', whose original launch command cannot be reconstructed from its recorded basename; recovering without --harness would substitute the canonical adapter '$PRIOR_HARNESS' for the command actually running. Pass an explicit --harness to choose the replacement runtime deliberately"
+  fi
+  if [ "$HARNESS_SET" = 1 ]; then
+    fm_control_harness_supported "$NEW_HARNESS" \
+      || die "'$NEW_HARNESS' is not a verified harness; fm-control refuses to recover onto an adapter with no verified control or launch mechanics"
+    TARGET_HARNESS=$NEW_HARNESS
+  else
+    TARGET_HARNESS=$PRIOR_HARNESS
+  fi
+  fm_control_harness_supports_kind "$TARGET_HARNESS" "$KIND" \
+    || die "'$TARGET_HARNESS' is not verified to run a $KIND task, so recovering $ID onto it would be refused by the launch owner; choose an adapter verified for this kind"
+  if [ "$MODEL_SET" = 1 ]; then
+    TARGET_MODEL=$NEW_MODEL
+  elif [ "$TARGET_HARNESS" = "$PRIOR_HARNESS" ]; then
+    TARGET_MODEL=$PRIOR_MODEL
+  else
+    TARGET_MODEL=default
+  fi
+  if [ "$EFFORT_SET" = 1 ]; then
+    TARGET_EFFORT=$NEW_EFFORT
+  elif [ "$TARGET_HARNESS" = "$PRIOR_HARNESS" ]; then
+    TARGET_EFFORT=$PRIOR_EFFORT
+  else
+    TARGET_EFFORT=default
+  fi
+}
+
+# prove_published_work: refuse when the task's local work is not already
+# published. The local tip is the checked-out branch (falling back to the
+# conventional fm-<id> branch when detached), and the published head is the
+# branch's origin/upstream counterpart, falling back to the recorded pr_head.
+# Prints the published head on success.
+prove_published_work() {
+  local branch pr_head published local_tip
+  pr_head=$(fm_meta_get "$META" pr_head)
+  branch=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
+  if [ -z "$branch" ] && git -C "$WT" show-ref --verify --quiet "refs/heads/fm-$ID"; then
+    branch="fm-$ID"
+  fi
+  if [ -n "$branch" ]; then
+    local_tip=$(git -C "$WT" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null) \
+      || die "task $ID's branch '$branch' cannot be read"
+    published=$(git -C "$WT" rev-parse --verify --quiet "origin/$branch^{commit}" 2>/dev/null \
+      || git -C "$WT" rev-parse --verify --quiet "$branch@{upstream}^{commit}" 2>/dev/null || true)
+    [ -n "$published" ] || published=$pr_head
+    [ -n "$published" ] || die "task $ID's branch '$branch' has no published head (no origin/$branch, no upstream, no recorded pr_head); refusing to recover work that may be unpublished"
+  elif [ -n "$pr_head" ]; then
+    local_tip=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) \
+      || die "task $ID's worktree HEAD cannot be read"
+    branch=HEAD
+    published=$pr_head
+  else
+    die "task $ID's worktree is detached and records no pr_head; refusing to recover work that cannot be proven published"
+  fi
+  if ! git -C "$WT" merge-base --is-ancestor "$local_tip" "$published"; then
+    die "task $ID's local work is not published: '$branch' ($local_tip) is not an ancestor of its published head ($published); push the branch before recovering so a re-dispatch cannot orphan local commits"
+  fi
+  printf '%s\n' "$published"
+}
+
+record_recovery_note() {  # <published-head>
+  local published=$1 stamp pr branch
+  stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  branch=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
+  [ -n "$branch" ] || branch="fm-$ID"
+  pr=$(fm_meta_get "$META" pr)
+  cp -p "$RECOVER_BRIEF" "$RECOVER_BRIEF_PRIOR" \
+    || die "could not preserve task $ID's instructions before recording the recovery note"
+  {
+    echo
+    echo "## Recovery note ($stamp)"
+    echo
+    echo "This task's window was lost and has been recovered onto a fresh endpoint."
+    echo "The local copy, branch, and every commit are exactly as they were; DO NOT"
+    echo "rebuild, reset, or redo this change. Continue from the state below."
+    echo
+    echo "Branch: $branch"
+    echo "Published head: $published"
+    [ -n "$pr" ] && echo "PR: $pr"
+    echo
+    printf '%s\n' "$NOTE"
+  } >> "$RECOVER_BRIEF" \
+    || die "could not append the recovery note to task $ID's instructions"
+}
+
+recover_rollback() {
+  [ "$RECOVER_ACTIVE" = 1 ] || return 0
+  [ "$RECOVER_PHASE" != complete ] || return 0
+  RECOVER_ACTIVE=0
+  case "$RECOVER_PHASE" in
+    noted)
+      if [ -n "$RECOVER_BRIEF" ] && [ -f "$RECOVER_BRIEF_PRIOR" ]; then
+        cp -p "$RECOVER_BRIEF_PRIOR" "$RECOVER_BRIEF" 2>/dev/null || true
+      fi
+      echo "error: recovery of $ID was refused before its replacement was launched; nothing changed" >&2
+      ;;
+    launching)
+      echo "error: recovery of $ID failed while launching its replacement; no agent is running, and its work plus the recovery note are preserved at $WT" >&2
+      ;;
+  esac
+  return 0
+}
+
+do_recover() {
+  local state published
+  local -a spawn_args
+
+  require_state_verified_backend recover
+  state=$(agent_state)
+  [ "$state" = missing ] || die "task $ID's endpoint reads '$state', not 'missing'; recover acts only on a positively classified missing endpoint. A stopped (dead) endpoint is relaunch, and a live agent is exit or relaunch"
+  case "$KIND" in
+    ship|scout) ;;
+    secondmate) die "task $ID is a secondmate; a missing secondmate endpoint is recovered through the secondmate-liveness path (bin/fm-bootstrap.sh), not this verb" ;;
+    *) die "task $ID records kind '$KIND', which has no defined recovery shape" ;;
+  esac
+  resolve_recover_profile
+  RECOVER_BRIEF="$DATA/$ID/brief.md"
+  [ -f "$RECOVER_BRIEF" ] \
+    || die "task $ID has no instructions at $RECOVER_BRIEF; refusing to recover a worker with nothing to work from"
+  [ "$NOTE_SET" = 1 ] && [ -n "$NOTE" ] \
+    || die "recover of a $KIND task requires --note (or --note-file): the replacement worker inherits the local copy but none of the conversation, so it must be told what happened"
+
+  safe_checkpoint
+  published=$(prove_published_work)
+  RECOVER_BRIEF_PRIOR="$STATE/$ID.control-recover.brief-prior"
+  RECOVER_ACTIVE=1
+  RECOVER_PHASE=noted
+  record_recovery_note "$published"
+
+  RECOVER_PHASE=launching
+  spawn_args=("$ID" --recover-missing --harness "$TARGET_HARNESS")
+  [ "$TARGET_MODEL" = default ] || spawn_args+=(--model "$TARGET_MODEL")
+  [ "$TARGET_EFFORT" = default ] || spawn_args+=(--effort "$TARGET_EFFORT")
+  if ! "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
+    die "the replacement agent for $ID could not be recovered on $TARGET_HARNESS"
+  fi
+
+  state=$(wait_agent_state "$LAUNCH_WAIT" alive) || {
+    die "the recovered agent for $ID did not come up within ${LAUNCH_WAIT}s (endpoint reads '$state')"
+  }
+  RECOVER_PHASE=complete
+  RECOVER_ACTIVE=0
+  echo "recovered $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
+}
+
 # --- verbs ------------------------------------------------------------------
 
 case "$VERB" in
@@ -906,5 +1081,8 @@ case "$VERB" in
     ;;
   relaunch)
     do_relaunch
+    ;;
+  recover)
+    do_recover
     ;;
 esac
