@@ -24,7 +24,7 @@ No manual repository registration is required.
 
 Open the Orca app to watch a task's terminal.
 Routine supervision uses the recorded endpoint through `bin/fm-peek.sh <id>` and `FM_HOME=<home> bin/fm-send.sh <id> '<text>'`.
-Enter and Ctrl-C are supported; Escape is not.
+Enter and Ctrl-C are supported; Escape and Ctrl-S are not.
 
 ## Task shape and metadata
 
@@ -69,7 +69,7 @@ It never raw-deletes an Orca worktree.
 - Orca is macOS-only and explicit-only.
 - The app must be running and report ready.
 - Secondmate spawns are unsupported.
-- Escape is unsupported.
+- Escape and Ctrl-S are unsupported, so a Kimi worker is refused before launch or before any text is typed rather than left unsubmitted.
 - Orca exposes no stable CLI version or protocol marker, so readiness is the compatibility gate rather than a version floor.
 - Only the verified terminal-handle and worktree result fields are accepted; speculative response shapes are rejected.
 

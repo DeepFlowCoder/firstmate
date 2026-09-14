@@ -310,7 +310,7 @@ fm_composer_strip_ghost() {
 # exposes no stable ASCII busy token.
 # The harness-less default is the UNION of the per-harness tokens below, used
 # when a caller has no recorded harness for the pane (the submit cores read the
-# baseline and the post-Enter transition this way). cursor's `ctrl+c to stop` is
+# baseline and the post-submit transition this way). cursor's `ctrl+c to stop` is
 # part of that union for the same reason the others are: without it a cursor
 # submit could never be acknowledged, because cursor parks its terminal cursor
 # outside its composer and the composer verdict is therefore always `unknown`.
@@ -1323,21 +1323,23 @@ EOF
   esac
 }
 
-# fm_composer_submit_retry_core: the ONE verify-and-retry-Enter submit loop
+# fm_composer_submit_retry_core: the ONE verify-and-retry submit loop
 # for the cursor-less backends (cmux, orca, zellij), parameterised by the
 # adapter's send-key and composer-state functions. The caller has already
 # typed the text ONCE (send_literal) and settled; this loop submits with
-# Enter, re-reading the composer verdict, and retries Enter ONLY - never
-# retypes, because a swallowed Enter leaves the text in the composer and
-# retyping would duplicate it. Proven pending (and pending-unproven) retries
-# consume the budget; any other verdict returns immediately, so `unknown`
-# stays a loud refusal rather than a blind retry into an unreadable pane.
+# <submit-key> (Enter by default; C-s for Kimi), re-reading the composer
+# verdict, and retries that key ONLY - never retypes, because a swallowed
+# submit leaves the text in the composer and retyping would duplicate it.
+# Proven pending (and pending-unproven) retries consume the budget; any other
+# verdict returns immediately, so `unknown` stays a loud refusal rather than a
+# blind retry into an unreadable pane.
 # tmux and herdr keep richer cores that consume this same shared verdict plus
 # fm_composer_queued_enter_verdict; no shape knowledge lives in any loop.
-fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries> <enter-sleep> [expected-label]
-  local send_key_fn=$1 state_fn=$2 target=$3 retries=$4 sleep_s=$5 expected_label=${6:-} i=0 state
+fm_composer_submit_retry_core() {  # <send-key-fn> <state-fn> <target> <retries> <enter-sleep> [expected-label] [submit-key]
+  local send_key_fn=$1 state_fn=$2 target=$3 retries=$4 sleep_s=$5 expected_label=${6:-} submit_key=${7:-Enter} i=0 state
+  [ -n "$submit_key" ] || submit_key=Enter
   while :; do
-    "$send_key_fn" "$target" Enter "$expected_label" || true
+    "$send_key_fn" "$target" "$submit_key" "$expected_label" || true
     sleep "$sleep_s"
     state=$("$state_fn" "$target" "$expected_label")
     case "$state" in

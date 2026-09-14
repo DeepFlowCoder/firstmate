@@ -271,17 +271,18 @@ fm_backend_orca_send_key() {  # <terminal-id> <key>
 }
 
 # fm_backend_orca_send_text_submit: type <text> once, then drive the shared
-# verify-and-retry-Enter loop (bin/fm-composer-lib.sh:
+# verify-and-retry loop (bin/fm-composer-lib.sh:
 # fm_composer_submit_retry_core) against the shared composer verdict, so a
-# slash-command popup placeholder fill gets the required second Enter without
-# duplicating text.
-fm_backend_orca_send_text_submit() {  # <terminal-id> <text> <retries> <enter-sleep> <settle>
-  local terminal=$1 text=$2 retries=$3 sleep_s=$4 settle=$5
+# slash-command popup placeholder fill gets the required second submit press
+# without duplicating text.
+fm_backend_orca_send_text_submit() {  # <terminal-id> <text> <retries> <enter-sleep> <settle> [expected-label] [submit-key]
+  local terminal=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 expected_label=${6:-} submit_key=${7:-Enter}
+  [ -n "$submit_key" ] || submit_key=Enter
   fm_backend_orca_tool_check || { printf 'send-failed'; return 0; }
   fm_backend_orca_send_literal "$terminal" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   fm_composer_submit_retry_core fm_backend_orca_send_key fm_backend_orca_composer_state \
-    "$terminal" "$retries" "$sleep_s"
+    "$terminal" "$retries" "$sleep_s" "$expected_label" "$submit_key"
 }
 
 fm_backend_orca_kill() {  # <terminal-id>

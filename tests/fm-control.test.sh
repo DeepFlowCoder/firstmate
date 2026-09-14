@@ -236,6 +236,28 @@ test_exit_types_each_harness_verified_command() {
   pass "fm-control exit: every verified harness gets its own verified exit command"
 }
 
+# Kimi queues typed text and directs only on Ctrl+S (measured: Enter clears the
+# line without submitting), so the exit command must be submitted with C-s and
+# never Enter. The stub records named keys, so the submit chord is observable.
+test_kimi_exit_submits_with_ctrl_s() {
+  local dir out rc keys
+  dir=$(new_case exit-kimi)
+  add_task "$dir" t1 kimi
+  alive_as "$dir" kimi
+  out=$(run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "exit on kimi should succeed"$'\n'"$out"
+  [ "$(literals "$dir")" = /exit ] \
+    || fail "kimi exit should type exactly /exit, got: $(literals "$dir")"
+  keys=$(cat "$dir/fake/keys")
+  assert_contains "$keys" "C-s" \
+    "kimi exit should submit with C-s; the named keys were: $(printf '%s' "$keys" | tr '\n' ' ')"
+  case "$keys" in
+    *Enter*) fail "kimi exit must not submit on Enter; the named keys were: $(printf '%s' "$keys" | tr '\n' ' ')" ;;
+  esac
+  assert_contains "$out" "stopped t1 harness=kimi" "exit should report the stop"
+  pass "fm-control exit: kimi submits its exit command with Ctrl+S, not Enter"
+}
+
 test_interrupt_sends_each_harness_verified_key() {
   local dir out rc harness expected key repeat clear got want
   for harness in $VERIFIED_HARNESSES; do
@@ -344,9 +366,9 @@ test_unverified_harness_is_refused() {
 test_backend_key_capability_matrix() {
   local backend key
   for backend in tmux herdr zellij cmux; do
-    # C-u is the composer clear muse's interrupt needs; every session provider
-    # but Orca normalizes it (bin/backends/*.sh).
-    for key in Escape Enter C-c C-u; do
+    # C-u is the composer clear muse's interrupt needs and C-s is Kimi's
+    # submit; every session provider but Orca normalizes both (bin/backends/*.sh).
+    for key in Escape Enter C-c C-u C-s; do
       fm_control_backend_supports_key "$backend" "$key" \
         || fail "$backend should be able to deliver $key"
     done
@@ -355,9 +377,26 @@ test_backend_key_capability_matrix() {
     && fail "orca's terminal API has no Escape and must not claim it"
   fm_control_backend_supports_key orca C-u \
     && fail "orca's terminal API has no composer clear and must not claim one"
+  fm_control_backend_supports_key orca C-s \
+    && fail "orca's terminal API has no Ctrl+S and must not claim one"
   fm_control_backend_supports_key orca C-c || fail "orca should deliver C-c"
   fm_control_backend_supports_key orca Enter || fail "orca should deliver Enter"
   pass "fm-control-lib: the backend key matrix matches each adapter's real send-key surface"
+}
+
+test_submit_key_per_harness() {
+  local harness
+  for harness in claude codex opencode pi pi-signed grok cursor muse ''; do
+    [ "$(fm_control_submit_key "$harness")" = Enter ] \
+      || fail "$harness should submit on Enter, got $(fm_control_submit_key "$harness")"
+  done
+  [ "$(fm_control_submit_key kimi)" = C-s ] \
+    || fail "kimi should submit on C-s, got $(fm_control_submit_key kimi)"
+  [ "$(fm_control_submit_key kimi-2)" = C-s ] \
+    || fail "a kimi-prefixed harness should submit on C-s, got $(fm_control_submit_key kimi-2)"
+  [ "$(fm_control_submit_key someagent)" = Enter ] \
+    || fail "an unrecognized harness must keep the Enter default"
+  pass "fm-control-lib: only kimi submits on C-s; every other harness keeps Enter"
 }
 
 # A verified adapter is not automatically verified for every task kind, and the
@@ -874,12 +913,14 @@ test_fm_send_still_marks_the_same_secondmate_task() {
 }
 
 test_exit_types_each_harness_verified_command
+test_kimi_exit_submits_with_ctrl_s
 test_interrupt_sends_each_harness_verified_key
 test_opencode_interrupts_twice_and_others_once
 test_unverified_harness_is_refused
 test_harness_family_resolution
 test_prefixed_recorded_harness_reaches_each_control_verb
 test_backend_key_capability_matrix
+test_submit_key_per_harness
 test_harness_kind_capability
 test_orca_refuses_an_escape_harness_interrupt
 test_unverified_state_backends_refuse_stop_verbs

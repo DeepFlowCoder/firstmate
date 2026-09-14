@@ -724,7 +724,10 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
 # fm_backend_send_text_submit: type text once, then submit and verify,
 # retrying only the submission (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
-fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label]
+# Optional trailing args: [expected-label] [submit-key]. The submit key
+# defaults to Enter; pass fm_control_submit_key's result for harnesses that
+# submit on another chord (Kimi: C-s).
+fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle> [expected-label] [submit-key]
   local backend=$1
   shift
   fm_backend_source "$backend" || return 1

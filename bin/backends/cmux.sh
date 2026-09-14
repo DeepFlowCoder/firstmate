@@ -491,6 +491,8 @@ fm_backend_cmux_normalize_key() {  # <key>
     # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
     # drop the prompt muse restores into the composer after Escape.
     C-u|c-u|ctrl+u|Ctrl+u|Ctrl+U|ctrl-u) printf 'ctrl-u' ;;
+    # C-s submits typed composer text for Kimi (fm_control_submit_key).
+    C-s|c-s|ctrl+s|Ctrl+s|Ctrl+S|ctrl-s) printf 'ctrl-s' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -560,17 +562,18 @@ fm_backend_cmux_composer_state() {  # <target> [expected-label] -> empty|pending
 }
 
 # fm_backend_cmux_send_text_submit: type <text> into <target> once (raw,
-# unsubmitted, via send_literal), then drive the shared verify-and-retry-Enter
+# unsubmitted, via send_literal), then drive the shared verify-and-retry
 # loop (bin/fm-composer-lib.sh: fm_composer_submit_retry_core) against the
 # shared composer verdict. Echoes empty|pending|unknown|send-failed, a subset
 # of the proof-carrying submit vocabulary.
-fm_backend_cmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label]
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 expected_label=${6:-}
+fm_backend_cmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [submit-key]
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 expected_label=${6:-} submit_key=${7:-Enter}
+  [ -n "$submit_key" ] || submit_key=Enter
   fm_backend_cmux_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_cmux_send_literal "$target" "$text" "$expected_label" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   fm_composer_submit_retry_core fm_backend_cmux_send_key fm_backend_cmux_composer_state \
-    "$target" "$retries" "$sleep_s" "$expected_label"
+    "$target" "$retries" "$sleep_s" "$expected_label" "$submit_key"
 }
 
 # fm_backend_cmux_window_of_workspace: echo "<window_id> <workspace_count>" for

@@ -76,6 +76,12 @@ _FM_TASK_INBOX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_FM_TASK_INBOX_LIB_DIR/fm-wake-lib.sh"
 # shellcheck source=/dev/null
 . "$_FM_TASK_INBOX_LIB_DIR/fm-backend.sh"
+# The doorbell must submit with the target harness's own submit chord (Kimi
+# directs on Ctrl+S, not Enter), and fm_control_lib.sh is the one owner of that
+# per-harness fact. It is pure (function definitions only, no side effects), so
+# sourcing it here is safe for every inbox consumer.
+# shellcheck source=/dev/null
+. "$_FM_TASK_INBOX_LIB_DIR/fm-control-lib.sh"
 
 FM_TASK_INBOX_SCHEMA='fm-task-inbox.v1'
 FM_TASK_INBOX_GRACE_DEFAULT=90
@@ -269,7 +275,7 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # line instead of reading it. No return value is delivery proof; the
 # acknowledgement move is the only delivery signal.
 # The composer skip is deliberately narrow: only an exact `pending` verdict
-# defers, because there our Enter could submit someone's real half-typed
+# defers, because there our submit press could submit someone's real half-typed
 # content. `pending-unproven` and `unknown` still ring - the worst outcome is a
 # garbled CONSTANT line the worker recovers semantically, while skipping on
 # ambiguous verdicts would starve a harness whose idle screen the classifier
@@ -284,15 +290,17 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # running an unrecognized process is still not a shell prompt, so this question
 # survives the same drift. Every unproven, unreadable, or unanswerable case
 # rings exactly as before.
-fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
-  local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
+fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label] [harness]
+  local backend=$1 target=$2 rec=$3 label=${4:-} harness=${5:-} line cstate verdict submit_key
   line=$(fm_task_inbox_doorbell_line "$rec")
   ! fm_backend_pane_is_bare_shell "$backend" "$target" 2>/dev/null || return 3
   cstate=$(fm_backend_composer_state "$backend" "$target" "$label" 2>/dev/null) || cstate=unknown
   case "$cstate" in
     pending) return 1 ;;
   esac
-  if ! verdict=$(fm_backend_send_text_submit "$backend" "$target" "$line" 1 0.4 0.3 "$label" 2>/dev/null); then
+  submit_key=$(fm_control_submit_key "$harness")
+  fm_control_backend_supports_key "$backend" "$submit_key" || return 2
+  if ! verdict=$(fm_backend_send_text_submit "$backend" "$target" "$line" 1 0.4 0.3 "$label" "$submit_key" 2>/dev/null); then
     return 2
   fi
   # The verdict is read only to report a failed keystroke; every other value

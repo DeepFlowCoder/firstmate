@@ -215,12 +215,12 @@ An environment variable alone is not reliable when another Herdr server is runni
 
 Literal text and Enter are separate operations on `fm-send.sh`'s typed plane; ordinary local text steers instead use the durable steering inbox and send only its best-effort constant doorbell through this adapter.
 Spawn-time fixed commands may use Herdr's atomic run primitive.
-Enter, Escape, and Ctrl-C are supported.
+Enter, Escape, Ctrl-C, and Ctrl-S are supported (Ctrl-S normalized to herdr's `ctrl+s` for Kimi's submit).
 Typed-plane slash input, and dollar-prefixed skill input for Codex, uses the shared harness-aware settle before the first Enter so a completion popup cannot consume it.
-Typed-plane text is typed once; only Enter is retried.
+Typed-plane text is typed once; only the harness submit key is retried (Enter by default, Ctrl+S for Kimi).
 
 On an idle or done native baseline, submit confirmation first waits for `working` or `blocked` across a bounded polling window.
-If native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries Enter.
+If native status stays idle, the shared composer verdict is the next positive signal: a cleared composer is delivery, and proven pending text retries the submit key.
 After the retry budget, `fm_composer_queued_enter_verdict` treats proven pending text plus a generating busy signal as a queued delivered Enter, and keeps an idle pending composer as a genuine swallow.
 On an already active or unreadable baseline, the adapter falls back to conservative composer clearance, with a pre-Enter rendered-footer transition when that baseline is unavailable.
 A fully unreadable target stops retrying and reports unknown.

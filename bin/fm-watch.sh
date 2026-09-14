@@ -435,7 +435,7 @@ inbox_steer_check() {  # <window> <task>
   case "$verb" in
     ring)
       ring_rc=0
-      fm_task_inbox_ring "$(window_backend "$w")" "$w" "$rec" "$(window_label "$w")" || ring_rc=$?
+      fm_task_inbox_ring "$(window_backend "$w")" "$w" "$rec" "$(window_label "$w")" "$(window_harness "$w")" || ring_rc=$?
       # A 3 means the backend POSITIVELY classified this endpoint as having no
       # agent to read the line, so the doorbell was not typed into it (a pane
       # with no agent is a shell, and a shell runs what it is sent -

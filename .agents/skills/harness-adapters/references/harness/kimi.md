@@ -15,7 +15,7 @@ Verified on 2026-07-25 with Kimi Code CLI 0.29.1.
 | Skill invocation | `/<skill>`, for example `/no-mistakes`; Firstmate skills are discovered. |
 | Autonomy | `--auto`; `-y` and `--yolo` are weaker and are not used. |
 | Trust dialog | None observed on a clean first launch in a fresh pooled worktree. |
-| Slash submission | One Enter submits, with no popup swallow or settle hazard. |
+| Submit key | `C-s` (Ctrl+S) directs typed composer text; Enter clears the line without submitting (measured 2026-08-31, Kimi's "ctrl-s para dirigir de inmediato" hint). `../../../bin/fm-control-lib.sh`'s `fm_control_submit_key` owns this fact. |
 | Environment marker | None; detection uses process ancestry command name `kimi`. |
 | Composer | Bordered box with a bare `>` prompt glyph and no observed ghost or placeholder text. |
 | Effort | No verified reasoning-effort flag; `references/common/model-and-effort.md` owns unsupported-value handling. |
@@ -30,7 +30,7 @@ Sending before readiness was reproduced as a silent drop with zero exit status, 
 The startup input-readiness window is the established cause; the banner is not.
 An early Enter can expand the composer to multiple content rows, leaving pointer text on the first row and the cursor on an empty later row.
 The shared tmux reader therefore locates the complete bordered composer and treats real text on any content row as positive evidence that submission remains pending.
-No rendering signal proves Kimi will accept input during this window, so delivery retries Enter through the shared submit core and retains the postcondition verification rather than relaxing readiness.
+No rendering signal proves Kimi will accept input during this window, so delivery retries the harness submit key (Ctrl+S for Kimi) through the shared submit core and retains the postcondition verification rather than relaxing readiness.
 Because that postcondition can go unobserved on a delivery that landed, a submitted pointer whose arrival is never confirmed is recorded as `blocked` under the key `kimi-delivery`, while only a proven non-delivery records `failed`; `../../../bin/fm-spawn.sh`'s header owns that record contract.
 
 Observed spinner captures had optional leading whitespace, a moon-phase glyph, whitespace around `·`, and rotating tip text, including during tool execution.

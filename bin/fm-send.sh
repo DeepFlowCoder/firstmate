@@ -1049,7 +1049,7 @@ else
     # Ring the doorbell, best-effort: no ring outcome changes the exit status,
     # because the watcher's re-ring ladder owns loss detection from here.
     ring_rc=0
-    fm_task_inbox_ring "$TARGET_BACKEND" "$T" "$INBOX_RECORD" "$EXPECTED_LABEL" || ring_rc=$?
+    fm_task_inbox_ring "$TARGET_BACKEND" "$T" "$INBOX_RECORD" "$EXPECTED_LABEL" "${TARGET_HARNESS:-}" || ring_rc=$?
     case "$ring_rc" in
       1) echo "fm-send: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
       2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
@@ -1059,7 +1059,7 @@ else
   fi
   # Slash commands open a completion popup in some TUIs (verified on codex);
   # submitting too fast selects nothing, so give the popup time to settle before
-  # the (retried) Enter. Codex opens the same kind of popup for a `$<skill>`
+  # the (retried) submit. Codex opens the same kind of popup for a `$<skill>`
   # invocation, so a `$...` message to a codex target gets the same settle. That
   # `$` case is scoped to codex on purpose: unlike `/`, a leading `$` commonly
   # starts ordinary text ("$5/month", "$HOME"), so a universal `$` rule would
@@ -1077,9 +1077,15 @@ else
   # Type once, submit, verify. Only exact empty confirms delivery; every other
   # verdict preserves the loud refusal boundary. Only LOCAL targets reach this
   # block: remote text rides the inbox leg above, and remote --key exits
-  # earlier.
+  # earlier. The submit key follows the harness (Kimi directs on Ctrl+S); a
+  # backend that cannot deliver that chord is refused before any text is typed.
+  submit_key=$(fm_control_submit_key "${TARGET_HARNESS:-}")
+  if ! fm_control_backend_supports_key "$TARGET_BACKEND" "$submit_key"; then
+    echo "error: text not sent to $T: harness ${TARGET_HARNESS:-unknown} submits with $submit_key, which the $TARGET_BACKEND backend cannot deliver (tried $RESOLUTION_TRIED)" >&2
+    exit 1
+  fi
   send_rc=0
-  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
+  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL" "$submit_key"); then
     :
   else
     send_rc=$?
@@ -1100,7 +1106,7 @@ else
       exit 1
       ;;
     pending)
-      # The text was typed into the live target and Enter was sent; only the
+      # The text was typed into the live target and the submit key was sent; only the
       # submit read-back stayed unconfirmed (e.g. a busy harness queues the
       # steer and keeps rendering it). That is not a proven failure, so never
       # re-type the message: verify the pane instead. Exit 3 is the documented
@@ -1111,7 +1117,7 @@ else
       # correlated report still resolves it and an unanswered one still
       # surfaces through the library's own reconciliation
       # (bin/fm-pending-reply-lib.sh).
-      echo "fm-send: text delivered to $T but submission is unconfirmed (verdict=pending; tried $RESOLUTION_TRIED); do not retype or blindly resend - verify with fm-peek.sh, then re-send '--key Enter' only if the composer still holds the text" >&2
+      echo "fm-send: text delivered to $T but submission is unconfirmed (verdict=pending; tried $RESOLUTION_TRIED); do not retype or blindly resend - verify with fm-peek.sh, then re-send '--key $submit_key' only if the composer still holds the text" >&2
       exit 3
       ;;
     *)

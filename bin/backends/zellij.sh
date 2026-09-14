@@ -454,6 +454,8 @@ fm_backend_zellij_normalize_key() {  # <key>
     # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
     # drop the prompt muse restores into the composer after Escape.
     C-u|c-u|ctrl+u|Ctrl+u|Ctrl+U|'Ctrl u'|'ctrl u') printf 'Ctrl u' ;;
+    # C-s submits typed composer text for Kimi (fm_control_submit_key).
+    C-s|c-s|ctrl+s|Ctrl+s|Ctrl+S|'Ctrl s'|'ctrl s') printf 'Ctrl s' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -561,14 +563,15 @@ fm_backend_zellij_composer_observed_append() {  # <target> <before> <text> [expe
 }
 
 # fm_backend_zellij_send_text_submit: type <text> into <target> once (raw,
-# unsubmitted, via send_literal), then drive the shared verify-and-retry-Enter
+# unsubmitted, via send_literal), then drive the shared verify-and-retry
 # loop (bin/fm-composer-lib.sh: fm_composer_submit_retry_core) against the
 # real composer verdict above. Echoes empty|pending|unknown|send-failed, a
 # subset of the proof-carrying submit vocabulary. Only a positively classified
 # empty composer confirms delivery - a pane that merely CHANGED does not, so
 # the old heuristic's false "delivery confirmed" cannot recur.
-fm_backend_zellij_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label]
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 expected_label=${6:-} before
+fm_backend_zellij_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [submit-key]
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 expected_label=${6:-} submit_key=${7:-Enter} before
+  [ -n "$submit_key" ] || submit_key=Enter
   before=$(fm_backend_zellij_composer_content "$target" "$expected_label") \
     || { printf 'send-failed'; return 0; }
   fm_backend_zellij_send_literal "$target" "$text" "$expected_label" || { printf 'send-failed'; return 0; }
@@ -576,7 +579,7 @@ fm_backend_zellij_send_text_submit() {  # <target> <text> <retries> <enter-sleep
   fm_backend_zellij_composer_observed_append "$target" "$before" "$text" "$expected_label" \
     || { printf 'send-failed'; return 0; }
   fm_composer_submit_retry_core fm_backend_zellij_send_key fm_backend_zellij_composer_state \
-    "$target" "$retries" "$sleep_s" "$expected_label"
+    "$target" "$retries" "$sleep_s" "$expected_label" "$submit_key"
 }
 
 # fm_backend_zellij_kill: remove the task's tab, best-effort (mirrors

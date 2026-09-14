@@ -189,7 +189,7 @@
 # task's status record carries the difference: `failed` means the brief
 # demonstrably never arrived (no ready signal so no pointer was sent, the send
 # itself failed, or the composer still reads back the pointer text after both
-# the Enter retries and the arrival window), while `blocked` under the key
+# the submit retries and the arrival window), while `blocked` under the key
 # kimi-delivery means the pointer was submitted and only its arrival went
 # unconfirmed, so the endpoint is preserved and that open decision stays up
 # until someone checks the window and closes it.
@@ -2386,7 +2386,7 @@ kimi_wait_for_delivery() {
 # The durable record of a kimi spawn this script PROVED did not deliver: the
 # ready gate never opened, so no pointer was ever sent, the submit core
 # reported the send itself failed, or the composer read back the pointer text
-# after both the Enter retries and the arrival window that follows them.
+# after both the submit retries and the arrival window that follows them.
 # `failed` is a terminal verb in
 # bin/fm-classify-lib.sh - it closes an open decision and opens none - which is
 # the truth only when the brief demonstrably never arrived.
@@ -3098,6 +3098,11 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
     LAUNCH="unset TRACEPARENT; $LAUNCH"
   fi
 fi
+if [ "$HARNESS" = kimi ]; then
+  KIMI_SUBMIT_KEY=$(fm_control_submit_key kimi)
+  fm_control_backend_supports_key "$BACKEND" "$KIMI_SUBMIT_KEY" \
+    || { kimi_spawn_fail "kimi submits with $KIMI_SUBMIT_KEY, which the $BACKEND backend cannot deliver"; exit 1; }
+fi
 sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
@@ -3115,9 +3120,11 @@ if [ "$HARNESS" = kimi ]; then
   KIMI_SUBMIT_RETRIES=${FM_KIMI_SUBMIT_RETRIES:-3}
   KIMI_SUBMIT_SLEEP=${FM_KIMI_SUBMIT_SLEEP:-${FM_KIMI_POLL_INTERVAL:-0.5}}
   KIMI_SUBMIT_SETTLE=${FM_KIMI_SUBMIT_SETTLE:-0}
+  # Kimi queues typed text and directs it only on Ctrl+S (fm_control_submit_key),
+  # so the brief pointer must be submitted with that chord rather than Enter.
   KIMI_SUBMIT_VERDICT=$(fm_backend_send_text_submit \
     "$BACKEND" "$T" "$KIMI_POINTER" "$KIMI_SUBMIT_RETRIES" \
-    "$KIMI_SUBMIT_SLEEP" "$KIMI_SUBMIT_SETTLE" "$W") || {
+    "$KIMI_SUBMIT_SLEEP" "$KIMI_SUBMIT_SETTLE" "$W" "$KIMI_SUBMIT_KEY") || {
     kimi_spawn_fail "kimi brief pointer could not be submitted"
     exit 1
   }
@@ -3126,12 +3133,12 @@ if [ "$HARNESS" = kimi ]; then
     exit 1
   fi
   # A `pending` verdict proves the composer held real text at the instant the
-  # Enter budget ran out, and nothing about arrival. What is missing is the BUSY
-  # read that would tell a queued Enter from a swallow: outside tmux the submit
+  # submit budget ran out, and nothing about arrival. What is missing is the BUSY
+  # read that would tell a queued submit from a swallow: outside tmux the submit
   # core takes none at all, and inside tmux it runs harness-less, so it cannot
   # see kimi's only busy token. So `pending` must never short-circuit the
   # arrival window, and it is not enough on its own afterwards either: the
-  # verdict is frozen before the window opens, and a queued Enter accepted
+  # verdict is frozen before the window opens, and a queued submit accepted
   # inside it clears the composer. The terminal verb therefore demands positive
   # proof at decision time - the pointer text read back into the composer AGAIN
   # after the window closed. Absence of proof is not proof: an unreadable or
@@ -3139,7 +3146,7 @@ if [ "$HARNESS" = kimi ]; then
   # record, which is the whole point of the split.
   if ! kimi_wait_for_delivery; then
     if [ "$KIMI_SUBMIT_VERDICT" = pending ] && [ "$(kimi_composer_state)" = pending ]; then
-      kimi_spawn_fail "kimi brief pointer Enter retries were spent with the pointer text in the composer, the arrival window then passed unconfirmed, and the composer still holds that same pointer text, so the brief did not arrive"
+      kimi_spawn_fail "kimi brief pointer $KIMI_SUBMIT_KEY submit retries were spent with the pointer text in the composer, the arrival window then passed unconfirmed, and the composer still holds that same pointer text, so the brief did not arrive"
     else
       kimi_spawn_unconfirmed "kimi brief pointer was submitted but its arrival was not confirmed; the worker may already be reading the brief, so check the window before assuming it never arrived"
     fi
