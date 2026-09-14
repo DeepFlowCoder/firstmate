@@ -299,6 +299,7 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label] [har
     pending) return 1 ;;
   esac
   submit_key=$(fm_control_submit_key "$harness")
+  fm_control_backend_supports_key "$backend" "$submit_key" || return 2
   if ! verdict=$(fm_backend_send_text_submit "$backend" "$target" "$line" 1 0.4 0.3 "$label" "$submit_key" 2>/dev/null); then
     return 2
   fi
