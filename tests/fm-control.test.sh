@@ -392,6 +392,8 @@ test_submit_key_per_harness() {
   done
   [ "$(fm_control_submit_key kimi)" = C-s ] \
     || fail "kimi should submit on C-s, got $(fm_control_submit_key kimi)"
+  [ "$(fm_control_submit_key kimi-2)" = C-s ] \
+    || fail "a kimi-prefixed harness should submit on C-s, got $(fm_control_submit_key kimi-2)"
   [ "$(fm_control_submit_key someagent)" = Enter ] \
     || fail "an unrecognized harness must keep the Enter default"
   pass "fm-control-lib: only kimi submits on C-s; every other harness keeps Enter"

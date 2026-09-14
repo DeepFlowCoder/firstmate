@@ -1059,7 +1059,7 @@ else
   fi
   # Slash commands open a completion popup in some TUIs (verified on codex);
   # submitting too fast selects nothing, so give the popup time to settle before
-  # the (retried) Enter. Codex opens the same kind of popup for a `$<skill>`
+  # the (retried) submit. Codex opens the same kind of popup for a `$<skill>`
   # invocation, so a `$...` message to a codex target gets the same settle. That
   # `$` case is scoped to codex on purpose: unlike `/`, a leading `$` commonly
   # starts ordinary text ("$5/month", "$HOME"), so a universal `$` rule would
@@ -1106,7 +1106,7 @@ else
       exit 1
       ;;
     pending)
-      # The text was typed into the live target and Enter was sent; only the
+      # The text was typed into the live target and the submit key was sent; only the
       # submit read-back stayed unconfirmed (e.g. a busy harness queues the
       # steer and keeps rendering it). That is not a proven failure, so never
       # re-type the message: verify the pane instead. Exit 3 is the documented
@@ -1117,7 +1117,7 @@ else
       # correlated report still resolves it and an unanswered one still
       # surfaces through the library's own reconciliation
       # (bin/fm-pending-reply-lib.sh).
-      echo "fm-send: text delivered to $T but submission is unconfirmed (verdict=pending; tried $RESOLUTION_TRIED); do not retype or blindly resend - verify with fm-peek.sh, then re-send '--key Enter' only if the composer still holds the text" >&2
+      echo "fm-send: text delivered to $T but submission is unconfirmed (verdict=pending; tried $RESOLUTION_TRIED); do not retype or blindly resend - verify with fm-peek.sh, then re-send '--key $submit_key' only if the composer still holds the text" >&2
       exit 3
       ;;
     *)

@@ -174,7 +174,7 @@ fm_control_exit_command() {  # <harness>
 # recorded meta stay on the historical default.
 fm_control_submit_key() {  # <harness>
   case "${1-}" in
-    kimi) printf 'C-s' ;;
+    kimi*) printf 'C-s' ;;
     claude|codex|opencode|pi|pi-signed|grok|cursor|muse|'') printf 'Enter' ;;
     *) printf 'Enter' ;;
   esac
