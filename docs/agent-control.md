@@ -18,7 +18,7 @@ The failure repeated across harnesses and homes, and the workaround (remember to
 - The **verb allowlist**: `interrupt`, `exit`, `relaunch`.
   There is no arbitrary-text and no generic raw-key entry point.
   A caller either names an allowlisted verb or is refused.
-- **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, whether the composer needs clearing afterwards, the command that exits the agent, and which task kinds the adapter is verified to run.
+- **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, whether the composer needs clearing afterwards, the command that exits the agent, the key that submits typed composer text, and which task kinds the adapter is verified to run.
   These were previously carried only in the [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md) skill's tool references, which now point here.
   `bin/fm-send.sh`'s `--key` path reads the composer-clear table from this owner too, rather than keeping a second copy of it.
 - **Per-backend capability**: which named keys a runtime backend can deliver, and whether it has a recovery-grade agent-state classifier able to prove an agent stopped.
@@ -93,7 +93,8 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - An adapter that is not verified for this task's kind is refused **before** the running agent is stopped, not after.
   Muse is a crewmate and scout adapter only, so relaunching a secondmate onto it refuses while its agent is still up rather than leaving that secondmate with no agent when the launch owner refuses.
 - A backend that cannot deliver the harness's interrupt key, or the composer clear that key needs, is refused rather than sent a different key.
-  Orca's terminal API exposes only an interrupt and an Enter, so it can deliver neither Escape nor Ctrl+U.
+  Orca's terminal API exposes only an interrupt and an Enter, so it can deliver neither Escape, Ctrl+U, nor Ctrl+S.
+- A backend that cannot deliver the harness's submit key is refused before text is typed, so a Kimi steer, exit command, or brief pointer is never left typed-but-unsubmitted (orca cannot deliver Kimi's Ctrl+S).
 - `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux and herdr - because without one the "the agent stopped" postcondition cannot be proven.
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
@@ -104,13 +105,13 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 
 Backend capability comes from each adapter's real surface, not from a policy choice.
 
-| Backend | Escape | Enter | Ctrl+C | Ctrl+U | Recovery-grade agent state |
-| --- | --- | --- | --- | --- | --- |
-| tmux | yes | yes | yes | yes | yes |
-| herdr | yes | yes | yes | yes | yes |
-| zellij | yes | yes | yes | yes | no |
-| cmux | yes | yes | yes | yes | no |
-| orca | no | yes | yes | no | no |
+| Backend | Escape | Enter | Ctrl+C | Ctrl+U | Ctrl+S | Recovery-grade agent state |
+| --- | --- | --- | --- | --- | --- | --- |
+| tmux | yes | yes | yes | yes | yes | yes |
+| herdr | yes | yes | yes | yes | yes | yes |
+| zellij | yes | yes | yes | yes | yes | no |
+| cmux | yes | yes | yes | yes | yes | no |
+| orca | no | yes | yes | no | no | no |
 
 Per-harness interrupt keys, repeat counts, composer clears, exit commands, and supported task kinds live in `bin/fm-control-lib.sh` and are exercised for every verified harness by `tests/fm-control.test.sh`.
 The empirical basis for each adapter's value is the `harness-adapters` skill's verification record for that adapter.
