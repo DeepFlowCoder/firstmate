@@ -275,7 +275,7 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # line instead of reading it. No return value is delivery proof; the
 # acknowledgement move is the only delivery signal.
 # The composer skip is deliberately narrow: only an exact `pending` verdict
-# defers, because there our Enter could submit someone's real half-typed
+# defers, because there our submit press could submit someone's real half-typed
 # content. `pending-unproven` and `unknown` still ring - the worst outcome is a
 # garbled CONSTANT line the worker recovers semantically, while skipping on
 # ambiguous verdicts would starve a harness whose idle screen the classifier

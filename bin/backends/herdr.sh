@@ -2746,12 +2746,12 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # claude/codex popups, so the caller's <settle> before the first submit matters
 # here the same way it does for tmux.
 #
-# Confirmation signal: when the target is legibly idle before Enter,
+# Confirmation signal: when the target is legibly idle before the submit press,
 # submission is confirmed by fm_backend_herdr_wait_for_working observing a
-# submit-active agent_status after Enter. Live Claude on Herdr 0.8.0 can
-# keep agent_status idle for a whole landed turn, so an idle native result
+# submit-active agent_status after the submit press. Live Claude on Herdr 0.8.0
+# can keep agent_status idle for a whole landed turn, so an idle native result
 # falls through to the shared composer verdict: empty is positive delivery,
-# proven pending retries Enter, and retries-exhausted pending plus a
+# proven pending retries the submit key, and retries-exhausted pending plus a
 # generating busy signal is a queued Enter via
 # fm_composer_queued_enter_verdict (bin/fm-composer-lib.sh).
 #
@@ -2763,7 +2763,7 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # submit confirmation still prefers native agent-state so a faint idle tip
 # cannot block a landed send. Composer content is consulted only after native
 # state stays idle, as the empty/pending owner, and for submit attempts whose
-# pre-Enter agent-state baseline is not legibly idle.
+# pre-submit agent-state baseline is not legibly idle.
 #
 # This also still correctly handles the earlier 2026-07-03 incident (a
 # slash-command popup selection/placeholder-fill on the FIRST Enter is not a
@@ -2795,13 +2795,13 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # The escape is the SAME semantic signal the idle-baseline path uses, read from
 # the pane's verified busy footer instead of native agent-state, and it is the
 # rendered-footer twin of the tmux submit core's turn-started confirmation
-# (bin/fm-tmux-lib.sh): an idle-to-busy transition ACROSS our Enter is proof the
-# harness accepted the submission. The baseline is taken before the first Enter
-# and only when the native baseline was not legibly idle, so the idle-baseline
-# path still never reads pane content until native stays idle. A pane already
-# mid-turn cannot use a rendered-footer transition as proof of this Enter;
-# only the separate retries-exhausted, proven-pending queued-Enter verdict can
-# confirm delivery from its native working state.
+# (bin/fm-tmux-lib.sh): an idle-to-busy transition ACROSS our submit press is
+# proof the harness accepted the submission. The baseline is taken before the
+# first submit press and only when the native baseline was not legibly idle, so
+# the idle-baseline path still never reads pane content until native stays idle.
+# A pane already mid-turn cannot use a rendered-footer transition as proof of
+# this submit press; only the separate retries-exhausted, proven-pending
+# queued-Enter verdict can confirm delivery from its native working state.
 # Queued-while-busy Enter (OpenCode 1.18.4, and any harness that keeps typed
 # text visible until the current turn ends): after the retry budget, a proven
 # pending composer plus native agent_status=working is delivered, not swallowed.

@@ -14,7 +14,7 @@
 #
 # OpenCode's busy-queued Enter conversion accepts only structurally proven
 # pending text after retries, while the separate turn-started conversion accepts
-# an unknown post-Enter composer only after this submit observed an idle baseline
+# an unknown post-submit composer only after this submit observed an idle baseline
 # become busy.
 # The queued-Enter policy itself lives in fm_composer_queued_enter_verdict
 # (bin/fm-composer-lib.sh); this file supplies tmux's pane-busy primitive.
@@ -214,24 +214,25 @@ fm_pane_is_busy() {  # <target> [harness]
   [ "$(fm_pane_busy_state "$1" "${2:-}")" = busy ]
 }
 
-# fm_tmux_submit_core: type <text> into <target> ONCE, then submit with Enter,
-# verifying the composer cleared. Retries Enter ONLY — never retypes, because a
-# swallowed Enter leaves our text in the composer and retyping would duplicate
-# it. Echoes the final proof-carrying verdict on stdout so callers can require
-# exact `empty` before treating submission as confirmed.
+# fm_tmux_submit_core: type <text> into <target> ONCE, then submit with the
+# harness submit key (Enter by default, C-s for Kimi), verifying the composer
+# cleared. Retries that key ONLY - never retypes, because a swallowed submit
+# leaves our text in the composer and retyping would duplicate it. Echoes the
+# final proof-carrying verdict on stdout so callers can require exact `empty`
+# before treating submission as confirmed.
 # Busy-queued Enter (opencode 1.18.4): the harness accepts Enter while mid-turn
 # and queues it for after the current turn, but keeps the typed text visible in
-# the composer. Once the Enter-retry budget is spent and a structurally proven
+# the composer. Once the submit-retry budget is spent and a structurally proven
 # composer still reads "pending", the submit core falls back to
-# `fm_pane_is_busy`: a busy pane means the Enter was accepted and queued (report
+# `fm_pane_is_busy`: a busy pane means the submit was accepted and queued (report
 # `empty` so the caller does not re-send), while an idle pane keeps `pending` as
-# a genuine swallow. Pending-unproven receives the same Enter retry budget but
+# a genuine swallow. Pending-unproven receives the same submit-retry budget but
 # never reaches this exception.
 # Turn-started confirmation (the strict blank-row posture's counterpart): a
 # harness whose mid-turn screen the classifier cannot positively identify (pi
 # replaces its separated composer while working) reads `unknown` right after a
 # successful submit. When and only when the pane was IDLE before the text was
-# typed, an idle-to-busy transition across our Enter is proof the harness
+# typed, an idle-to-busy transition across our submit press is proof the harness
 # accepted the submission - the same semantic signal herdr's native
 # agent-state confirmation uses, read from the pane's verified busy footer.
 # The busy read is polled across the remaining retry budget because the turn
