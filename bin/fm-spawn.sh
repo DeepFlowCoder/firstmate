@@ -41,7 +41,10 @@
 #   same two facts as fm-control recover: it proves the recorded endpoint reads
 #   missing and proves the task's local work is already published (via
 #   fm_recover_prove_published_work), so a recovery can never act on a live
-#   endpoint or on a branch carrying unpublished commits. It creates a NEW
+#   endpoint or on a branch carrying unpublished commits. It also refuses a
+#   detached worktree, because it cannot write the recovery note that tells
+#   the worker to check out the verified branch; a detached recovery must go
+#   through bin/fm-control.sh recover. It creates a NEW
 #   endpoint with its shell sitting in the recorded worktree - never treehouse
 #   get, never a fresh base - clears the previous harness's per-task wiring,
 #   and preserves every durable metadata field the same way --relaunch does.
@@ -1158,6 +1161,10 @@ if [ "$REUSE" -eq 1 ]; then
   }
   if [ "$RECOVER_MISSING" -eq 1 ]; then
     fm_recover_prove_published_work "$RELAUNCH_META" "$ID" "$RELAUNCH_WT" || exit 1
+    if [ "$SPAWN_CONTROL_PARENT" = 0 ] && [ "${FM_RECOVER_DETACHED:-}" = 1 ]; then
+      echo "error: task $ID's worktree is detached at a commit other than its verified branch '$FM_RECOVER_PUBLISHED_BRANCH'; the direct --recover-missing path never resumes from an unverified detached HEAD, so recover it through the full recovery verb instead: bin/fm-control.sh $ID recover --note '<what happened>'" >&2
+      exit 1
+    fi
   fi
   if [ "$KIND" = secondmate ]; then
     FIRSTMATE_HOME=$(fm_meta_get "$RELAUNCH_META" home)

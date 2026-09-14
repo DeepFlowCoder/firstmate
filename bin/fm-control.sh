@@ -372,8 +372,11 @@ wait_agent_state() {  # <timeout> <wanted>...
 }
 
 require_state_verified_backend() {  # <verb>
+  local verb=$1 action
   fm_control_backend_state_verified "$BACKEND" && return 0
-  die "task $ID runs on the $BACKEND backend, which has no recovery-grade agent-state classifier, so '$1' cannot prove the agent actually stopped; refusing rather than reporting an unproven transition as done"
+  action="prove the agent actually stopped"
+  [ "$verb" = recover ] && action="prove the endpoint is positively missing"
+  die "task $ID runs on the $BACKEND backend, which has no recovery-grade agent-state classifier, so '$verb' cannot $action; refusing rather than reporting an unproven transition as done"
 }
 
 # send_interrupt_keys: deliver the harness's interrupt key the verified number

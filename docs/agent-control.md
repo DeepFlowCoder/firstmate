@@ -91,7 +91,7 @@ An endpoint whose recorded window is gone (agent-state `missing`, e.g. after a h
    A ship or scout recovery requires `--note` and appends a dated recovery section carrying the branch, published head, and PR, plus the explicit instruction NOT to rebuild the change.
 4. **Launch the replacement** through `bin/fm-spawn.sh --recover-missing`, which creates a fresh endpoint whose shell starts in the recorded worktree - never `treehouse get`, never a fresh base - clears the previous harness's per-task wiring, and preserves every durable metadata field exactly like a relaunch.
 
-A refusal before the replacement is launched leaves the durable record and the instructions byte-identical.
+A refusal before the replacement is launched leaves the durable record byte-identical. If the launch itself refuses or fails after the note was appended, the recovery note stays in the instructions because it records only durable facts - the window was lost, the copy/branch/commits are preserved, do not rebuild - that remain true whether or not the replacement comes up.
 
 ### Failure and rollback
 

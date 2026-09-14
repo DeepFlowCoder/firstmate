@@ -346,6 +346,44 @@ test_direct_spawn_recover_missing_refuses_unpublished_work() {
   pass "fm-spawn --recover-missing: refuses a branch carrying unpublished commits"
 }
 
+test_direct_spawn_recover_missing_refuses_a_detached_worktree() {
+  local dir out rc proj wt c1
+  dir=$(new_case spawn-detached rc16)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "fm/rc16"
+  c1=$(git -C "$wt" rev-parse "fm/rc16")
+  git -C "$wt" push -q -u origin "fm/rc16"
+  git -C "$wt" checkout --detach -q "$c1"
+  mkdir -p "$dir/home/data/rc16"
+  printf '# brief for rc16\n\nDo the thing.\n' > "$dir/home/data/rc16/brief.md"
+  {
+    echo "window=fmses:fm-rc16"
+    echo "endpoint_task_id=rc16"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc16"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc16.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc16")
+
+  out=$(run_spawn "$dir" rc16 --recover-missing --harness claude); rc=$?
+  expect_code 1 "$rc" "a direct recover-missing over a detached worktree should refuse"$'\n'"$out"
+  assert_contains "$out" "never resumes from an unverified detached HEAD" \
+    "the refusal should name the unverified detached HEAD"
+  assert_contains "$out" "bin/fm-control.sh rc16 recover" \
+    "the refusal should route to the full recovery verb"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused direct recover-missing must launch nothing"
+  pass "fm-spawn --recover-missing: refuses a detached worktree and routes to fm-control recover"
+}
+
 test_recover_detached_worktree_proves_the_task_branch() {
   local dir out rc proj wt c1
   dir=$(new_case recover-detached rc11)
@@ -550,6 +588,7 @@ test_exit_points_a_missing_endpoint_at_recover
 test_direct_spawn_recover_missing_refuses_a_live_endpoint
 test_direct_spawn_recover_missing_reuses_the_recorded_worktree
 test_direct_spawn_recover_missing_refuses_unpublished_work
+test_direct_spawn_recover_missing_refuses_a_detached_worktree
 test_recover_detached_worktree_proves_the_task_branch
 test_recover_detached_worktree_instructs_checkout
 test_recover_detached_worktree_refuses_unpublished_detached_head
