@@ -7,6 +7,9 @@
 #        fm-control.sh <task-id> relaunch [--harness <name>] [--model <name>]
 #                                         [--effort <level>]
 #                                         (--note <text> | --note-file <path>)
+#        fm-control.sh <task-id> recover  [--harness <name>] [--model <name>]
+#                                         [--effort <level>]
+#                                         (--note <text> | --note-file <path>)
 #
 # Why this exists, and how it differs from fm-send.sh. bin/fm-send.sh is the
 # DATA plane: conversational text for the agent to read, always routing-marked
@@ -50,6 +53,21 @@
 #              the prior durable record in place and reports the concrete
 #              state; it never leaves a half-transitioned task claiming to be
 #              running.
+#   recover    Reconcile a ship or scout whose recorded endpoint is GONE
+#              (agent-state `missing`, e.g. after a host reboot cleared the
+#              session provider's windows) without tearing the task down or
+#              minting a new id. Preserves the same task id, the same local
+#              copy, and the same branch: it proves every local commit is
+#              already published (merge-base --is-ancestor against the recorded
+#              pr_head, the branch upstream, or origin/<branch>), appends a
+#              recovery note to the brief, then delegates to
+#              bin/fm-spawn.sh --recover-missing, which creates a NEW endpoint
+#              and launches into the recorded worktree. Refuses cleanly when
+#              anything local is unpublished or the copy is dirty. A secondmate
+#              missing endpoint stays on the secondmate-liveness path, not this
+#              verb. This is the named exit from the exit↔relaunch circle that
+#              otherwise traps a rebooted task (exit refuses missing; relaunch
+#              requires a positively agent-free existing endpoint).
 #
 # Teardown and discard are NOT verbs here and never will be. `exit` stops an
 # agent and preserves everything else; removing a worktree, killing an
@@ -82,13 +100,15 @@
 #     than reported as successful blind.
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts.
+#   - `recover` acts only on a positively classified `missing` endpoint for a
+#     ship or scout, and only after every local commit is proven published.
 #
 # Environment knobs (all bounded waits, seconds):
 #   FM_CONTROL_POLL              poll interval for postcondition waits (0.5)
 #   FM_CONTROL_SETTLE_WAIT       adapter acknowledgement wait after interrupt (5)
 #   FM_CONTROL_EXIT_WAIT         alive->dead wait after the exit command (30)
-#   FM_CONTROL_LAUNCH_WAIT       dead->alive wait after a relaunch (90)
-#   FM_CONTROL_EXIT_RETRIES      submit-key retries for the exit command (3)
+#   FM_CONTROL_LAUNCH_WAIT       dead->alive wait after a relaunch or recover (90)
+#   FM_CONTROL_EXIT_RETRIES      Enter retries for the exit command (3)
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,12 +170,18 @@ CONTROL_LOCK=
 CONTROL_LOCK_HELD=0
 RELAUNCH_ACTIVE=0
 RELAUNCH_PHASE=start
+RECOVER_ACTIVE=0
+RECOVER_PHASE=start
 
 control_cleanup() {
   local status=$?
   if [ "$RELAUNCH_ACTIVE" = 1 ] \
      && declare -F relaunch_rollback >/dev/null 2>&1; then
     relaunch_rollback || true
+  fi
+  if [ "$RECOVER_ACTIVE" = 1 ] \
+     && declare -F recover_rollback >/dev/null 2>&1; then
+    recover_rollback || true
   fi
   if [ "$CONTROL_LOCK_HELD" = 1 ]; then
     CONTROL_LOCK_HELD=0
@@ -238,10 +264,13 @@ if [ -n "$control_want_value" ]; then
   die "--$control_want_value requires a value"
 fi
 
-if [ "$VERB" != relaunch ]; then
-  [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
-    || die "--harness, --model, --effort, and --note apply to 'relaunch' only"
-fi
+case "$VERB" in
+  relaunch|recover) ;;
+  *)
+    [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
+      || die "--harness, --model, --effort, and --note apply to 'relaunch' and 'recover' only"
+    ;;
+esac
 [ "$HARNESS_SET" = 0 ] || [ -n "$NEW_HARNESS" ] || die "--harness requires a non-empty value"
 [ "$MODEL_SET" = 0 ] || [ -n "$NEW_MODEL" ] || die "--model requires a non-empty value"
 [ "$EFFORT_SET" = 0 ] || [ -n "$NEW_EFFORT" ] || die "--effort requires a non-empty value"
@@ -454,7 +483,7 @@ do_exit() {
       return 0
       ;;
     alive) ;;
-    missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action" ;;
+    missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop; recover it with bin/fm-control.sh $ID recover --note '<what happened>' rather than exit or relaunch" ;;
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
   # A busy agent is interrupted first before the exit command is submitted.
