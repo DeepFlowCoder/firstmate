@@ -2493,10 +2493,10 @@ elif [ "$RECOVER_MISSING" -eq 1 ]; then
   # adopted pane did.
   recover_wt_real=$(real_path_or_raw "$WT")
   recover_seen=
-  for _ in $(seq 1 10); do
+  for _ in $(seq 1 60); do
     recover_seen=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$recover_seen" ] || [ "$(real_path_or_raw "$recover_seen")" != "$recover_wt_real" ] || break
-    sleep 0.5
+    sleep 1
   done
   if [ -z "$recover_seen" ] || [ "$(real_path_or_raw "$recover_seen")" != "$recover_wt_real" ]; then
     echo "error: task $ID's new endpoint is in '${recover_seen:-unknown}', not its recorded worktree '$WT'; refusing to recover an agent outside the copy holding its work" >&2
