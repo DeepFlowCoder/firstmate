@@ -172,6 +172,7 @@ RELAUNCH_ACTIVE=0
 RELAUNCH_PHASE=start
 RECOVER_ACTIVE=0
 RECOVER_PHASE=start
+RECOVER_LAUNCHED=0
 
 control_cleanup() {
   local status=$?
@@ -942,7 +943,11 @@ recover_rollback() {
       echo "error: recovery of $ID was refused before its replacement was launched; nothing changed" >&2
       ;;
     launching)
-      echo "error: recovery of $ID failed while launching its replacement; no agent is running, and its work plus the recovery note are preserved at $WT" >&2
+      if [ "$RECOVER_LAUNCHED" = 1 ]; then
+        echo "error: recovery of $ID launched its replacement but could not confirm it alive; its work plus the recovery note are preserved at $WT, and the durable record points at the new endpoint" >&2
+      else
+        echo "error: recovery of $ID failed while launching its replacement; no agent is running, and its work plus the recovery note are preserved at $WT" >&2
+      fi
       ;;
   esac
   return 0
@@ -986,6 +991,7 @@ do_recover() {
   if ! "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
     die "the replacement agent for $ID could not be recovered on $TARGET_HARNESS"
   fi
+  RECOVER_LAUNCHED=1
 
   fm_backend_validate_task_endpoint "$META" "$ID" \
     || die "task $ID's replacement endpoint could not be revalidated after recovery"

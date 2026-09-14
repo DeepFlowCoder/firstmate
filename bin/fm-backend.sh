@@ -366,12 +366,12 @@ fm_backend_target_of_meta() {  # <meta-file>
 # the checked-out branch (falling back to refs/heads/fm/<id> when detached); a
 # detached worktree with no such branch is accepted only when its HEAD is
 # exactly the recorded pr_head. A detached worktree with a resolved branch
-# additionally requires the detached HEAD itself to be an ancestor of the
-# published head (so nothing checked out is unpublished) and sets
-# FM_RECOVER_DETACHED=1 so the caller can tell the worker to check out the
-# verified branch. On success, sets FM_RECOVER_PUBLISHED and
-# FM_RECOVER_PUBLISHED_BRANCH (the branch resolution, or "detached HEAD at
-# <head>"). On failure, prints one refusal and returns 1.
+# additionally requires the detached HEAD itself to be published (reachable
+# from a remote-tracking ref, e.g. an ancestor of origin/<branch>) so nothing
+# checked out is unpublished, and sets FM_RECOVER_DETACHED=1 so the caller can
+# tell the worker to check out the verified branch. On success, sets
+# FM_RECOVER_PUBLISHED and FM_RECOVER_PUBLISHED_BRANCH (the branch resolution,
+# or "detached HEAD at <head>"). On failure, prints one refusal and returns 1.
 fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
   local meta=$1 id=$2 wt=$3 branch pr_head published local_tip detached_head
   FM_RECOVER_PUBLISHED=
@@ -418,8 +418,8 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
   if [ "$FM_RECOVER_DETACHED" = 1 ]; then
     detached_head=$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null) \
       || { echo "error: task $id's worktree HEAD cannot be read" >&2; return 1; }
-    if ! git -C "$wt" merge-base --is-ancestor "$detached_head" "$published"; then
-      echo "error: task $id's worktree is detached at $detached_head, which is not an ancestor of its published head ($published); refusing to recover a worktree whose checked-out state is not published" >&2
+    if [ -z "$(git -C "$wt" branch -r --contains "$detached_head" 2>/dev/null)" ]; then
+      echo "error: task $id's worktree is detached at $detached_head, which is not reachable from any remote-tracking ref; refusing to recover a worktree whose checked-out state is not published" >&2
       return 1
     fi
   fi

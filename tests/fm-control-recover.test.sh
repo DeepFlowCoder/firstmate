@@ -495,11 +495,54 @@ test_recover_detached_worktree_refuses_unpublished_detached_head() {
   TASK_TMPS+=("/tmp/fm-rc15")
 
   out=$(run_control "$dir" rc15 recover --note "x"); rc=$?
-  expect_code 1 "$rc" "a detached worktree whose HEAD is not an ancestor of the published head should refuse"$'\n'"$out"
-  assert_contains "$out" "which is not an ancestor of its published head" \
-    "the refusal should name the detached-HEAD ancestor failure"
+  expect_code 1 "$rc" "a detached worktree whose HEAD is not reachable from any remote-tracking ref should refuse"$'\n'"$out"
+  assert_contains "$out" "not reachable from any remote-tracking ref" \
+    "the refusal should name the unpublished detached HEAD"
   [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused recovery must launch nothing"
   pass "fm-control recover: a detached worktree refuses when its checked-out state is not published"
+}
+
+test_recover_detached_at_published_advanced_default_branch_succeeds() {
+  local dir out rc proj wt c1 m2 default_branch
+  dir=$(new_case recover-detached-advanced rc17)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "fm/rc17"
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "task work"
+  c1=$(git -C "$wt" rev-parse "fm/rc17")
+  git -C "$wt" push -q -u origin "fm/rc17"
+  default_branch=$(git -C "$proj" symbolic-ref --short HEAD)
+  git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "advance default branch"
+  m2=$(git -C "$proj" rev-parse HEAD)
+  git -C "$proj" push -q -u origin "$default_branch"
+  git -C "$wt" checkout --detach -q "$m2"
+  mkdir -p "$dir/home/data/rc17"
+  printf '# brief for rc17\n\nDo the thing.\n' > "$dir/home/data/rc17/brief.md"
+  {
+    echo "window=fmses:fm-rc17"
+    echo "endpoint_task_id=rc17"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc17"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc17.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc17")
+
+  out=$(run_control "$dir" rc17 recover --note "x"); rc=$?
+  expect_code 0 "$rc" "a detached worktree at a published advanced default-branch tip should recover"$'\n'"$out"
+  assert_contains "$out" "recovered rc17 harness=claude" "the recovery should succeed"
+  assert_grep "git checkout fm/rc17" "$dir/home/data/rc17/brief.md" \
+    "the note must tell the worker to check out the verified branch"
+  pass "fm-control recover: a detached worktree at a published advanced default branch recovers onto its fm/<id> branch"
 }
 
 test_recover_detached_without_branch_refuses_unpublished_head() {
@@ -592,5 +635,6 @@ test_direct_spawn_recover_missing_refuses_a_detached_worktree
 test_recover_detached_worktree_proves_the_task_branch
 test_recover_detached_worktree_instructs_checkout
 test_recover_detached_worktree_refuses_unpublished_detached_head
+test_recover_detached_at_published_advanced_default_branch_succeeds
 test_recover_detached_without_branch_refuses_unpublished_head
 test_recover_prefers_recorded_pr_head_over_stale_origin
