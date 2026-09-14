@@ -365,17 +365,25 @@ fm_backend_target_of_meta() {  # <meta-file>
 # present, else the task branch's origin/upstream counterpart. The local tip is
 # the checked-out branch (falling back to refs/heads/fm/<id> when detached); a
 # detached worktree with no such branch is accepted only when its HEAD is
-# exactly the recorded pr_head. On success, sets FM_RECOVER_PUBLISHED and
+# exactly the recorded pr_head. A detached worktree with a resolved branch
+# additionally requires the detached HEAD itself to be an ancestor of the
+# published head (so nothing checked out is unpublished) and sets
+# FM_RECOVER_DETACHED=1 so the caller can tell the worker to check out the
+# verified branch. On success, sets FM_RECOVER_PUBLISHED and
 # FM_RECOVER_PUBLISHED_BRANCH (the branch resolution, or "detached HEAD at
 # <head>"). On failure, prints one refusal and returns 1.
 fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
-  local meta=$1 id=$2 wt=$3 branch pr_head published local_tip
+  local meta=$1 id=$2 wt=$3 branch pr_head published local_tip detached_head
   FM_RECOVER_PUBLISHED=
   FM_RECOVER_PUBLISHED_BRANCH=
+  FM_RECOVER_DETACHED=
   pr_head=$(fm_meta_get "$meta" pr_head)
   branch=$(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
-  if [ -z "$branch" ] && git -C "$wt" show-ref --verify --quiet "refs/heads/fm/$id"; then
-    branch="fm/$id"
+  if [ -z "$branch" ]; then
+    FM_RECOVER_DETACHED=1
+    if git -C "$wt" show-ref --verify --quiet "refs/heads/fm/$id"; then
+      branch="fm/$id"
+    fi
   fi
   if [ -n "$branch" ]; then
     local_tip=$(git -C "$wt" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null) \
@@ -398,6 +406,7 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
     fi
     branch="detached HEAD at $pr_head"
     published=$pr_head
+    FM_RECOVER_DETACHED=
   else
     echo "error: task $id's worktree is detached and records no pr_head; refusing to recover work that cannot be proven published" >&2
     return 1
@@ -405,6 +414,14 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
   if ! git -C "$wt" merge-base --is-ancestor "$local_tip" "$published"; then
     echo "error: task $id's local work is not published: '$branch' ($local_tip) is not an ancestor of its published head ($published); push the branch before recovering so a re-dispatch cannot orphan local commits" >&2
     return 1
+  fi
+  if [ "$FM_RECOVER_DETACHED" = 1 ]; then
+    detached_head=$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null) \
+      || { echo "error: task $id's worktree HEAD cannot be read" >&2; return 1; }
+    if ! git -C "$wt" merge-base --is-ancestor "$detached_head" "$published"; then
+      echo "error: task $id's worktree is detached at $detached_head, which is not an ancestor of its published head ($published); refusing to recover a worktree whose checked-out state is not published" >&2
+      return 1
+    fi
   fi
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
   FM_RECOVER_PUBLISHED=$published

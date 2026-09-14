@@ -385,6 +385,85 @@ test_recover_detached_worktree_proves_the_task_branch() {
   pass "fm-control recover: a detached worktree proves its fm/<id> task branch, not the detached HEAD"
 }
 
+test_recover_detached_worktree_instructs_checkout() {
+  local dir out rc proj wt c1
+  dir=$(new_case recover-detached-checkout rc14)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "fm/rc14"
+  c1=$(git -C "$wt" rev-parse "fm/rc14")
+  git -C "$wt" push -q -u origin "fm/rc14"
+  git -C "$wt" checkout --detach -q "$c1"
+  mkdir -p "$dir/home/data/rc14"
+  printf '# brief for rc14\n\nDo the thing.\n' > "$dir/home/data/rc14/brief.md"
+  {
+    echo "window=fmses:fm-rc14"
+    echo "endpoint_task_id=rc14"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc14"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc14.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc14")
+
+  out=$(run_control "$dir" rc14 recover --note "x"); rc=$?
+  expect_code 0 "$rc" "a detached worktree whose HEAD is an ancestor of the published head should recover"$'\n'"$out"
+  assert_contains "$out" "recovered rc14 harness=claude" "the recovery should succeed"
+  assert_grep "Branch: fm/rc14" "$dir/home/data/rc14/brief.md" \
+    "the note must name the verified branch"
+  assert_grep "git checkout fm/rc14" "$dir/home/data/rc14/brief.md" \
+    "the note must tell the worker to check out the verified branch"
+  pass "fm-control recover: a detached worktree recovers onto its fm/<id> branch and instructs the checkout"
+}
+
+test_recover_detached_worktree_refuses_unpublished_detached_head() {
+  local dir out rc proj wt c1 detached
+  dir=$(new_case recover-detached-head rc15)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "fm/rc15"
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "task work"
+  c1=$(git -C "$wt" rev-parse "fm/rc15")
+  git -C "$wt" push -q -u origin "fm/rc15"
+  git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "divergent default-branch commit"
+  detached=$(git -C "$proj" rev-parse HEAD)
+  git -C "$wt" checkout --detach -q "$detached"
+  mkdir -p "$dir/home/data/rc15"
+  printf '# brief for rc15\n\nDo the thing.\n' > "$dir/home/data/rc15/brief.md"
+  {
+    echo "window=fmses:fm-rc15"
+    echo "endpoint_task_id=rc15"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc15"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc15.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc15")
+
+  out=$(run_control "$dir" rc15 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "a detached worktree whose HEAD is not an ancestor of the published head should refuse"$'\n'"$out"
+  assert_contains "$out" "which is not an ancestor of its published head" \
+    "the refusal should name the detached-HEAD ancestor failure"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused recovery must launch nothing"
+  pass "fm-control recover: a detached worktree refuses when its checked-out state is not published"
+}
+
 test_recover_detached_without_branch_refuses_unpublished_head() {
   local dir out rc proj wt base published
   dir=$(new_case recover-detached-nobranch rc12)
@@ -472,5 +551,7 @@ test_direct_spawn_recover_missing_refuses_a_live_endpoint
 test_direct_spawn_recover_missing_reuses_the_recorded_worktree
 test_direct_spawn_recover_missing_refuses_unpublished_work
 test_recover_detached_worktree_proves_the_task_branch
+test_recover_detached_worktree_instructs_checkout
+test_recover_detached_worktree_refuses_unpublished_detached_head
 test_recover_detached_without_branch_refuses_unpublished_head
 test_recover_prefers_recorded_pr_head_over_stale_origin
