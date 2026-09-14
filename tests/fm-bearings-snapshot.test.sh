@@ -104,7 +104,7 @@ fixture_mate_home() {  # <parent-home>
 
 # Standard fixture: a ship task with a recorded PR, a scout task with a report, a
 # secondmate with a MASKED open decision (needs-decision then a later unrelated
-# done), and a backlog with a superseded queued item.
+# done), and a backlog with a queued item held under a set-aside hold kind.
 write_fixture() {  # <home>
   local home=$1 mate
   mate=$(fixture_mate_home "$home")
@@ -120,8 +120,7 @@ write_fixture() {  # <home>
 
 ## Queued
 - [ ] live-gate - Real queued work blocked-by: ship-task (repo: firstmate) (kind: ship)
-- [ ] dead-gate - Old conditional work (repo: firstmate) (kind: scout)
-  NOT REQUIRED - superseded 2026-07-11; kept as reference only.
+- [ ] dead-gate - Old conditional work (repo: firstmate) (kind: scout) (hold: superseded 2026-07-11; kept as reference only) (hold-kind: parked)
 
 ## Done
 - [x] done-a - Landed thing https://github.com/kunchenguid/firstmate/pull/7 (repo: firstmate) (kind: ship) (merged 2026-07-10)
@@ -978,16 +977,79 @@ test_superseded_queued_item_dropped_by_default() {
   json=$(run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
     (.gates | any(.[]; .id == "live-gate")) and (.gates | any(.[]; .id == "dead-gate") | not)
-  ' >/dev/null || fail "default gates must include live and drop superseded: $json"
+  ' >/dev/null || fail "default gates must include live and drop set-aside: $json"
+  # Whatever the default withholds, it says so with a count, so an absent row is
+  # never left indistinguishable from a row that was never queued.
+  printf '%s' "$json" | jq -e '
+    [.omitted[] | select(.reveal == "--all-queued")] as $d
+    | ($d | length) == 1 and ($d[0].surface | test("1$"))
+  ' >/dev/null || fail "the withheld set-aside row was not disclosed with its count: $json"
   json=$(run "$home" "$fakebin" --json --all-queued)
   printf '%s' "$json" | jq -e '.gates | any(.[]; .id == "dead-gate")' >/dev/null \
-    || fail "--all-queued must restore the superseded item"
-  pass "superseded queued items are dropped by default and restored with --all-queued"
+    || fail "--all-queued must restore the set-aside item"
+  printf '%s' "$json" | jq -e '[.omitted[] | select(.reveal == "--all-queued")] | length == 0' \
+    >/dev/null || fail "--all-queued hid nothing, so it must disclose nothing: $json"
+  pass "set-aside queued items are dropped by default with a counted disclosure and restored with --all-queued"
+}
+
+# The measured bug: the filter used to search the row PROSE for SUPERSEDED /
+# NOT REQUIRED / DEFERRED, so a live captain call whose reason merely discussed
+# one of those words was swallowed - it reached neither decisions_open nor
+# gates, and the only difference from a visible row was a word inside its text.
+# Both directions are pinned here, because a filter that never hides anything is
+# as wrong as one that hides a live call.
+test_default_view_filters_by_structured_state_not_row_prose() {
+  local home fakebin json
+  home=$(make_home prose-filter)
+  mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] blocker-live - Real blocking work (repo: bitagora) (kind: ship)
+- [ ] canon-marca - Mark the E316 (repo: bitagora) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED as a marker) (hold-kind: captain)
+- [ ] canon-marca-gated - Mark the E316 phase two blocked-by: blocker-live (repo: bitagora) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED as a marker) (hold-kind: captain)
+- [ ] really-parked - Genuinely set-aside work (repo: bitagora) (kind: ship) (hold: replaced by canon-marca) (hold-kind: parked)
+- [ ] parked-dated - Parked with a future date (repo: bitagora) (kind: ship) (hold: replaced) (hold-kind: parked) (hold-until: 2099-01-01)
+- [ ] future-dated - Deferred to a future date (repo: bitagora) (kind: ship) (hold: after launch) (hold-kind: future) (hold-until: 2099-01-01)
+- [ ] future-due - Date-deferred work whose date has arrived (repo: bitagora) (kind: ship) (hold: start after launch) (hold-kind: future) (hold-until: 2020-01-01)
+
+## Done
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  # A live captain call reaches Captain's Call whatever its reason says.
+  printf '%s' "$json" | jq -e '.decisions_open | any(.[]; .id == "canon-marca")' >/dev/null \
+    || fail "a live captain call was hidden by a word inside its reason: $json"
+  # The same prose on a blocked hold reaches Charted Next rather than vanishing.
+  printf '%s' "$json" | jq -e '.gates | any(.[]; .id == "canon-marca-gated")' >/dev/null \
+    || fail "a blocked captain hold was hidden by a word inside its reason: $json"
+  # The filter still REFUSES: a parked row stays hidden even with a date.
+  printf '%s' "$json" | jq -e '
+    (.gates | any(.[]; .id == "really-parked") | not)
+      and (.decisions_open | any(.[]; .id == "really-parked") | not)
+      and (.gates | any(.[]; .id == "parked-dated") | not)
+  ' >/dev/null || fail "a parked row must stay hidden by default: $json"
+  # A future-kind row carrying a still-ahead date is a dated gate, not hidden.
+  printf '%s' "$json" | jq -e '
+    .gates[] | select(.id == "future-dated") | .reason | startswith("until 2099-01-01:")
+  ' >/dev/null || fail "a future-kind row with an ahead date must render as its dated gate: $json"
+  # A future-kind row whose date has arrived surfaces, it is not set-aside.
+  printf '%s' "$json" | jq -e '.gates | any(.[]; .id == "future-due")' >/dev/null \
+    || fail "a future-kind row whose date arrived was hidden: $json"
+  printf '%s' "$json" | jq -e '
+    [.omitted[] | select(.reveal == "--all-queued")] as $d
+    | ($d | length) == 1 and ($d[0].surface | test("2$"))
+  ' >/dev/null || fail "exactly two rows were withheld and the count must say so: $json"
+  json=$(run "$home" "$fakebin" --json --all-queued)
+  printf '%s' "$json" | jq -e '.gates | any(.[]; .id == "really-parked")' >/dev/null \
+    || fail "--all-queued must reveal the set-aside row: $json"
+  pass "the default view filters by structured hold kind, not by a word in the row prose"
 }
 
 # The collapsed captain-call contract: any due, unblocked captain-held task is
 # Captain's Call whatever its kind; a date-deferred hold is a dated gate until
-# due; a prose-deferred hold leaves the default views with a disclosure; and
+# due; a structurally parked hold leaves the default views with a disclosure; and
 # Recently Landed excludes only what closed while still held for the captain.
 test_collapsed_captain_call_deferral_and_landed() {
   local home fakebin json
@@ -1000,7 +1062,7 @@ test_collapsed_captain_call_deferral_and_landed() {
 - [ ] work-gate - Captain-gated ship work (repo: firstmate) (kind: ship) (hold: captain go needed) (hold-kind: captain)
 - [ ] later-call - Deferred captain call (repo: firstmate) (kind: captain) (hold: revisit with the captain) (hold-kind: captain) (hold-until: 2026-08-01)
 - [ ] due-call - Due captain call (repo: firstmate) (kind: captain) (hold: overdue captain choice) (hold-kind: captain) (hold-until: 2026-07-11)
-- [ ] parked-call - Prose-parked captain call (repo: firstmate) (kind: ship) (hold: DEFERRED by captain revisit later) (hold-kind: captain)
+- [ ] parked-call - Structurally parked call (repo: firstmate) (kind: ship) (hold: captain revisit later) (hold-kind: parked)
 - [ ] external-gate - Externally held work (repo: firstmate) (kind: ship) (hold: upstream release pending) (hold-kind: external)
 
 ## Done
@@ -1021,14 +1083,14 @@ EOF
       and (.gates | any(.[]; .id == "external-gate"))
       and (.landed | any(.[]; .id == "shipped-work"))
       and (.landed | any(.[]; .id == "answered-call") | not)
-      and (.omitted | any(.[]; .surface | startswith("captain holds marked deferred")))
+      and (.omitted | any(.[]; .reveal == "--all-queued" and (.surface | test("1$"))))
   ' >/dev/null || fail "the collapsed captain-call projection is wrong: $json"
   json=$(run "$home" "$fakebin" --json --all-decisions --all-queued)
   printf '%s' "$json" | jq -e '
-    (.decisions_open | any(.[]; .id == "parked-call"))
-      and (.gates | any(.[]; .id == "parked-call") | not)
-  ' >/dev/null || fail "--all-decisions must reveal the prose-deferred call: $json"
-  pass "captain-held tasks of any kind reach Captain's Call, deferral is honored, and landed excludes answered calls"
+    (.decisions_open | any(.[]; .id == "parked-call") | not)
+      and (.gates | any(.[]; .id == "parked-call"))
+  ' >/dev/null || fail "--all-queued must reveal the structurally parked call as a gate: $json"
+  pass "captain-held tasks of any kind reach Captain's Call, structured deferral is honored, and landed excludes answered calls"
 }
 
 # The captain holding work that is ALREADY UNDER WAY is the most urgent call
@@ -2498,6 +2560,7 @@ test_completed_scout_report_not_pending
 test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
 test_superseded_queued_item_dropped_by_default
+test_default_view_filters_by_structured_state_not_row_prose
 test_include_prs_is_the_only_fetch_path
 test_no_verdict_check_is_never_reported_passing
 test_partial_github_failure_degrades

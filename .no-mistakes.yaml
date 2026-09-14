@@ -29,13 +29,17 @@ document:
 # `.github/workflows/ci.yml` invokes it directly, with parity asserted by
 # `tests/fm-lint.test.sh` and `tests/fm-lint-workflows.test.sh`.
 #
-# Do not set commands.test to a complete tests/*.test.sh walk. Local no-mistakes
-# Test is intent-targeted validation of whether the change meets its brief;
-# .github/workflows/ci.yml owns broad regression (behavior suite, platform,
-# security, Herdr, tmux, and lifecycle coverage). A full-suite override here
-# would duplicate CI and defeat the targeted Test contract.
+# Pin the Test step to a targeted command, not a gate-agent-chosen scope and not
+# a complete tests/*.test.sh walk: an agent-scoped run exceeded the 30m Test
+# budget on broad regression that .github/workflows/ci.yml already owns.
+# commands.test runs the fleet-status-view suites (fleet snapshot, bearings
+# snapshot, and bearings board) that pin the view contract this repo's status
+# surface depends on; CI owns broad regression (behavior suite, platform,
+# security, Herdr, tmux, and lifecycle coverage). Do not widen this to a
+# full-suite walk: it would duplicate CI and re-introduce the timeout.
 commands:
   lint: 'bin/fm-lint.sh'
+  test: 'bash tests/fm-fleet-snapshot-view.test.sh && bash tests/fm-bearings-snapshot.test.sh && bash tests/fm-bearings-board.test.sh && bash tests/fm-bearings-board-render.test.sh'
 
 # Publish each run's test evidence to the orphan no-mistakes/evidence branch linked from the PR.
 # The evidence is not committed to the feature or default branch.

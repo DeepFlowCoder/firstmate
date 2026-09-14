@@ -46,10 +46,16 @@
 #     current_role is unaffected: an in-flight captain hold stays "held".
 #     There is no separate decision type: any captain-held task is the same
 #     primitive, whatever kind its row carries.
-#     deferred_marker is a presentation hint only: the row's hold reason or
-#     body carries an explicit SUPERSEDED / NOT REQUIRED / DEFERRED marker.
-#     It never changes captain_actionable; renderers may use it to keep
-#     prose-deferred rows out of default views.
+#     deferred_marker is a presentation hint only: the row's hold_kind is the
+#     set-aside kind (parked). It is read from that field alone and never from
+#     the hold reason or body, because free prose that merely mentions such a
+#     word is not a marker. Any other kind, including an unrecognized one and
+#     future (date-deferred through hold_until), is not deferred. It never
+#     changes captain_actionable - the two are disjoint, since captain_actionable
+#     requires hold_kind == "captain" - and renderers may use it to keep
+#     parked rows out of default views. A hold_until date is the separate
+#     deferral every reader gates on by date, and a future-kind row surfaces
+#     once its date arrives.
 #   tasks[]: one row per state/<id>.meta, sorted by id.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately.
@@ -521,9 +527,24 @@ backlog_json() {  # [<backlog-path>] [<archive-path>] - default to this home's f
               ((.state == "queued" or .state == "in_flight") and .hold_kind == "captain"
                and .hold_reason != null and (.unresolved_blocker_ids | length) == 0
                and (.hold_until == null or .hold_until <= $today))
+          # Read the hold kind field, never prose. A hold reason or body is free
+          # text written for some other purpose, so a row whose reason merely
+          # DISCUSSES such a word - a captain hold reading "the E317 explicitly
+          # rejects `superseded` as a marker" - read as deferred and vanished
+          # from every default view. A kind has a closed value set that
+          # tasks-axi alone writes, so it can be asserted; a substring in a
+          # paragraph cannot. parked is the one kind meaning set aside; future
+          # is date-deferred through hold_until, so it renders as a dated gate
+          # and surfaces once its date arrives instead of being withheld. Any
+          # other kind, including an unrecognized one, is NOT deferred: failing
+          # toward showing the row is the only safe direction for a view read to
+          # find live work.
+          # Deliberately disjoint from captain_actionable above, which requires
+          # hold_kind == "captain": a captain call is never also marked deferred
+          # here, so no reader has to filter one by the other. Revisit that
+          # invariant only if these two kind sets ever overlap.
           | .deferred_marker =
-              ((((.hold_reason // "") + " " + (.body_excerpt // ""))
-                | test("SUPERSEDED|NOT REQUIRED|NOT-REQUIRED|DEFERRED"; "i")))
+              ((.hold_kind // "") as $kind | $kind == "parked")
         else . end)
     | del(.section,.order)
   ' < "$backlog"

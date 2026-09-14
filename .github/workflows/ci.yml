@@ -491,7 +491,7 @@ jobs:
           }
 
           run_stock_bash_suite tests/fm-fleet-snapshot-view.test.sh snapshot/fleet-view 20
-          run_stock_bash_suite tests/fm-bearings-snapshot.test.sh Bearings 49
+          run_stock_bash_suite tests/fm-bearings-snapshot.test.sh Bearings 50
 
   invariants:
     name: Repo invariants

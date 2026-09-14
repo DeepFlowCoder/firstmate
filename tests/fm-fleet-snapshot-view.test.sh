@@ -777,7 +777,10 @@ test_backlog_tasks_axi_forms_and_overrides() {
 - [ ] sample-decision-route - Choose sample route (repo: sample) (kind: captain) (since 2026-07-14) (hold: captain route choice pending) (hold-kind: captain)
 - [ ] dated-route - Deferred sample route (repo: sample) (kind: ship) (hold: captain sent this to later) (hold-kind: captain) (hold-until: 2026-09-01)
 - [ ] captain-gated-work - Captain-gated ship work (repo: sample) (kind: ship) (hold: captain go pending) (hold-kind: captain)
-- [ ] parked-prose - Parked captain call (repo: sample) (kind: ship) (hold: DEFERRED by captain) (hold-kind: captain)
+- [ ] prose-mentions-marker - Captain call whose reason discusses the word (repo: sample) (kind: ship) (hold: the E317 explicitly rejects SUPERSEDED and NOT REQUIRED as markers) (hold-kind: captain)
+- [ ] structurally-parked - Genuinely set-aside work (repo: sample) (kind: ship) (hold: replaced by captain-gated-work) (hold-kind: parked)
+- [ ] structurally-future - Date-deferred work (repo: sample) (kind: ship) (hold: after launch) (hold-kind: future)
+- [ ] unknown-hold-kind - Held under a kind this reader does not know (repo: sample) (kind: ship) (hold: some other reason) (hold-kind: bogus)
 
 ## Done
 - [x] done-comma - Done Comma Task https://github.com/kunchenguid/firstmate/pull/42 (repo: gamma, merged 2026-07-09) (kind: ship)
@@ -851,10 +854,35 @@ EOF
     .backlog.records[] | select(.id == "captain-gated-work")
     | .kind == "ship" and .captain_actionable == true and .deferred_marker == false
   ' >/dev/null || fail "captain actionability must not depend on the row kind"
+  # The regression: the marker is read from the hold kind field, so a live
+  # captain call whose REASON merely discusses those words is not deferred.
   printf '%s' "$out" | jq -e '
-    .backlog.records[] | select(.id == "parked-prose")
-    | .captain_actionable == true and .deferred_marker == true
-  ' >/dev/null || fail "a prose-deferred captain hold did not carry the presentation marker"
+    .backlog.records[] | select(.id == "prose-mentions-marker")
+    | .captain_actionable == true and .deferred_marker == false
+  ' >/dev/null || fail "a captain hold whose reason discusses the marker words was marked deferred"
+  # The other direction: a structurally parked row still carries the marker,
+  # while a future-kind row does not (it is date-deferred, not set aside).
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "structurally-parked")
+    | .deferred_marker == true and .captain_actionable == false
+  ' >/dev/null || fail "a parked hold did not carry the presentation marker"
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "structurally-future")
+    | .deferred_marker == false and .captain_actionable == false
+  ' >/dev/null || fail "a future hold was marked deferred instead of date-deferred"
+  # A kind outside the closed tasks-axi set reaches the record verbatim and
+  # fails toward showing the row, never toward hiding it.
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "unknown-hold-kind")
+    | .hold_kind == "bogus" and .deferred_marker == false
+  ' >/dev/null || fail "a hold kind outside the set-aside set was marked deferred"
+  # Marked-deferred and captain-actionable are disjoint across the whole backlog,
+  # which is what lets every decision renderer skip a deferral filter entirely.
+  printf '%s' "$out" | jq -e '
+    [.backlog.records[]
+     | select(.structured and .captain_actionable == true and .deferred_marker == true)]
+    | length == 0
+  ' >/dev/null || fail "a row was both captain-actionable and marked deferred"
   printf '%s' "$out" | jq -e '
     .backlog.records[] | select(.id == "done-comma")
     | .repo == "gamma"
