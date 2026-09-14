@@ -1049,7 +1049,7 @@ else
     # Ring the doorbell, best-effort: no ring outcome changes the exit status,
     # because the watcher's re-ring ladder owns loss detection from here.
     ring_rc=0
-    fm_task_inbox_ring "$TARGET_BACKEND" "$T" "$INBOX_RECORD" "$EXPECTED_LABEL" || ring_rc=$?
+    fm_task_inbox_ring "$TARGET_BACKEND" "$T" "$INBOX_RECORD" "$EXPECTED_LABEL" "${TARGET_HARNESS:-}" || ring_rc=$?
     case "$ring_rc" in
       1) echo "fm-send: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
       2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
@@ -1077,9 +1077,15 @@ else
   # Type once, submit, verify. Only exact empty confirms delivery; every other
   # verdict preserves the loud refusal boundary. Only LOCAL targets reach this
   # block: remote text rides the inbox leg above, and remote --key exits
-  # earlier.
+  # earlier. The submit key follows the harness (Kimi directs on Ctrl+S); a
+  # backend that cannot deliver that chord is refused before any text is typed.
+  submit_key=$(fm_control_submit_key "${TARGET_HARNESS:-}")
+  if ! fm_control_backend_supports_key "$TARGET_BACKEND" "$submit_key"; then
+    echo "error: text not sent to $T: harness ${TARGET_HARNESS:-unknown} submits with $submit_key, which the $TARGET_BACKEND backend cannot deliver (tried $RESOLUTION_TRIED)" >&2
+    exit 1
+  fi
   send_rc=0
-  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
+  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL" "$submit_key"); then
     :
   else
     send_rc=$?

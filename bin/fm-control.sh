@@ -445,7 +445,7 @@ retire_busy_incarnation() {
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped` or `stopped`.
 do_exit() {
-  local state cmd verdict cancel interrupt_result=not-needed
+  local state cmd verdict cancel interrupt_result=not-needed submit_key
   require_state_verified_backend exit
   state=$(agent_state)
   case "$state" in
@@ -475,13 +475,16 @@ do_exit() {
       ;;
   esac
   cmd=$(fm_control_exit_command "$HARNESS")
+  submit_key=$(fm_control_submit_key "$HARNESS")
+  fm_control_backend_supports_key "$BACKEND" "$submit_key" \
+    || die "harness $HARNESS submits with $submit_key, which the $BACKEND backend cannot deliver; refusing to leave the exit command unsubmitted"
   # The submit verdict is NOT the postcondition here: a successful exit command
   # destroys the composer the verdict is read from, so a post-exit read can
   # legitimately report anything. Only a hard transport failure aborts; the
-  # authoritative proof is the agent-state wait below. The retried Enter still
+  # authoritative proof is the agent-state wait below. The retried submit still
   # matters, because a slash command opens a completion popup on some TUIs that
-  # swallows the first Enter.
-  verdict=$(fm_backend_send_text_submit "$BACKEND" "$T" "$cmd" "$EXIT_RETRIES" "$POLL" 1.2 "$LABEL") \
+  # swallows the first press, and Kimi directs only on Ctrl+S.
+  verdict=$(fm_backend_send_text_submit "$BACKEND" "$T" "$cmd" "$EXIT_RETRIES" "$POLL" 1.2 "$LABEL" "$submit_key") \
     || die "the exit command could not be sent to task $ID on $BACKEND"
   [ "$verdict" != send-failed ] \
     || die "the exit command could not be sent to task $ID on $BACKEND"

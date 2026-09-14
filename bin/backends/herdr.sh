@@ -2598,10 +2598,11 @@ fm_backend_herdr_send_literal() {  # <target> <text>
 }
 
 # fm_backend_herdr_normalize_key: map firstmate's key vocabulary (Enter,
-# Escape, C-c, as used by fm-send.sh --key and stuck-crewmate-recovery) onto
-# herdr's `pane send-keys` names. Verified empirically: enter, escape/esc, and
-# both ctrl+c/C-c all work (case-insensitive on herdr's side, but normalize
-# explicitly rather than relying on that).
+# Escape, C-c, C-u, C-s, as used by fm-send.sh --key, stuck-crewmate-recovery,
+# and Kimi's Ctrl+S submit) onto herdr's `pane send-keys` names. Verified
+# empirically: enter, escape/esc, and both ctrl+c/C-c all work (case-insensitive
+# on herdr's side, but normalize explicitly rather than relying on that). A raw
+# `C-s` is rejected by herdr; the chord must be spelled `ctrl+s`.
 fm_backend_herdr_normalize_key() {  # <key>
   case "$1" in
     Enter|enter) printf 'enter' ;;
@@ -2610,6 +2611,8 @@ fm_backend_herdr_normalize_key() {  # <key>
     # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
     # drop the prompt muse restores into the composer after Escape.
     C-u|c-u|ctrl+u|Ctrl+U) printf 'ctrl+u' ;;
+    # C-s submits typed composer text for Kimi (fm_control_submit_key).
+    C-s|c-s|ctrl+s|Ctrl+S) printf 'ctrl+s' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -2734,12 +2737,13 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 }
 
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
-# unsubmitted, via send_literal), then submit with a named Enter key, retried
-# (Enter only, never retyped) until native agent-state, a cleared composer, or
-# fm_composer_queued_enter_verdict confirms delivery. Verified hazard
+# unsubmitted, via send_literal), then submit with the harness submit key
+# (Enter by default; the optional trailing arg carries C-s for Kimi), retried
+# (that key only, never retyped) until native agent-state, a cleared composer,
+# or fm_composer_queued_enter_verdict confirms delivery. Verified hazard
 # (herdr-verification-p2.md "slash/$ autocomplete popup"): a `/`- or
 # `$`-prefixed send opens a completion popup within ~0.1s, exactly like tmux's
-# claude/codex popups, so the caller's <settle> before the first Enter matters
+# claude/codex popups, so the caller's <settle> before the first submit matters
 # here the same way it does for tmux.
 #
 # Confirmation signal: when the target is legibly idle before Enter,
@@ -2829,9 +2833,11 @@ fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
   fi
 }
 
-fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle> [expected-label] [submit-key]
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5
+  local submit_key=${7:-Enter} i=0 verdict baseline confirm_sleep
   local raw_status footer_baseline='' allow_rendered=0 enter_sent=0
+  [ -n "$submit_key" ] || submit_key=Enter
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
@@ -2839,14 +2845,14 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   baseline=$(fm_backend_herdr_classify_submit_agent_status "$raw_status")
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
   # Typing never starts a turn, so a footer read taken after the literal send
-  # and before the first Enter is still a pre-submission baseline.
+  # and before the first submit is still a pre-submission baseline.
   if [ "$baseline" = idle ]; then
     allow_rendered=1
   else
     footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target")
   fi
   while :; do
-    if fm_backend_herdr_send_key "$target" Enter; then
+    if fm_backend_herdr_send_key "$target" "$submit_key"; then
       enter_sent=1
     elif [ "$enter_sent" -eq 0 ]; then
       i=$((i + 1))

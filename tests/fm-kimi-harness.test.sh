@@ -88,12 +88,18 @@ case "${1:-}" in
     fi
     case " $* " in
       *' Enter '*)
+        # The LAUNCH command (a bare-shell `kimi --auto`) submits on Enter.
         case "$state" in
           launched)
             if [ "${FM_FAKE_KIMI_READY:-yes}" = yes ]; then
               printf 'ready\n' > "$FM_FAKE_KIMI_STATE"
             fi
             ;;
+        esac
+        ;;
+      *' C-s '*)
+        # The brief pointer and every later steer submit on Kimi's Ctrl+S.
+        case "$state" in
           pointer-typed)
             if [ "${FM_FAKE_KIMI_SWALLOW_ALL:-no}" = yes ]; then
               :
@@ -219,6 +225,13 @@ test_kimi_launch_then_send_is_verified() {
   pointer=$(cat "$CASE_DIR/pointer.log")
   [ "$pointer" = "Read the brief at $brief_real and follow it exactly." ] \
     || fail "kimi pointer was not the exact absolute-path-only instruction: $pointer"
+  # The brief pointer is submitted with Kimi's Ctrl+S (Enter clears the line
+  # without directing it), so the submit must land as a C-s send-keys. The
+  # fixture only transitions pointer-typed -> delivered on C-s, so a spawn that
+  # still submitted on Enter would time out the delivery window and fail the
+  # expect_code 0 above.
+  assert_grep 'C-s' "$CASE_DIR/tmux-calls.log" \
+    "kimi brief submit did not use C-s"
   meta="$HOME_DIR/state/$id.meta"
   assert_grep 'model=kimi-code/k3' "$meta" "kimi meta lost the requested model"
   assert_grep 'effort=high' "$meta" "kimi meta did not retain the unsupported effort axis"

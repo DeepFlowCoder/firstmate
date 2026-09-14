@@ -22,7 +22,8 @@
 #   2. Per-harness control mechanics: which key interrupts a running turn, how
 #      many times it must be sent, whether the composer needs clearing after
 #      that key, which adapter-owned cancellation acknowledgement is observable,
-#      which command exits the agent, and which task kinds the adapter is
+#      which command exits the agent, which key submits typed composer text,
+#      and which task kinds the adapter is
 #      verified to run. These are the empirically verified facts previously
 #      carried only in the harness-adapters skill's per-adapter tables; that
 #      skill now points here so one executable owner holds them, and
@@ -165,15 +166,30 @@ fm_control_exit_command() {  # <harness>
   esac
 }
 
+# The key that submits typed composer text for this harness. Most adapters
+# submit on Enter. Kimi's TUI queues typed text and directs it only on Ctrl+S
+# (measured 2026-08-31: Enter clears the line while the agent stays idle with
+# "ctrl-s para dirigir de inmediato"; steers and /exit never execute until that
+# chord lands). An empty or unrecognized harness keeps Enter, so callers without
+# recorded meta stay on the historical default.
+fm_control_submit_key() {  # <harness>
+  case "${1-}" in
+    kimi) printf 'C-s' ;;
+    claude|codex|opencode|pi|pi-signed|grok|cursor|muse|'') printf 'Enter' ;;
+    *) printf 'Enter' ;;
+  esac
+}
+
 # Which named keys a backend adapter can deliver. Every session provider
-# normalizes Enter, Ctrl+C, and the Ctrl+U composer clear; Orca's terminal API
-# exposes only an interrupt and an Enter, so it can deliver neither Escape nor
-# Ctrl+U (bin/backends/orca.sh's fm_backend_orca_send_key).
+# normalizes Enter, Ctrl+C, the Ctrl+U composer clear, and Ctrl+S (Kimi's
+# submit); Orca's terminal API exposes only an interrupt and an Enter, so it
+# can deliver neither Escape, Ctrl+U, nor Ctrl+S
+# (bin/backends/orca.sh's fm_backend_orca_send_key).
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
     tmux|herdr|zellij|cmux)
-      case "$key" in Escape|Enter|C-c|C-u) return 0 ;; esac
+      case "$key" in Escape|Enter|C-c|C-u|C-s) return 0 ;; esac
       ;;
     orca)
       case "$key" in Enter|C-c) return 0 ;; esac

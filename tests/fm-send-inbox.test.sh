@@ -60,6 +60,8 @@ case "${1:-}" in
     done
     if [ "$literal" = 1 ]; then
       printf '%s\n' "${1:-}" >> "$FM_SEND_LOG"
+    else
+      printf '%s\n' "${1:-}" >> "${FM_KEYS_LOG:-/dev/null}"
     fi
     exit 0 ;;
   display-message)
@@ -229,6 +231,27 @@ test_key_path_never_touches_inbox() {
   pass "fm-send planes: the --key lifecycle path never touches the inbox"
 }
 
+# Kimi queues typed text and directs only on Ctrl+S, so the doorbell that tells
+# a kimi worker to drain its inbox must be submitted with C-s - never Enter,
+# which clears the line without directing it. The named-key log makes the
+# submit chord observable.
+test_kimi_doorbell_submits_with_ctrl_s() {
+  local dir err rc keys
+  dir=$(setup_case kimiring kimi); err="$dir/send.err"
+  : > "$dir/keys.log"
+  run_send "$dir" "$err" FM_KEYS_LOG="$dir/keys.log" -- t1 "run the regression suite"; rc=$?
+  expect_code 0 "$rc" "a kimi steer should succeed"
+  [ -f "$dir/home/state/t1.inbox/001.msg" ] || fail "the kimi steer was not recorded"
+  keys=$(cat "$dir/keys.log")
+  assert_contains "$keys" "C-s" "the kimi doorbell should submit with C-s"
+  case "$keys" in
+    *Enter*) fail "the kimi doorbell must not submit on Enter" ;;
+  esac
+  assert_contains "$(cat "$dir/send.log")" "Firstmate instruction waiting" \
+    "the kimi doorbell line should still be typed"
+  pass "fm-send inbox: a kimi steer's doorbell submits with Ctrl+S, not Enter"
+}
+
 test_secondmate_marker_and_enqueue_delivery() {
   local dir err body corr pr_rec delivered
   dir=$(setup_case secondmate); err="$dir/send.err"
@@ -346,6 +369,7 @@ test_failed_ring_is_still_sent
 test_harness_invocations_stay_typed
 test_explicit_target_stays_typed
 test_key_path_never_touches_inbox
+test_kimi_doorbell_submits_with_ctrl_s
 test_secondmate_marker_and_enqueue_delivery
 test_post_enqueue_bookkeeping_failure_is_not_retryable
 test_meta_lock_contention_fails_bounded

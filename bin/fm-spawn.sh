@@ -3115,9 +3115,14 @@ if [ "$HARNESS" = kimi ]; then
   KIMI_SUBMIT_RETRIES=${FM_KIMI_SUBMIT_RETRIES:-3}
   KIMI_SUBMIT_SLEEP=${FM_KIMI_SUBMIT_SLEEP:-${FM_KIMI_POLL_INTERVAL:-0.5}}
   KIMI_SUBMIT_SETTLE=${FM_KIMI_SUBMIT_SETTLE:-0}
+  # Kimi queues typed text and directs it only on Ctrl+S (fm_control_submit_key),
+  # so the brief pointer must be submitted with that chord rather than Enter.
+  KIMI_SUBMIT_KEY=$(fm_control_submit_key kimi)
+  fm_control_backend_supports_key "$BACKEND" "$KIMI_SUBMIT_KEY" \
+    || kimi_spawn_fail "kimi submits with $KIMI_SUBMIT_KEY, which the $BACKEND backend cannot deliver"
   KIMI_SUBMIT_VERDICT=$(fm_backend_send_text_submit \
     "$BACKEND" "$T" "$KIMI_POINTER" "$KIMI_SUBMIT_RETRIES" \
-    "$KIMI_SUBMIT_SLEEP" "$KIMI_SUBMIT_SETTLE" "$W") || {
+    "$KIMI_SUBMIT_SLEEP" "$KIMI_SUBMIT_SETTLE" "$W" "$KIMI_SUBMIT_KEY") || {
     kimi_spawn_fail "kimi brief pointer could not be submitted"
     exit 1
   }
