@@ -37,10 +37,11 @@
 #   (bin/fm-control.sh recover). It launches a replacement agent for an
 #   EXISTING task whose recorded endpoint is authoritatively GONE (agent-state
 #   missing), reusing the SAME task id, the SAME recorded worktree, and the
-#   SAME branch instead of creating any of them. The recorded endpoint's
-#   absence must already be proven (fm-control recover owns that checkpoint,
-#   the published-head proof, and the recovery note), so a direct invocation
-#   refuses unless the recorded endpoint reads missing. It creates a NEW
+#   SAME branch instead of creating any of them. It independently refuses the
+#   same two facts as fm-control recover: it proves the recorded endpoint reads
+#   missing and proves the task's local work is already published (via
+#   fm_recover_prove_published_work), so a recovery can never act on a live
+#   endpoint or on a branch carrying unpublished commits. It creates a NEW
 #   endpoint with its shell sitting in the recorded worktree - never treehouse
 #   get, never a fresh base - clears the previous harness's per-task wiring,
 #   and preserves every durable metadata field the same way --relaunch does.
@@ -1156,34 +1157,7 @@ if [ "$REUSE" -eq 1 ]; then
     exit 1
   }
   if [ "$RECOVER_MISSING" -eq 1 ]; then
-    recover_pr_head=$(fm_meta_get "$RELAUNCH_META" pr_head)
-    recover_branch=$(git -C "$RELAUNCH_WT" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
-    if [ -z "$recover_branch" ] && git -C "$RELAUNCH_WT" show-ref --verify --quiet "refs/heads/fm/$ID"; then
-      recover_branch="fm/$ID"
-    fi
-    if [ -n "$recover_branch" ]; then
-      recover_local_tip=$(git -C "$RELAUNCH_WT" rev-parse --verify "refs/heads/$recover_branch^{commit}" 2>/dev/null) \
-        || { echo "error: task $ID's branch '$recover_branch' cannot be read" >&2; exit 1; }
-      recover_published=$(git -C "$RELAUNCH_WT" rev-parse --verify --quiet "origin/$recover_branch^{commit}" 2>/dev/null \
-        || git -C "$RELAUNCH_WT" rev-parse --verify --quiet "$recover_branch@{upstream}^{commit}" 2>/dev/null || true)
-      [ -n "$recover_published" ] || recover_published=$recover_pr_head
-      [ -n "$recover_published" ] || {
-        echo "error: task $ID's branch '$recover_branch' has no published head (no origin/$recover_branch, no upstream, no recorded pr_head); refusing to recover work that may be unpublished" >&2
-        exit 1
-      }
-    elif [ -n "$recover_pr_head" ]; then
-      recover_local_tip=$(git -C "$RELAUNCH_WT" rev-parse --verify HEAD 2>/dev/null) \
-        || { echo "error: task $ID's worktree HEAD cannot be read" >&2; exit 1; }
-      recover_branch=HEAD
-      recover_published=$recover_pr_head
-    else
-      echo "error: task $ID's worktree is detached and records no pr_head; refusing to recover work that cannot be proven published" >&2
-      exit 1
-    fi
-    if ! git -C "$RELAUNCH_WT" merge-base --is-ancestor "$recover_local_tip" "$recover_published"; then
-      echo "error: task $ID's local work is not published: '$recover_branch' ($recover_local_tip) is not an ancestor of its published head ($recover_published); push the branch before recovering so a re-dispatch cannot orphan local commits" >&2
-      exit 1
-    fi
+    fm_recover_prove_published_work "$RELAUNCH_META" "$ID" "$RELAUNCH_WT" || exit 1
   fi
   if [ "$KIND" = secondmate ]; then
     FIRSTMATE_HOME=$(fm_meta_get "$RELAUNCH_META" home)

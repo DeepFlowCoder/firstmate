@@ -385,6 +385,82 @@ test_recover_detached_worktree_proves_the_task_branch() {
   pass "fm-control recover: a detached worktree proves its fm/<id> task branch, not the detached HEAD"
 }
 
+test_recover_detached_without_branch_refuses_unpublished_head() {
+  local dir out rc proj wt base published
+  dir=$(new_case recover-detached-nobranch rc12)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_init_commit "$proj"
+  fm_git_add_origin "$proj" "$proj.origin.git"
+  base=$(git -C "$proj" rev-parse HEAD)
+  git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "published work"
+  published=$(git -C "$proj" rev-parse HEAD)
+  git -C "$proj" worktree add --detach -q "$wt" "$base"
+  mkdir -p "$dir/home/data/rc12"
+  printf '# brief for rc12\n\nDo the thing.\n' > "$dir/home/data/rc12/brief.md"
+  {
+    echo "window=fmses:fm-rc12"
+    echo "endpoint_task_id=rc12"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc12"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$published"
+  } > "$dir/home/state/rc12.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc12")
+
+  out=$(run_control "$dir" rc12 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "a detached worktree whose HEAD is not the recorded published head should refuse"$'\n'"$out"
+  assert_contains "$out" "not its recorded published head" \
+    "the refusal should name the detached HEAD/published-head mismatch"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused recovery must launch nothing"
+  pass "fm-control recover: a detached worktree with no fm/<id> branch refuses unless its HEAD equals the recorded pr_head"
+}
+
+test_recover_prefers_recorded_pr_head_over_stale_origin() {
+  local dir out rc proj wt head
+  dir=$(new_case recover-prhead rc13)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "task-rc13"
+  git -C "$wt" push -q -u origin "task-rc13"
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "published via PR"
+  head=$(git -C "$wt" rev-parse "task-rc13")
+  mkdir -p "$dir/home/data/rc13"
+  printf '# brief for rc13\n\nDo the thing.\n' > "$dir/home/data/rc13/brief.md"
+  {
+    echo "window=fmses:fm-rc13"
+    echo "endpoint_task_id=rc13"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc13"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$head"
+  } > "$dir/home/state/rc13.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc13")
+
+  out=$(run_control "$dir" rc13 recover --note "x"); rc=$?
+  expect_code 0 "$rc" "a recorded pr_head equal to the branch tip should publish the work even when origin is stale"$'\n'"$out"
+  assert_contains "$out" "recovered rc13 harness=claude" "the recovery should succeed"
+  assert_grep "Published head: $head" "$dir/home/data/rc13/brief.md" \
+    "the note must record the recorded pr_head as the published head"
+  pass "fm-control recover: prefers the recorded pr_head over a stale origin/<branch> ref"
+}
+
 test_recover_preserves_identity_and_creates_a_new_endpoint
 test_recover_appends_the_recovery_note_without_rebuilding
 test_unpublished_local_commit_refuses_before_mutation
@@ -396,3 +472,5 @@ test_direct_spawn_recover_missing_refuses_a_live_endpoint
 test_direct_spawn_recover_missing_reuses_the_recorded_worktree
 test_direct_spawn_recover_missing_refuses_unpublished_work
 test_recover_detached_worktree_proves_the_task_branch
+test_recover_detached_without_branch_refuses_unpublished_head
+test_recover_prefers_recorded_pr_head_over_stale_origin

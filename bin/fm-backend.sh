@@ -360,6 +360,59 @@ fm_backend_target_of_meta() {  # <meta-file>
   [ -n "$window" ] && printf '%s' "$window"
 }
 
+# fm_recover_prove_published_work: prove a recovery target's local work is
+# already published. The task's published head is the recorded pr_head when
+# present, else the task branch's origin/upstream counterpart. The local tip is
+# the checked-out branch (falling back to refs/heads/fm/<id> when detached); a
+# detached worktree with no such branch is accepted only when its HEAD is
+# exactly the recorded pr_head. On success, sets FM_RECOVER_PUBLISHED and
+# FM_RECOVER_PUBLISHED_BRANCH (the branch resolution, or "detached HEAD at
+# <head>"). On failure, prints one refusal and returns 1.
+fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
+  local meta=$1 id=$2 wt=$3 branch pr_head published local_tip
+  FM_RECOVER_PUBLISHED=
+  FM_RECOVER_PUBLISHED_BRANCH=
+  pr_head=$(fm_meta_get "$meta" pr_head)
+  branch=$(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
+  if [ -z "$branch" ] && git -C "$wt" show-ref --verify --quiet "refs/heads/fm/$id"; then
+    branch="fm/$id"
+  fi
+  if [ -n "$branch" ]; then
+    local_tip=$(git -C "$wt" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null) \
+      || { echo "error: task $id's branch '$branch' cannot be read" >&2; return 1; }
+    published=$pr_head
+    if [ -z "$published" ]; then
+      published=$(git -C "$wt" rev-parse --verify --quiet "origin/$branch^{commit}" 2>/dev/null \
+        || git -C "$wt" rev-parse --verify --quiet "$branch@{upstream}^{commit}" 2>/dev/null || true)
+    fi
+    [ -n "$published" ] || {
+      echo "error: task $id's branch '$branch' has no published head (no recorded pr_head, no origin/$branch, no upstream); refusing to recover work that may be unpublished" >&2
+      return 1
+    }
+  elif [ -n "$pr_head" ]; then
+    local_tip=$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null) \
+      || { echo "error: task $id's worktree HEAD cannot be read" >&2; return 1; }
+    if [ "$local_tip" != "$pr_head" ]; then
+      echo "error: task $id's worktree is detached at $local_tip, not its recorded published head $pr_head; refusing to recover a worktree that does not hold the task's published work" >&2
+      return 1
+    fi
+    branch="detached HEAD at $pr_head"
+    published=$pr_head
+  else
+    echo "error: task $id's worktree is detached and records no pr_head; refusing to recover work that cannot be proven published" >&2
+    return 1
+  fi
+  if ! git -C "$wt" merge-base --is-ancestor "$local_tip" "$published"; then
+    echo "error: task $id's local work is not published: '$branch' ($local_tip) is not an ancestor of its published head ($published); push the branch before recovering so a re-dispatch cannot orphan local commits" >&2
+    return 1
+  fi
+  # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
+  FM_RECOVER_PUBLISHED=$published
+  # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
+  FM_RECOVER_PUBLISHED_BRANCH=$branch
+  return 0
+}
+
 # fm_backend_validate_task_endpoint: validate a task cleanup record entirely
 # from its durable metadata before any runtime command or cleanup mutation.
 # The validation binds the exact task id, selected backend, target, project,

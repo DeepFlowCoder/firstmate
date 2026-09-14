@@ -59,7 +59,7 @@
 #              minting a new id. Preserves the same task id, the same local
 #              copy, and the same branch: it proves every local commit is
 #              already published (merge-base --is-ancestor against the recorded
-#              pr_head, the branch upstream, or origin/<branch>), appends a
+#              pr_head, else origin/<branch>/upstream), appends a
 #              recovery note to the brief, then delegates to
 #              bin/fm-spawn.sh --recover-missing, which creates a NEW endpoint
 #              and launches into the recorded worktree. Refuses cleanly when
@@ -938,44 +938,9 @@ resolve_recover_profile() {
   fi
 }
 
-# prove_published_work: refuse when the task's local work is not already
-# published. The local tip is the checked-out branch (falling back to the
-# conventional fm/<id> branch when detached), and the published head is the
-# branch's origin/upstream counterpart, falling back to the recorded pr_head.
-# Prints the published head on success.
-prove_published_work() {
-  local branch pr_head published local_tip
-  pr_head=$(fm_meta_get "$META" pr_head)
-  branch=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
-  if [ -z "$branch" ] && git -C "$WT" show-ref --verify --quiet "refs/heads/fm/$ID"; then
-    branch="fm/$ID"
-  fi
-  if [ -n "$branch" ]; then
-    local_tip=$(git -C "$WT" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null) \
-      || die "task $ID's branch '$branch' cannot be read"
-    published=$(git -C "$WT" rev-parse --verify --quiet "origin/$branch^{commit}" 2>/dev/null \
-      || git -C "$WT" rev-parse --verify --quiet "$branch@{upstream}^{commit}" 2>/dev/null || true)
-    [ -n "$published" ] || published=$pr_head
-    [ -n "$published" ] || die "task $ID's branch '$branch' has no published head (no origin/$branch, no upstream, no recorded pr_head); refusing to recover work that may be unpublished"
-  elif [ -n "$pr_head" ]; then
-    local_tip=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) \
-      || die "task $ID's worktree HEAD cannot be read"
-    branch=HEAD
-    published=$pr_head
-  else
-    die "task $ID's worktree is detached and records no pr_head; refusing to recover work that cannot be proven published"
-  fi
-  if ! git -C "$WT" merge-base --is-ancestor "$local_tip" "$published"; then
-    die "task $ID's local work is not published: '$branch' ($local_tip) is not an ancestor of its published head ($published); push the branch before recovering so a re-dispatch cannot orphan local commits"
-  fi
-  printf '%s\n' "$published"
-}
-
-record_recovery_note() {  # <published-head>
-  local published=$1 stamp pr branch
+record_recovery_note() {  # <published-head> <branch>
+  local published=$1 branch=$2 stamp pr
   stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  branch=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
-  [ -n "$branch" ] || branch="fm/$ID"
   pr=$(fm_meta_get "$META" pr)
   cp -p "$RECOVER_BRIEF" "$RECOVER_BRIEF_PRIOR" \
     || die "could not preserve task $ID's instructions before recording the recovery note"
@@ -1034,11 +999,12 @@ do_recover() {
     || die "recover of a $KIND task requires --note (or --note-file): the replacement worker inherits the local copy but none of the conversation, so it must be told what happened"
 
   safe_checkpoint
-  published=$(prove_published_work)
+  fm_recover_prove_published_work "$META" "$ID" "$WT" || exit 1
+  published=$FM_RECOVER_PUBLISHED
   RECOVER_BRIEF_PRIOR="$STATE/$ID.control-recover.brief-prior"
   RECOVER_ACTIVE=1
   RECOVER_PHASE=noted
-  record_recovery_note "$published"
+  record_recovery_note "$published" "$FM_RECOVER_PUBLISHED_BRANCH"
 
   RECOVER_PHASE=launching
   spawn_args=("$ID" --recover-missing --harness "$TARGET_HARNESS")
