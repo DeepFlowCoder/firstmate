@@ -3098,6 +3098,11 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
     LAUNCH="unset TRACEPARENT; $LAUNCH"
   fi
 fi
+if [ "$HARNESS" = kimi ]; then
+  KIMI_SUBMIT_KEY=$(fm_control_submit_key kimi)
+  fm_control_backend_supports_key "$BACKEND" "$KIMI_SUBMIT_KEY" \
+    || { kimi_spawn_fail "kimi submits with $KIMI_SUBMIT_KEY, which the $BACKEND backend cannot deliver"; exit 1; }
+fi
 sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
@@ -3117,9 +3122,6 @@ if [ "$HARNESS" = kimi ]; then
   KIMI_SUBMIT_SETTLE=${FM_KIMI_SUBMIT_SETTLE:-0}
   # Kimi queues typed text and directs it only on Ctrl+S (fm_control_submit_key),
   # so the brief pointer must be submitted with that chord rather than Enter.
-  KIMI_SUBMIT_KEY=$(fm_control_submit_key kimi)
-  fm_control_backend_supports_key "$BACKEND" "$KIMI_SUBMIT_KEY" \
-    || { kimi_spawn_fail "kimi submits with $KIMI_SUBMIT_KEY, which the $BACKEND backend cannot deliver"; exit 1; }
   KIMI_SUBMIT_VERDICT=$(fm_backend_send_text_submit \
     "$BACKEND" "$T" "$KIMI_POINTER" "$KIMI_SUBMIT_RETRIES" \
     "$KIMI_SUBMIT_SLEEP" "$KIMI_SUBMIT_SETTLE" "$W" "$KIMI_SUBMIT_KEY") || {
