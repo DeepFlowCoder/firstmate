@@ -329,6 +329,62 @@ test_direct_spawn_recover_missing_reuses_the_recorded_worktree() {
   pass "fm-spawn --recover-missing: reuses the recorded worktree and creates a fresh endpoint"
 }
 
+test_direct_spawn_recover_missing_refuses_unpublished_work() {
+  local dir out rc meta_before
+  dir=$(new_case spawn-unpublished rc10)
+  add_ship_task "$dir" rc10 published
+  add_unpublished_commit "$dir" rc10
+  meta_before=$(cat "$dir/home/state/rc10.meta")
+  out=$(run_spawn "$dir" rc10 --recover-missing --harness claude); rc=$?
+  expect_code 1 "$rc" "a direct recover-missing over unpublished work should refuse"$'\n'"$out"
+  assert_contains "$out" "not published" "the refusal should name the unpublished work"
+  assert_contains "$out" "is not an ancestor of its published head" \
+    "the refusal should name the failed ancestor proof"
+  [ "$(cat "$dir/home/state/rc10.meta")" = "$meta_before" ] \
+    || fail "a refused direct recover-missing must leave the durable record byte-identical"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused direct recover-missing must launch nothing"
+  pass "fm-spawn --recover-missing: refuses a branch carrying unpublished commits"
+}
+
+test_recover_detached_worktree_proves_the_task_branch() {
+  local dir out rc proj wt c1
+  dir=$(new_case recover-detached rc11)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "fm/rc11"
+  c1=$(git -C "$wt" rev-parse "fm/rc11")
+  git -C "$wt" push -q -u origin "fm/rc11"
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "unpublished local commit"
+  git -C "$wt" checkout --detach -q "$c1"
+  mkdir -p "$dir/home/data/rc11"
+  printf '# brief for rc11\n\nDo the thing.\n' > "$dir/home/data/rc11/brief.md"
+  {
+    echo "window=fmses:fm-rc11"
+    echo "endpoint_task_id=rc11"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc11"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc11.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc11")
+
+  out=$(run_control "$dir" rc11 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "a detached worktree whose fm/<id> branch carries unpublished work should refuse"$'\n'"$out"
+  assert_contains "$out" "not published" "the refusal should name the unpublished work"
+  assert_contains "$out" "is not an ancestor of its published head" \
+    "the refusal should name the failed ancestor proof"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused recovery must launch nothing"
+  pass "fm-control recover: a detached worktree proves its fm/<id> task branch, not the detached HEAD"
+}
+
 test_recover_preserves_identity_and_creates_a_new_endpoint
 test_recover_appends_the_recovery_note_without_rebuilding
 test_unpublished_local_commit_refuses_before_mutation
@@ -338,3 +394,5 @@ test_recover_refuses_an_unpublished_branch_with_no_remote_head
 test_exit_points_a_missing_endpoint_at_recover
 test_direct_spawn_recover_missing_refuses_a_live_endpoint
 test_direct_spawn_recover_missing_reuses_the_recorded_worktree
+test_direct_spawn_recover_missing_refuses_unpublished_work
+test_recover_detached_worktree_proves_the_task_branch

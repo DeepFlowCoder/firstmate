@@ -1155,6 +1155,36 @@ if [ "$REUSE" -eq 1 ]; then
     echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch or recover without the local copy its work lives in" >&2
     exit 1
   }
+  if [ "$RECOVER_MISSING" -eq 1 ]; then
+    recover_pr_head=$(fm_meta_get "$RELAUNCH_META" pr_head)
+    recover_branch=$(git -C "$RELAUNCH_WT" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
+    if [ -z "$recover_branch" ] && git -C "$RELAUNCH_WT" show-ref --verify --quiet "refs/heads/fm/$ID"; then
+      recover_branch="fm/$ID"
+    fi
+    if [ -n "$recover_branch" ]; then
+      recover_local_tip=$(git -C "$RELAUNCH_WT" rev-parse --verify "refs/heads/$recover_branch^{commit}" 2>/dev/null) \
+        || { echo "error: task $ID's branch '$recover_branch' cannot be read" >&2; exit 1; }
+      recover_published=$(git -C "$RELAUNCH_WT" rev-parse --verify --quiet "origin/$recover_branch^{commit}" 2>/dev/null \
+        || git -C "$RELAUNCH_WT" rev-parse --verify --quiet "$recover_branch@{upstream}^{commit}" 2>/dev/null || true)
+      [ -n "$recover_published" ] || recover_published=$recover_pr_head
+      [ -n "$recover_published" ] || {
+        echo "error: task $ID's branch '$recover_branch' has no published head (no origin/$recover_branch, no upstream, no recorded pr_head); refusing to recover work that may be unpublished" >&2
+        exit 1
+      }
+    elif [ -n "$recover_pr_head" ]; then
+      recover_local_tip=$(git -C "$RELAUNCH_WT" rev-parse --verify HEAD 2>/dev/null) \
+        || { echo "error: task $ID's worktree HEAD cannot be read" >&2; exit 1; }
+      recover_branch=HEAD
+      recover_published=$recover_pr_head
+    else
+      echo "error: task $ID's worktree is detached and records no pr_head; refusing to recover work that cannot be proven published" >&2
+      exit 1
+    fi
+    if ! git -C "$RELAUNCH_WT" merge-base --is-ancestor "$recover_local_tip" "$recover_published"; then
+      echo "error: task $ID's local work is not published: '$recover_branch' ($recover_local_tip) is not an ancestor of its published head ($recover_published); push the branch before recovering so a re-dispatch cannot orphan local commits" >&2
+      exit 1
+    fi
+  fi
   if [ "$KIND" = secondmate ]; then
     FIRSTMATE_HOME=$(fm_meta_get "$RELAUNCH_META" home)
     [ -n "$FIRSTMATE_HOME" ] || FIRSTMATE_HOME=$RELAUNCH_WT

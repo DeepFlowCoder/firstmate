@@ -63,7 +63,7 @@
 #              recovery note to the brief, then delegates to
 #              bin/fm-spawn.sh --recover-missing, which creates a NEW endpoint
 #              and launches into the recorded worktree. Refuses cleanly when
-#              anything local is unpublished or the copy is dirty. A secondmate
+#              anything local is unpublished. A secondmate
 #              missing endpoint stays on the secondmate-liveness path, not this
 #              verb. This is the named exit from the exit↔relaunch circle that
 #              otherwise traps a rebooted task (exit refuses missing; relaunch
@@ -940,15 +940,15 @@ resolve_recover_profile() {
 
 # prove_published_work: refuse when the task's local work is not already
 # published. The local tip is the checked-out branch (falling back to the
-# conventional fm-<id> branch when detached), and the published head is the
+# conventional fm/<id> branch when detached), and the published head is the
 # branch's origin/upstream counterpart, falling back to the recorded pr_head.
 # Prints the published head on success.
 prove_published_work() {
   local branch pr_head published local_tip
   pr_head=$(fm_meta_get "$META" pr_head)
   branch=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
-  if [ -z "$branch" ] && git -C "$WT" show-ref --verify --quiet "refs/heads/fm-$ID"; then
-    branch="fm-$ID"
+  if [ -z "$branch" ] && git -C "$WT" show-ref --verify --quiet "refs/heads/fm/$ID"; then
+    branch="fm/$ID"
   fi
   if [ -n "$branch" ]; then
     local_tip=$(git -C "$WT" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null) \
@@ -975,7 +975,7 @@ record_recovery_note() {  # <published-head>
   local published=$1 stamp pr branch
   stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   branch=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
-  [ -n "$branch" ] || branch="fm-$ID"
+  [ -n "$branch" ] || branch="fm/$ID"
   pr=$(fm_meta_get "$META" pr)
   cp -p "$RECOVER_BRIEF" "$RECOVER_BRIEF_PRIOR" \
     || die "could not preserve task $ID's instructions before recording the recovery note"
@@ -1047,6 +1047,11 @@ do_recover() {
   if ! "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
     die "the replacement agent for $ID could not be recovered on $TARGET_HARNESS"
   fi
+
+  fm_backend_validate_task_endpoint "$META" "$ID" \
+    || die "task $ID's replacement endpoint could not be revalidated after recovery"
+  BACKEND=$FM_BACKEND_VALIDATED_BACKEND
+  T=$FM_BACKEND_VALIDATED_TARGET
 
   state=$(wait_agent_state "$LAUNCH_WAIT" alive) || {
     die "the recovered agent for $ID did not come up within ${LAUNCH_WAIT}s (endpoint reads '$state')"
