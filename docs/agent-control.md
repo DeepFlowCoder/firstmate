@@ -74,6 +74,13 @@ It is not deterministic across the verified adapters: codex and grok resume only
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
+### Failure and rollback
+
+- A refusal **before** the agent is stopped leaves the durable record and the instructions byte-identical.
+- A launch failure **after** the agent is stopped restores the prior durable record, keeps the progress note so a later recovery still has it, marks the journal `failed:launching`, and reports plainly that no agent is running and where the work is preserved.
+- If the launch owner already published the new record but no running agent can be confirmed, the new record is kept: the task is recorded on the new harness with no agent confirmed, which is exactly what recovery reconciles.
+  Rewriting it back to the old harness would be a second, worse inaccuracy.
+
 ## Recovery from a vanished endpoint
 
 `recover` is the named exit from the exit<->relaunch circle.
@@ -93,13 +100,6 @@ An endpoint whose recorded window is gone (agent-state `missing`, e.g. after a h
 4. **Launch the replacement** through `bin/fm-spawn.sh --recover-missing`, which creates a fresh endpoint whose shell starts in the recorded worktree - never `treehouse get`, never a fresh base - clears the previous harness's per-task wiring, and preserves every durable metadata field exactly like a relaunch.
 
 A refusal before the replacement is launched leaves the durable record byte-identical. If the launch itself refuses or fails after the note was appended, the recovery note stays in the instructions because it records only durable facts - the window was lost, the copy/branch/commits are preserved, do not rebuild - that remain true whether or not the replacement comes up.
-
-### Failure and rollback
-
-- A refusal **before** the agent is stopped leaves the durable record and the instructions byte-identical.
-- A launch failure **after** the agent is stopped restores the prior durable record, keeps the progress note so a later recovery still has it, marks the journal `failed:launching`, and reports plainly that no agent is running and where the work is preserved.
-- If the launch owner already published the new record but no running agent can be confirmed, the new record is kept: the task is recorded on the new harness with no agent confirmed, which is exactly what recovery reconciles.
-  Rewriting it back to the old harness would be a second, worse inaccuracy.
 
 ## Fail-closed boundaries
 
