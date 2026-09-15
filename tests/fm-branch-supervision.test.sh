@@ -532,8 +532,8 @@ test_branch_cannot_force_teardown_or_directly_relaunch() {
     "$ROOT/bin/fm-spawn.sh" task-x --relaunch 2>&1)
   status=$?
   [ "$status" -eq 6 ] || fail "direct branch relaunch exited $status, not 6: $out"
-  assert_contains "$out" "must relaunch through fm-control" "relaunch refusal lost its wording"
-  pass "the branch cannot force a teardown or bypass fm-control for a relaunch"
+  assert_contains "$out" "must relaunch or recover through fm-control" "relaunch/recover refusal lost its wording"
+  pass "the branch cannot force a teardown or bypass fm-control for a relaunch or recovery"
 }
 
 test_branch_prompt_is_byte_stable_and_above_cache_floor
