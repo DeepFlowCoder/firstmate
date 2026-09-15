@@ -92,12 +92,13 @@ An endpoint whose recorded window is gone (agent-state `missing`, e.g. after a h
    A stopped (dead) endpoint is `relaunch`; a live agent is `exit` or `relaunch`.
    A `kind=secondmate` task is refused, because a missing secondmate endpoint is recovered through the secondmate-liveness path, not this verb.
 2. **Prove the local work is published.**
+   The worktree must be clean, because uncommitted and untracked changes are not published.
    Every local branch - including the task branch - must be an ancestor of its configured upstream, proven with `merge-base --is-ancestor` before anything is mutated.
    The configured upstream is the single publication authority; the recorded `pr_head` is metadata only and never overrides the upstream proof.
    Anything local that is not published refuses, because a re-dispatch that did not prove that could orphan a commit in one copy while the record points at another.
 3. **Record the recovery note.**
-   A ship or scout recovery requires `--note` and appends a dated recovery section carrying the branch, published head, and PR, plus the explicit instruction NOT to rebuild the change.
-4. **Launch the replacement** through `bin/fm-spawn.sh --recover-missing`, which creates a fresh endpoint whose shell starts in the recorded worktree - never `treehouse get`, never a fresh base - clears the previous harness's per-task wiring, and preserves every durable metadata field exactly like a relaunch.
+   A ship or scout recovery requires `--note` and appends a dated recovery section carrying the branch, published head, and PR (explicitly `none` when no PR is recorded), plus the explicit instruction NOT to rebuild the change.
+4. **Launch the replacement** through `bin/fm-spawn.sh --recover-missing`, which creates a fresh endpoint whose shell starts in the recorded worktree - never `treehouse get`, never a fresh base - clears the previous harness's per-task wiring, and preserves the task's durable identity and launch profile while publishing the fresh endpoint.
 
 A refusal before the replacement is launched leaves the durable record byte-identical. If the launch itself refuses or fails after the note was appended, the recovery note stays in the instructions because it records only durable facts - the window was lost, the copy/branch/commits are preserved, do not rebuild - that remain true whether or not the replacement comes up.
 
@@ -121,8 +122,8 @@ A refusal before the replacement is launched leaves the durable record byte-iden
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
-- `recover` refuses unless the recorded endpoint is positively `missing` and every local branch (including the task branch) is an ancestor of its configured upstream.
-  `fm-spawn --recover-missing` independently refuses the same two facts, so a recovery can never act on a live endpoint or on a branch carrying unpublished commits.
+- `recover` refuses unless the recorded endpoint is positively `missing`, the worktree is clean, and every local branch (including the task branch) is an ancestor of its configured upstream.
+  `fm-spawn --recover-missing` independently verifies the same preconditions, so a recovery can never act on a live endpoint or on unpublished local work.
 
 ## Capability matrix
 
