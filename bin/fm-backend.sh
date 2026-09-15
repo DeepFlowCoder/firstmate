@@ -366,7 +366,8 @@ fm_backend_target_of_meta() {  # <meta-file>
 # and never overrides the upstream proof. The local tip is the checked-out
 # branch (falling back to refs/heads/fm/<id> when detached); a
 # detached worktree with no such branch is accepted only when its HEAD is
-# exactly the recorded pr_head. A detached worktree with a resolved branch
+# exactly the recorded pr_head and that HEAD is itself reachable from a
+# remote-tracking ref. A detached worktree with a resolved branch
 # additionally requires the detached HEAD itself to be published (reachable
 # from a remote-tracking ref, e.g. an ancestor of origin/<branch>) so nothing
 # checked out is unpublished, and sets FM_RECOVER_DETACHED=1 so the caller can
@@ -413,7 +414,9 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
     fi
     branch="detached HEAD at $pr_head"
     published=$pr_head
-    FM_RECOVER_DETACHED=
+    if [ -n "$(git -C "$wt" branch -r --contains "$local_tip" 2>/dev/null)" ]; then
+      FM_RECOVER_DETACHED=
+    fi
   else
     echo "error: task $id's worktree is detached and records no pr_head; refusing to recover work that cannot be proven published" >&2
     return 1

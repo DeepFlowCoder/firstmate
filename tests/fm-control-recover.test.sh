@@ -659,6 +659,123 @@ test_recover_detached_without_branch_refuses_unpublished_head() {
   pass "fm-control recover: a detached worktree with no fm/<id> branch refuses unless its HEAD equals the recorded pr_head"
 }
 
+test_recover_detached_without_branch_refuses_unreachable_pr_head() {
+  local dir out rc proj wt c1
+  dir=$(new_case recover-detached-nobranch-unpublished rc23)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_init_commit "$proj"
+  fm_git_add_origin "$proj" "$proj.origin.git"
+  configure_default_upstream "$proj"
+  git -C "$proj" worktree add --detach -q "$wt" HEAD
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "unmerged PR head"
+  c1=$(git -C "$wt" rev-parse HEAD)
+  mkdir -p "$dir/home/data/rc23"
+  printf '# brief for rc23\n\nDo the thing.\n' > "$dir/home/data/rc23/brief.md"
+  {
+    echo "window=fmses:fm-rc23"
+    echo "endpoint_task_id=rc23"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc23"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc23.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc23")
+
+  out=$(run_control "$dir" rc23 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "a detached HEAD equal to an unreachable pr_head should refuse"$'\n'"$out"
+  assert_contains "$out" "not reachable from any remote-tracking ref" \
+    "the refusal should name the unpublished detached HEAD"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused recovery must launch nothing"
+  pass "fm-control recover: a detached HEAD equal to an unreachable pr_head refuses"
+}
+
+test_recover_detached_without_branch_recovers_published_pr_head() {
+  local dir out rc proj wt c1 default_branch
+  dir=$(new_case recover-detached-nobranch-published rc25)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_init_commit "$proj"
+  fm_git_add_origin "$proj" "$proj.origin.git"
+  configure_default_upstream "$proj"
+  default_branch=$(git -C "$proj" symbolic-ref --short HEAD)
+  git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "published PR head"
+  c1=$(git -C "$proj" rev-parse HEAD)
+  git -C "$proj" push -q origin "$default_branch"
+  git -C "$proj" worktree add --detach -q "$wt" "$c1"
+  mkdir -p "$dir/home/data/rc25"
+  printf '# brief for rc25\n\nDo the thing.\n' > "$dir/home/data/rc25/brief.md"
+  {
+    echo "window=fmses:fm-rc25"
+    echo "endpoint_task_id=rc25"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc25"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc25.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc25")
+
+  out=$(run_control "$dir" rc25 recover --note "x"); rc=$?
+  expect_code 0 "$rc" "a detached HEAD equal to a reachable pr_head should recover"$'\n'"$out"
+  assert_contains "$out" "recovered rc25 harness=claude" "the recovery should succeed"
+  pass "fm-control recover: a detached HEAD equal to a reachable pr_head recovers"
+}
+
+test_direct_spawn_recover_missing_refuses_unreachable_pr_head() {
+  local dir out rc proj wt c1
+  dir=$(new_case spawn-detached-nobranch-unpublished rc24)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_init_commit "$proj"
+  fm_git_add_origin "$proj" "$proj.origin.git"
+  configure_default_upstream "$proj"
+  git -C "$proj" worktree add --detach -q "$wt" HEAD
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "unmerged PR head"
+  c1=$(git -C "$wt" rev-parse HEAD)
+  mkdir -p "$dir/home/data/rc24"
+  printf '# brief for rc24\n\nDo the thing.\n' > "$dir/home/data/rc24/brief.md"
+  {
+    echo "window=fmses:fm-rc24"
+    echo "endpoint_task_id=rc24"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc24"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc24.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc24")
+
+  out=$(run_spawn "$dir" rc24 --recover-missing --harness claude); rc=$?
+  expect_code 1 "$rc" "a direct recover-missing over an unreachable pr_head should refuse"$'\n'"$out"
+  assert_contains "$out" "not reachable from any remote-tracking ref" \
+    "the refusal should name the unpublished detached HEAD"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused direct recover-missing must launch nothing"
+  pass "fm-spawn --recover-missing: refuses a detached HEAD equal to an unreachable pr_head"
+}
+
 test_recover_refuses_task_branch_with_stale_upstream() {
   local dir out rc proj wt head meta_before brief_before
   dir=$(new_case recover-prhead rc13)
@@ -780,6 +897,9 @@ test_recover_detached_worktree_instructs_checkout
 test_recover_detached_worktree_refuses_unpublished_detached_head
 test_recover_detached_at_published_advanced_default_branch_succeeds
 test_recover_detached_without_branch_refuses_unpublished_head
+test_recover_detached_without_branch_refuses_unreachable_pr_head
+test_recover_detached_without_branch_recovers_published_pr_head
+test_direct_spawn_recover_missing_refuses_unreachable_pr_head
 test_recover_refuses_task_branch_with_stale_upstream
 test_recover_accepts_stale_pr_head_with_newer_published_upstream
 test_recover_partial_spawn_reports_the_published_endpoint
