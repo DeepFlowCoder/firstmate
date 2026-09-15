@@ -111,6 +111,13 @@ SH
   chmod +x "$fb/sleep"
 }
 
+configure_default_upstream() {  # <repo>
+  local repo=$1 default_branch
+  default_branch=$(git -C "$repo" symbolic-ref --short HEAD)
+  git -C "$repo" fetch -q origin
+  git -C "$repo" branch --set-upstream-to="origin/$default_branch" "$default_branch" >/dev/null
+}
+
 # new_case <name> <id> -> echoes a case dir with a clean claude ship task whose
 # endpoint is MISSING (the windows inventory is empty, as after a reboot).
 new_case() {
@@ -132,6 +139,7 @@ add_ship_task() {
   local dir=$1 id=$2 published=${3:-} pr=${4:-with-pr}
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "task-$id"
+  configure_default_upstream "$proj"
   mkdir -p "$home/data/$id"
   printf '# brief for %s\n\nDo the thing.\n' "$id" > "$home/data/$id/brief.md"
   {
@@ -280,6 +288,31 @@ test_dirty_worktree_refuses_before_mutation() {
   pass "fm-control recover: a dirty worktree refuses before anything is mutated"
 }
 
+test_unpublished_non_task_branch_refuses_before_mutation() {
+  local dir out rc meta_before brief_before
+  dir=$(new_case recover-other-branch rc20)
+  add_ship_task "$dir" rc20 published
+  git -C "$dir/wt" checkout -q -b local-side-work
+  git -C "$dir/wt" push -q -u origin local-side-work
+  git -C "$dir/wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "unpublished side work"
+  git -C "$dir/wt" checkout -q task-rc20
+  meta_before=$(cat "$dir/home/state/rc20.meta")
+  brief_before=$(cat "$dir/home/data/rc20/brief.md")
+
+  out=$(run_control "$dir" rc20 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "an unpublished non-task branch should refuse"$'\n'"$out"
+  assert_contains "$out" "local-side-work" "the refusal should identify the unpublished branch"
+  assert_contains "$out" "not an ancestor of its configured upstream" \
+    "the refusal should name the failed ancestor proof"
+  [ "$(cat "$dir/home/state/rc20.meta")" = "$meta_before" ] \
+    || fail "a non-task branch refusal must leave the durable record byte-identical"
+  [ "$(cat "$dir/home/data/rc20/brief.md")" = "$brief_before" ] \
+    || fail "a non-task branch refusal must leave the instructions byte-identical"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a non-task branch refusal must launch nothing"
+  pass "fm-control recover: unpublished work on any local branch refuses before mutation"
+}
+
 test_recovery_note_records_missing_pr_explicitly() {
   local dir out rc
   dir=$(new_case recover-no-pr rc19)
@@ -386,6 +419,7 @@ test_direct_spawn_recover_missing_refuses_a_detached_worktree() {
   proj="$dir/proj"
   wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "fm/rc16"
+  configure_default_upstream "$proj"
   c1=$(git -C "$wt" rev-parse "fm/rc16")
   git -C "$wt" push -q -u origin "fm/rc16"
   git -C "$wt" checkout --detach -q "$c1"
@@ -424,6 +458,7 @@ test_recover_detached_worktree_proves_the_task_branch() {
   proj="$dir/proj"
   wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "fm/rc11"
+  configure_default_upstream "$proj"
   c1=$(git -C "$wt" rev-parse "fm/rc11")
   git -C "$wt" push -q -u origin "fm/rc11"
   git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
@@ -463,6 +498,7 @@ test_recover_detached_worktree_instructs_checkout() {
   proj="$dir/proj"
   wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "fm/rc14"
+  configure_default_upstream "$proj"
   c1=$(git -C "$wt" rev-parse "fm/rc14")
   git -C "$wt" push -q -u origin "fm/rc14"
   git -C "$wt" checkout --detach -q "$c1"
@@ -496,19 +532,19 @@ test_recover_detached_worktree_instructs_checkout() {
 }
 
 test_recover_detached_worktree_refuses_unpublished_detached_head() {
-  local dir out rc proj wt c1 detached
+  local dir out rc proj wt c1
   dir=$(new_case recover-detached-head rc15)
   proj="$dir/proj"
   wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "fm/rc15"
+  configure_default_upstream "$proj"
   git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -q --allow-empty -m "task work"
   c1=$(git -C "$wt" rev-parse "fm/rc15")
   git -C "$wt" push -q -u origin "fm/rc15"
-  git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
-    commit -q --allow-empty -m "divergent default-branch commit"
-  detached=$(git -C "$proj" rev-parse HEAD)
-  git -C "$wt" checkout --detach -q "$detached"
+  git -C "$wt" checkout --detach -q origin/master
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "unpublished detached commit"
   mkdir -p "$dir/home/data/rc15"
   printf '# brief for rc15\n\nDo the thing.\n' > "$dir/home/data/rc15/brief.md"
   {
@@ -542,6 +578,7 @@ test_recover_detached_at_published_advanced_default_branch_succeeds() {
   proj="$dir/proj"
   wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "fm/rc17"
+  configure_default_upstream "$proj"
   git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -q --allow-empty -m "task work"
   c1=$(git -C "$wt" rev-parse "fm/rc17")
@@ -586,6 +623,7 @@ test_recover_detached_without_branch_refuses_unpublished_head() {
   wt="$dir/wt"
   fm_git_init_commit "$proj"
   fm_git_add_origin "$proj" "$proj.origin.git"
+  configure_default_upstream "$proj"
   base=$(git -C "$proj" rev-parse HEAD)
   git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -q --allow-empty -m "published work"
@@ -624,6 +662,7 @@ test_recover_prefers_recorded_pr_head_over_stale_origin() {
   proj="$dir/proj"
   wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "task-rc13"
+  configure_default_upstream "$proj"
   git -C "$wt" push -q -u origin "task-rc13"
   git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -q --allow-empty -m "published via PR"
@@ -659,6 +698,7 @@ test_recover_preserves_identity_and_creates_a_new_endpoint
 test_recover_appends_the_recovery_note_without_rebuilding
 test_unpublished_local_commit_refuses_before_mutation
 test_dirty_worktree_refuses_before_mutation
+test_unpublished_non_task_branch_refuses_before_mutation
 test_recovery_note_records_missing_pr_explicitly
 test_recover_without_a_note_is_refused
 test_recover_refuses_a_not_missing_endpoint

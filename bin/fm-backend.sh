@@ -374,6 +374,7 @@ fm_backend_target_of_meta() {  # <meta-file>
 # or "detached HEAD at <head>"). On failure, prints one refusal and returns 1.
 fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
   local meta=$1 id=$2 wt=$3 branch pr_head published local_tip detached_head status_output
+  local branches local_branch local_branch_tip upstream
   FM_RECOVER_PUBLISHED=
   FM_RECOVER_PUBLISHED_BRANCH=
   FM_RECOVER_DETACHED=
@@ -423,6 +424,30 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
     echo "error: task $id's local work is not published: '$branch' ($local_tip) is not an ancestor of its published head ($published); push the branch before recovering so a re-dispatch cannot orphan local commits" >&2
     return 1
   fi
+  branches=$(git -C "$wt" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null) || {
+    echo "error: task $id's local branches cannot be enumerated; refusing to recover without proving every local branch is published" >&2
+    return 1
+  }
+  while IFS= read -r local_branch; do
+    [ -n "$local_branch" ] || continue
+    [ "$local_branch" = "$branch" ] && continue
+    local_branch_tip=$(git -C "$wt" rev-parse --verify "refs/heads/$local_branch^{commit}" 2>/dev/null) || {
+      echo "error: task $id's local branch '$local_branch' cannot be read; refusing to recover without proving every local branch is published" >&2
+      return 1
+    }
+    upstream=$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name "$local_branch@{upstream}" 2>/dev/null) || {
+      echo "error: task $id's local branch '$local_branch' has no configured published upstream; refusing to recover work that may be unpublished" >&2
+      return 1
+    }
+    if ! git -C "$wt" rev-parse --verify "$upstream^{commit}" >/dev/null 2>&1; then
+      echo "error: task $id's local branch '$local_branch' has an unreadable published upstream '$upstream'; refusing to recover work that may be unpublished" >&2
+      return 1
+    fi
+    if ! git -C "$wt" merge-base --is-ancestor "$local_branch_tip" "$upstream"; then
+      echo "error: task $id's local branch '$local_branch' is not published: $local_branch_tip is not an ancestor of its configured upstream '$upstream'; push every local branch before recovering" >&2
+      return 1
+    fi
+  done <<< "$branches"
   if [ "$FM_RECOVER_DETACHED" = 1 ]; then
     detached_head=$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null) \
       || { echo "error: task $id's worktree HEAD cannot be read" >&2; return 1; }
