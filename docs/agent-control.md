@@ -15,7 +15,7 @@ The failure repeated across harnesses and homes, and the workaround (remember to
 
 `bin/fm-control-lib.sh` is the single executable owner of three capability tables, with no side effects, so it can be read as a contract:
 
-- The **verb allowlist**: `interrupt`, `exit`, `relaunch`.
+- The **verb allowlist**: `interrupt`, `exit`, `relaunch`, `recover`.
   There is no arbitrary-text and no generic raw-key entry point.
   A caller either names an allowlisted verb or is refused.
 - **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, whether the composer needs clearing afterwards, the command that exits the agent, the key that submits typed composer text, and which task kinds the adapter is verified to run.
@@ -33,6 +33,7 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |
 | `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. |
 | `relaunch` | Replace the running agent with a new one in the same endpoint and worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. | The new agent is alive on the recorded endpoint, and the durable record names the harness that is actually running. |
+| `recover` | Reconcile a ship or scout whose recorded endpoint is authoritatively gone (agent-state `missing`, e.g. after a host reboot) onto a NEW endpoint over the same task id, local copy, and branch. | The new agent is alive on a fresh endpoint, and the local work was proven already published before anything changed. |
 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Interrupt never rewrites busy state as proof of its own success.
@@ -53,7 +54,7 @@ It is not deterministic across the verified adapters: codex and grok resume only
 
 ## Transactional relaunch
 
-`relaunch` is the only verb that changes durable records, so it runs as a transaction with a journal at `state/<id>.control-relaunch`, the prior record preserved beside it, and a ship or scout's prior instructions preserved when a progress note is appended.
+`relaunch` changes durable records, so it runs as a transaction with a journal at `state/<id>.control-relaunch`, the prior record preserved beside it, and a ship or scout's prior instructions preserved when a progress note is appended.
 
 1. **Resolve the profile.**
    An explicit `--harness`, `--model`, or `--effort` wins.
@@ -80,6 +81,27 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - If the launch owner already published the new record but no running agent can be confirmed, the new record is kept: the task is recorded on the new harness with no agent confirmed, which is exactly what recovery reconciles.
   Rewriting it back to the old harness would be a second, worse inaccuracy.
 
+## Recovery from a vanished endpoint
+
+`recover` is the named exit from the exit<->relaunch circle.
+An endpoint whose recorded window is gone (agent-state `missing`, e.g. after a host reboot cleared the session provider's windows) traps a task between two refusals: `exit` refuses because there is no agent to stop, and `relaunch` refuses because it needs a positively agent-free existing endpoint.
+`recover` reconciles that task onto a NEW endpoint over the SAME id, the SAME local copy, and the SAME branch, without teardown and without minting a new id.
+
+1. **Prove the endpoint is missing.**
+   `recover` acts only on a positively classified `missing` endpoint on a state-verified backend (tmux or herdr).
+   A stopped (dead) endpoint is `relaunch`; a live agent is `exit` or `relaunch`.
+   A `kind=secondmate` task is refused, because a missing secondmate endpoint is recovered through the secondmate-liveness path, not this verb.
+2. **Prove the local work is published.**
+   The worktree must be clean, because uncommitted and untracked changes are not published.
+   Every local branch - including the task branch - must be an ancestor of its configured upstream, proven with `merge-base --is-ancestor` before anything is mutated.
+   The configured upstream is the single publication authority; the recorded `pr_head` is metadata only and never overrides the upstream proof.
+   Anything local that is not published refuses, because a re-dispatch that did not prove that could orphan a commit in one copy while the record points at another.
+3. **Record the recovery note.**
+   A ship or scout recovery requires `--note` and appends a dated recovery section carrying the branch, published head, and PR (explicitly `none` when no PR is recorded), plus the explicit instruction NOT to rebuild the change.
+4. **Launch the replacement** through `bin/fm-spawn.sh --recover-missing`, which creates a fresh endpoint whose shell starts in the recorded worktree - never `treehouse get`, never a fresh base - clears the previous harness's per-task wiring, and preserves the task's durable identity and launch profile while publishing the fresh endpoint.
+
+A refusal before the replacement is launched leaves the durable record byte-identical. If the launch itself refuses or fails after the note was appended, the recovery note stays in the instructions because it records only durable facts - the window was lost, the copy/branch/commits are preserved, do not rebuild - that remain true whether or not the replacement comes up.
+
 ## Fail-closed boundaries
 
 - Targeting is exact.
@@ -100,6 +122,8 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
+- `recover` refuses unless the recorded endpoint is positively `missing`, the worktree is clean, and every local branch (including the task branch) is an ancestor of its configured upstream.
+  `fm-spawn --recover-missing` independently verifies the same preconditions, so a recovery can never act on a live endpoint or on unpublished local work.
 
 ## Capability matrix
 
@@ -120,4 +144,5 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
 - `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
+- `tests/fm-control-recover.test.sh` - the recovery path: identity preservation onto a fresh endpoint, the recovery note, the unpublished-work refusal, and the exit<->relaunch circle break, all against a stubbed session provider with real git.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.

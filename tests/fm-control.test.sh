@@ -642,15 +642,15 @@ test_resume_is_refused_with_its_reason() {
   pass "fm-control: resume is refused with the determinism reason and the alternative"
 }
 
-test_relaunch_only_flags_are_rejected_on_other_verbs() {
+test_launch_flags_are_rejected_on_other_verbs() {
   local dir out rc
   dir=$(new_case flags)
   add_task "$dir" t1 claude
   alive_as "$dir" claude
   out=$(run_control "$dir" t1 exit --harness codex); rc=$?
   expect_code 1 "$rc" "--harness should not apply to exit"
-  assert_contains "$out" "apply to 'relaunch' only" "the refusal should scope the flags"
-  pass "fm-control: profile and note flags belong to relaunch only"
+  assert_contains "$out" "apply to 'relaunch' and 'recover' only" "the refusal should scope the flags"
+  pass "fm-control: profile and note flags belong to relaunch and recover only"
 }
 
 # --- 5. lifecycle states ----------------------------------------------------
@@ -933,7 +933,7 @@ test_remote_secondmate_is_refused_by_placement
 test_interrupt_and_exit_lock_before_task_state_resolution
 test_verb_allowlist_is_closed
 test_resume_is_refused_with_its_reason
-test_relaunch_only_flags_are_rejected_on_other_verbs
+test_launch_flags_are_rejected_on_other_verbs
 test_already_stopped_exit_is_idempotent
 test_missing_endpoint_refuses
 test_interrupt_refuses_when_no_agent_runs
