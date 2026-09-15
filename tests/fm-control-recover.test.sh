@@ -656,8 +656,8 @@ test_recover_detached_without_branch_refuses_unpublished_head() {
   pass "fm-control recover: a detached worktree with no fm/<id> branch refuses unless its HEAD equals the recorded pr_head"
 }
 
-test_recover_prefers_recorded_pr_head_over_stale_origin() {
-  local dir out rc proj wt head
+test_recover_refuses_task_branch_with_stale_upstream() {
+  local dir out rc proj wt head meta_before brief_before
   dir=$(new_case recover-prhead rc13)
   proj="$dir/proj"
   wt="$dir/wt"
@@ -685,13 +685,20 @@ test_recover_prefers_recorded_pr_head_over_stale_origin() {
   } > "$dir/home/state/rc13.meta"
   printf '%s' "$wt" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-rc13")
+  meta_before=$(cat "$dir/home/state/rc13.meta")
+  brief_before=$(cat "$dir/home/data/rc13/brief.md")
 
   out=$(run_control "$dir" rc13 recover --note "x"); rc=$?
-  expect_code 0 "$rc" "a recorded pr_head equal to the branch tip should publish the work even when origin is stale"$'\n'"$out"
-  assert_contains "$out" "recovered rc13 harness=claude" "the recovery should succeed"
-  assert_grep "Published head: $head" "$dir/home/data/rc13/brief.md" \
-    "the note must record the recorded pr_head as the published head"
-  pass "fm-control recover: prefers the recorded pr_head over a stale origin/<branch> ref"
+  expect_code 1 "$rc" "a matching pr_head must not exempt a stale task-branch upstream"$'\n'"$out"
+  assert_contains "$out" "task-rc13" "the refusal should identify the task branch"
+  assert_contains "$out" "not an ancestor of its configured upstream" \
+    "the refusal should name the failed upstream ancestor proof"
+  [ "$(cat "$dir/home/state/rc13.meta")" = "$meta_before" ] \
+    || fail "a stale task-upstream refusal must leave the durable record byte-identical"
+  [ "$(cat "$dir/home/data/rc13/brief.md")" = "$brief_before" ] \
+    || fail "a stale task-upstream refusal must leave the instructions byte-identical"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a stale task-upstream refusal must launch nothing"
+  pass "fm-control recover: pr_head cannot exempt an unpublished task branch"
 }
 
 test_recover_preserves_identity_and_creates_a_new_endpoint
@@ -713,4 +720,4 @@ test_recover_detached_worktree_instructs_checkout
 test_recover_detached_worktree_refuses_unpublished_detached_head
 test_recover_detached_at_published_advanced_default_branch_succeeds
 test_recover_detached_without_branch_refuses_unpublished_head
-test_recover_prefers_recorded_pr_head_over_stale_origin
+test_recover_refuses_task_branch_with_stale_upstream

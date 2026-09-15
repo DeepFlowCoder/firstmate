@@ -430,7 +430,6 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
   }
   while IFS= read -r local_branch; do
     [ -n "$local_branch" ] || continue
-    [ "$local_branch" = "$branch" ] && continue
     local_branch_tip=$(git -C "$wt" rev-parse --verify "refs/heads/$local_branch^{commit}" 2>/dev/null) || {
       echo "error: task $id's local branch '$local_branch' cannot be read; refusing to recover without proving every local branch is published" >&2
       return 1
