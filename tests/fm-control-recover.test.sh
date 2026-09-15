@@ -66,7 +66,10 @@ case "${1:-}" in
       printf '%s\n' "$payload" >> "$D/literal"
       case "$payload" in
         /exit|/quit) printf 'zsh' > "$D/command" ;;
-        *'encode launch-brief'*) cat "$D/becomes" > "$D/command" ;;
+        *'encode launch-brief'*)
+          cat "$D/becomes" > "$D/command"
+          [ -z "${FM_FAKE_LAUNCH_TRANSPORT_FAIL_AFTER_START:-}" ] || exit 1
+          ;;
       esac
     else
       printf '%s\n' "$payload" >> "$D/keys"
@@ -691,7 +694,7 @@ test_recover_refuses_task_branch_with_stale_upstream() {
   out=$(run_control "$dir" rc13 recover --note "x"); rc=$?
   expect_code 1 "$rc" "a matching pr_head must not exempt a stale task-branch upstream"$'\n'"$out"
   assert_contains "$out" "task-rc13" "the refusal should identify the task branch"
-  assert_contains "$out" "not an ancestor of its configured upstream" \
+  assert_contains "$out" "is not an ancestor of its published head" \
     "the refusal should name the failed upstream ancestor proof"
   [ "$(cat "$dir/home/state/rc13.meta")" = "$meta_before" ] \
     || fail "a stale task-upstream refusal must leave the durable record byte-identical"
@@ -699,6 +702,63 @@ test_recover_refuses_task_branch_with_stale_upstream() {
     || fail "a stale task-upstream refusal must leave the instructions byte-identical"
   [ -z "$(cat "$dir/fake/literal")" ] || fail "a stale task-upstream refusal must launch nothing"
   pass "fm-control recover: pr_head cannot exempt an unpublished task branch"
+}
+
+test_recover_accepts_stale_pr_head_with_newer_published_upstream() {
+  local dir out rc proj wt c1 c2
+  dir=$(new_case recover-stale-prhead-ok rc21)
+  proj="$dir/proj"
+  wt="$dir/wt"
+  fm_git_worktree "$proj" "$wt" "task-rc21"
+  configure_default_upstream "$proj"
+  git -C "$wt" push -q -u origin "task-rc21"
+  c1=$(git -C "$wt" rev-parse "task-rc21")
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "published follow-up"
+  c2=$(git -C "$wt" rev-parse "task-rc21")
+  git -C "$wt" push -q origin "task-rc21"
+  mkdir -p "$dir/home/data/rc21"
+  printf '# brief for rc21\n\nDo the thing.\n' > "$dir/home/data/rc21/brief.md"
+  {
+    echo "window=fmses:fm-rc21"
+    echo "endpoint_task_id=rc21"
+    echo "worktree=$wt"
+    echo "project=$proj"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "tasktmp=/tmp/fm-rc21"
+    echo "model=default"
+    echo "effort=default"
+    echo "pr_head=$c1"
+  } > "$dir/home/state/rc21.meta"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-rc21")
+
+  out=$(run_control "$dir" rc21 recover --note "x"); rc=$?
+  expect_code 0 "$rc" "a stale pr_head must not refuse a newer published upstream tip"$'\n'"$out"
+  assert_contains "$out" "recovered rc21 harness=claude" "the recovery should succeed"
+  assert_grep "Published head: $c2" "$dir/home/data/rc21/brief.md" \
+    "the note must name the configured upstream tip, not the stale pr_head"
+  pass "fm-control recover: a stale recorded pr_head accepts a newer published upstream tip"
+}
+
+test_recover_partial_spawn_reports_the_published_endpoint() {
+  local dir out rc
+  dir=$(new_case recover-partial rc22)
+  add_ship_task "$dir" rc22 published
+
+  out=$(FM_FAKE_LAUNCH_TRANSPORT_FAIL_AFTER_START=1 \
+    run_control "$dir" rc22 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "a post-publication launch failure should fail closed"$'\n'"$out"
+  assert_contains "$out" "published a new endpoint but its replacement could not be confirmed" \
+    "the rollback should report the published endpoint instead of claiming no agent launched"
+  assert_not_contains "$out" "no agent is running" \
+    "the rollback must not claim no agent is running after the endpoint was published"
+  [ -n "$(meta_field "$dir" rc22 spawn_gen)" ] \
+    || fail "the partial spawn should have republished the durable record with a new incarnation"
+  pass "fm-control recover: a partial spawn after publication reports the published endpoint"
 }
 
 test_recover_preserves_identity_and_creates_a_new_endpoint
@@ -721,3 +781,5 @@ test_recover_detached_worktree_refuses_unpublished_detached_head
 test_recover_detached_at_published_advanced_default_branch_succeeds
 test_recover_detached_without_branch_refuses_unpublished_head
 test_recover_refuses_task_branch_with_stale_upstream
+test_recover_accepts_stale_pr_head_with_newer_published_upstream
+test_recover_partial_spawn_reports_the_published_endpoint

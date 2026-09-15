@@ -58,8 +58,8 @@
 #              session provider's windows) without tearing the task down or
 #              minting a new id. Preserves the same task id, the same local
 #              copy, and the same branch: it proves every local commit is
-#              already published (merge-base --is-ancestor against the recorded
-#              pr_head, else origin/<branch>/upstream), appends a
+#              already published (merge-base --is-ancestor against each local
+#              branch's configured upstream), appends a
 #              recovery note to the brief, then delegates to
 #              bin/fm-spawn.sh --recover-missing, which creates a NEW endpoint
 #              and launches into the recorded worktree. Refuses cleanly when
@@ -173,6 +173,7 @@ RELAUNCH_PHASE=start
 RECOVER_ACTIVE=0
 RECOVER_PHASE=start
 RECOVER_LAUNCHED=0
+RECOVER_META_PUBLISHED=0
 
 control_cleanup() {
   local status=$?
@@ -890,10 +891,10 @@ do_relaunch() {
 # onto a NEW endpoint over the SAME task id, the SAME local copy, and the SAME
 # branch. It never tears the task down and never mints a new id.
 #
-# The durable safety boundary is publication: before anything is mutated, the
-# task's local work must already be on a published head (merge-base
-# --is-ancestor against the recorded pr_head or the branch's origin/upstream
-# counterpart). Anything local that is not published refuses, because a
+# The durable safety boundary is publication: before anything is mutated, every
+# local branch must be an ancestor of its configured upstream (merge-base
+# --is-ancestor, the single publication authority; the recorded pr_head is
+# metadata only). Anything local that is not published refuses, because a
 # re-dispatch that did not prove that could orphan a commit in one copy while
 # the record points at another. The recovery note then carries the branch,
 # published head, and PR into the instructions, with the explicit instruction
@@ -945,6 +946,8 @@ recover_rollback() {
     launching)
       if [ "$RECOVER_LAUNCHED" = 1 ]; then
         echo "error: recovery of $ID launched its replacement but could not confirm it alive; its work plus the recovery note are preserved at $WT, and the durable record points at the new endpoint" >&2
+      elif [ "$RECOVER_META_PUBLISHED" = 1 ]; then
+        echo "error: recovery of $ID published a new endpoint but its replacement could not be confirmed; its work plus the recovery note are preserved at $WT, and the durable record points at the new endpoint" >&2
       else
         echo "error: recovery of $ID failed while launching its replacement; no agent is running, and its work plus the recovery note are preserved at $WT" >&2
       fi
@@ -954,7 +957,7 @@ recover_rollback() {
 }
 
 do_recover() {
-  local state published checkout_branch
+  local state published checkout_branch prior_spawn_gen
   local -a spawn_args
 
   require_state_verified_backend recover
@@ -985,10 +988,13 @@ do_recover() {
   record_recovery_note "$published" "$FM_RECOVER_PUBLISHED_BRANCH" "$checkout_branch"
 
   RECOVER_PHASE=launching
+  prior_spawn_gen=$(fm_meta_get "$META" spawn_gen)
   spawn_args=("$ID" --recover-missing --harness "$TARGET_HARNESS")
   [ "$TARGET_MODEL" = default ] || spawn_args+=(--model "$TARGET_MODEL")
   [ "$TARGET_EFFORT" = default ] || spawn_args+=(--effort "$TARGET_EFFORT")
   if ! "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
+    [ "$(fm_meta_get "$META" spawn_gen)" = "$prior_spawn_gen" ] \
+      || RECOVER_META_PUBLISHED=1
     die "the replacement agent for $ID could not be recovered on $TARGET_HARNESS"
   fi
   RECOVER_LAUNCHED=1

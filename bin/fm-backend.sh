@@ -361,9 +361,10 @@ fm_backend_target_of_meta() {  # <meta-file>
 }
 
 # fm_recover_prove_published_work: prove a recovery target's local work is
-# already published. The task's published head is the recorded pr_head when
-# present, else the task branch's origin/upstream counterpart. The local tip is
-# the checked-out branch (falling back to refs/heads/fm/<id> when detached); a
+# already published. The task's published head is its configured upstream
+# (with an origin/<branch> fallback); the recorded pr_head is metadata only
+# and never overrides the upstream proof. The local tip is the checked-out
+# branch (falling back to refs/heads/fm/<id> when detached); a
 # detached worktree with no such branch is accepted only when its HEAD is
 # exactly the recorded pr_head. A detached worktree with a resolved branch
 # additionally requires the detached HEAD itself to be published (reachable
@@ -397,13 +398,10 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
   if [ -n "$branch" ]; then
     local_tip=$(git -C "$wt" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null) \
       || { echo "error: task $id's branch '$branch' cannot be read" >&2; return 1; }
-    published=$pr_head
-    if [ -z "$published" ]; then
-      published=$(git -C "$wt" rev-parse --verify --quiet "origin/$branch^{commit}" 2>/dev/null \
-        || git -C "$wt" rev-parse --verify --quiet "$branch@{upstream}^{commit}" 2>/dev/null || true)
-    fi
+    published=$(git -C "$wt" rev-parse --verify --quiet "$branch@{upstream}^{commit}" 2>/dev/null \
+      || git -C "$wt" rev-parse --verify --quiet "origin/$branch^{commit}" 2>/dev/null || true)
     [ -n "$published" ] || {
-      echo "error: task $id's branch '$branch' has no published head (no recorded pr_head, no origin/$branch, no upstream); refusing to recover work that may be unpublished" >&2
+      echo "error: task $id's branch '$branch' has no published head (no configured upstream or origin/$branch); refusing to recover work that may be unpublished" >&2
       return 1
     }
   elif [ -n "$pr_head" ]; then
