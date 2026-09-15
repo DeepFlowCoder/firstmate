@@ -373,10 +373,18 @@ fm_backend_target_of_meta() {  # <meta-file>
 # FM_RECOVER_PUBLISHED and FM_RECOVER_PUBLISHED_BRANCH (the branch resolution,
 # or "detached HEAD at <head>"). On failure, prints one refusal and returns 1.
 fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
-  local meta=$1 id=$2 wt=$3 branch pr_head published local_tip detached_head
+  local meta=$1 id=$2 wt=$3 branch pr_head published local_tip detached_head status_output
   FM_RECOVER_PUBLISHED=
   FM_RECOVER_PUBLISHED_BRANCH=
   FM_RECOVER_DETACHED=
+  status_output=$(git -C "$wt" status --porcelain 2>/dev/null) || {
+    echo "error: task $id's worktree status cannot be inspected; refusing to recover without accounting for local changes" >&2
+    return 1
+  }
+  if [ -n "$status_output" ]; then
+    echo "error: task $id's worktree has uncommitted or untracked local changes; refusing to recover work that is not published" >&2
+    return 1
+  fi
   pr_head=$(fm_meta_get "$meta" pr_head)
   branch=$(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
   if [ -z "$branch" ]; then

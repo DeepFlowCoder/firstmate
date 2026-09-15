@@ -919,7 +919,7 @@ record_recovery_note() {  # <published-head> <branch> [checkout-branch]
     echo
     echo "Branch: $branch"
     echo "Published head: $published"
-    [ -n "$pr" ] && echo "PR: $pr"
+    echo "PR: ${pr:-none}"
     if [ -n "$checkout" ]; then
       echo
       echo "This worktree was left detached; run 'git checkout $checkout' first so"

@@ -129,7 +129,7 @@ new_case() {
 # meta. With `published`, the task branch is pushed to origin so recovery's
 # published-head proof passes; without it, the branch is local-only.
 add_ship_task() {
-  local dir=$1 id=$2 published=${3:-}
+  local dir=$1 id=$2 published=${3:-} pr=${4:-with-pr}
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
@@ -146,7 +146,7 @@ add_ship_task() {
     echo "tasktmp=/tmp/fm-$id"
     echo "model=default"
     echo "effort=default"
-    [ -z "$published" ] || echo "pr=https://github.com/example/repo/pull/1"
+    [ -z "$published" ] || [ "$pr" != with-pr ] || echo "pr=https://github.com/example/repo/pull/1"
   } > "$home/state/$id.meta"
   printf '%s' "$wt" > "$dir/fake/cwd"
   if [ -n "$published" ]; then
@@ -257,6 +257,39 @@ test_unpublished_local_commit_refuses_before_mutation() {
     || fail "a refused recovery must leave the instructions byte-identical"
   [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused recovery must launch nothing"
   pass "fm-control recover: unpublished local work refuses before anything is mutated"
+}
+
+test_dirty_worktree_refuses_before_mutation() {
+  local dir out rc meta_before brief_before
+  dir=$(new_case recover-dirty rc18)
+  add_ship_task "$dir" rc18 published
+  printf 'uncommitted work\n' > "$dir/wt/untracked.txt"
+  meta_before=$(cat "$dir/home/state/rc18.meta")
+  brief_before=$(cat "$dir/home/data/rc18/brief.md")
+
+  out=$(run_control "$dir" rc18 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "a dirty worktree should refuse"$'\n'"$out"
+  assert_contains "$out" "uncommitted or untracked local changes" \
+    "the refusal should identify the dirty worktree"
+  assert_contains "$out" "not published" "the refusal should name the publication boundary"
+  [ "$(cat "$dir/home/state/rc18.meta")" = "$meta_before" ] \
+    || fail "a dirty-worktree refusal must leave the durable record byte-identical"
+  [ "$(cat "$dir/home/data/rc18/brief.md")" = "$brief_before" ] \
+    || fail "a dirty-worktree refusal must leave the instructions byte-identical"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a dirty-worktree refusal must launch nothing"
+  pass "fm-control recover: a dirty worktree refuses before anything is mutated"
+}
+
+test_recovery_note_records_missing_pr_explicitly() {
+  local dir out rc
+  dir=$(new_case recover-no-pr rc19)
+  add_ship_task "$dir" rc19 published no-pr
+
+  out=$(run_control "$dir" rc19 recover --note "window lost in a reboot"); rc=$?
+  expect_code 0 "$rc" "published work without PR metadata should recover"$'\n'"$out"
+  assert_grep "PR: none" "$dir/home/data/rc19/brief.md" \
+    "the recovery note must represent missing PR metadata explicitly"
+  pass "fm-control recover: the recovery note records missing PR metadata as none"
 }
 
 test_recover_without_a_note_is_refused() {
@@ -625,6 +658,8 @@ test_recover_prefers_recorded_pr_head_over_stale_origin() {
 test_recover_preserves_identity_and_creates_a_new_endpoint
 test_recover_appends_the_recovery_note_without_rebuilding
 test_unpublished_local_commit_refuses_before_mutation
+test_dirty_worktree_refuses_before_mutation
+test_recovery_note_records_missing_pr_explicitly
 test_recover_without_a_note_is_refused
 test_recover_refuses_a_not_missing_endpoint
 test_recover_refuses_an_unpublished_branch_with_no_remote_head
