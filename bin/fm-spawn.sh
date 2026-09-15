@@ -1180,7 +1180,10 @@ if [ "$REUSE" -eq 1 ]; then
     HERDR_SES=$(fm_meta_get "$RELAUNCH_META" herdr_session)
     HERDR_WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_workspace_id)
     HERDR_TAB_ID=$(fm_meta_get "$RELAUNCH_META" herdr_tab_id)
-    HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
+    # A relaunch adopts the recorded pane; a recovery creates a NEW pane placed
+    # relative to this launcher's own herdr pane (or the per-home container when
+    # there is none), never the vanished task pane that no longer exists.
+    [ "$RECOVER_MISSING" -eq 0 ] && HERDR_PANE_ID=$(fm_meta_get "$RELAUNCH_META" herdr_pane_id)
   fi
   # With no explicit harness, a relaunch or recovery reuses the harness already
   # recorded for this task. It must NOT fall through to the fresh-spawn config
