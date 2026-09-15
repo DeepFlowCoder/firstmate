@@ -158,7 +158,8 @@ add_ship_task() {
 # add_unpublished_commit <case-dir> <id>: push the branch, then add one local
 # commit beyond the published head so the published-head proof must refuse.
 add_unpublished_commit() {
-  local dir=$1 id=$2 wt="$dir/wt"
+  local dir=$1 id=$2
+  local wt="$dir/wt"
   git -C "$wt" push -q -u origin "task-$id"
   git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
     commit -q --allow-empty -m "unpublished local commit"
