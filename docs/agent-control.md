@@ -129,14 +129,15 @@ A refusal before the replacement is launched leaves the durable record byte-iden
 
 Backend capability comes from each adapter's real surface, not from a policy choice.
 
-| Backend | Escape | Enter | Ctrl+C | Ctrl+U | Ctrl+S | Recovery-grade agent state |
-| --- | --- | --- | --- | --- | --- | --- |
-| tmux | yes | yes | yes | yes | yes | yes |
-| herdr | yes | yes | yes | yes | yes | yes |
-| zellij | yes | yes | yes | yes | yes | no |
-| cmux | yes | yes | yes | yes | yes | no |
-| orca | no | yes | yes | no | no | no |
+| Backend | Escape | Enter | Ctrl+C | Ctrl+U | Ctrl+S | Up | Recovery-grade agent state |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| tmux | yes | yes | yes | yes | yes | yes | yes |
+| herdr | yes | yes | yes | yes | yes | no | yes |
+| zellij | yes | yes | yes | yes | yes | no | no |
+| cmux | yes | yes | yes | yes | yes | no | no |
+| orca | no | yes | yes | no | no | no | no |
 
+`Up` moves a selection up a vendor dialog list and is used only by `fm-spawn`'s Kimi workspace-trust handling; it is claimed for tmux alone, and `bin/fm-control-lib.sh`'s header owns which backends may add it.
 Per-harness interrupt keys, repeat counts, composer clears, exit commands, and supported task kinds live in `bin/fm-control-lib.sh` and are exercised for every verified harness by `tests/fm-control.test.sh`.
 The empirical basis for each adapter's value is the `harness-adapters` skill's verification record for that adapter.
 
