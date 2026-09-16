@@ -66,6 +66,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-turnend-guard-cursor.sh` | Cursor Stop-hook adapter for the primary turn-end guard (the park model)             |
 | `fm-hook-host-lib.sh`    | Shared "which harness delivered this hook payload?" predicate for the tracked Claude-shaped hook entries |
 | `fm-kimi-turnend-hook.sh` | Surgically install or remove Kimi's guarded global crew turn-end hook                |
+| `fm-kimi-trust-lib.sh`   | One owner of Kimi Code's workspace-trust dialog contract: recognition, the only selectable row, the grant postcondition, and the MCP-declaring refusal |
 | `fm-arm-pretool-check.sh` | Stable PreToolUse transport for the watcher-arm command policy (docs/arm-pretool-check.md) |
 | `fm-arm-command-policy.mjs` | Semantic owner of the watcher-arm PreToolUse policy (docs/arm-pretool-check.md)   |
 | `fm-cd-pretool-check.sh` | Stable PreToolUse transport for the cd-guard command policy (docs/cd-guard.md)       |
