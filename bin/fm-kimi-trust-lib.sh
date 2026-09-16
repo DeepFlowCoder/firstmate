@@ -65,20 +65,36 @@
 # source it as a contract.
 
 # The vendor strings this contract keys on, named once.
+#
+# WIDTH MATTERS when choosing these. The vendor renders the title and the
+# navigation hint with a direct `lines.push`, but puts the workspace path and
+# the long "Project-level MCP servers are disabled until you explicitly choose
+# Trust." sentence through `wrapTextWithAnsi(text, max(20, width - 2))`, then
+# truncates every line to the pane width at the end. Measured at 60 columns,
+# that sentence really does break across three lines. Keying detection on it
+# would therefore stop matching on a narrow pane, the dialog would go
+# unrecognized, and the launch would fall through to exactly the ready-timeout
+# abort this contract exists to prevent. So detection uses the two lines the
+# vendor never wraps, and matches them by short leading fragments that survive
+# end-truncation far below any usable pane width.
 FM_KIMI_TRUST_TITLE='Trust this folder?'
-FM_KIMI_TRUST_GATE_SENTENCE='Project-level MCP servers are disabled until you explicitly choose Trust'
+FM_KIMI_TRUST_HINT_RE='navigate.*Enter select'
 FM_KIMI_TRUST_ACCEPT_LABEL='Trust this folder'
 FM_KIMI_TRUST_MCP_HEADING='Project MCP targets:'
 FM_KIMI_TRUST_POINTER='❯'
 
 # fm_kimi_trust_prompt_present: whether <pane> is showing the trust dialog.
-# Two independent vendor strings must BOTH be present - the dialog title and the
-# gate sentence - so an ordinary agent turn that happens to quote one of them
+# Two independent vendor signals must BOTH be present - the dialog title and its
+# navigation hint - so an ordinary agent turn that happens to quote one of them
 # back (a worker reading this very file, for instance) is not mistaken for a
 # dialog that is waiting on a keypress.
+#
+# The hint is matched as "navigate" and "Enter select" on one line rather than
+# as its literal text, because the separator between them is a vendor glyph and
+# nothing here should depend on how a terminal renders it.
 fm_kimi_trust_prompt_present() {  # <pane>
   printf '%s\n' "${1-}" | grep -Fq "$FM_KIMI_TRUST_TITLE" || return 1
-  printf '%s\n' "${1-}" | grep -Fq "$FM_KIMI_TRUST_GATE_SENTENCE" || return 1
+  printf '%s\n' "${1-}" | grep -Eq "$FM_KIMI_TRUST_HINT_RE" || return 1
   return 0
 }
 
@@ -98,17 +114,28 @@ fm_kimi_trust_accept_is_selected() {  # <pane>
 # of the two-signal refusal: it is the vendor's own verdict over its own merge
 # of the project files, so it stays correct even if the file layout changes
 # under us.
+#
+# Two things end the list. The vendor's own blank line before the option rows is
+# the ordinary one. The accept row is the backstop, and it is not redundant: a
+# reader that drops blank lines would otherwise collect the option rows
+# themselves as targets, and that refuses EVERY launch meeting the dialog rather
+# than failing harmlessly. Only the accept row is checked, because the vendor
+# renders it before the refuse row. Both the heading and that label reach awk
+# through -v rather than being written into the program text, so the apostrophe
+# in the refuse label is never escaped and nothing here depends on how one awk
+# implementation reads \x27 (BWK awk and gawk differ from mawk, which is
+# Ubuntu CI's default).
 fm_kimi_trust_rendered_mcp_targets() {  # <pane>
-  printf '%s\n' "${1-}" | awk -v heading="$FM_KIMI_TRUST_MCP_HEADING" '
+  printf '%s\n' "${1-}" \
+    | awk -v heading="$FM_KIMI_TRUST_MCP_HEADING" \
+          -v accept="$FM_KIMI_TRUST_ACCEPT_LABEL" '
     index($0, heading) { collecting = 1; next }
     collecting {
       line = $0
       sub(/^[[:space:]]+/, "", line)
       sub(/[[:space:]]+$/, "", line)
       if (line == "") { collecting = 0; next }
-      # The option rows end the target list; everything before them is a target.
-      if (index(line, "❯") || index(line, "Trust this folder") \
-          || index(line, "Don\x27t trust")) { collecting = 0; next }
+      if (index(line, accept)) { collecting = 0; next }
       print line
     }
   '

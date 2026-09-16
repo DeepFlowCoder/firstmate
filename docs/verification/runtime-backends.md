@@ -1071,6 +1071,22 @@ Launched in a fresh git repository, the real CLI rendered:
 ```
 
 The highlight glyph is `❯` and is written by the vendor as `pointer = selected ? "❯" : " "`, so it survives a plain pane capture rather than depending on colour or a theme symbol.
+
+Pane width decides which of those lines can be used to recognize the dialog at all.
+The vendor pushes the title and the `↑↓ navigate · Enter select · Esc exit` hint straight into its line list, but puts the workspace path and the long gate sentence through `wrapTextWithAnsi(text, max(20, width - 2))`, then truncates every line to the pane width.
+Re-running the same launch at `COLUMNS=60` confirmed it: the title and the hint stayed on one line each, while the gate sentence broke across three.
+
+```
+  Trust this folder?
+  ↑↓ navigate · Enter select · Esc exit
+  Project-level MCP servers are disabled until you
+  explicitly choose Trust. Trust starts the listed project
+  MCP targets and remembers this folder.
+```
+
+Detection therefore keys on the two unwrapped lines, matched by short leading fragments rather than whole sentences.
+A detector keyed on the gate sentence reads a dialog that is plainly on screen as absent below about 75 columns, and the launch then falls through to the ready-timeout abort this whole contract exists to prevent.
+The live guard drives the real CLI at 160 columns and structurally cannot measure this, so the narrow render is pinned in `tests/fm-kimi-harness.test.sh` instead.
 Navigation is clamped, not wrapping: from the top row a single Up produced no redraw at all, while Down moved the highlight to `Don't trust`.
 Selecting `Don't trust` exited the process with status 0 and wrote no record, which is why no key may be pressed from an unconfirmed position.
 Selecting `Trust this folder` proceeded to the normal composer and `Welcome to Kimi Code!`, and wrote a durable record:

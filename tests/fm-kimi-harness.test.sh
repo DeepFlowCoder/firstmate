@@ -775,6 +775,99 @@ kimi_real_trust_capture() {  # [pointer-row: accept|refuse|none]
   printf ' ─────────────────────────────────────────\n'
 }
 
+# The same dialog as Kimi Code 0.43.1 draws it at 60 columns, captured from the
+# real CLI. The vendor pushes the title and the navigation hint straight into
+# its line list but puts the workspace path and the long gate sentence through
+# wrapTextWithAnsi, so exactly those two wrap here - the gate sentence across
+# three lines. Pinned because the live guard drives the real CLI at 160 columns
+# and so cannot measure any width dependence itself.
+kimi_real_trust_capture_narrow() {  # [declares-mcp]
+  printf ' ──────────────────────────────────────────────────────────\n'
+  printf '  Trust this folder?\n'
+  printf '  ↑↓ navigate · Enter select · Esc exit\n'
+  printf '\n'
+  printf '  /Users/ramongarcia/.treehouse/proj-0096/1/proj-with-a-lo\n'
+  printf '  ng-enough-name-to-wrap\n'
+  printf '\n'
+  printf '  Project-level MCP servers are disabled until you\n'
+  printf '  explicitly choose Trust. Trust starts the listed project\n'
+  printf '  MCP targets and remembers this folder.\n'
+  if [ "${1:-no}" = yes ]; then
+    printf '  Project MCP targets:\n'
+    printf '    payments-admin (stdio): command=/usr/bin/false\n'
+    printf '    args=["--serve"]\n'
+    printf '    cwd=/Users/ramongarcia/.treehouse/proj-0096/1/proj-wi\n'
+    printf '    th-a-long-enough-name-to-wrap\n'
+  fi
+  printf '\n'
+  printf '   ❯ Trust this folder\n'
+  printf '     Enable project MCP servers. Remembered for this\n'
+  printf '     folder.\n'
+  printf "     Don't trust\\n"
+  printf '     Exit Kimi Code. Asked again next launch.\n'
+  printf ' ──────────────────────────────────────────────────────────\n'
+}
+
+# A narrow pane must not make the dialog invisible to the contract. It did
+# while detection keyed on the long gate sentence, and the consequence was the
+# launch falling through to the very ready-timeout abort this contract exists to
+# prevent - silently, because nothing else about the pane looks wrong.
+test_kimi_trust_contract_reads_a_narrow_dialog() {
+  local capture targets
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-kimi-trust-lib.sh"
+
+  capture=$(kimi_real_trust_capture_narrow)
+  # The measurement this test exists for: at this width the vendor's gate
+  # sentence is genuinely broken across lines, so any detector keyed on it whole
+  # would be reading a dialog that is plainly on screen and calling it absent.
+  if printf '%s\n' "$capture" \
+     | grep -Fq 'Project-level MCP servers are disabled until you explicitly choose Trust'; then
+    fail "the narrow capture no longer wraps the gate sentence, so this test no longer exercises the width dependence it exists for"
+  fi
+  fm_kimi_trust_prompt_present "$capture" \
+    || fail "a trust dialog plainly on screen at 60 columns was not recognized"
+  fm_kimi_trust_accept_is_selected "$capture" \
+    || fail "the accept row's highlight was not read back from a 60-column dialog"
+
+  targets=$(fm_kimi_trust_rendered_mcp_targets "$capture")
+  [ -z "$targets" ] \
+    || fail "a narrow dialog listing no project MCP targets reported some: $targets"
+
+  # Wrapped target details still have to be seen, because a launch is refused on
+  # their presence and a missed one would be trusted instead.
+  capture=$(kimi_real_trust_capture_narrow yes)
+  targets=$(fm_kimi_trust_rendered_mcp_targets "$capture")
+  printf '%s\n' "$targets" | grep -Fq 'payments-admin' \
+    || fail "a project MCP target wrapped across lines at 60 columns went unread: $targets"
+  printf '%s\n' "$targets" | grep -Fq 'Trust this folder' \
+    && fail "the option rows were collected as project MCP targets"
+  pass "kimi trust contract: a 60-column dialog is still recognized, selectable, and read for MCP targets"
+}
+
+# The vendor's blank line before the option rows is what ordinarily ends the
+# target list, so the accept row is a backstop. It is not dead weight: a reader
+# that drops blank lines would otherwise collect the option rows themselves as
+# targets, and that refuses EVERY launch meeting the dialog rather than failing
+# harmlessly. This drives the backstop directly.
+test_kimi_trust_targets_stop_at_the_option_rows_without_a_blank_line() {
+  local capture targets
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-kimi-trust-lib.sh"
+  capture=$(kimi_real_trust_capture_narrow yes | grep -v '^$')
+  if printf '%s\n' "$capture" | grep -q '^$'; then
+    fail "the blank-line-free capture still has a blank line, so the backstop is not what is under test"
+  fi
+  targets=$(fm_kimi_trust_rendered_mcp_targets "$capture")
+  printf '%s\n' "$targets" | grep -Fq 'payments-admin' \
+    || fail "the declared project MCP target went unread without a blank line: $targets"
+  printf '%s\n' "$targets" | grep -Fq 'Trust this folder' \
+    && fail "without the vendor's blank line the option rows were collected as project MCP targets, which would refuse every launch that meets this dialog"
+  printf '%s\n' "$targets" | grep -Fq "Don't trust" \
+    && fail "the refuse row was collected as a project MCP target"
+  pass "kimi trust contract: the option rows end the target list even when no blank line separates them"
+}
+
 test_kimi_trust_contract_reads_the_real_dialog() {
   local capture targets
   # shellcheck source=/dev/null
@@ -1238,6 +1331,8 @@ test_kimi_pending_submit_without_proof_at_decision_time_is_unconfirmed
 test_kimi_pending_submit_confirmed_inside_the_window_succeeds
 test_kimi_readiness_gate_precedes_pointer
 test_kimi_trust_contract_reads_the_real_dialog
+test_kimi_trust_contract_reads_a_narrow_dialog
+test_kimi_trust_targets_stop_at_the_option_rows_without_a_blank_line
 test_kimi_trust_contract_reads_declared_project_mcp_servers
 test_kimi_trust_dialog_is_accepted_and_the_brief_still_lands
 test_kimi_trust_dialog_never_selects_the_worker_quitting_row
