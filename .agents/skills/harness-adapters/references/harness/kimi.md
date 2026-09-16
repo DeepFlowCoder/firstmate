@@ -1,6 +1,6 @@
 # Kimi Code
 
-Verified on 2026-07-25 with Kimi Code CLI 0.29.1.
+Verified on 2026-07-25 with Kimi Code CLI 0.29.1; the workspace-trust facts below were measured on 2026-09-15 with 0.43.0 and re-confirmed on 0.43.1.
 
 ## Operating facts
 
@@ -14,15 +14,29 @@ Verified on 2026-07-25 with Kimi Code CLI 0.29.1.
 | Interrupt | Single Escape, which prints `Interrupted by user`. |
 | Skill invocation | `/<skill>`, for example `/no-mistakes`; Firstmate skills are discovered. |
 | Autonomy | `--auto`; `-y` and `--yolo` are weaker and are not used. |
-| Trust dialog | None observed on a clean first launch in a fresh pooled worktree. |
+| Trust dialog | `Trust this folder?` with `Project-level MCP servers are disabled until you explicitly choose Trust`, on the FIRST launch in any workspace root Kimi holds no trust record for; the rows are `Trust this folder` and `Don't trust` / `Exit Kimi Code`, and Escape also exits (measured 2026-09-15 on 0.43.0 and 0.43.1, reproducing 2026-08-31's aborted launch). `../../../bin/fm-kimi-trust-lib.sh` owns the contract and `../../../bin/fm-spawn.sh` handles it; see "Workspace trust" below. |
 | Submit key | `C-s` (Ctrl+S) directs typed composer text; Enter clears the line without submitting (measured 2026-08-31, Kimi's "ctrl-s para dirigir de inmediato" hint). `../../../bin/fm-control-lib.sh`'s `fm_control_submit_key` owns this fact. |
 | Environment marker | None; detection uses process ancestry command name `kimi`. |
 | Composer | Bordered box with a bare `>` prompt glyph and no observed ghost or placeholder text. |
 | Effort | No verified reasoning-effort flag; `references/common/model-and-effort.md` owns unsupported-value handling. |
 
+## Workspace trust
+
+Kimi asks its trust question the first time it launches in a workspace root it holds no trust record for, and grants are durable per root under `<KIMI_CODE_HOME>/workspace-trust/`.
+Firstmate's own pooled worktree paths are reused across tasks and were granted trust long ago, so firstmate-repo spawns stopped meeting the dialog entirely; that is why this reference carried a "no dialog" claim while every fresh project worktree still met it, aborted at the ready gate, and never received its brief.
+A launch that meets the dialog with the brief undelivered keeps its endpoint, so delivering the brief with `fm-send` recovers it without a relaunch.
+
+Selecting the wrong row is destructive rather than merely unhelpful: the neighbouring row exits Kimi Code, and 0.43.0 opens on the accept row while the earlier measured build opened on the refuse one.
+`../../../bin/fm-kimi-trust-lib.sh` is the single owner of that contract, including which row may be selected, how the highlight is read back before anything is pressed, and how a grant is proven; do not improvise a key recipe from this table.
+
+Accepting starts the project's project-level MCP servers, so a worktree that declares any is refused rather than trusted and the captain decides.
+That refusal, and every other way the dialog can stop a launch, records `blocked` under the key `kimi-trust` and leaves the worker alive at the question.
+Getting past the dialog is not trust handling complete: `../common/control-and-recovery.md` still requires inspection proving the target started processing its instructions, which for Kimi remains the delivery postcondition below.
+
 ## Readiness-gated start
 
-`../../../bin/fm-spawn.sh` launches Kimi bare, waits for the composer box or `Welcome to Kimi Code!`, sends only `Read the brief at <absolute-path> and follow it exactly.`, and requires a cleared composer plus either the echoed `✨` submission or nonzero context before accepting delivery.
+`../../../bin/fm-spawn.sh` launches Kimi bare, clears the workspace-trust question above if it appears, waits for the composer box or `Welcome to Kimi Code!`, sends only `Read the brief at <absolute-path> and follow it exactly.`, and requires a cleared composer plus either the echoed `✨` submission or nonzero context before accepting delivery.
+Clearing that question restarts the readiness budget once, because time spent at a question firstmate has just answered is not evidence that Kimi failed to start; the budget's own refusal is otherwise unchanged.
 This launch-then-send shape is mandatory because Kimi rejects positional instructions as an unknown command.
 The path must be absolute because the instructions live outside the task worktree and Kimi reads them there without `--add-dir`.
 

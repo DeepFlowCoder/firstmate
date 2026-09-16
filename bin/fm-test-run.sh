@@ -273,6 +273,7 @@ family_for_basename() {
     fm-cursor-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-adapter-instructions-live-e2e.test.sh|\
     fm-harness-liveness-drift-live-e2e.test.sh|\
+    fm-kimi-trust-live-e2e.test.sh|\
     fm-muse-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
@@ -564,6 +565,7 @@ tests/fm-herdr-submit-confirm-live-e2e.test.sh 20
 tests/fm-herdr-version-floor-live-e2e.test.sh 21
 tests/fm-inactive-reconcile.test.sh 41567
 tests/fm-kimi-harness.test.sh 14881
+tests/fm-kimi-trust-live-e2e.test.sh 21
 tests/fm-lint-workflows.test.sh 612
 tests/fm-merge-local.test.sh 2682
 tests/fm-muse-harness.test.sh 28675
@@ -1236,6 +1238,14 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
+      ;;
+    bin/fm-kimi-trust-lib.sh)
+      # Kimi's workspace-trust contract is vendor-rendered signal plus a
+      # vendor-written record, so a change to it re-selects the live guard that
+      # measures both against the real CLI alongside the portable families.
+      printf '%s\n' backend-dispatch
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' live-harness-optin
       ;;
     bin/fm-spawn.sh|bin/fm-harness.sh|\
     bin/fm-peek.sh|bin/fm-composer*)

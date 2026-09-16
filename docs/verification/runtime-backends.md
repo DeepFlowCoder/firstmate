@@ -1049,6 +1049,79 @@ Refresh this harness-dependent proof before accepting a cursor upgrade:
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
 ```
 
+## Kimi Code CLI
+
+### Workspace trust dialog
+
+Measured 2026-09-15 on macOS 26.5.2 arm64 against the installed Kimi Code CLI, driven through a PTY because this host has no tmux.
+`kimi --version` reported `0.43.0` for the captures below and `0.43.1` for the live-guard run that followed its auto-update; both behave identically on every fact recorded here.
+
+Kimi asks its trust question on the first launch in any workspace root it holds no trust record for, whether or not that root declares MCP servers.
+Launched in a fresh git repository, the real CLI rendered:
+
+```
+  Trust this folder?
+  ↑↓ navigate · Enter select · Esc exit
+  <workspace root>
+  Project-level MCP servers are disabled until you explicitly choose Trust. Trust starts the listed project MCP targets and remembers this folder.
+   ❯ Trust this folder
+     Enable project MCP servers. Remembered for this folder.
+     Don't trust
+     Exit Kimi Code. Asked again next launch.
+```
+
+The highlight glyph is `❯` and is written by the vendor as `pointer = selected ? "❯" : " "`, so it survives a plain pane capture rather than depending on colour or a theme symbol.
+Navigation is clamped, not wrapping: from the top row a single Up produced no redraw at all, while Down moved the highlight to `Don't trust`.
+Selecting `Don't trust` exited the process with status 0 and wrote no record, which is why no key may be pressed from an unconfirmed position.
+Selecting `Trust this folder` proceeded to the normal composer and `Welcome to Kimi Code!`, and wrote a durable record:
+
+```
+$ cat "$KIMI_CODE_HOME/workspace-trust/wd_repo_8fcd9d1003d7"
+{"root":"<workspace root>","trustedAt":1789532452658}
+```
+
+That record is the grant's postcondition, and firstmate matches it on its own `root` field rather than recomputing the vendor's key hash.
+
+In a repository declaring project MCP servers in both trust-gated files, the same dialog additionally rendered the vendor's own list, which is why firstmate does not have to reimplement Kimi's merge to know what a grant would start:
+
+```
+  Project MCP targets:
+    local-http-thing (http): url=http://127.0.0.1:9999/mcp
+    payments-admin (stdio): command=/usr/bin/false args=["--serve"]
+```
+
+The trust-gated files are `<project root>/.mcp.json`, where project root is the nearest git worktree root from the launch directory, and `<launch directory>/.kimi-code/mcp.json`; `<KIMI_CODE_HOME>/mcp.json` is user-global and is not gated.
+`KIMI_CODE_HOME` selects the data root, and with it the trust records, exactly as `resolveKimiHome` resolves it: the variable, else `$HOME/.kimi-code`.
+
+The dialog appears before authentication: launched with a throwaway empty `KIMI_CODE_HOME`, Kimi still rendered it and reached it without reading any credential.
+That is what lets the live guard run isolated and free.
+
+There is no launch-flag equivalent of Cursor's `--trust` for Kimi.
+`kimi --help` lists no trust option, and the bundle contains no `--trust`-shaped flag and no trust environment override; its only programmatic `trustWorkspace` lives on the ACP/RPC surface that `kimi acp` serves, not on the interactive CLI.
+Answering the dialog is therefore the only in-band route, which is why this adapter drives keys where the Cursor adapter simply passes a flag.
+
+The false "no dialog observed" claim this replaced survived because firstmate's own pooled worktree roots are reused across tasks and had been granted trust long before, so firstmate-repo spawns never met the dialog while every fresh project worktree did.
+
+The portable regression is `tests/fm-kimi-harness.test.sh`.
+Refresh this harness-dependent proof before accepting a Kimi upgrade:
+
+```sh
+FM_KIMI_TRUST_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-kimi-trust-live-e2e.test.sh
+```
+
+That run printed:
+
+```
+ok - kimi 0.43.1: the workspace-trust dialog exists and opens on the accept row, only its accept row reads as selectable, Up never reaches the row that exits, an accepted grant is recorded, and a declared project MCP server is listed
+```
+
+### Dialog move key by backend
+
+`Up` is claimed only for tmux, whose `send-keys Up` is its own documented key name.
+Herdr 0.8.2's `herdr pane send-keys --help` documents no arrow vocabulary and this record's Herdr entry covers only `enter`, `escape`, and `ctrl+c`; Zellij and cmux are likewise unverified for arrows, and Orca's terminal API exposes only an interrupt and an Enter.
+The consequence is bounded rather than silent: on those backends a dialog whose highlight already sits on the accept row is still accepted, and one that would need moving is refused with the runtime named.
+Add a backend to `fm_control_backend_supports_key`'s `Up` row only together with live evidence here.
+
 ## Pi supervision branch
 
 The supervision-branch extension (`.pi/extensions/fm-branch-supervision.ts`, [docs/pi-supervision-branch.md](../pi-supervision-branch.md)) builds its persistent second session through the Pi SDK surface: `createAgentSession` (including its `model`, `modelRuntime`, and `thinkingLevel` options), `DefaultResourceLoader` with `extensionFactories`, `SessionManager`, `createBashToolDefinition` with a `spawnHook`, `sendCustomMessage`, the `before_provider_request` hook, the command context's model registry for picker candidates, a fresh `ModelRuntime` for isolated-branch resolution, and Pi's own `getSupportedThinkingLevels`/`clampThinkingLevel` plus its `getThinkingLevel` and `thinking_level_select` extension surface for effort.

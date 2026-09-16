@@ -186,10 +186,25 @@ fm_control_submit_key() {  # <harness>
 # submit); Orca's terminal API exposes only an interrupt and an Enter, so it
 # can deliver neither Escape, Ctrl+U, nor Ctrl+S
 # (bin/backends/orca.sh's fm_backend_orca_send_key).
+#
+# Up is the arrow that moves a selection UP a vendor dialog list, needed only by
+# Kimi's workspace-trust prompt on a build whose highlight does not already
+# start on the accept row (bin/fm-kimi-trust-lib.sh). It is claimed for tmux
+# alone, because tmux is the verified reference backend and `send-keys Up` is
+# its own documented key name; herdr, zellij, cmux, and orca have verified key
+# vocabularies covering only the keys above (docs/verification/runtime-backends.md),
+# and an arrow spelling none of them has been proven to accept would be a guess.
+# Claiming it falsely is the expensive direction: the caller refuses loudly and
+# leaves the worker alive when the key is unavailable, but a key that silently
+# does nothing would leave it waiting at a dialog forever. Add a backend here
+# only together with live evidence in that verification record.
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
-    tmux|herdr|zellij|cmux)
+    tmux)
+      case "$key" in Escape|Enter|C-c|C-u|C-s|Up) return 0 ;; esac
+      ;;
+    herdr|zellij|cmux)
       case "$key" in Escape|Enter|C-c|C-u|C-s) return 0 ;; esac
       ;;
     orca)

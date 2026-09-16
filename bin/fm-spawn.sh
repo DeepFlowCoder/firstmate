@@ -209,6 +209,11 @@
 # kimi-delivery means the pointer was submitted and only its arrival went
 # unconfirmed, so the endpoint is preserved and that open decision stays up
 # until someone checks the window and closes it.
+# A kimi launch in a worktree Kimi has no trust record for meets its
+# workspace-trust dialog before any of that; bin/fm-kimi-trust-lib.sh owns that
+# contract, and a launch stopped there records `blocked` under the key
+# kimi-trust with the concrete cause, always leaving the worker alive at the
+# dialog rather than pressing the neighbouring choice, which quits it.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # muse installs no hook at all - its plugin engine is off in the default build - so
@@ -293,6 +298,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
+# shellcheck source=bin/fm-kimi-trust-lib.sh
+. "$SCRIPT_DIR/fm-kimi-trust-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
@@ -2406,17 +2413,129 @@ kimi_composer_is_empty() {
   [ "$(kimi_composer_state)" = empty ]
 }
 
+# The durable record of a kimi spawn stopped at the workspace-trust dialog.
+# `blocked` under one key, because every cause below is the same captain-facing
+# question - "may this project's copy be trusted, and on what evidence?" - and
+# because the worker is left ALIVE at the dialog in every one of them. Nothing
+# here is a proven non-delivery, so `failed` would be wrong twice over: it is
+# terminal in bin/fm-classify-lib.sh, and the endpoint is still sitting there
+# waiting for a keypress.
+KIMI_TRUST_DECISION_KEY=kimi-trust
+kimi_trust_refuse() {  # <detail>
+  printf 'blocked [key=%s]: %s\n' "$KIMI_TRUST_DECISION_KEY" "$1" >> "$STATE/$ID.status"
+  echo "blocked: $1; inspect window $T" >&2
+}
+
+# Flatten a multi-line evidence list into one status line, which is a single
+# record per append by contract.
+kimi_trust_join() {
+  printf '%s\n' "$1" | awk 'NF { list = list sep $0; sep = "; " } END { printf "%s", list }'
+}
+
+# Drive Kimi's workspace-trust dialog. bin/fm-kimi-trust-lib.sh owns what the
+# dialog is, which row may be chosen, and what proves a grant; this drives it
+# against the live endpoint. Returns 0 when trust was granted and proven, and 1
+# when it was refused, having already written the concrete record.
+#
+# The refuse row is "Exit Kimi Code", so a select keypress is authorized only
+# after the ACCEPT row has been read back as highlighted from a live capture -
+# never from an assumed starting position. Up is the move key because the vendor
+# clamps it at the top of the list rather than wrapping, so a press that was
+# already unnecessary changes nothing, and a build whose highlight starts on the
+# refuse row still walks the right way.
+kimi_trust_handle() {  # <pane>
+  local pane=$1 declared rendered moves=0 max_moves=4 waited=0
+  local interval=${FM_KIMI_POLL_INTERVAL:-0.5}
+  local record_polls=${FM_KIMI_TRUST_RECORD_POLLS:-20}
+
+  # Accepting starts this project's project-level MCP servers. Two independent
+  # readings answer whether there are any, and either one refuses: Kimi's own
+  # rendered list, and firstmate's own read of the two gated files.
+  declared=$(fm_kimi_trust_declared_mcp_servers "$WT")
+  rendered=$(fm_kimi_trust_rendered_mcp_targets "$pane")
+  if [ -n "$declared" ] || [ -n "$rendered" ]; then
+    kimi_trust_refuse "kimi will not start in this project's copy until the copy is trusted, and trusting it starts the project-level MCP servers this project declares, so the grant was refused instead of made on firstmate's own authority; declared in the copy: [$(kimi_trust_join "${declared:-none}")]; listed by kimi: [$(kimi_trust_join "${rendered:-none}")]; review them and say whether to trust this project"
+    return 1
+  fi
+
+  while :; do
+    if fm_kimi_trust_accept_is_selected "$pane"; then
+      break
+    fi
+    if [ "$moves" -ge "$max_moves" ]; then
+      kimi_trust_refuse "kimi is waiting on its trust question for this project's copy and firstmate could not confirm the accept choice was the one highlighted after $max_moves attempts, so it pressed nothing rather than risk the neighbouring choice, which quits the worker"
+      return 1
+    fi
+    if ! fm_control_backend_supports_key "$BACKEND" Up; then
+      kimi_trust_refuse "kimi is waiting on its trust question for this project's copy with a choice other than accept highlighted, and the $BACKEND runtime has no verified way to move that highlight, so firstmate pressed nothing rather than risk the neighbouring choice, which quits the worker"
+      return 1
+    fi
+    spawn_send_key "$T" Up
+    sleep "$interval"
+    moves=$((moves + 1))
+    pane=$(kimi_capture)
+  done
+
+  # Enter, not Kimi's Ctrl+S composer submit: this dialog is not the composer,
+  # and the vendor selects the highlighted row on Enter or Space.
+  spawn_send_key "$T" Enter
+
+  # The grant's postcondition is Kimi's own durable trust record for this copy,
+  # not a redrawn pane: a grant that landed is provable from disk even if the
+  # dialog's last frame is never captured cleanly.
+  while [ "$waited" -lt "$record_polls" ]; do
+    fm_kimi_trust_record_present "$WT" && return 0
+    waited=$((waited + 1))
+    sleep "$interval"
+  done
+  if ! command -v jq >/dev/null 2>&1; then
+    kimi_trust_refuse "firstmate answered kimi's trust question for this project's copy but cannot confirm the answer was stored, because the jq tool it reads that record with is missing"
+    return 1
+  fi
+  kimi_trust_refuse "firstmate answered kimi's trust question for this project's copy with the accept choice and kimi never recorded the answer, so the worker may still be sitting on that question"
+  return 1
+}
+
+# Readiness, with Kimi's workspace-trust dialog handled on the way. The dialog
+# is checked FIRST so a launch that meets it is never read as a start that went
+# quiet, and the readiness budget is restarted once after a granted trust,
+# because time spent at a question firstmate has just answered is not evidence
+# that kimi failed to start. Returns 2 when trust was refused, so the caller
+# leaves that concrete record standing instead of overwriting it with the
+# generic no-start failure.
 kimi_wait_for_ready() {
   local pane i=0 max=${FM_KIMI_READY_POLLS:-60} interval=${FM_KIMI_POLL_INTERVAL:-0.5}
+  local trust_handled=0 dialog_last_seen=0
   while [ "$i" -lt "$max" ]; do
     pane=$(kimi_capture)
-    if printf '%s\n' "$pane" | grep -Fq 'Welcome to Kimi Code!' \
-       || kimi_composer_is_empty; then
-      return 0
+    if fm_kimi_trust_prompt_present "$pane"; then
+      dialog_last_seen=1
+      # A dialog still on screen right after a granted trust is a pane that has
+      # not redrawn yet, not a grant that failed, so it is waited out on the
+      # restarted budget rather than refused on the first re-sighting.
+      if [ "$trust_handled" -eq 0 ]; then
+        kimi_trust_handle "$pane" || return 2
+        trust_handled=1
+        i=0
+        continue
+      fi
+    else
+      dialog_last_seen=0
+      if printf '%s\n' "$pane" | grep -Fq 'Welcome to Kimi Code!' \
+         || kimi_composer_is_empty; then
+        return 0
+      fi
     fi
     i=$((i + 1))
     [ "$i" -ge "$max" ] || sleep "$interval"
   done
+  # The budget is spent. Name the trust question specifically when that is still
+  # what the worker is sitting on, and otherwise leave the caller its generic
+  # no-start failure.
+  if [ "$trust_handled" -eq 1 ] && [ "$dialog_last_seen" -eq 1 ]; then
+    kimi_trust_refuse "kimi recorded firstmate's answer to its trust question for this project's copy but is still asking it, so the worker never got past that question"
+    return 2
+  fi
   return 1
 }
 
@@ -3189,7 +3308,18 @@ if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
 fi
 spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then
-  if ! kimi_wait_for_ready; then
+  # Guarded because this script runs under errexit and a ready gate that
+  # legitimately refuses must reach the branches below rather than abort here.
+  KIMI_READY_STATUS=0
+  kimi_wait_for_ready || KIMI_READY_STATUS=$?
+  # 2 means the workspace-trust dialog stopped the launch and kimi_trust_handle
+  # already wrote the concrete reason; the generic no-start failure below must
+  # not overwrite it, and the ready gate itself is unchanged for every other
+  # way a launch can fail to start.
+  if [ "$KIMI_READY_STATUS" -eq 2 ]; then
+    exit 1
+  fi
+  if [ "$KIMI_READY_STATUS" -ne 0 ]; then
     kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"
     exit 1
   fi

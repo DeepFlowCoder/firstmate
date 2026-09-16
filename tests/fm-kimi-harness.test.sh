@@ -35,8 +35,51 @@ make_spawn_fakebin() {
 set -u
 printf '%s\n' "$*" >> "$FM_FAKE_TMUX_CALL_LOG"
 state=$(cat "$FM_FAKE_KIMI_STATE" 2>/dev/null || true)
+# The workspace-trust dialog, modelled the way the vendor builds it
+# (bin/fm-kimi-trust-lib.sh's header records the source): a two-row list whose
+# highlighted index moves with Up/Down, clamped at both ends rather than
+# wrapping, and whose second row EXITS Kimi Code. FM_FAKE_KIMI_TRUST_INDEX is
+# that index, so a test can open the dialog on either row and the fixture
+# reproduces the consequence of selecting whichever one is highlighted.
+trust_index() {
+  local i
+  i=$(cat "$FM_FAKE_KIMI_TRUST_INDEX" 2>/dev/null || true)
+  case "$i" in 0|1) printf '%s\n' "$i" ;; *) printf '0\n' ;; esac
+}
+fake_trust_screen() {
+  local i row0=' ' row1=' '
+  i=$(trust_index)
+  # A "stuck" dialog renders no highlight at all, which is what an unreadable
+  # or truncated capture looks like: nothing may be selected from it.
+  if [ "${FM_FAKE_KIMI_TRUST_STUCK:-no}" != yes ]; then
+    if [ "$i" = 0 ]; then row0='❯'; else row1='❯'; fi
+  fi
+  printf ' ──────────────────────────────\n'
+  printf '  Trust this folder?\n'
+  printf '  ↑↓ navigate · Enter select · Esc exit\n'
+  printf '  %s\n' "$FM_FAKE_PANE_PATH"
+  printf '  Project-level MCP servers are disabled until you explicitly choose Trust. Trust starts the listed project MCP targets and remembers this folder.\n'
+  if [ -n "${FM_FAKE_KIMI_TRUST_TARGETS:-}" ]; then
+    printf '  Project MCP targets:\n'
+    printf '    %s\n' "$FM_FAKE_KIMI_TRUST_TARGETS"
+    printf '\n'
+  fi
+  printf '   %s Trust this folder\n' "$row0"
+  printf '     Enable project MCP servers. Remembered for this folder.\n'
+  printf "   %s Don't trust\\n" "$row1"
+  printf '     Exit Kimi Code. Asked again next launch.\n'
+  printf ' ──────────────────────────────\n'
+}
 fake_screen() {
   case "$state" in
+    trust)
+      fake_trust_screen
+      ;;
+    quit)
+      # What "Don't trust" leaves behind: Kimi exited and the pane is a bare
+      # shell again. No test may ever reach this state.
+      printf 'shell after kimi exited\n$ \n'
+      ;;
     ready)
       printf 'Welcome to Kimi Code!\ncontext: 0%% (0/256k)\n╭────────────────────────────────╮\n│ >                              │\n╰────────────────────────────────╯\n'
       ;;
@@ -57,6 +100,27 @@ fake_cursor_y() {
     ready|delivered) printf '3\n' ;;
     *) printf '1\n' ;;
   esac
+}
+# What selecting the highlighted row does. Row 0 grants trust: Kimi writes its
+# durable {"root":...} record and the session proceeds to its normal composer.
+# Row 1 is "Exit Kimi Code".
+trust_select() {
+  local i dir
+  i=$(trust_index)
+  if [ "$i" != 0 ]; then
+    printf 'quit\n' > "$FM_FAKE_KIMI_STATE"
+    return 0
+  fi
+  if [ "${FM_FAKE_KIMI_TRUST_NO_RECORD:-no}" != yes ]; then
+    dir="$HOME/.kimi-code/workspace-trust"
+    mkdir -p "$dir"
+    printf '{"root":"%s","trustedAt":1789532452658}\n' "$FM_FAKE_PANE_PATH" \
+      > "$dir/wd_fake_000000000000"
+  fi
+  if [ "${FM_FAKE_KIMI_TRUST_STICKY:-no}" = yes ]; then
+    return 0
+  fi
+  printf 'ready\n' > "$FM_FAKE_KIMI_STATE"
 }
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "$FM_FAKE_PANE_PATH"; exit 0 ;;
@@ -87,11 +151,35 @@ case "${1:-}" in
       exit 0
     fi
     case " $* " in
-      *' Enter '*)
-        # The LAUNCH command (a bare-shell `kimi --auto`) submits on Enter.
+      *' Up '*)
+        # The vendor's Up clamps at the top of the option list; it never wraps
+        # round to the row that exits Kimi Code.
         case "$state" in
+          trust)
+            printf 'Up@%s\n' "$(trust_index)" >> "$FM_FAKE_KIMI_TRUST_KEYLOG"
+            if [ "${FM_FAKE_KIMI_TRUST_STUCK:-no}" != yes ]; then
+              i=$(trust_index)
+              [ "$i" = 0 ] || printf '0\n' > "$FM_FAKE_KIMI_TRUST_INDEX"
+            fi
+            ;;
+        esac
+        ;;
+      *' Enter '*)
+        # The LAUNCH command (a bare-shell `kimi --auto`) submits on Enter, and
+        # so does the trust dialog's selection.
+        case "$state" in
+          trust)
+            # Every key the DIALOG receives is logged with the row it was
+            # pointing at, so a test can prove no selection ever landed on the
+            # row that exits Kimi Code.
+            printf 'Enter@%s\n' "$(trust_index)" >> "$FM_FAKE_KIMI_TRUST_KEYLOG"
+            trust_select
+            ;;
           launched)
-            if [ "${FM_FAKE_KIMI_READY:-yes}" = yes ]; then
+            if [ -n "${FM_FAKE_KIMI_TRUST_OPENS_ON:-}" ]; then
+              printf '%s\n' "$FM_FAKE_KIMI_TRUST_OPENS_ON" > "$FM_FAKE_KIMI_TRUST_INDEX"
+              printf 'trust\n' > "$FM_FAKE_KIMI_STATE"
+            elif [ "${FM_FAKE_KIMI_READY:-yes}" = yes ]; then
               printf 'ready\n' > "$FM_FAKE_KIMI_STATE"
             fi
             ;;
@@ -169,6 +257,8 @@ make_spawn_case() {
   : > "$case_dir/pointer.log"
   : > "$case_dir/kimi.state"
   : > "$case_dir/tmux-calls.log"
+  : > "$case_dir/trust-index"
+  : > "$case_dir/trust-keys.log"
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin"
 }
 
@@ -186,6 +276,14 @@ run_spawn() {
     FM_FAKE_KIMI_SWALLOW_FIRST="${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" \
     FM_FAKE_KIMI_SWALLOW_ALL="${FM_FAKE_KIMI_SWALLOW_ALL:-no}" \
     FM_FAKE_KIMI_LATE_STATE="${FM_FAKE_KIMI_LATE_STATE:-}" \
+    FM_FAKE_KIMI_TRUST_INDEX="$case_dir/trust-index" \
+    FM_FAKE_KIMI_TRUST_KEYLOG="$case_dir/trust-keys.log" \
+    FM_FAKE_KIMI_TRUST_OPENS_ON="${FM_FAKE_KIMI_TRUST_OPENS_ON:-}" \
+    FM_FAKE_KIMI_TRUST_TARGETS="${FM_FAKE_KIMI_TRUST_TARGETS:-}" \
+    FM_FAKE_KIMI_TRUST_STUCK="${FM_FAKE_KIMI_TRUST_STUCK:-no}" \
+    FM_FAKE_KIMI_TRUST_STICKY="${FM_FAKE_KIMI_TRUST_STICKY:-no}" \
+    FM_FAKE_KIMI_TRUST_NO_RECORD="${FM_FAKE_KIMI_TRUST_NO_RECORD:-no}" \
+    FM_KIMI_TRUST_RECORD_POLLS=2 \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_FAKE_BRIEF_REAL="$(cd "$home/data/$id" && pwd -P)/brief.md" \
     FM_KIMI_READY_POLLS=2 FM_KIMI_DELIVERY_POLLS=2 FM_KIMI_POLL_INTERVAL=0 \
@@ -655,6 +753,319 @@ test_kimi_readiness_gate_precedes_pointer() {
   pass "fm-spawn: kimi never sends the brief pointer before an observable ready signal"
 }
 
+# The exact plain-text render of Kimi Code 0.43.0's workspace-trust dialog,
+# captured from the real CLI through a PTY (docs/verification/runtime-backends.md
+# records the run). Vendor output, pinned here so the classifier is measured
+# against what Kimi actually draws rather than against a paraphrase of it.
+kimi_real_trust_capture() {  # [pointer-row: accept|refuse|none]
+  local row=${1:-accept} accept=' ' refuse=' '
+  case "$row" in
+    accept) accept='❯' ;;
+    refuse) refuse='❯' ;;
+  esac
+  printf ' ─────────────────────────────────────────\n'
+  printf '  Trust this folder?\n'
+  printf '  ↑↓ navigate · Enter select · Esc exit\n'
+  printf '  /Users/ramongarcia/.treehouse/proj-0096/1/proj\n'
+  printf '  Project-level MCP servers are disabled until you explicitly choose Trust. Trust starts the listed project MCP targets and remembers this folder.\n'
+  printf '   %s Trust this folder\n' "$accept"
+  printf '     Enable project MCP servers. Remembered for this folder.\n'
+  printf "   %s Don't trust\\n" "$refuse"
+  printf '     Exit Kimi Code. Asked again next launch.\n'
+  printf ' ─────────────────────────────────────────\n'
+}
+
+test_kimi_trust_contract_reads_the_real_dialog() {
+  local capture targets
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-kimi-trust-lib.sh"
+
+  capture=$(kimi_real_trust_capture accept)
+  fm_kimi_trust_prompt_present "$capture" \
+    || fail "the real Kimi trust dialog was not recognized as a trust dialog"
+  fm_kimi_trust_accept_is_selected "$capture" \
+    || fail "the accept row's own highlight was not read back from the real dialog"
+
+  # The row that quits Kimi must never read as the accept row, which is the one
+  # thing standing between a worker and being destroyed by a stray Enter.
+  capture=$(kimi_real_trust_capture refuse)
+  fm_kimi_trust_prompt_present "$capture" \
+    || fail "a dialog highlighting the refuse row stopped being recognized"
+  if fm_kimi_trust_accept_is_selected "$capture"; then
+    fail "the refuse row's highlight was misread as the accept row's"
+  fi
+
+  # No highlight at all - a truncated or unreadable capture - authorizes nothing.
+  capture=$(kimi_real_trust_capture none)
+  if fm_kimi_trust_accept_is_selected "$capture"; then
+    fail "a dialog with no highlight at all was treated as ready to select"
+  fi
+
+  # An agent turn that merely quotes one of the vendor's strings is not a dialog
+  # waiting on a keypress.
+  if fm_kimi_trust_prompt_present 'I read that Kimi asks "Trust this folder?" on a fresh copy.'; then
+    fail "one quoted vendor string was enough to declare a live trust dialog"
+  fi
+
+  targets=$(fm_kimi_trust_rendered_mcp_targets "$(kimi_real_trust_capture accept)")
+  [ -z "$targets" ] \
+    || fail "a dialog listing no project MCP targets reported some: $targets"
+  pass "kimi trust contract: the real 0.43.0 dialog is recognized and only its accept row reads as selectable"
+}
+
+test_kimi_trust_contract_reads_declared_project_mcp_servers() {
+  local wt out
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-kimi-trust-lib.sh"
+  wt="$TMP_ROOT/trust-mcp-read"
+  mkdir -p "$wt/.kimi-code"
+
+  out=$(fm_kimi_trust_declared_mcp_servers "$wt")
+  [ -z "$out" ] || fail "a copy declaring no project MCP servers reported some: $out"
+
+  # Both trust-gated files count. The user-global one deliberately does not:
+  # Kimi starts it whether or not this folder is trusted.
+  printf '{"mcpServers":{"payments-admin":{"command":"/usr/bin/false"}}}\n' > "$wt/.mcp.json"
+  printf '{"mcpServers":{"local-thing":{"url":"http://127.0.0.1:9/mcp"}}}\n' > "$wt/.kimi-code/mcp.json"
+  out=$(fm_kimi_trust_declared_mcp_servers "$wt")
+  assert_contains "$out" "payments-admin" "the project-root declaration was not read"
+  assert_contains "$out" "local-thing" "the project-local declaration was not read"
+
+  # "Cannot tell" must refuse exactly like "declares one", so an unparseable
+  # declaration file reports a reason rather than disappearing into silence.
+  printf '{"mcpServers":{\n' > "$wt/.mcp.json"
+  rm "$wt/.kimi-code/mcp.json"
+  out=$(fm_kimi_trust_declared_mcp_servers "$wt")
+  assert_contains "$out" "unreadable" "an unparseable declaration file was silently treated as declaring nothing"
+
+  # An empty map is a real answer, not an unreadable one.
+  printf '{"mcpServers":{}}\n' > "$wt/.mcp.json"
+  out=$(fm_kimi_trust_declared_mcp_servers "$wt")
+  [ -z "$out" ] || fail "an empty mcpServers map was reported as a declaration: $out"
+  pass "kimi trust contract: both trust-gated project MCP files are read, and an unreadable one still refuses"
+}
+
+# The dialog as Kimi 0.43.0 opens it, with the accept row already highlighted.
+# The whole point of the fix: the launch gets past it and the brief still lands
+# under the unchanged delivery postcondition.
+test_kimi_trust_dialog_is_accepted_and_the_brief_still_lands() {
+  local id rec out rc task_tmp
+  id="kimi-trust-accept-z9-$$"
+  task_tmp="/tmp/fm-$id"
+  rec=$(make_spawn_case trust-accept "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_TRUST_OPENS_ON=0 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  rm -rf "$task_tmp"
+  expect_code 0 "$rc" "a kimi launch that met the trust dialog should still spawn"
+  assert_contains "$out" "spawned $id harness=kimi" \
+    "a kimi launch that met the trust dialog was not reported as spawned"
+  [ "$(cat "$CASE_DIR/kimi.state")" != quit ] \
+    || fail "the trust dialog's worker-quitting row was selected"
+  assert_present "$HOME_DIR/.kimi-code/workspace-trust/wd_fake_000000000000" \
+    "the accepted trust grant was never recorded"
+  [ -s "$CASE_DIR/pointer.log" ] \
+    || fail "the brief pointer was never delivered after the trust dialog cleared"
+  assert_absent "$HOME_DIR/state/$id.status" \
+    "a launch that merely passed the trust dialog wrote a status record"
+  pass "fm-spawn: a kimi launch that meets the trust dialog accepts it and still delivers its brief"
+}
+
+# The build the captain measured opened this dialog on the row that exits Kimi
+# Code, so a launch that replays a fixed keypress destroys the worker. This is
+# the ordering proof: the highlight must be MOVED onto the accept row, and read
+# back there, before anything is selected. The fixture quits the worker the
+# instant a selection lands on the refuse row, so a spawn that succeeds here is
+# positive evidence the refuse row was never selected.
+test_kimi_trust_dialog_never_selects_the_worker_quitting_row() {
+  local id rec out rc task_tmp keys
+  id="kimi-trust-move-z10-$$"
+  task_tmp="/tmp/fm-$id"
+  rec=$(make_spawn_case trust-move "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_TRUST_OPENS_ON=1 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  rm -rf "$task_tmp"
+  [ "$(cat "$CASE_DIR/kimi.state")" != quit ] \
+    || fail "a dialog opening on the refuse row had that row selected, which quits the worker"
+  expect_code 0 "$rc" "a kimi launch that had to move the trust highlight should still spawn"
+  assert_contains "$out" "spawned $id harness=kimi" \
+    "a kimi launch that moved the trust highlight was not reported as spawned"
+  [ "$(cat "$CASE_DIR/trust-index")" = 0 ] \
+    || fail "the trust highlight never reached the accept row before a selection landed"
+  assert_present "$HOME_DIR/.kimi-code/workspace-trust/wd_fake_000000000000" \
+    "no trust grant was recorded, so the accept row was not what got selected"
+
+  # The order itself, not just its outcome. Each key the DIALOG received is
+  # logged with the row it was pointing at when it arrived, so this reads the
+  # exact sequence: a move taken while the refuse row was up, then a selection
+  # taken only once the accept row was.
+  keys=$(tr '\n' ' ' < "$CASE_DIR/trust-keys.log" | sed 's/ *$//')
+  [ "$keys" = 'Up@1 Enter@0' ] \
+    || fail "the trust dialog did not receive exactly a move off the refuse row then a selection on the accept row: [$keys]"
+  if grep -q 'Enter@1' "$CASE_DIR/trust-keys.log"; then
+    fail "a selection key landed on the row that exits Kimi Code"
+  fi
+  pass "fm-spawn: kimi's trust highlight is moved onto the accept row and read back there before anything is selected"
+}
+
+# Accepting starts this project's project-level MCP servers, so a copy that
+# declares any is a captain call, not firstmate's to make. Both readings that
+# can answer it are exercised: the files in the copy, and Kimi's own rendered
+# list. Either one alone refuses, and the worker is left alive at the dialog.
+test_kimi_trust_dialog_refuses_a_copy_that_declares_project_mcp_servers() {
+  local case_name id rec out rc status_file line open
+  for case_name in declared-in-files listed-by-kimi; do
+    id="kimi-trust-mcp-${case_name}-z11-$$"
+    rec=$(make_spawn_case "trust-mcp-$case_name" "$id")
+    read_spawn_record "$rec"
+    rc=0
+    if [ "$case_name" = declared-in-files ]; then
+      # Published into the project's own history, because the launch resets the
+      # task copy to the published base: a declaration only dropped into the
+      # copy would either be wiped by that reset or refuse the launch as
+      # uncommitted work, and neither is the case under test.
+      printf '{"mcpServers":{"payments-admin":{"command":"/usr/bin/false"}}}\n' \
+        > "$PROJ_DIR/.mcp.json"
+      git -C "$PROJ_DIR" add .mcp.json >/dev/null 2>&1 \
+        || fail "could not stage the project MCP declaration"
+      git -C "$PROJ_DIR" -c user.email=t@t -c user.name=t \
+        commit -q -m 'declare a project MCP server' >/dev/null 2>&1 \
+        || fail "could not commit the project MCP declaration"
+      git -C "$PROJ_DIR" push -q origin HEAD >/dev/null 2>&1 \
+        || fail "could not publish the project MCP declaration"
+      out=$(FM_FAKE_KIMI_TRUST_OPENS_ON=0 run_spawn \
+        "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+    else
+      out=$(FM_FAKE_KIMI_TRUST_OPENS_ON=0 \
+        FM_FAKE_KIMI_TRUST_TARGETS='payments-admin (stdio): command=/usr/bin/false' \
+        run_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+    fi
+
+    [ "$rc" -ne 0 ] || fail "$case_name: a copy declaring project MCP servers was trusted anyway"
+    assert_not_contains "$out" "spawned $id" \
+      "$case_name: a refused trust grant was reported as a completed spawn"
+    assert_absent "$HOME_DIR/.kimi-code/workspace-trust/wd_fake_000000000000" \
+      "$case_name: trust was granted despite the refusal"
+    [ "$(cat "$CASE_DIR/kimi.state")" = trust ] \
+      || fail "$case_name: the worker was not left alive at the dialog"
+
+    status_file="$HOME_DIR/state/$id.status"
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-classify-lib.sh"
+    line=$(last_status_line "$status_file")
+    [ "$(status_line_verb "$line")" = blocked ] \
+      || fail "$case_name: a captain call about starting MCP servers did not take the needs-a-look verb: $line"
+    status_is_captain_relevant "$line" \
+      || fail "$case_name: the refusal would not reach firstmate at all: $line"
+    assert_contains "$line" "payments-admin" \
+      "$case_name: the record did not name the server the grant would have started"
+    open=$(status_open_decisions "$status_file")
+    assert_contains "$open" "kimi-trust" \
+      "$case_name: the refusal left no open decision, so nobody is obliged to answer it"
+  done
+  pass "fm-spawn: a copy declaring project MCP servers is refused by either reading, and the worker is left alive"
+}
+
+# When the accept row cannot be confirmed as highlighted, pressing nothing is
+# the only safe move: the neighbouring row quits the worker.
+test_kimi_trust_dialog_presses_nothing_when_the_accept_row_cannot_be_confirmed() {
+  local id rec out rc status_file line
+  id="kimi-trust-stuck-z12-$$"
+  rec=$(make_spawn_case trust-stuck "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_TRUST_OPENS_ON=0 FM_FAKE_KIMI_TRUST_STUCK=yes run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "an unconfirmable trust highlight was reported as a completed spawn"
+  [ "$(cat "$CASE_DIR/kimi.state")" = trust ] \
+    || fail "a key was pressed into a dialog whose highlight could not be read"
+  assert_absent "$HOME_DIR/.kimi-code/workspace-trust/wd_fake_000000000000" \
+    "trust was granted from a dialog whose highlight could not be read"
+  status_file="$HOME_DIR/state/$id.status"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-classify-lib.sh"
+  line=$(last_status_line "$status_file")
+  [ "$(status_line_verb "$line")" = blocked ] \
+    || fail "an unconfirmable trust highlight did not take the needs-a-look verb: $line"
+  assert_contains "$line" "pressed nothing" \
+    "the record did not say that firstmate declined to press anything"
+  pass "fm-spawn: an unconfirmable trust highlight is left untouched rather than guessed at"
+}
+
+# Answering the question is not the same as the answer being stored. A grant
+# whose durable record never appears leaves the worker possibly still sitting on
+# the question, so it is reported rather than assumed away.
+test_kimi_trust_grant_without_its_record_is_not_reported_as_started() {
+  local id rec out rc status_file line
+  id="kimi-trust-norecord-z13-$$"
+  rec=$(make_spawn_case trust-norecord "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_TRUST_OPENS_ON=0 FM_FAKE_KIMI_TRUST_NO_RECORD=yes run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  [ "$rc" -ne 0 ] || fail "an unrecorded trust grant was reported as a completed spawn"
+  assert_not_contains "$out" "spawned $id" \
+    "an unrecorded trust grant was reported as a completed spawn"
+  status_file="$HOME_DIR/state/$id.status"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-classify-lib.sh"
+  line=$(last_status_line "$status_file")
+  [ "$(status_line_verb "$line")" = blocked ] \
+    || fail "an unrecorded trust grant did not take the needs-a-look verb: $line"
+  assert_contains "$line" "never recorded the answer" \
+    "the record did not say what could not be confirmed"
+  pass "fm-spawn: a trust grant whose record never appears is reported, not assumed"
+}
+
+# The abort the captain met was CORRECT behaviour given a false adapter claim,
+# so clearing the trust dialog must not soften it. Here the dialog is answered
+# and recorded and the agent STILL never starts; the generic no-start failure
+# must survive intact, with no pointer sent.
+test_kimi_ready_guard_still_refuses_after_trust_when_the_agent_never_starts() {
+  local id rec out rc
+  id="kimi-trust-thenstuck-z14-$$"
+  rec=$(make_spawn_case trust-thenstuck "$id")
+  read_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_KIMI_TRUST_OPENS_ON=0 FM_FAKE_KIMI_TRUST_STICKY=yes run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
+  expect_code 1 "$rc" "an agent that never started after trust should still fail the launch"
+  assert_present "$HOME_DIR/.kimi-code/workspace-trust/wd_fake_000000000000" \
+    "the fixture did not actually record the grant, so this exercises the wrong case"
+  [ ! -s "$CASE_DIR/pointer.log" ] \
+    || fail "the brief pointer was sent to an agent that never showed a ready signal"
+  assert_grep 'blocked [key=kimi-trust]' "$HOME_DIR/state/$id.status" \
+    "an agent still sitting on its answered trust question was not reported as such"
+  assert_not_contains "$out" "spawned $id" \
+    "an agent that never started was reported as a completed spawn"
+  pass "fm-spawn: clearing the trust dialog does not soften the guard on an agent that never starts"
+}
+
+test_kimi_trust_move_key_is_claimed_only_where_it_is_verified() {
+  local backend
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-control-lib.sh"
+  fm_control_backend_supports_key tmux Up \
+    || fail "the verified reference runtime lost its ability to move a dialog highlight"
+  for backend in herdr zellij cmux orca; do
+    if fm_control_backend_supports_key "$backend" Up; then
+      fail "$backend claims an arrow key with no live evidence behind it"
+    fi
+  done
+  # The keys that WERE verified must be unaffected by adding one more.
+  fm_control_backend_supports_key herdr C-s \
+    || fail "adding a move key disturbed a verified key on another runtime"
+  fm_control_backend_supports_key orca Enter \
+    || fail "adding a move key disturbed Orca's verified Enter"
+  if fm_control_backend_supports_key orca Escape; then
+    fail "Orca gained a key its terminal API cannot deliver"
+  fi
+  pass "control plane: the dialog move key is claimed for the verified reference runtime only"
+}
+
 test_kimi_detection_uses_ancestry_after_markers() {
   local dir fakebin cfg out
   dir="$TMP_ROOT/detection"
@@ -826,6 +1237,15 @@ test_kimi_proven_enter_swallow_is_recorded_as_failed
 test_kimi_pending_submit_without_proof_at_decision_time_is_unconfirmed
 test_kimi_pending_submit_confirmed_inside_the_window_succeeds
 test_kimi_readiness_gate_precedes_pointer
+test_kimi_trust_contract_reads_the_real_dialog
+test_kimi_trust_contract_reads_declared_project_mcp_servers
+test_kimi_trust_dialog_is_accepted_and_the_brief_still_lands
+test_kimi_trust_dialog_never_selects_the_worker_quitting_row
+test_kimi_trust_dialog_refuses_a_copy_that_declares_project_mcp_servers
+test_kimi_trust_dialog_presses_nothing_when_the_accept_row_cannot_be_confirmed
+test_kimi_trust_grant_without_its_record_is_not_reported_as_started
+test_kimi_ready_guard_still_refuses_after_trust_when_the_agent_never_starts
+test_kimi_trust_move_key_is_claimed_only_where_it_is_verified
 test_kimi_detection_uses_ancestry_after_markers
 test_kimi_session_lock_identity
 test_kimi_busy_signature_is_scoped_to_spinner_lines
