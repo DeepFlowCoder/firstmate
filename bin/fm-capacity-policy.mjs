@@ -323,13 +323,28 @@ function classifyProvider(provider) {
   // Nothing at all was established. Naming WHY matters, because an unopened
   // credential store is something the captain can grant access to, while an
   // upstream that did not answer is something to wait out. quota-axi's own slug
-  // is quoted rather than interpreted.
+  // is quoted rather than interpreted. Beside the prose detail runs a closed
+  // sub-cause slug for the repeat-suppression digest: `unread:<reason>` comes
+  // only from AUTH_UNREAD_REASONS, `upstream` is any vendor error, and
+  // `unknown` is a lane with no signal at all.
+  const upstreamError = typeof state.error === "string" && state.error !== "";
   const detail = credentialUnread
     ? `credential store not readable: ${state.reason}`
-    : typeof state.error === "string" && state.error !== ""
+    : upstreamError
       ? state.error
       : state.status;
-  return { id, cause: "unmeasured", stale, detail: typeof detail === "string" ? detail : null };
+  const subcause = credentialUnread
+    ? `unread:${state.reason}`
+    : upstreamError
+      ? "upstream"
+      : "unknown";
+  return {
+    id,
+    cause: "unmeasured",
+    stale,
+    detail: typeof detail === "string" ? detail : null,
+    subcause,
+  };
 }
 
 function describe(lane) {
@@ -421,6 +436,7 @@ function digestOf(lanes, dispatchable) {
   const parts = lanes.map((lane) => {
     if (lane.cause === "dispatchable") return `${lane.id}:live:${lane.finite ? "finite" : "ok"}`;
     if (lane.cause === "window") return `${lane.id}:window:${lane.resetsAt}`;
+    if (lane.cause === "unmeasured") return `${lane.id}:unmeasured:${lane.subcause}`;
     return `${lane.id}:${lane.cause}`;
   });
   return `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}`;

@@ -480,6 +480,29 @@ out=$(run_guard "$home" 2 "$home/snap.json" check)
 assert_contains "$out" "claude allowance spent" "a new cause must re-report"
 pass "a genuinely changed fleet reports again"
 
+# Two unmeasured lanes with different remedies are different reasons, and the
+# suppression key must say so. A lane unread because of an upstream blip is
+# something to wait out; a lane unread because the credential store could not be
+# opened is access the captain can grant. Collapsing both to "unmeasured" in the
+# digest would suppress the transition and the captain would never learn the
+# change. The digest carries a closed sub-cause slug, never the vendor prose.
+home=$(fresh_home unmeasured-subcause)
+snapshot "$home/snap.json" \
+  "$(credential_provider grok)" \
+  "$(unmeasured_provider cursor)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+assert_contains "$out" "cursor not measured (upstream unavailable)" "the upstream blip must report on the first poll"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+[ -z "$out" ] || fail "the same unmeasured sub-reason must not re-report, got: $out"
+pass "the same unmeasured sub-reason does not re-report"
+
+snapshot "$home/snap.json" \
+  "$(credential_provider grok)" \
+  "$(store_unread_blind_provider cursor)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+assert_contains "$out" "cursor not measured (credential store not readable: keychain_access_required)" "a changed unmeasured sub-reason must re-report"
+pass "a different unmeasured sub-reason re-reports"
+
 # Recovery is silent, but it must re-arm: the record is cleared so the next
 # degradation is news rather than a suppressed repeat.
 snapshot "$home/snap.json" "$(healthy_provider grok 90)" "$(healthy_provider claude 80)"
