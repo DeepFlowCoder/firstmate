@@ -130,13 +130,45 @@ credential_provider() {
 EOF
 }
 
-# unconfirmed_provider <id> - nothing established. Not a credential fault and
+# unmeasured_provider <id> - nothing established. Not a credential fault and
 # not an exhaustion; AGENTS.md section 4 forbids reading missing evidence as
 # either one.
-unconfirmed_provider() {
+unmeasured_provider() {
   cat <<EOF
 {"provider":"$1",
  "state":{"status":"error","stale":false,"error":"upstream unavailable"},
+ "windows":[],
+ "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
+EOF
+}
+
+# store_unread_provider <id> <percent> - the measured incident's own shape: the
+# credential STORE could not be opened, so quota-axi asks for access to it while
+# the vendor has already answered for this provider's headroom. This guard runs
+# quota-axi without --allow-keychain-prompt on purpose (see the check script's
+# header), so a locked store is the ordinary reading here, not an exception.
+store_unread_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"auth_required","stale":false,"reason":"keychain_access_required",
+          "remedyCommand":"$1 login"},
+ "windows":[{"id":"weekly","label":"week","kind":"weekly","percentRemaining":$2,
+             "resetsAt":"2026-09-20T04:00:00Z"}],
+ "quotaSemantics":{"status":"known","effectiveAvailability":[
+   {"scope":"all_models","status":"known","effectivePercentRemaining":$2,
+    "boundedBy":["weekly"],"limitingWindowIds":["weekly"],
+    "runway":{"status":"through_reset","projectionConfidence":"established"}}]}}
+EOF
+}
+
+# store_unread_blind_provider <id> - the same unopened store, with no headroom
+# established either. Nothing at all is known about this lane, which is a
+# different thing from knowing it is spent or signed out.
+store_unread_blind_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"auth_required","stale":false,"reason":"keychain_access_required",
+          "remedyCommand":"$1 login"},
  "windows":[],
  "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
 EOF
@@ -245,15 +277,137 @@ pass "a constant zero credits purse does not hide a spent time window"
 # source is disclosed uncertainty, never a credential escalation. A guard that
 # turned an upstream blip into "the captain must sign in" would send them to fix
 # something that is not broken.
+#
+# The alarm has to fire here for a reason that is NOT the unmeasured lane, or
+# the case could not tell "named correctly" from "never reached the report at
+# all": two spent lanes put the fleet below three on their own, and the
+# unmeasured lane is then read in the line they produced.
 
-home=$(fresh_home unconfirmed)
+home=$(fresh_home unmeasured)
 snapshot "$home/snap.json" \
-  "$(unconfirmed_provider cursor)" \
-  "$(healthy_provider claude 70)"
-out=$(run_guard "$home" 2 "$home/snap.json" report)
-assert_contains "$out" "cursor unconfirmed (upstream unavailable)" "an unestablished provider must be named as unconfirmed"
+  "$(unmeasured_provider cursor)" \
+  "$(healthy_provider claude 70)" \
+  "$(credential_provider grok)" \
+  "$(window_exhausted_provider codex)"
+out=$(run_guard "$home" 3 "$home/snap.json" report)
+assert_contains "$out" "cursor not measured (upstream unavailable)" "an unestablished provider must be named as not measured"
 assert_not_contains "$out" "cursor sign-in required" "unmeasurable evidence must never be read as a credential fault"
-pass "an unestablished provider is reported as unconfirmed, not as a credential fault"
+assert_not_contains "$out" "cursor allowance spent" "unmeasurable evidence must never be read as an exhaustion"
+pass "an unestablished provider is reported as not measured, not as a credential fault"
+
+# The count the captain reads must not silently swallow the lanes nobody could
+# measure: "1 of 4 dispatchable" alone reads as three broken providers.
+assert_contains "$out" "1 not measured" "the headline must disclose how many lanes could not be measured"
+pass "the headline discloses the lanes that could not be measured"
+
+# === a lane nobody could measure is not a lane that was lost =================
+#
+# This is the whole delivery. The guard fired twice on a fleet that was fine,
+# the captain opened two sessions that were not needed, and firstmate called
+# three different warnings a false alarm in one day. A guard that cries wolf
+# spends itself, so the count that decides the alarm must only ever be reduced
+# by a lane that was PROVEN lost.
+
+home=$(fresh_home unmeasured-never-fires)
+snapshot "$home/snap.json" \
+  "$(healthy_provider claude 70)" \
+  "$(unmeasured_provider cursor)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+[ -z "$out" ] || fail "an unmeasured lane must not be the reason the minimum alarm fires, got: $out"
+pass "the minimum alarm does not fire when the only missing lane is one nobody could measure"
+
+# And it must still fire when the lanes really are gone, or the case above would
+# have been satisfied by a guard that simply stopped working.
+snapshot "$home/snap.json" \
+  "$(healthy_provider claude 70)" \
+  "$(window_exhausted_provider codex)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "1 of 2 provider lanes dispatchable" "a genuinely lost lane must still fire the minimum alarm"
+pass "a proven lost lane still fires the minimum alarm"
+
+# The rule taken to its end: a snapshot that establishes nothing about ANY
+# provider sounds no minimum alarm, because no lane was proven lost. This is
+# pinned rather than left to emerge, because it is the one shape where the rule
+# costs something - the guard is protecting nothing and says nothing about it -
+# and the alternative is the "0 of 10 dispatchable" cry-wolf line this delivery
+# exists to remove. A snapshot that cannot be read or classified at all is a
+# different thing and is still reported; the cases at the end of this file own
+# that. Revisit this only on evidence that a parsed all-unmeasured snapshot
+# happens in practice.
+home=$(fresh_home nothing-measured)
+snapshot "$home/snap.json" \
+  "$(unmeasured_provider cursor)" \
+  "$(unmeasured_provider copilot)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+[ -z "$out" ] || fail "a snapshot that proved no lane lost must sound no minimum alarm, got: $out"
+pass "a snapshot that establishes nothing about any lane sounds no minimum alarm"
+
+# === an unopened credential store is not a signed-out captain ================
+#
+# Measured twice on this fleet. On 2026-09-15 the guard said claude needed
+# sign-in and a fresh reading gave it 94%. On 2026-09-17 it reported "1 of 10
+# provider lanes dispatchable" naming claude "sign-in required", while a reading
+# from the same minute gave claude 59% with established confidence and no
+# authentication fault at all. Two lanes were dispatchable, the threshold was
+# met, and the alarm should never have sounded.
+#
+# The cause is that quota-axi was asked for a store it had no access to open, so
+# it never examined the credential. "I could not look" is not "you are signed
+# out", and reading it as one both loses a working lane and sends the captain to
+# sign in to an account that was never signed out.
+
+home=$(fresh_home store-unread)
+snapshot "$home/snap.json" \
+  "$(store_unread_provider claude 59)" \
+  "$(window_exhausted_provider codex)" \
+  "$(exhausted_provider deepseek)"
+out=$(run_guard "$home" 3 "$home/snap.json" report)
+assert_contains "$out" "claude 59% left" "headroom the vendor already answered for must be read as a working lane"
+assert_not_contains "$out" "claude sign-in required" "a store that could not be opened must never be reported as a sign-out"
+pass "established headroom is a working lane even when the credential store could not be opened"
+
+# The same reading must count toward the threshold, because the alarm in the
+# measured incident sounded only by discarding this lane.
+home=$(fresh_home store-unread-counts)
+snapshot "$home/snap.json" \
+  "$(store_unread_provider claude 59)" \
+  "$(healthy_provider codex 60)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+[ -z "$out" ] || fail "a lane with established headroom must count toward the threshold, got: $out"
+pass "a lane whose credential store could not be opened still counts toward the threshold"
+
+# With no headroom established either, nothing at all is known about the lane.
+# It is named as not measured, it names the store as the reason, and it does not
+# sound the alarm by itself.
+home=$(fresh_home store-unread-blind)
+snapshot "$home/snap.json" \
+  "$(store_unread_blind_provider claude)" \
+  "$(healthy_provider codex 60)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+[ -z "$out" ] || fail "an unopened store with nothing established must not sound the alarm, got: $out"
+pass "an unopened credential store with nothing established does not sound the alarm"
+
+# Fired for another reason, that same lane has to say why it could not be read,
+# so the captain can grant access rather than guess.
+snapshot "$home/snap.json" \
+  "$(store_unread_blind_provider claude)" \
+  "$(window_exhausted_provider codex)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "claude not measured (credential store not readable: keychain_access_required)" "an unopened store must name itself as the reason the lane could not be measured"
+assert_not_contains "$out" "claude sign-in required" "an unopened store must never be reported as a sign-out"
+pass "an unopened credential store names itself rather than blaming the credential"
+
+# The fix must not go vacuous the other way: a credential quota-axi DID examine
+# and found unusable is still a sign-in, in the same snapshot, so the two
+# readings are visibly different rather than both softened away.
+home=$(fresh_home store-unread-vs-fault)
+snapshot "$home/snap.json" \
+  "$(store_unread_blind_provider claude)" \
+  "$(credential_provider grok)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "grok sign-in required" "an examined, unusable credential must still ask the captain to sign in"
+assert_contains "$out" "claude not measured" "an unopened store must not be softened into the same words as a real fault"
+pass "an examined credential fault and an unopened store are told apart in one snapshot"
 
 # === the incident's own shape ===============================================
 #
@@ -325,6 +479,29 @@ snapshot "$home/snap.json" "$(credential_provider grok)" "$(exhausted_provider c
 out=$(run_guard "$home" 2 "$home/snap.json" check)
 assert_contains "$out" "claude allowance spent" "a new cause must re-report"
 pass "a genuinely changed fleet reports again"
+
+# Two unmeasured lanes with different remedies are different reasons, and the
+# suppression key must say so. A lane unread because of an upstream blip is
+# something to wait out; a lane unread because the credential store could not be
+# opened is access the captain can grant. Collapsing both to "unmeasured" in the
+# digest would suppress the transition and the captain would never learn the
+# change. The digest carries a closed sub-cause slug, never the vendor prose.
+home=$(fresh_home unmeasured-subcause)
+snapshot "$home/snap.json" \
+  "$(credential_provider grok)" \
+  "$(unmeasured_provider cursor)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+assert_contains "$out" "cursor not measured (upstream unavailable)" "the upstream blip must report on the first poll"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+[ -z "$out" ] || fail "the same unmeasured sub-reason must not re-report, got: $out"
+pass "the same unmeasured sub-reason does not re-report"
+
+snapshot "$home/snap.json" \
+  "$(credential_provider grok)" \
+  "$(store_unread_blind_provider cursor)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+assert_contains "$out" "cursor not measured (credential store not readable: keychain_access_required)" "a changed unmeasured sub-reason must re-report"
+pass "a different unmeasured sub-reason re-reports"
 
 # Recovery is silent, but it must re-arm: the record is cleared so the next
 # degradation is news rather than a suppressed repeat.

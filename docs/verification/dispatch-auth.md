@@ -205,6 +205,8 @@ These are the verified structural facts that classification rests on:
 - A provider-level `credits` object appears only for `codex` (`{"remaining":0,"unlimited":false,"unit":"credits"}`) and reads the same zero while that provider's weekly window is at 84%, matching the Grok note above on a healthy account.
   `credits.remaining: 0` is therefore never headroom and never evidence of a spent balance.
 - A spent time window is `percentRemaining: 0` with a `resetsAt`; a credential fault is `state.status === "auth_required"` or `state.authStatus === "unusable"` (or a slug in the policy's `AUTH_REASON_FAULTS` set).
+  A `state.reason` in the policy's `AUTH_UNREAD_REASONS` set is not one of those, because it reports that quota-axi could not open the credential store rather than that it examined the credential and found it unusable.
+  That distinction is load-bearing for the capacity guard, which runs `quota-axi --json` without `--allow-keychain-prompt`, so a store it cannot read is its ordinary reading rather than an exception.
 - quota-axi 0.1.29 exposes no signal that separates "balance exhausted (recharge)" from a spent allowance with no reset reported, so the capacity policy reports that shape as `exhausted` rather than guessing `balance`.
 
 The policy's own header owns the classification contract and its wording; this record only pins the producer facts that contract reads.
@@ -215,6 +217,7 @@ The policy's own header owns the classification contract and its wording; this r
 It asserts that the script accepts no harness, model, or provider input, never calls `quota-axi`, exits alike for every probe result because it renders no verdict, invokes only the two fixed non-destructive argv forms with stdin closed, holds a real bound even when the configured bound is zero or malformed, and never echoes raw vendor output.
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
 `tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic.
+`tests/fm-capacity.test.sh` owns the capacity classification, including that an unopened credential store is neither reported as a sign-out nor counted as a lost lane, and that a lane nobody could measure never sounds the minimum-lane alarm by itself.
 `tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake schema-5 snapshot per case, served as quota-axi's default TOON.
 It covers TOON-first `spendPriority` ranking among candidates that pass eligibility, reasoning-class, and runway-feasibility gates, explicit accounting for unmeasurable runway, the strongest-reasoning constraint, and the runway feasibility floor over a higher `spendPriority`.
 The skill's primary path is that default TOON; `--json` is the documented defensive fallback, and this section records the producer `--json` shape that fallback consumes.
