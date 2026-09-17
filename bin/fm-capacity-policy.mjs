@@ -46,12 +46,34 @@
 // is never headroom (docs/verification/dispatch-auth.md). A spent allowance with
 // no named reset therefore reads as `exhausted`, never as a guessed "recharge".
 //
-// A provider that establishes none of those is `unconfirmed`, never folded into
+// A provider that establishes none of those is `unmeasured`, never folded into
 // one of them. AGENTS.md section 4 is explicit that unmeasurable headroom,
 // a missing auth source, or unmodeled authentication is disclosed uncertainty
 // and never a credential escalation, so only a STRUCTURAL auth fact
 // (`state.status`, `state.authStatus`, `state.reason`) is read as `credential`.
 // A vendor error string is never classified, only quoted.
+//
+// COULD NOT MEASURE IS NOT A FAULT, and it is the whole reason this file was
+// revised. The guard fired twice on a fleet that was fine: on 2026-09-15 it said
+// claude needed sign-in while a fresh reading gave it 94%, and on 2026-09-17 it
+// reported "1 of 10 provider lanes dispatchable" naming claude "sign-in
+// required" while a reading from the same minute gave claude 59% with
+// established confidence and no authentication fault. Two lanes were
+// dispatchable and the threshold was met. A guard that cries wolf spends itself,
+// and the day one of these is right nobody will read it.
+//
+// Two rules follow from that, and both are the same rule the dispatch skill
+// `quota-array-dispatch` already applies to a candidate: uncertainty discloses,
+// it never blocks.
+//
+//   1. A lane nobody could measure NEVER reduces the count the minimum alarm is
+//      judged against. Only a lane PROVEN lost - a spent window, an examined and
+//      unusable credential, a spent allowance - takes the count down.
+//   2. An auth signal never overrides headroom the vendor has already answered
+//      for. A provider carries its credential sources INDEPENDENTLY
+//      (docs/verification/dispatch-auth.md), so a fault on one source while
+//      quota-axi is reporting fresh, known headroom is a fault on a source this
+//      lane is not using.
 //
 // Input:  quota-axi's default `--json` (schemaVersion 5) on stdin.
 // Output: exactly one line on stdout when the guard should fire, and nothing at
@@ -69,11 +91,25 @@ import { fileURLToPath } from "node:url";
 const SCHEMA_VERSION = 5;
 
 // Structural auth facts. Each one is quota-axi's own machine-readable statement
-// that the local credential cannot be used, independent of quota freshness.
-// `expired_refreshable` is soft expiry rather than sign-out, but it is still the
-// captain's signature that clears it, so it belongs with the other two.
+// that it EXAMINED the local credential and it cannot be used, independent of
+// quota freshness. `expired_refreshable` is soft expiry rather than sign-out,
+// but it is still the captain's signature that clears it, so it belongs with the
+// other two.
 const AUTH_STATUS_FAULTS = new Set(["unusable", "expired_refreshable"]);
-const AUTH_REASON_FAULTS = new Set(["keychain_access_required", "credentials_expired"]);
+const AUTH_REASON_FAULTS = new Set(["credentials_expired"]);
+
+// Not a fault, and deliberately not in the set above. These say quota-axi could
+// not OPEN the credential store, so it never examined the credential and holds
+// no verdict about it. bin/fm-capacity-check.sh runs `quota-axi --json` without
+// `--allow-keychain-prompt` on purpose - a blocking credential dialog holds the
+// captain's screen - so a store it cannot read is this guard's ordinary reading,
+// not an exception.
+//
+// A reason in this set QUALIFIES every other auth signal on the same provider:
+// an `auth_required` status reached by never looking is not the statement that
+// the captain is signed out, and reading it as one both discards a working lane
+// and sends the captain to sign in to an account that was never signed out.
+const AUTH_UNREAD_REASONS = new Set(["keychain_access_required"]);
 
 // A scope with finite runway still has headroom NOW, so it stays a dispatchable
 // lane. It is reported because a lane that ends before its own reset is the
@@ -83,7 +119,7 @@ const FINITE_RUNWAY = new Set(["exhausted_now", "projected_exhaustion"]);
 
 // Report order, so one snapshot always renders the same sentence: what you can
 // still dispatch on, then the causes in the order they cost the captain effort.
-const CAUSE_ORDER = ["dispatchable", "window", "credential", "exhausted", "unconfirmed"];
+const CAUSE_ORDER = ["dispatchable", "window", "credential", "exhausted", "unmeasured"];
 
 const MAX_LINE = 1000;
 
@@ -202,23 +238,26 @@ function earliestReset(windows) {
 
 /**
  * Classify ONE provider. The order below is the priority order, and it is
- * deliberate: a credential fault is checked first because a provider whose
- * credential cannot be read has no trustworthy quota to classify at all, and
- * exhaustion is checked before uncertainty because an allowance that reads zero
- * is evidence, while unknown headroom is only the absence of it.
+ * deliberate: headroom the vendor has already answered for is read FIRST because
+ * it is the strongest evidence in the snapshot and an auth signal beside it
+ * describes some other credential source; a credential fault is read next
+ * because an examined, unusable credential leaves no trustworthy quota behind
+ * it; and exhaustion is read before uncertainty because an allowance that reads
+ * zero is evidence, while unknown headroom is only the absence of it.
  */
 function classifyProvider(provider) {
   const id = typeof provider.provider === "string" ? provider.provider : "unknown";
   const state = provider.state ?? {};
   const stale = state.stale === true;
 
-  if (
-    state.status === "auth_required" ||
-    AUTH_STATUS_FAULTS.has(state.authStatus) ||
-    AUTH_REASON_FAULTS.has(state.reason)
-  ) {
-    return { id, cause: "credential", stale, remedy: state.remedyCommand ?? null };
-  }
+  // A store quota-axi could not open leaves it with nothing to say about the
+  // credential, so it cannot have established a fault about one.
+  const credentialUnread = AUTH_UNREAD_REASONS.has(state.reason);
+  const credentialFault =
+    !credentialUnread &&
+    (state.status === "auth_required" ||
+      AUTH_STATUS_FAULTS.has(state.authStatus) ||
+      AUTH_REASON_FAULTS.has(state.reason));
 
   const scopes = (provider.quotaSemantics?.effectiveAvailability ?? []).filter(
     (scope) => scope && typeof scope === "object",
@@ -228,7 +267,11 @@ function classifyProvider(provider) {
   const live = known.filter(
     (scope) => scope.effectivePercentRemaining > 0 && scope.runway?.status !== "exhausted_now",
   );
-  if (live.length > 0) {
+  // Known, positive headroom is a working lane. The one reading that does NOT
+  // survive an examined credential fault is a stale one, because then the
+  // percentages are leftovers from before the credential went bad rather than an
+  // answer the vendor gave with it.
+  if (live.length > 0 && !(credentialFault && stale)) {
     // The widest scope is the honest headline: a model-scoped window can be
     // tighter than the account bound and must not be read across models, so the
     // lane is described by the most remaining any of its scopes still has.
@@ -250,12 +293,18 @@ function classifyProvider(provider) {
     };
   }
 
+  // No usable headroom to read, so an examined credential fault is now the
+  // answer: this lane is gone until the captain signs in.
+  if (credentialFault) {
+    return { id, cause: "credential", stale, remedy: state.remedyCommand ?? null };
+  }
+
   const bounding = boundingWindows(provider, scopes);
   const readable = bounding.filter((window) => percent(window.percentRemaining) !== null);
   const exhausted = readable.filter((window) => window.percentRemaining === 0);
   // Exhaustion needs positive evidence from every window that HAS evidence, and
   // at least one window that has it. A provider whose windows are all silent
-  // establishes nothing and falls through to `unconfirmed` below.
+  // establishes nothing and falls through to `unmeasured` below.
   const zeroed =
     (known.length > 0 && known.every((scope) => scope.effectivePercentRemaining === 0)) ||
     known.some((scope) => scope.runway?.status === "exhausted_now") ||
@@ -271,8 +320,16 @@ function classifyProvider(provider) {
     return { id, cause: "exhausted", stale };
   }
 
-  const detail = typeof state.error === "string" && state.error !== "" ? state.error : state.status;
-  return { id, cause: "unconfirmed", stale, detail: typeof detail === "string" ? detail : null };
+  // Nothing at all was established. Naming WHY matters, because an unopened
+  // credential store is something the captain can grant access to, while an
+  // upstream that did not answer is something to wait out. quota-axi's own slug
+  // is quoted rather than interpreted.
+  const detail = credentialUnread
+    ? `credential store not readable: ${state.reason}`
+    : typeof state.error === "string" && state.error !== ""
+      ? state.error
+      : state.status;
+  return { id, cause: "unmeasured", stale, detail: typeof detail === "string" ? detail : null };
 }
 
 function describe(lane) {
@@ -294,7 +351,10 @@ function describe(lane) {
     case "exhausted":
       return `${lane.id} allowance spent, with no reset reported${staleNote}`;
     default:
-      return `${lane.id} unconfirmed${lane.detail ? ` (${lane.detail})` : ""}${staleNote}`;
+      // "not measured", never a word that reads as a verdict about the lane. It
+      // is the only cause here that states something about the READING rather
+      // than about the provider.
+      return `${lane.id} not measured${lane.detail ? ` (${lane.detail})` : ""}${staleNote}`;
   }
 }
 
@@ -307,12 +367,18 @@ export function verdict(snapshot, minLanes) {
   }
   const lanes = snapshot.providers.map(classifyProvider);
   const dispatchable = lanes.filter((lane) => lane.cause === "dispatchable");
+  const unmeasured = lanes.filter((lane) => lane.cause === "unmeasured");
 
   // 0 is the captain's own off switch, the same shape config/disk-space-min-gb
   // uses, and it retires the guard rather than making it permanently loud.
   if (minLanes === 0) return { fire: false, lanes, dispatchable };
 
-  const below = dispatchable.length < minLanes;
+  // Only a lane PROVEN lost may take the count below the threshold. A lane
+  // nobody could measure is disclosed uncertainty, and counting it as lost is
+  // what made this guard fire twice on a fleet that was fine - see this file's
+  // header. It stays visible in the report either way; what it never does is
+  // sound the alarm by itself.
+  const below = dispatchable.length + unmeasured.length < minLanes;
   // A fleet whose every remaining lane ends before its own reset is the measured
   // incident even when the count itself looks fine, so it fires on its own.
   const allFinite = dispatchable.length > 0 && dispatchable.every((lane) => lane.finite);
@@ -330,8 +396,11 @@ export function verdict(snapshot, minLanes) {
   const ordered = [...lanes].sort(
     (a, b) => CAUSE_ORDER.indexOf(a.cause) - CAUSE_ORDER.indexOf(b.cause),
   );
+  // The count of lanes nobody could measure rides in the headline, because
+  // "1 of 10 dispatchable" on its own reads as nine broken providers.
+  const unmeasuredNote = unmeasured.length > 0 ? `, ${unmeasured.length} not measured` : "";
   const line =
-    `${dispatchable.length} of ${lanes.length} provider lanes dispatchable ` +
+    `${dispatchable.length} of ${lanes.length} provider lanes dispatchable${unmeasuredNote} ` +
     `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`;
   return { fire: true, line: line.slice(0, MAX_LINE), digest: digestOf(lanes, dispatchable), lanes, dispatchable };
 }

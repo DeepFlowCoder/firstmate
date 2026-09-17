@@ -16,11 +16,13 @@
 # its one line into a `check:` wake. `disarm` removes the shim, its trust
 # binding, and the report record.
 #
-# Two conditions are reported, and they are deliberately distinct:
+# Three conditions are reported, and they are deliberately distinct:
 #
 #   "<tool> update available"      a newer version exists at the update source.
 #   "<tool> update not in effect"  a newer copy is installed on this host, but
 #                                  PATH still resolves an older one.
+#   "<tool> not measured"          the probe never got an answer, so nothing at
+#                                  all was established about this tool.
 #
 # The second condition is the reason this script exists. A tool that
 # self-installs into ~/.local/bin while a version manager keeps its own older
@@ -30,6 +32,23 @@
 # compared. A directory name is never read as a version, because a version
 # manager's "latest" directory can hold an older build. A copy that will not
 # report a version is reported as a check failure rather than assumed current.
+#
+# THE THIRD CONDITION IS NOT A MILDER SECOND. "could not measure" and "is wrong"
+# ask the captain for opposite things - more time against a reinstall - and this
+# check used to answer both with "<path> did not report a version". Measured on
+# 2026-09-17: the sweep said that of kimi, while `kimi --version` answered
+# cleanly with stdin closed and its output captured (exit 0, six bytes,
+# "0.43.1"). The probe had simply been killed at its bound. A guard that reports
+# a healthy tool as broken spends its own credibility, and the day it is right
+# nobody reads it.
+#
+# So a probe that never answered is reported in its own words, naming the bound
+# it ran past, and naming the sweep budget when the budget is what cut that bound
+# short. A copy that DID answer and said nothing resembling a version keeps the
+# check-failure wording, because that is evidence about the tool. The rule is the
+# same one AGENTS.md section 4 and `quota-array-dispatch` already apply to a
+# dispatch candidate: unmeasurable evidence is disclosed uncertainty, never a
+# fault, and bin/fm-capacity-policy.mjs applies it to provider lanes.
 #
 # What this script never does: it reports, and it repairs nothing. It does not
 # install, update, uninstall, reorder PATH, or touch any version manager's
@@ -213,12 +232,14 @@ budget_exhausted() {
 # True while the sweep budget still has room for another probe. When it does not,
 # it records once which tool the sweep did not finish, so a sweep that cannot
 # finish says so rather than being killed by the watcher with nothing printed.
+# A tool the sweep never reached was not measured; it is not a tool with a
+# problem, and it must not be worded as one.
 budget_allows() {
   local name=$1
   budget_exhausted || return 0
   if [ "$INCOMPLETE_REPORTED" -eq 0 ]; then
     INCOMPLETE_REPORTED=1
-    emit "check incomplete: the time budget ran out before $name"
+    emit "$name not measured: the sweep's time budget ran out before this tool was reached"
   fi
   return 1
 }
@@ -226,6 +247,13 @@ budget_allows() {
 # The bound for one probe: the probe bound, cut down to whatever the sweep
 # budget has left, so no probe can run past the end of the sweep. Never below
 # PROBE_MIN_SECS, because fm_run_timed treats a non-positive bound as no bound.
+#
+# The per tool bound is FM_TOOL_UPDATE_PROBE_SECS and the sweep budget is shared,
+# so a slow CLI early in the registry can leave the tools behind it a fraction of
+# that bound. Cutting is still right - the watcher kills a check that overruns,
+# and a killed check prints nothing at all - but a cut bound must never be
+# invisible in the result, or a starved tool reads exactly like a broken one.
+# probe_bound_note is what carries the cut into the report.
 probe_bound() {
   local left
   left=$((DEADLINE - $(real_epoch)))
@@ -235,6 +263,18 @@ probe_bound() {
     printf '%s\n' "$left"
   else
     printf '%s\n' "$PROBE_SECS"
+  fi
+}
+
+# Names the sweep budget when it, rather than the configured per tool bound, is
+# what this probe was actually given. The operator can raise the budget; they can
+# do nothing about a tool blamed for a bound it never got.
+probe_bound_note() {
+  local bound=$1
+  if [ "$bound" -lt "$PROBE_SECS" ]; then
+    printf ', cut from %ss by the sweep budget\n' "$PROBE_SECS"
+  else
+    printf '\n'
   fi
 }
 
@@ -395,17 +435,24 @@ path_hits() {
 
 # Ask one copy for its own version. Combined output, because tools answer on
 # either stream, and no-mistakes announces its update on stderr.
+#
+# The bound is passed in rather than resolved here, because a caller that reports
+# on a probe which ran past its bound has to name the bound it was given, and a
+# value resolved inside this function would be lost with its command
+# substitution's subshell. The caller reads fm_run_timed's status from this
+# function's own, so 124 stays distinguishable from any status the tool exits.
 probe_output() {
-  local path=$1
-  shift
-  fm_run_timed "$(probe_bound)" "$path" "$@" 2>&1
+  local bound=$1 path=$2
+  shift 2
+  fm_run_timed "$bound" "$path" "$@" 2>&1
 }
 
 command_findings() {
   local name=$1 command_name=$2 args_joined=$3 announce=$4 announce_args=$5
-  local hit out version matched announce_out status
-  local resolved_path='' resolved_version='' resolved_out=''
+  local hit out version matched announce_out status bound
+  local resolved_path='' resolved_version='' resolved_out='' resolved_status=0 resolved_bound=0
   local best_path='' best_version='' unreadable='' hits=''
+  local unanswered='' unanswered_bound=0
 
   # This tool's announcement source is dead if its pattern cannot be used, which
   # is reported here, for this tool alone, so the rest of the sweep still runs.
@@ -423,19 +470,35 @@ command_findings() {
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     if budget_exhausted; then
-      emit "$name check failed: the time budget ran out before every copy answered"
+      emit "$name not measured: the time budget ran out before every copy answered"
       break
     fi
+    bound=$(probe_bound)
     # shellcheck disable=SC2086  # deliberate split on validated space-free tokens
-    out=$(probe_output "$hit" $args_joined)
+    out=$(probe_output "$bound" "$hit" $args_joined)
+    status=$?
     version=$(parse_version "$out")
     if [ -z "$resolved_path" ]; then
       resolved_path=$hit
       resolved_version=$version
       resolved_out=$out
+      resolved_status=$status
+      resolved_bound=$bound
     fi
     if [ -z "$version" ]; then
-      [ -n "$unreadable" ] || unreadable=$hit
+      # A copy killed at its bound said nothing because it was never allowed to
+      # finish, which is a different fact from a copy that answered with no
+      # version in it. They are kept apart here so they can be worded apart
+      # below. A probe that printed a parseable version before the bound was hit
+      # is a measurement and is used as one.
+      if [ "$status" -eq 124 ]; then
+        if [ -z "$unanswered" ]; then
+          unanswered=$hit
+          unanswered_bound=$bound
+        fi
+      else
+        [ -n "$unreadable" ] || unreadable=$hit
+      fi
       continue
     fi
     if [ -z "$best_version" ] || version_newer "$version" "$best_version"; then
@@ -456,16 +519,17 @@ EOF
       if budget_exhausted; then
         # The version probe's output cannot carry the announcement, so searching
         # it would present a source that was never asked as a clean result.
-        emit "$name check failed: the time budget ran out before the update announcement was checked"
+        emit "$name not measured: the time budget ran out before the update announcement was checked"
         announce_out=
       else
+        bound=$(probe_bound)
         # shellcheck disable=SC2086  # deliberate split on validated space-free tokens
-        announce_out=$(probe_output "$resolved_path" $announce_args)
+        announce_out=$(probe_output "$bound" "$resolved_path" $announce_args)
         status=$?
         if [ "$status" -eq 124 ]; then
           # A source that was asked and never answered is not a source that had
           # nothing to say. The one that answers with nothing stays silent below.
-          emit "$name check failed: $resolved_path did not answer when asked for its update announcement"
+          emit "$name not measured: $resolved_path did not answer when asked for its update announcement within ${bound}s$(probe_bound_note "$bound")"
           announce_out=
         fi
       fi
@@ -486,7 +550,13 @@ EOF
   if [ -z "$resolved_version" ]; then
     # No copy was probed at all when the path is empty, and the budget report
     # already covers that, so do not blame a copy that was never asked.
-    [ -z "$resolved_path" ] || emit "$name check failed: $resolved_path did not report a version"
+    if [ -n "$resolved_path" ]; then
+      if [ "$resolved_status" -eq 124 ]; then
+        emit "$name not measured: $resolved_path did not answer within ${resolved_bound}s$(probe_bound_note "$resolved_bound")"
+      else
+        emit "$name check failed: $resolved_path did not report a version"
+      fi
+    fi
     return 0
   fi
 
@@ -497,6 +567,13 @@ EOF
 
   if [ -n "$unreadable" ]; then
     emit "$name check failed: $unreadable did not report a version"
+  fi
+
+  # A copy nobody could measure leaves the PATH skew comparison above resting on
+  # fewer copies than this host actually has, so it is reported even when the
+  # copies that did answer agreed.
+  if [ -n "$unanswered" ]; then
+    emit "$name not measured: $unanswered did not answer within ${unanswered_bound}s$(probe_bound_note "$unanswered_bound")"
   fi
   return 0
 }
@@ -521,15 +598,18 @@ git_probe() {
 
 # The single place that reads a probe status as no answer at all, so every probe
 # reports an unanswered read the same way instead of taking it for the answer no.
+# Neither status is a finding about the watched repository: one was never asked
+# and the other was cut off, so both are worded as the measurement failures they
+# are rather than as a repository that is wrong.
 git_probe_answered() {
   local status=$1 name=$2 subject=$3 question=$4
   case "$status" in
     "$GIT_PROBE_NOT_ISSUED")
-      emit "$name check failed: the time budget ran out before $subject was asked $question"
+      emit "$name not measured: the time budget ran out before $subject was asked $question"
       return 1
       ;;
     124)
-      emit "$name check failed: $subject did not answer $question"
+      emit "$name not measured: $subject did not answer $question"
       return 1
       ;;
   esac

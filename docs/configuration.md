@@ -218,7 +218,11 @@ Recovery and unchanged readings stay silent, while a later degradation becomes r
 
 The warning names an exhausted time window by its reset hour, an unusable credential, and an allowance spent with no reset reported, because those require waiting, sign-in, and investigating respectively.
 quota-axi exposes no verified signal that separates a spent prepaid balance from a spent window whose reset is missing, so the guard reports that shape as `exhausted` rather than guessing a recharge.
-Unconfirmed quota evidence is named as unconfirmed rather than guessed to be a credential failure.
+
+A lane the snapshot could not establish anything about is named `not measured`, with the reason quoted, and it is never reported as spent or as a sign-out.
+Such a lane also never takes the count below the threshold on its own: only a lane proven lost - a spent window, an examined and unusable credential, a spent allowance - lowers the count the warning is judged against.
+A credential store quota-axi could not open is one of those unmeasured readings rather than a credential fault, because this guard deliberately never opens an interactive credential prompt, so a store it cannot read is its ordinary reading.
+Headroom the vendor has already answered for is read as a working lane even when an authentication signal sits beside it, because a provider's credential sources are independent of one another.
 The guard reports only and never refuses a dispatch.
 [`bin/fm-capacity-check.sh`](../bin/fm-capacity-check.sh)'s header owns snapshot acquisition, threshold precedence, transition state, and watcher registration, while [`bin/fm-capacity-policy.mjs`](../bin/fm-capacity-policy.mjs)'s header owns classification and wording.
 
@@ -475,15 +479,20 @@ Skipped items, such as a destination checkout that does not yet gitignore the it
 ## Watched tool updates (config/watched-tools.json)
 
 `config/watched-tools.json` is an optional local, gitignored list of the tools this home depends on.
-When it is present and the check is armed, [`bin/fm-tool-update-check.sh`](../bin/fm-tool-update-check.sh) reports two conditions, and keeps them deliberately distinct:
+When it is present and the check is armed, [`bin/fm-tool-update-check.sh`](../bin/fm-tool-update-check.sh) reports three conditions, and keeps them deliberately distinct:
 
 - `<tool> update available` means a newer version exists at the tool's update source.
 - `<tool> update not in effect` means a newer copy is already installed on this host, but `PATH` still resolves an older one.
+- `<tool> not measured` means a probe never got an answer, so nothing at all was established about that tool.
 
 The second condition is the reason the check exists.
 An update can install correctly and stay inert because an earlier `PATH` entry still holds an older copy, and a check that only asks whether a newer version is published reports that host as up to date.
 The script therefore runs every copy of a watched command found on `PATH` and asks it for its own version, rather than trusting one lookup or reading a version out of a directory name.
 It only reports; it never installs, updates, fetches, or changes `PATH`, a version manager, or any installed tool.
+
+The third condition is not a milder second one, and it never reads as a tool with something wrong with it.
+A probe killed at its time bound names that bound, a copy that answered without a version in it is still reported as a check failure, and a tool the sweep never reached is named as one the sweep ran out of time for.
+Every watched tool shares one sweep budget, so a slow command early in the registry can leave the ones behind it less than the configured per tool bound; when that happens the report names the cut, because the budget is the operator's to raise and the tool may be entirely healthy.
 
 This section is the single owner of the canonical schema.
 `bin/fm-tool-update-check.sh` owns probe mechanics, cadence, and the report record.

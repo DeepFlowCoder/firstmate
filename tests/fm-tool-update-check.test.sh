@@ -199,7 +199,62 @@ test_unreadable_version_is_a_failure_not_a_pass() {
   report=$(cat "$out")
   assert_contains "$report" "herdr check failed" "a copy that reports no version was treated as current"
   assert_contains "$report" "$dir/$TOOL did not report a version" "the failing copy was not named"
+  # The copy ANSWERED, and what it said carried no version. That is evidence
+  # about the tool, so it must not be softened into the words reserved for a
+  # probe that never got an answer at all.
+  assert_not_contains "$report" "not measured" "a copy that answered without a version was reported as unmeasurable"
   pass "a copy that reports no version is a check failure, not a pass"
+}
+
+test_a_probe_that_runs_past_its_bound_is_not_a_broken_tool() {
+  local home dir out report
+  # Measured on 2026-09-17: the sweep reported that kimi "did not report a
+  # version", which reads as a broken CLI, while `kimi --version` answered
+  # cleanly with stdin closed and its output captured - exit 0, six bytes,
+  # "0.43.1". The probe had run past its bound and been killed, and a killed
+  # probe was being reported in the same words as a tool that answered with
+  # nonsense. Nobody can act on that line: one asks for a reinstall, the other
+  # asks for more time.
+  home=$(make_home slow-version)
+  dir="$TMP_ROOT/slow-version/bin"
+  make_slow_copy "$dir" "$TOOL" 5
+  write_config "$home" "{\"tools\":[{\"name\":\"herdr\",\"command\":\"$TOOL\"}]}"
+  out="$home/out.txt"
+  # A one second probe bound inside a twenty second sweep, so the bound this
+  # probe is given is the configured one and the number in the report is stable.
+  run_check "$home" "$(fixture_path "$dir")" "$out" \
+    FM_TOOL_UPDATE_PROBE_SECS=1 FM_TOOL_UPDATE_BUDGET_SECS=20
+  report=$(cat "$out")
+  assert_contains "$report" "herdr not measured" "a probe killed at its bound was not reported as unmeasurable"
+  assert_contains "$report" "$dir/$TOOL did not answer within 1s" "the report did not name the copy and the bound it ran past"
+  assert_not_contains "$report" "did not report a version" "a probe killed at its bound was reported as a broken tool"
+  assert_not_contains "$report" "check failed" "a probe killed at its bound was reported as a check failure"
+  pass "a probe killed at its bound is reported as not measured, not as a broken tool"
+}
+
+test_a_bound_cut_by_the_shared_sweep_budget_says_so() {
+  local home dir out report
+  # The same fault one level up. Every watched tool shares one sweep budget, so
+  # a slow CLI early in the list leaves the ones behind it a fraction of their
+  # own probe bound. The per tool bound is real - FM_TOOL_UPDATE_PROBE_SECS -
+  # but the sweep can cut it, and a tool measured against a cut bound must not
+  # be reported as though it had been given its full one: the cut is the
+  # operator's to act on, and the tool may be perfectly healthy.
+  home=$(make_home cut-bound)
+  dir="$TMP_ROOT/cut-bound/bin"
+  make_slow_copy "$dir" "$TOOL" 30
+  write_config "$home" "{\"tools\":[{\"name\":\"herdr\",\"command\":\"$TOOL\"}]}"
+  out="$home/out.txt"
+  # Five seconds per probe, but only two seconds of sweep left to spend on it.
+  # The exact cut depends on where the sweep starts inside a second, so the
+  # assertion is on the cut being named, never on the number it lands at.
+  run_check "$home" "$(fixture_path "$dir")" "$out" \
+    FM_TOOL_UPDATE_PROBE_SECS=5 FM_TOOL_UPDATE_BUDGET_SECS=2
+  report=$(cat "$out")
+  assert_contains "$report" "herdr not measured" "a probe cut short by the sweep budget was not reported as unmeasurable"
+  assert_contains "$report" "cut from 5s by the sweep budget" "the report did not say the sweep budget cut this probe's bound"
+  assert_not_contains "$report" "did not report a version" "a probe cut short by the sweep budget was blamed on the tool"
+  pass "a probe bound cut by the shared sweep budget is named as the cut it is"
 }
 
 test_missing_command_is_reported() {
@@ -346,7 +401,9 @@ SH
   # still exhausts the budget before the announcement check.
   run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=2
   report=$(cat "$out")
-  assert_contains "$report" "no-mistakes check failed: the time budget ran out before the update announcement was checked" "an announcement source that was never asked was not reported"
+  # "not measured", because a source the sweep ran out of time to ask is a
+  # measurement that did not happen, not a tool with something wrong with it.
+  assert_contains "$report" "no-mistakes not measured: the time budget ran out before the update announcement was checked" "an announcement source that was never asked was not reported"
   pass "an announcement source the budget could not reach is reported, not read as current"
 }
 
@@ -371,7 +428,9 @@ SH
   out="$home/out.txt"
   run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_PROBE_SECS=1
   report=$(cat "$out")
-  assert_contains "$report" "no-mistakes check failed: $dir/no-mistakes-fixture did not answer when asked for its update announcement" "an announcement probe that never answered was read as a clean sweep"
+  # Named as a measurement that did not happen, and carrying the bound it ran
+  # past, so the operator can tell a slow announcement command from a broken one.
+  assert_contains "$report" "no-mistakes not measured: $dir/no-mistakes-fixture did not answer when asked for its update announcement" "an announcement probe that never answered was read as a clean sweep"
   pass "an announcement probe that does not answer is reported, not read as current"
 }
 
@@ -536,7 +595,9 @@ test_git_probes_stop_when_the_sweep_budget_is_gone() {
   out="$home/out.txt"
   run_check "$home" "$(fixture_path "$slow")" "$out" FM_TOOL_UPDATE_BUDGET_SECS=1
   report=$(cat "$out")
-  assert_contains "$report" "check incomplete: the time budget ran out before firstmate" "a sweep with no budget left did not say which tool it did not finish"
+  # A tool the sweep never reached was not measured; the repository is not being
+  # reported as behind, current, or broken, because none of that was established.
+  assert_contains "$report" "firstmate not measured: the sweep's time budget ran out before this tool was reached" "a sweep with no budget left did not say which tool it did not finish"
   assert_not_contains "$report" "commits behind" "the git probes ran after the sweep budget was already gone"
   pass "git probes stop and name their tool once the sweep budget is gone"
 }
@@ -578,7 +639,7 @@ SH
   run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_PROBE_SECS=3
   report=$(cat "$out")
   assert_not_contains "$report" "update available" "a probe that never answered was reported as an available update"
-  assert_contains "$report" "firstmate check failed: $work did not answer whether it already has" "the stalled object query was not the reported failure"
+  assert_contains "$report" "firstmate not measured: $work did not answer whether it already has" "the stalled object query was not the reported failure"
   [ "$(git -C "$work" rev-parse HEAD)" = "$head_before" ] || fail "the check moved the watched repository's HEAD"
   pass "a git probe that does not answer is reported as a failure, never as an update"
 }
@@ -610,7 +671,7 @@ SH
   out="$home/out.txt"
   run_check "$home" "$(fixture_path "$dir")" "$out" FM_TOOL_UPDATE_PROBE_SECS=1
   report=$(cat "$out")
-  assert_contains "$report" "firstmate check failed: $work did not answer whether it is a git repository" "a repository probe that never answered was not reported as such"
+  assert_contains "$report" "firstmate not measured: $work did not answer whether it is a git repository" "a repository probe that never answered was not reported as such"
   assert_not_contains "$report" "is not a git repository" "a repository probe that never answered was reported as not a repository"
   pass "a stalled repository probe is reported as no answer, not as not a repository"
 }
@@ -1010,6 +1071,8 @@ test_newest_copy_first_on_path_is_silent
 test_identical_versions_are_silent
 test_one_copy_reached_twice_is_probed_once
 test_unreadable_version_is_a_failure_not_a_pass
+test_a_probe_that_runs_past_its_bound_is_not_a_broken_tool
+test_a_bound_cut_by_the_shared_sweep_budget_says_so
 test_missing_command_is_reported
 test_announced_update_is_reported_from_the_tool_itself
 test_announcement_is_read_from_a_second_command
