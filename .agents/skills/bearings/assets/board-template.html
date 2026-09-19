@@ -1054,7 +1054,7 @@ __FM_BEARINGS_BOARD_DATA__
       card.classList.toggle("is-queued", accepted);
       card.classList.toggle("is-lost", !accepted);
       if (!accepted) return;
-      /* deal the next card once this one is answered */
+      /* deal the next card once this one is safely held */
       setTimeout(function () { showCard(active < cards.length - 1 ? active + 1 : active); }, 450);
     });
 
