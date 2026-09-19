@@ -71,7 +71,7 @@ diff <(git show upstream/main:bin/<owner>.sh) bin/<owner>.sh   # must be empty
 ```
 
 Verbatim is the point: a hand-modified copy is a third variant to maintain.
-Change it only where it asserts a contract this fork does not enforce, and then change the prose, never the rule (see step 6).
+Do not edit it even where its prose asserts a contract this fork does not enforce; record that gap as a backlog item instead (see step 6).
 
 `git cherry-pick` and `git merge` were not used and are not recommended for this.
 The fork's ancestry makes them replay hundreds of already-absorbed commits as conflicts; `git show <ref>:<path>` reads one file out of the object store with no ancestry involved at all.
@@ -117,8 +117,17 @@ When the rest is a different owner, do not follow it, and report the boundary wi
 
 For the first adoption the boundary was measured as: the selector subsystem is 79 new lines plus about a dozen changed lines across two call sites, while the merge-side enforcement from the same commit would have meant reconciling 2,779 changed lines across three heavily diverged files and introducing a 1,255-line library that is itself the **next** scheduled adoption.
 
-When the upstream file's own prose asserts an enforcement this fork does not have, correct the prose to name the mechanism's owner instead of claiming the enforcement.
-Leaving the claim in would ship a statement that is false here.
+An upstream owner file's own header may describe a contract this fork does not implement.
+Byte-identity with upstream wins over correcting that prose: do not edit the adopted file to fix a claim that is untrue here.
+The reason is recorded in this document: the captain authorized following the original and staying close to it.
+Byte-identity is not a cosmetic detail: it is the asset that makes the five following adoptions and every future catch-up cheap.
+Breaking it on the first adoption, over a nuance of prose, would spend the asset the day this method starts using it.
+The consequence is recorded as its own backlog item instead of being resolved by editing the adopted file.
+That item is `fm-fusion-sin-release-desaparece-de-aterrizado`.
+The concrete instance this exception came from: this adoption's header says merge approval clears the captain-hold annotation through the release contract, while this fork's merge entrypoints never require it (`require_released_captain_hold`: 0 occurrences here), so a genuinely merged delivery whose hold was answered without `--release` stays out of Recently Landed.
+That consequence is not cosmetic: Recently Landed is the section through which the captain learns what shipped.
+It is fixed on its own track, never by breaking identity.
+A method that records what we actually did is worth more than one describing what we would have liked to do.
 
 ### 7. Leave one owner in the prose too
 
