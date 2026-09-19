@@ -2327,10 +2327,21 @@ EOF
         and (.reason | contains("unreadable-child"))))
   ' >/dev/null || fail "end-to-end mixed-domain projection was wrong: $json"
 
-  sed '/unreadable-child/a\
-- [ ] ordinary-orphan - Unowned release task (repo: sshhip) (kind: ship)' \
-    "$sshhip/data/backlog.md" > "$sshhip/data/backlog.next"
-  mv "$sshhip/data/backlog.next" "$sshhip/data/backlog.md"
+  # Rewrite the fixture whole instead of sed-appending a row: BSD sed's `a\`
+  # emits the appended text with NO trailing newline, so on macOS it glues the
+  # next input line onto the new row and silently eats the following section
+  # header. Every mutation below states the exact fixture it wants.
+  cat > "$sshhip/data/backlog.md" <<'EOF'
+## In flight
+- [ ] unreadable-child - Submit App Store build (repo: sshhip) (kind: ship)
+- [ ] ordinary-orphan - Unowned release task (repo: sshhip) (kind: ship)
+
+## Queued
+- [ ] reviewer-decision - Choose reviewer remediation (repo: sshhip) (kind: captain) (hold: choose reviewer remediation A or B) (hold-kind: captain)
+
+## Done
+- [x] prior-release - Prior release (repo: sshhip) (kind: ship) (done 2026-07-21)
+EOF
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
@@ -2365,10 +2376,26 @@ EOF
       and [.queued[].id] == ["reviewer-decision"]
       and [.landed[].id] == ["prior-release"]
   ' >/dev/null || fail "an unowned unknown child discarded the readable home: $canonical"
-  sed '/## In flight/a\
-- [ ] unreadable-child - Submit App Store build (repo: sshhip) (kind: ship)' \
-    "$sshhip/data/backlog.md" > "$sshhip/data/backlog.next"
-  mv "$sshhip/data/backlog.next" "$sshhip/data/backlog.md"
+  # Restore the original fixture verbatim, for the same portability reason as
+  # above. The sed rebuild this replaces glued `## Queued` onto the end of the
+  # restored child row, so on macOS the header stopped starting a line, the
+  # section never switched, and the reviewer-decision row below was read as
+  # in-flight. Nothing downstream could catch that - the projection collapses an
+  # in-flight captain hold and a queued one into the same captain call - so the
+  # fixture's own shape is asserted here instead.
+  cat > "$sshhip/data/backlog.md" <<'EOF'
+## In flight
+- [ ] unreadable-child - Submit App Store build (repo: sshhip) (kind: ship)
+
+## Queued
+- [ ] reviewer-decision - Choose reviewer remediation (repo: sshhip) (kind: captain) (hold: choose reviewer remediation A or B) (hold-kind: captain)
+
+## Done
+- [x] prior-release - Prior release (repo: sshhip) (kind: ship) (done 2026-07-21)
+EOF
+  awk '/^## /{section=$0} /reviewer-decision/{print section}' "$sshhip/data/backlog.md" \
+    | grep -qx '## Queued' \
+    || fail "the rebuilt SSHHIP fixture lost its Queued header: $(cat "$sshhip/data/backlog.md")"
 
   fm_write_meta "$wheel/state/production-observation.meta" \
     "window=firstmate:fm-production-observation" "worktree=$wheel/projects/worker" "project=wheelhouse" \
