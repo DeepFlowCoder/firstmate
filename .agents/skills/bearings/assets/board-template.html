@@ -289,8 +289,31 @@ a { color: inherit; text-decoration: none; }
   border-radius: var(--radius-xs); padding: 5px 9px 4px;
 }
 .is-queued .bb-queued { display: inline-flex; }
+/* The failed submit's own outcome: this answer was not handed to Lavish. The
+   chip never retracts a tick an earlier answer earned, so a delivered answer
+   stays delivered and a later failed re-submit shows both signals. */
+.bb-lost {
+  display: none; align-items: center; gap: 6px; min-width: 0;
+  font-size: var(--fs-2xs); font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--rust-700); background: var(--rust-050); border: 1.5px solid var(--rust-300);
+  border-radius: var(--radius-xs); padding: 5px 9px 4px;
+}
+.is-lost .bb-lost { display: inline-flex; }
+.bb-lost__why { display: none; min-width: 0; font-size: var(--fs-xs); font-weight: 700;
+  color: var(--status-danger); overflow-wrap: anywhere; }
+.is-lost .bb-lost__why { display: inline; }
 .bb-limit { display: none; font-size: var(--fs-xs); font-weight: 700; color: var(--status-danger); }
 .bb-limit.is-visible { display: inline; }
+/* Permanent, never behind a disclosure: answering a card queues it inside this
+   tab and nothing leaves the browser until "Send to Agent" is pressed. */
+.bb-sendnote {
+  margin: 8px 0 0; display: flex; align-items: flex-start; gap: 7px;
+  font-size: var(--fs-xs); line-height: 1.4; color: var(--navy-700);
+  background: var(--gold-100); border: 1.5px solid var(--gold-600);
+  border-radius: var(--radius-sm); padding: 8px 11px; overflow-wrap: anywhere;
+}
+.bb-sendnote svg { width: 15px; height: 15px; flex: none; margin-top: 1px; }
+.bb-sendnote strong { font-weight: 800; }
 .bb-freeform { width: 100%; max-width: 100%; font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--text-strong);
   background: var(--surface-card); border: 1.5px solid var(--border-default); border-radius: var(--radius-sm); padding: 8px 11px; }
 .bb-freeform:focus { outline: none; border-color: var(--rust-400); box-shadow: var(--focus-ring); }
@@ -508,6 +531,13 @@ a { color: inherit; text-decoration: none; }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
         </button>
       </div>
+      <!-- Written into the page itself, never rendered by the script and never
+           behind a disclosure: the one thing the captain has to do for any
+           answer to leave this tab has to be readable before they answer. -->
+      <p class="bb-sendnote" id="bb-sendnote">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4"/><path d="M12 16h.01"/><circle cx="12" cy="12" r="10"/></svg>
+        <span>Answering a card only holds the answer in this tab. Press <strong>Send to Agent</strong> in the Lavish bar to send everything you have answered - nothing reaches firstmate before that.</span>
+      </p>
     </div>
   </section>
 
@@ -539,6 +569,11 @@ a { color: inherit; text-decoration: none; }
       <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
       queued
     </span>
+    <span class="bb-lost" id="bb-dispatch-lost" role="alert">
+      <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+      not captured
+    </span>
+    <span class="bb-lost__why" id="bb-dispatch-lost-why"></span>
     <button type="button" class="fm-btn fm-btn--sm fm-btn--gold" id="bb-dispatch-btn">Queue dispatch order</button>
   </div>
 
@@ -614,6 +649,37 @@ __FM_BEARINGS_BOARD_DATA__
   function badge(tone, text) { return el("span", "fm-badge fm-badge--" + tone, text); }
   function utf8ByteLength(text) { return new TextEncoder().encode(text).length; }
   var CHECK_SVG = '<svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+  var ALERT_SVG = '<svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
+
+  /* Why an answer could not even be handed over. The board names the failure it
+     actually saw, because a board that says "not connected" over a Lavish that
+     was right there and refused is telling the captain the same lie this fix
+     exists to stop. The recovery is the same in every case, so it is written
+     once and never varies. */
+  var LOST_ACTION = "the answer went nowhere. Reopen the board from firstmate and answer there.";
+  var LOST_WHY = {
+    absent: "This board is not connected to Lavish, so " + LOST_ACTION,
+    refused: "Lavish refused the answer, so " + LOST_ACTION,
+    broken: "Lavish broke while taking the answer, so " + LOST_ACTION
+  };
+
+  /* The single gate every answer passes through. Queuing is the only thing the
+     page can do and the only thing it may claim: it reports whether Lavish took
+     the answer, never that firstmate received it - that still needs "Send to
+     Agent". A missing channel, a throw, or an explicit refusal are all a no,
+     each carrying the reason why. */
+  function handToLavish(prompt, options) {
+    if (!window.lavish || typeof window.lavish.queuePrompt !== "function") {
+      return { ok: false, why: LOST_WHY.absent };
+    }
+    try {
+      return window.lavish.queuePrompt(prompt, options) === false
+        ? { ok: false, why: LOST_WHY.refused }
+        : { ok: true };
+    } catch (e) {
+      return { ok: false, why: LOST_WHY.broken };
+    }
+  }
 
   /* Warnings ride the charted feed for transport only; they are alarms about
      the fleet's own books, so they never enter a lane and never count as work. */
@@ -962,6 +1028,12 @@ __FM_BEARINGS_BOARD_DATA__
     var q = el("span", "bb-queued");
     q.innerHTML = CHECK_SVG + " queued";
     foot.appendChild(q);
+    var lost = el("span", "bb-lost");
+    lost.innerHTML = ALERT_SVG + " not captured";
+    lost.setAttribute("role", "alert");
+    foot.appendChild(lost);
+    var lostWhy = el("span", "bb-lost__why");
+    foot.appendChild(lostWhy);
     var answerLimit = el("span", "bb-limit");
     answerLimit.setAttribute("role", "alert");
     foot.appendChild(answerLimit);
@@ -981,20 +1053,28 @@ __FM_BEARINGS_BOARD_DATA__
         answerLimit.classList.add("is-visible");
         return;
       }
-      if (window.lavish && window.lavish.queuePrompt) {
-        /* close carries the composer-declared close mode: "release" frees a
-           captain-gated work item instead of completing a question task */
-        var ctxData = { question: item.key, answer: answer };
-        if (item.close) ctxData.close = item.close;
-        window.lavish.queuePrompt(
-          "Captain's Call answer - " + item.title + ": " + answer,
-          { tag: "choice", text: item.title + " -> " + answer, element: form,
-            data: ctxData }
-        );
+      /* close carries the composer-declared close mode: "release" frees a
+         captain-gated work item instead of completing a question task */
+      var ctxData = { question: item.key, answer: answer };
+      if (item.close) ctxData.close = item.close;
+      var outcome = handToLavish(
+        "Captain's Call answer - " + item.title + ": " + answer,
+        { tag: "choice", text: item.title + " -> " + answer, element: form,
+          data: ctxData }
+      );
+      /* The tick and the deal to the next card are what tell the captain the
+         answer is safely held. Both belong to the accepted branch only: a card
+         that said "queued" over an answer that went nowhere is the whole bug. */
+      if (outcome.ok) {
+        card.classList.add("is-queued");
+        card.classList.remove("is-lost");
+        lostWhy.textContent = "";
+        /* deal the next card once this one is safely held */
+        setTimeout(function () { showCard(active < cards.length - 1 ? active + 1 : active); }, 450);
+      } else {
+        card.classList.add("is-lost");
+        lostWhy.textContent = outcome.why;
       }
-      card.classList.add("is-queued");
-      /* deal the next card once this one is answered */
-      setTimeout(function () { showCard(active < cards.length - 1 ? active + 1 : active); }, 450);
     });
 
     pad.appendChild(form);
@@ -1316,6 +1396,7 @@ __FM_BEARINGS_BOARD_DATA__
   bar.hidden = !anyPickable;
   if (anyPickable) {
     refreshBar();
+    var dispatchLostWhy = document.getElementById("bb-dispatch-lost-why");
     barBtn.addEventListener("click", function () {
       var ids = pickedIds();
       var dispatchAnswer = ids.join(",");
@@ -1324,15 +1405,22 @@ __FM_BEARINGS_BOARD_DATA__
         refreshBar("Selection is too long to queue (512 bytes maximum). ");
         return;
       }
-      if (window.lavish && window.lavish.queuePrompt) {
-        window.lavish.queuePrompt(
-          "Dispatch order - start this queued work now: " + ids.join(", "),
-          { tag: "choice", text: "Dispatch: " + ids.join(", "), element: bar,
-            queueKey: "dispatch.charted",
-            data: { question: "dispatch.charted", answer: dispatchAnswer } }
-        );
+      var outcome = handToLavish(
+        "Dispatch order - start this queued work now: " + ids.join(", "),
+        { tag: "choice", text: "Dispatch: " + ids.join(", "), element: bar,
+          queueKey: "dispatch.charted",
+          data: { question: "dispatch.charted", answer: dispatchAnswer } }
+      );
+      /* the dispatch order is an answer like any other, so it gets the card's
+         own honesty: the tick only for an order Lavish actually took */
+      if (outcome.ok) {
+        bar.classList.add("is-queued");
+        bar.classList.remove("is-lost");
+        dispatchLostWhy.textContent = "";
+      } else {
+        bar.classList.add("is-lost");
+        dispatchLostWhy.textContent = outcome.why;
       }
-      bar.classList.add("is-queued");
     });
   }
   } catch (e) {

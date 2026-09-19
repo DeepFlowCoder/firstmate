@@ -29,7 +29,10 @@ make_home() {  # <name>
 # Build the board from a payload body merged over the required scaffold, and
 # return what the renderer produced. The board's ages are measured against
 # `generated`, so every fixture pins it rather than depending on today's date.
-render() {  # <home> <payload-body-json>
+# The optional third argument is the state of the answer channel the board is
+# opened against (`accept`, `absent`, `reject`, `throw`); it defaults to a
+# Lavish that is present and taking answers.
+render() {  # <home> <payload-body-json> [<answer-channel>]
   local home=$1 body=$2 data="$1/payload.json"
   jq -n --argjson body "$body" '{
     schema:"fm-bearings-board.v2", home:"render-home", generated:"2026-08-26T00:00Z",
@@ -38,7 +41,7 @@ render() {  # <home> <payload-body-json>
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
     "$BOARD" build "$data" >/dev/null || fail "the board did not build"
-  node "$HARNESS" "$home/.lavish/bearings-board.html" \
+  node "$HARNESS" "$home/.lavish/bearings-board.html" ${3:+"--lavish=$3"} \
     || fail "the built board could not be rendered"
 }
 
@@ -1140,6 +1143,177 @@ test_the_board_still_emits_every_answer_key() {
   pass "the board still emits the decision, merge, and dispatch answer keys"
 }
 
+# ---------------------------------------------------------------------------
+# The board's receipt is the only thing the captain has to go on, so it may
+# only ever confirm an answer the channel actually took. It once confirmed
+# every answer unconditionally, which let a whole deck be answered, ticked and
+# lost in a tab that was never connected to anything.
+# ---------------------------------------------------------------------------
+answerable_board='{
+  "captains_call": [
+    {"key":"first-call","type":"decision","repo":"sample","title":"Pick an approach",
+     "about":"two ways forward","decide":"which one?",
+     "options":[{"value":"first","label":"First way"},{"value":"second","label":"Second way"}]},
+    {"key":"second-call","type":"decision","repo":"sample","title":"Pick a time",
+     "about":"two windows","decide":"when?",
+     "options":[{"value":"now","label":"Now"},{"value":"later","label":"Later"}]}
+  ],
+  "charted": [
+    {"id":"ready-order","repo":"sample","title":"Ready order","reason":"",
+     "dispatchable":true,"since":"2026-08-22"}
+  ]}'
+
+# The diagnosis the board must print for each failure mode, so a board that was
+# right there and refused is never reported as one that is not connected.
+lost_diagnosis() {  # <channel>
+  case $1 in
+    absent) printf '%s' 'This board is not connected to Lavish' ;;
+    reject) printf '%s' 'Lavish refused the answer' ;;
+    throw)  printf '%s' 'Lavish broke while taking the answer' ;;
+  esac
+}
+
+test_an_answer_the_channel_never_took_is_never_confirmed() {
+  local channel diagnosis home out
+  for channel in absent reject throw; do
+    home=$(make_home "lost-$channel")
+    out=$(render "$home" "$answerable_board" "$channel")
+    diagnosis=$(lost_diagnosis "$channel")
+
+    printf '%s' "$out" | jq -e '.answers == []' >/dev/null \
+      || fail "the $channel channel somehow received an answer: $out"
+
+    # No tick, on the card or in the stylesheet that would have drawn it.
+    printf '%s' "$out" | jq -e '
+      [.cards[] | .queuedClass] == [false, false]
+      and ([.cards[] | .tick.present] | all)
+      and ([.cards[] | .tick.display == "none"] | all)
+    ' >/dev/null || fail "an uncaptured answer was still confirmed with a tick: $out"
+
+    # ... and the card says so, in words that are on screen and name the one
+    # failure this channel actually saw, while the recovery stays identical.
+    printf '%s' "$out" | jq -e --arg d "$diagnosis" '
+      [.cards[] | .lostClass] == [true, true]
+      and ([.cards[] | .notCaptured.present and .why.present] | all)
+      and ([.cards[] | .notCaptured.display != "none"] | all)
+      and ([.cards[] | .why.display != "none"] | all)
+      and ([.cards[] | .why.text | contains($d)] | all)
+      and ([.cards[] | .why.text | contains("the answer went nowhere")] | all)
+      and ([.cards[] | .why.text | contains("Reopen the board from firstmate and answer there")] | all)
+    ' >/dev/null || fail "an uncaptured answer left the card looking answered: $out"
+
+    # The deck does not deal on, so the captain is left on the card that failed
+    # instead of being walked through a deck that captured nothing.
+    printf '%s' "$out" | jq -e '[.cards[] | .shown] == [true, false]' >/dev/null \
+      || fail "the deck dealt past an answer that was never captured: $out"
+
+    # The dispatch bar is an answer channel too, and gets the same treatment.
+    printf '%s' "$out" | jq -e --arg d "$diagnosis" '
+      .dispatch.queuedClass == false and .dispatch.lostClass == true
+      and .dispatch.tick.present and .dispatch.notCaptured.present and .dispatch.why.present
+      and .dispatch.tick.display == "none"
+      and .dispatch.notCaptured.display != "none"
+      and .dispatch.why.display != "none"
+      and (.dispatch.why.text | contains($d))
+      and (.dispatch.why.text | contains("the answer went nowhere"))
+      and (.dispatch.why.text | contains("Reopen the board from firstmate and answer there"))
+    ' >/dev/null || fail "the dispatch bar still claimed an uncaptured order: $out"
+  done
+  pass "an answer no channel took is reported as not captured, never as queued"
+}
+
+test_an_accepted_answer_still_reads_as_it_always_did() {
+  local home out
+  home=$(make_home taken)
+  out=$(render "$home" "$answerable_board")
+
+  printf '%s' "$out" | jq -e '
+    ([.answers[].question] | sort) == ["dispatch.charted","first-call","second-call"]
+  ' >/dev/null || fail "an accepted board stopped handing over its answers: $out"
+
+  printf '%s' "$out" | jq -e '
+    [.cards[] | .queuedClass] == [true, true]
+    and ([.cards[] | .tick.present and .notCaptured.present and .why.present] | all)
+    and ([.cards[] | .tick.display != "none"] | all)
+    and ([.cards[] | .lostClass] == [false, false])
+    and ([.cards[] | .notCaptured.display == "none"] | all)
+    and ([.cards[] | .why.display == "none"] | all)
+  ' >/dev/null || fail "an accepted answer lost its tick: $out"
+
+  # the deal moves on and the count keeps its tally, exactly as before
+  printf '%s' "$out" | jq -e '
+    [.cards[] | .shown] == [false, true] and (.stackCount | test("2 answered"))
+  ' >/dev/null || fail "an accepted answer no longer deals the next card: $out"
+
+  printf '%s' "$out" | jq -e '
+    .dispatch.queuedClass == true and .dispatch.lostClass == false
+    and .dispatch.tick.present and .dispatch.notCaptured.present and .dispatch.why.present
+    and .dispatch.tick.display != "none"
+    and .dispatch.notCaptured.display == "none" and .dispatch.why.display == "none"
+  ' >/dev/null || fail "an accepted dispatch order lost its tick: $out"
+  pass "an answer the channel took still reads exactly as it did before"
+}
+
+# ---------------------------------------------------------------------------
+# A delivered answer is a fact once it is handed over: a later failed re-submit
+# must never retract the tick that fact earned. The later failure is its own,
+# separate signal, shown beside the tick rather than instead of it, so a changed
+# answer that does not go out cannot be mistaken for the one that already did.
+# ---------------------------------------------------------------------------
+test_a_late_failed_resubmit_never_retracts_a_captured_answer() {
+  local home out
+  home=$(make_home resubmit)
+  out=$(render "$home" "$answerable_board" "accept-then-fail")
+
+  printf '%s' "$out" | jq -e '
+    .cards[0].queuedClass == true
+    and .cards[0].tick.present and .cards[0].tick.display != "none"
+    and .cards[0].lostClass == true
+    and .cards[0].notCaptured.present and .cards[0].notCaptured.display != "none"
+    and .cards[0].why.present and .cards[0].why.display != "none"
+    and (.cards[0].why.text | contains("Lavish broke while taking the answer"))
+    and (.cards[0].why.text | contains("the answer went nowhere"))
+    and (.cards[0].why.text | contains("Reopen the board from firstmate and answer there"))
+  ' >/dev/null || fail "a failed resubmit erased the delivered tick or hid the new failure: $out"
+
+  printf '%s' "$out" | jq -e '
+    .dispatch.queuedClass == true and .dispatch.lostClass == true
+    and .dispatch.tick.present and .dispatch.tick.display != "none"
+    and .dispatch.notCaptured.present and .dispatch.notCaptured.display != "none"
+    and .dispatch.why.present and .dispatch.why.display != "none"
+    and (.dispatch.why.text | contains("Lavish broke while taking the answer"))
+  ' >/dev/null || fail "the dispatch bar dropped one of the two signals: $out"
+
+  pass "a later failed attempt sits beside the delivered tick, never instead of it"
+}
+
+# ---------------------------------------------------------------------------
+# Answering a card holds the answer in the tab; only "Send to Agent" sends it.
+# That is the one thing the captain must know BEFORE answering, so the board
+# has to say it in the open on every board, including a board with nothing to
+# answer, where the dispatch bar can still hold an order back.
+# ---------------------------------------------------------------------------
+test_the_board_says_an_answer_stays_in_the_tab_until_it_is_sent() {
+  local home out body
+  for body in "$answerable_board" '{}'; do
+    home=$(make_home "sendnote-${#body}")
+    out=$(render "$home" "$body")
+    printf '%s' "$out" | jq -e '.sendNote != null' >/dev/null \
+      || fail "the board dropped its standing reminder: $out"
+    printf '%s' "$out" | jq -e '
+      (.sendNote.text | test("Send to Agent")) and (.sendNote.text | test("firstmate"))
+    ' >/dev/null || fail "the reminder no longer names the action it asks for: $out"
+    # on screen: drawn, not withdrawn by the cascade, and never behind a
+    # disclosure the captain would have to know to open
+    printf '%s' "$out" | jq -e '
+      .sendNote.display != "none" and .sendNote.visibility != "hidden"
+      and .sendNote.hidden == false
+      and .sendNote.behindDisclosure == false and .sendNote.hiddenAncestor == false
+    ' >/dev/null || fail "the reminder is in the page but not on the screen: $out"
+  done
+  pass "the board always says answers stay in the tab until they are sent"
+}
+
 test_two_projects_with_the_same_queue_read_differently
 test_every_lane_draws_the_same_route_in_the_same_order
 test_the_board_never_states_a_rate_or_a_change
@@ -1168,3 +1342,7 @@ test_a_record_dated_after_the_snapshot_renders_no_age
 test_a_forward_dated_launch_does_not_hide_a_real_one
 test_a_lane_whose_launches_are_all_undated_promises_no_launch
 test_work_on_the_ways_shows_state_and_never_an_invented_age
+test_an_answer_the_channel_never_took_is_never_confirmed
+test_an_accepted_answer_still_reads_as_it_always_did
+test_a_late_failed_resubmit_never_retracts_a_captured_answer
+test_the_board_says_an_answer_stays_in_the_tab_until_it_is_sent

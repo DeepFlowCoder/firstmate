@@ -2,16 +2,29 @@
 // shim and print what the renderer actually produced, so board behavior is
 // asserted through the real template rather than by reading its source.
 //
-// Usage: node board-render-harness.mjs <built-board.html>
+// Usage: node board-render-harness.mjs <built-board.html> [--lavish=MODE]
+//   MODE is the state of the answer channel the board is opened against:
+//   `accept` (default, Lavish present and taking answers), `absent` (the board
+//   is being read outside Lavish, so window.lavish does not exist), `reject`
+//   (the channel is there and refuses), `throw` (the channel is there and
+//   blows up), or `accept-then-fail` (Lavish takes the first answers, then the
+//   channel breaks for a re-submit). Everything but `accept` is an answer that
+//   never left the tab.
 // Prints one JSON document describing the rendered yard:
 //   { headline, headlineSub, flowNote, stats:[{n,label}],
 //     lanes:[{name, reading, badges, launch, tone, flow, berths, empty}],
 //     berths:[{label, count, none, rows, shown, more:{n,hint,rows}}],
 //     notices:[{title,sub,badges}], noticeMore, yardEmpty, more, answers,
+//     channel, cards, dispatch, sendNote,
 //     stylesheet:{rules,conditional}, hintStyle:{closed,open}, error }
 import { readFileSync } from "node:fs";
 
 const html = readFileSync(process.argv[2], "utf8");
+const channel = (process.argv.slice(3).find((a) => a.startsWith("--lavish=")) || "--lavish=accept")
+  .slice("--lavish=".length);
+if (!["accept", "absent", "reject", "throw", "accept-then-fail"].includes(channel)) {
+  throw new Error("unknown --lavish mode: " + channel);
+}
 
 class Node {
   constructor(tag) {
@@ -66,7 +79,62 @@ class Node {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The board ships some elements in its own markup rather than creating them
+// from the script - anything that must still be on the page when the script
+// fails. A browser builds those into the same tree and puts them under the same
+// stylesheet, so the shim builds them too: without this they would be invisible
+// to the harness and only assertable as source text, which proves nothing about
+// what the captain sees.
+// ---------------------------------------------------------------------------
+const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img",
+  "input", "link", "meta", "param", "source", "track", "wbr"]);
 const byId = new Map();
+
+const parseMarkup = (src) => {
+  const root = new Node("body");
+  const stack = [root];
+  const tag = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>])*)>/g;
+  let at = 0, m;
+  const text = (raw) => {
+    const t = raw.replace(/\s+/g, " ");
+    if (!t.trim()) return;
+    const n = new Node("#text");
+    n.textContent = t;
+    stack[stack.length - 1].appendChild(n);
+  };
+  while ((m = tag.exec(src))) {
+    text(src.slice(at, m.index));
+    at = tag.lastIndex;
+    const [, closing, name, rest] = m;
+    if (closing) {
+      for (let i = stack.length - 1; i > 0; i--) {
+        if (stack[i].tagName === name.toLowerCase()) { stack.length = i; break; }
+      }
+      continue;
+    }
+    const n = new Node(name.toLowerCase());
+    for (const a of rest.matchAll(/([\w:-]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g)) {
+      n.setAttribute(a[1].toLowerCase(), (a[2] || "").replace(/^["']|["']$/g, ""));
+    }
+    if (n.attributes.class != null) n.className = n.attributes.class;
+    if (n.attributes.hidden != null) n.hidden = true;
+    stack[stack.length - 1].appendChild(n);
+    if (n.attributes.id) byId.set(n.attributes.id, n);
+    if (!VOID_TAGS.has(n.tagName) && !rest.trimEnd().endsWith("/")) stack.push(n);
+  }
+  text(src.slice(at));
+  return root;
+};
+
+parseMarkup(
+  html
+    .slice(html.indexOf("<body"), html.lastIndexOf("</body>"))
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script[\s\S]*?<\/script>/g, "")
+    .replace(/<style[\s\S]*?<\/style>/g, ""),
+);
+
 const dataNode = new Node("script");
 dataNode.textContent = html
   .split('<script id="bearings-data" type="application/json">')[1]
@@ -92,11 +160,19 @@ globalThis.document = {
   },
 };
 // The page hands every answer to Lavish through window.lavish.queuePrompt, so
-// recording that call is how the harness observes what the board would send.
+// recording that call is how the harness observes what the board would send -
+// and standing that channel down is how the harness observes what the board
+// does with an answer that never left the tab.
 const queued = [];
-globalThis.window = {
-  lavish: { queuePrompt: (prompt, opts) => queued.push({ prompt, opts }) },
+const takers = {
+  accept: (prompt, opts) => { queued.push({ prompt, opts }); },
+  reject: () => false,
+  throw: () => { throw new Error("the answer channel is gone"); },
 };
+const flipToFail = channel === "accept-then-fail";
+globalThis.window = channel === "absent"
+  ? {}
+  : { lavish: { queuePrompt: takers[flipToFail ? "accept" : channel] } };
 globalThis.TextEncoder = TextEncoder;
 globalThis.FormData = class {
   constructor(form) {
@@ -114,6 +190,14 @@ globalThis.FormData = class {
   }
   get(k) { return this.map.has(k) ? this.map.get(k) : null; }
 };
+
+// The board deals the next card on a timer once the current one is safely
+// answered, so the timer is captured and run on demand: which card the deck is
+// left showing is part of what the captain is told, and waiting out real
+// milliseconds for it would make the read both slow and flaky.
+const timers = [];
+globalThis.setTimeout = (fn) => timers.push(fn);
+const runTimers = () => { while (timers.length) timers.shift()(); };
 
 const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"));
 new Function(script)();
@@ -395,18 +479,29 @@ const findAll = (root, tag) => {
   return out;
 };
 
-// pick the first pickable order in every lane, then queue the dispatch order
+// pick the first pickable order in every lane, then queue the dispatch order,
+// then answer every Captain's Call card with its first option.
 const picks = yard.querySelectorAll(".bb-pick");
-if (picks.length) {
-  picks[0].checked = true;
-  picks[0].dispatch("change");
-  node("bb-dispatch-btn").dispatch("click");
-}
-// answer every Captain's Call card with its first option
-for (const form of findAll(node("bb-call"), "form")) {
-  const radio = findAll(form, "input").find((i) => i.type === "radio");
-  if (radio) radio.checked = true;
-  form.dispatch("submit");
+const callForms = findAll(node("bb-call"), "form");
+const driveOnce = () => {
+  if (picks.length) {
+    picks[0].checked = true;
+    picks[0].dispatch("change");
+    node("bb-dispatch-btn").dispatch("click");
+  }
+  for (const form of callForms) {
+    const radio = findAll(form, "input").find((i) => i.type === "radio");
+    if (radio) radio.checked = true;
+    form.dispatch("submit");
+  }
+  runTimers();
+};
+driveOnce();
+if (flipToFail) {
+  window.lavish.queuePrompt = takers.throw;
+  if (callForms.length) callForms[0].dispatch("submit");
+  if (picks.length) node("bb-dispatch-btn").dispatch("click");
+  runTimers();
 }
 
 const answers = queued.map((q) => ({
@@ -415,6 +510,50 @@ const answers = queued.map((q) => ({
   close: q.opts?.data?.close ?? null,
   queueKey: q.opts?.queueKey ?? null,
 }));
+
+// What the captain is told about the answer he just gave. The chips are shown
+// and withdrawn by the stylesheet, so each one's verdict is the display the
+// cascade actually resolves on the live node, never the class alone.
+const chip = (holder, cls) => {
+  const n = holder.querySelectorAll("." + cls)[0] || null;
+  return n
+    ? { present: true, display: resolve(n, "display"), text: n.textContent.trim() }
+    : { present: false, display: null, text: null };
+};
+const answerState = (holder) => ({
+  queuedClass: has(holder, "is-queued"),
+  lostClass: has(holder, "is-lost"),
+  tick: chip(holder, "bb-queued"),
+  notCaptured: chip(holder, "bb-lost"),
+  why: chip(holder, "bb-lost__why"),
+});
+const cards = node("bb-call").children.map((c) => ({
+  title: firstText(c, "bb-decision__title"),
+  shown: c.hidden === false,
+  ...answerState(c),
+}));
+const dispatch = { ...answerState(node("bb-dispatch")), count: firstText(node("bb-dispatch"), "bb-dispatch__count") };
+
+// The standing reminder is part of the page's own markup, so it is reported the
+// way a reader meets it: its words, whether the cascade leaves it on screen, and
+// whether anything between it and the page has to be opened to reach it.
+const sendNote = (() => {
+  const n = byId.get("bb-sendnote");
+  if (!n) return null;
+  let behindDisclosure = false, hiddenAncestor = false;
+  for (let p = n.parentNode; p; p = p.parentNode) {
+    if (p.tagName === "details" || has(p, "bb-more")) behindDisclosure = true;
+    if (p.hidden) hiddenAncestor = true;
+  }
+  return {
+    text: n.textContent.trim(),
+    display: resolve(n, "display"),
+    visibility: resolve(n, "visibility"),
+    hidden: n.hidden,
+    behindDisclosure,
+    hiddenAncestor,
+  };
+})();
 
 process.stdout.write(
   JSON.stringify({
@@ -431,6 +570,11 @@ process.stdout.write(
     yardEmpty: kids(yard, "bb-empty").map((c) => c.textContent),
     more: kids(yard, "bb-morechip").map((c) => c.textContent),
     answers,
+    channel,
+    cards,
+    stackCount: node("bb-stack-count").textContent,
+    dispatch,
+    sendNote,
     stylesheet: { rules: sheet.rules.length, conditional: sheet.conditional },
     hintStyle,
     error: errorText,
