@@ -10,10 +10,13 @@
 # liveness signal, every agent-state verdict, and every agent-process lookup
 # across the backends resolves names through this single function.
 #
-# Dependencies are the caller's to provide, unchanged from when this lived in
-# the tmux adapter: fm_harness_path_name (bin/fm-session-lock-lib.sh) and
-# fm_cursor_process_matches (bin/fm-cursor-lib.sh). Each sourcing backend
-# already loads both.
+# Dependencies are loaded here rather than left to each caller, so no future
+# backend can forget them: fm_harness_path_name (bin/fm-session-lock-lib.sh)
+# and fm_cursor_process_matches (bin/fm-cursor-lib.sh).
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/fm-session-lock-lib.sh"
+# shellcheck source=bin/fm-cursor-lib.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/fm-cursor-lib.sh"
 
 # fm_process_classify_name: `agent` for a verified harness, `shell` for an idle
 # login/interactive shell, `other` for anything else.

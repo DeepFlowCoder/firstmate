@@ -51,7 +51,23 @@ fm_backend_tmux_capture() {  # <target> <lines>
 # scrollback. `-S 0 -E -` is tmux's own viewport range, the same one the
 # composer reader uses; bin/fm-backend.sh's fm_backend_capture_visible owns why
 # a caller would need this rather than the bounded scrollback capture above.
+#
+# The exact recorded window must first appear in the session inventory, exactly
+# as the liveness probe does: tmux serves an absent capture target from the
+# active window instead of failing, which would read - and then let a caller
+# answer - a dialog on some other worker's pane. An absent window returns
+# nonzero with no output rather than another pane's screen.
 fm_backend_tmux_capture_visible() {  # <target>
+  local target=$1 session window windows
+  case "$target" in
+    *:*:*|'':*|*:'') return 1 ;;
+    *:*) ;;
+    *) return 1 ;;
+  esac
+  session=${target%%:*}
+  window=${target#*:}
+  windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null) || return 1
+  printf '%s\n' "$windows" | grep -Fqx "$window" || return 1
   tmux capture-pane -p -t "$1" -S 0 -E - 2>/dev/null
 }
 

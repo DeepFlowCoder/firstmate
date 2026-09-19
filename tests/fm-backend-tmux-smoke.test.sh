@@ -288,5 +288,41 @@ state=$(fm_backend_agent_state tmux "$TARGET")
 fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead target must stay best-effort (never fail)"
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
 
+# --- capture_visible refuses a killed window --------------------------------
+# tmux serves an absent capture target from the session's ACTIVE window rather
+# than failing, which would read - and then let a caller answer - a dialog on
+# some other worker's pane. Make a known window active with a distinctive
+# marker, prove that window is what a wrong-pane capture would return, then
+# prove a visible capture aimed at the dead target neither succeeds nor returns
+# it.
+SURVIVOR="fm-survivor"
+SURVIVOR_TARGET="$SESSION:$SURVIVOR"
+fm_backend_tmux_create_task "$SESSION" "$SURVIVOR" "$HOME" >/dev/null \
+  || fail "could not create the survivor window"
+SURVIVOR_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$SURVIVOR_TARGET" C-c
+  tmux send-keys -t "$SURVIVOR_TARGET" -l "printf 'survivor-marker-%s\\n' zzz"
+  tmux send-keys -t "$SURVIVOR_TARGET" Enter
+  if wait_for_capture_text "$SURVIVOR_TARGET" "survivor-marker-zzz" 10; then
+    SURVIVOR_READY=true
+    break
+  fi
+done
+[ "$SURVIVOR_READY" = true ] || fail "the survivor window never became ready to seed its marker"
+tmux select-window -t "$SURVIVOR_TARGET" || fail "could not make the survivor window active"
+survivor_view=$(tmux capture-pane -p -t "$SURVIVOR_TARGET" -S 0 -E -) \
+  || fail "capturing the survivor window's viewport failed"
+case "$survivor_view" in
+  *survivor-marker-zzz*) : ;;
+  *) fail "the survivor window's viewport does not carry the marker, so the wrong-pane assertion would be vacuous" ;;
+esac
+if visible=$(fm_backend_capture_visible tmux "$TARGET"); then
+  fail "fm_backend_capture_visible must refuse a killed window, but it returned content"$'\n'"$visible"
+fi
+[ -z "$visible" ] \
+  || fail "fm_backend_capture_visible returned the survivor window's content for a killed target"$'\n'"$visible"
+pass "real tmux: fm_backend_capture_visible refuses a killed window instead of returning the active window's content"
+
 cleanup_all
 trap - EXIT
