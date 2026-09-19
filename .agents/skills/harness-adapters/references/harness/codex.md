@@ -19,7 +19,7 @@ Verified on 2026-06-11 with codex-cli 0.139.0 unless a fact gives a newer versio
 
 Codex parks the agent in numbered modal dialogs that have no composer, and while one is up the agent is deaf to every text channel, including its own exit command.
 Never type at one and never improvise a keypress: a dialog reads each character as one of its keybindings, and typing `/quit` at the trust dialog was measured to select "Yes, continue" and submit the leftovers as a prompt while the agent kept running.
-Answer one only through `../../../../bin/fm-control.sh <task-id> dialog`, which names the class and each answer's consequence, then `--answer <name>` to deliver it and verify the dialog closed.
+Answer one only through `../../../bin/fm-control.sh <task-id> dialog`, which names the class and each answer's consequence, then `--answer <name>` to deliver it and verify the dialog closed.
 `interrupt`, `exit`, and `relaunch` refuse at a registered dialog and print those commands; `exit --unresponsive` replaces an agent that must go instead of being answered.
 
 Registered classes, all answered by their option's own digit, which selects and acts immediately:
@@ -32,7 +32,7 @@ Registered classes, all answered by their option's own digit, which selects and 
 
 `update-available`'s first option runs a package-manager upgrade of the captain's codex, so it is recorded as declined and never offered as an answer.
 The trust decision persists for the repository, so later worktrees of the same project skip that dialog.
-`../../../../bin/fm-dialog-lib.sh` owns the registry and `../../../../docs/verification/vendor-dialogs.md` owns the measurements; a class absent from that registry stays unanswerable on purpose.
+`../../../bin/fm-dialog-lib.sh` owns the registry and `../../../docs/verification/vendor-dialogs.md` owns the measurements; a class absent from that registry stays unanswerable on purpose.
 
 ## Skill popup
 

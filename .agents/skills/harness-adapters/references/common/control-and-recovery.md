@@ -24,7 +24,7 @@ Popup, queued-input, and readiness handling belongs to `../../../bin/fm-composer
 
 A tool can park the agent in a modal with no composer, where every character is one of that modal's keybindings rather than text.
 Never type at one, and never improvise a keypress to clear it.
-The control plane's `dialog` verb answers only the classes `../../../../bin/fm-dialog-lib.sh` registers, by named answer rather than by key, and verifies the dialog closed; the selected tool reference lists that tool's registered classes, and a tool with none refuses by name.
+The control plane's `dialog` verb answers only the classes `../../../bin/fm-dialog-lib.sh` registers, by named answer rather than by key, and verifies the dialog closed; the selected tool reference lists that tool's registered classes, and a tool with none refuses by name.
 Interrupt, exit, and relaunch all refuse at a registered dialog and print the commands that answer it.
 
 ## Interrupt and exit

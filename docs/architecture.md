@@ -169,12 +169,12 @@ Unsupported supervisor backends refuse at daemon startup.
 Stalled escalation delivery writes `state/.subsuper-inject-wedged` and attempts a configured backend-independent active alert after `FM_MAX_DEFER_SECS` instead of silently deferring forever.
 On an unmarked return, `bin/fm-afk-return.sh` owns ordered shutdown, durable catch-up evidence, and the fail-closed gate that keeps ordinary work behind every live firstmate-actionable blocker.
 `fm-send.sh` delivers every remote text steer and ordinary local text steer as a durable steering-inbox record plus a best-effort constant doorbell line (`bin/fm-task-inbox-lib.sh`).
-The doorbell is never typed into an endpoint positively proven to be a bare shell; the durable record waits for a replacement worker and the watcher raises the ordinary stale recovery wake immediately.
+The doorbell is never typed into an endpoint positively proven to be a bare shell or showing a recognized vendor dialog; the durable record waits for a replacement worker or for the dialog to be answered, and the watcher raises the ordinary stale recovery wake immediately.
 Its local-only typed plane - harness-native invocations and explicit backend targets - selects a pre-Enter popup-settle for slash commands and for codex `$...` skill invocations using metadata-routed target `harness=` values, then adds its own `FM_SEND_SETTLE` pause after successful typed sends so immediate peeks catch the receiving turn starting; the sub-supervisor uses only the shared submit core and does not pay that post-submit pause.
 
 Text for a worker to read and commands that drive a worker's process are separate planes.
 `fm-send.sh` is the data plane and always routing-marks a `kind=secondmate` target, which is right for a message and wrong for a lifecycle command, because a marked exit command arrives as chat the agent reasons about instead of executing.
-`bin/fm-control.sh` is the control plane: allowlisted `interrupt`, `exit`, transactional `relaunch`, and missing-endpoint `recover` actions addressed to an exact task id, with per-harness mechanics owned by `bin/fm-control-lib.sh`, a verified postcondition per verb, and no arbitrary-text or raw-key entry point.
+`bin/fm-control.sh` is the control plane: allowlisted `interrupt`, `exit`, transactional `relaunch`, missing-endpoint `recover`, and registered-vendor-dialog `dialog` actions addressed to an exact task id, with per-harness mechanics owned by `bin/fm-control-lib.sh`, a verified postcondition per verb, and no arbitrary-text or raw-key entry point.
 [`docs/agent-control.md`](agent-control.md) owns the verb contract, capability matrix, relaunch and recovery transactions, and fail-closed boundaries.
 
 ## Busy state is semantic, per adapter

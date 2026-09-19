@@ -13,7 +13,7 @@ metadata:
 
 Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, or when a steer failed to land.
 
-Interrupt, stop, relaunch, and recover a worker through `bin/fm-control.sh <task-id> interrupt|exit|relaunch|recover`, which resolves the recorded runtime itself, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](../../../docs/agent-control.md)).
+Interrupt, stop, relaunch, recover, or answer a vendor dialog for a worker through `bin/fm-control.sh <task-id> interrupt|exit|relaunch|recover|dialog`, which resolves the recorded runtime itself, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](../../../docs/agent-control.md)).
 That plane covers workers running in this home; a remotely placed secondmate is refused by name and reconciled through `secondmate-provisioning` instead.
 Load `harness-adapters` before a resume command or a harness-specific skill invocation, and whenever the adapter's own quirks matter.
 The target window's harness is recorded as `harness=` in `state/<id>.meta`.

@@ -48,9 +48,11 @@ fm_backend_tmux_capture() {  # <target> <lines>
 }
 
 # fm_backend_tmux_capture_visible: the VISIBLE pane only, plain text, no
-# scrollback. `-S 0 -E -` is tmux's own viewport range, the same one the
-# composer reader uses; bin/fm-backend.sh's fm_backend_capture_visible owns why
-# a caller would need this rather than the bounded scrollback capture above.
+# scrollback. `-S 0 -E -` is tmux's own viewport range; unlike the composer
+# reader's styled `-e` capture, this reads WITHOUT `-e`, so tmux strips SGR
+# escape sequences and the dialog recognizer sees plain text.
+# bin/fm-backend.sh's fm_backend_capture_visible owns why a caller would need
+# this rather than the bounded scrollback capture above.
 #
 # The exact recorded window must first appear in the session inventory, exactly
 # as the liveness probe does: tmux serves an absent capture target from the
