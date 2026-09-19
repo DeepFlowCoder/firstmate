@@ -211,6 +211,35 @@ The move IS the acknowledgement: without it firstmate rings again and eventually
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
 
+# How to wait, stated once and shared by the ship and scout scaffolds as the
+# last numbered rule of each, so the existing rule numbers other sections cite
+# keep their meaning.
+#
+# It exists because the scaffold used to tell a worker to append a status line
+# and stop, and never told it what WAITING looks like. A worker that does not
+# know invents one, and a polling loop is the shape that invents itself: measured
+# 2026-09-13, a worker spent 17 minutes and ~28,800 tokens re-running an empty
+# command while its own work sat finished and its pipeline advanced on its own.
+# Supervision no longer depends on the declaration this rule mentions
+# (bin/fm-wait-evidence-lib.sh), which is exactly why the rule can present it as
+# a courtesy rather than leaning on a worker to remember it.
+IFS= read -r -d '' WAIT_RULE <<EOF || true
+8. Waiting is something you DO, not something you run. When your next step depends on
+   something outside you - a pipeline gate, a check run, a release, a rate-limit reset,
+   an answer from firstmate - end your turn and stay still. The wake comes to you:
+   firstmate steers you through the instruction inbox below, and supervision is already
+   watching this endpoint. Never write a polling loop, a sleep-and-retry loop, or a
+   repeated command to pass the time. It burns your context for nothing, and a pane that
+   keeps executing reads from outside exactly like a pane that has stopped, so the loop
+   also spends the attention that exists to catch a worker who is genuinely stuck.
+   If something truly must be checked before you can continue, take ONE concrete reading,
+   act on what it says, and stop again - never a second one just in case.
+   Declaring \`$PAUSED_VERB: {why}\` before you stop makes firstmate's report of you more
+   accurate, and it is a courtesy, not the mechanism: supervision does not need your
+   declaration to tell a wait from a wedge.
+EOF
+WAIT_RULE=${WAIT_RULE%$'\n'}
+
 # The credential-store rule, stated once and shared by the ship and scout
 # scaffolds. Quoted delimiter: every backtick and brace below is literal brief
 # text. The refusal is by command NAME on purpose - a runtime detector that
@@ -425,6 +454,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$WAIT_RULE
 
 $INBOX_SECTION
 
@@ -564,6 +594,7 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$WAIT_RULE
 
 $INBOX_SECTION
 

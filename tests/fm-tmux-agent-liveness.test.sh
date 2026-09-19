@@ -350,5 +350,60 @@ fi
   || fail "a dead-shell pane still showing Cursor's composer must never read empty"
 pass "cursor composer: a stale Cursor screen over a dead shell never reads empty"
 
+# --- the foreground command signature ----------------------------------------
+# The supervision question this answers is "is this worker running commands, or
+# is it frozen?", and only a CHANGE between two samples can tell those apart: a
+# pane's foreground group always holds the harness, and may hold helpers it
+# started with, so presence alone says nothing. Real processes in a real pane
+# are the only honest way to pin it, because the signature is a kernel fact.
+# Both panes run their process as the window command rather than typing into a
+# shell, for the same reason every case above does: no readiness race.
+new_window sigfrozen sh -c "exec '$SLEEP_BIN' 900"
+new_window sigbusy sh -c "while :; do '$SLEEP_BIN' 0.2; done"
+
+sig_frozen=""
+for _ in $(seq 1 100); do
+  sig_frozen=$(fm_backend_pane_command_signature tmux "$SESSION:sigfrozen")
+  [ -n "$sig_frozen" ] && break
+  sleep 0.1
+done
+[ -n "$sig_frozen" ] || fail "the foreground command signature never answered for a live pane"
+case "$sig_frozen" in
+  *:sleep*) ;;
+  *) fail "the signature did not name the pane's own foreground process: $sig_frozen" ;;
+esac
+sleep 1
+[ "$(fm_backend_pane_command_signature tmux "$SESSION:sigfrozen")" = "$sig_frozen" ] \
+  || fail "a pane frozen inside one long call moved its signature, so a hung worker would read as working"
+pass "command signature: a pane frozen inside one long call samples the same set twice"
+
+# The other side: a pane turning over short commands, which is what a worker
+# inside a poll loop looks like from outside. Its set must move.
+sig_busy=""
+for _ in $(seq 1 100); do
+  sig_busy=$(fm_backend_pane_command_signature tmux "$SESSION:sigbusy")
+  [ -n "$sig_busy" ] && break
+  sleep 0.1
+done
+[ -n "$sig_busy" ] || fail "the signature never answered for the command-running pane"
+sig_moved=1
+for _ in $(seq 1 100); do
+  if [ "$(fm_backend_pane_command_signature tmux "$SESSION:sigbusy")" != "$sig_busy" ]; then
+    sig_moved=0
+    break
+  fi
+  sleep 0.1
+done
+[ "$sig_moved" -eq 0 ] \
+  || fail "a pane running one short command after another never moved its signature: $sig_busy"
+pass "command signature: a pane turning over commands moves its set"
+
+# A target that does not exist answers NOTHING rather than an empty set, because
+# the contract reads empty as "not answered" and an unreadable endpoint must
+# leave a wedge escalation on its unchanged schedule.
+[ -z "$(fm_backend_pane_command_signature tmux "$SESSION:no-such-window-here")" ] \
+  || fail "an unreadable target produced a signature"
+pass "command signature: an unreadable target answers nothing"
+
 cleanup_all
 trap - EXIT

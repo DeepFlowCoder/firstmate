@@ -4651,6 +4651,46 @@ test_normalize_event_leaves_from_empty
 test_escalation_marker_keys_like_watcher
 test_apply_transition_blocked_requires_commit_to_dedupe
 test_apply_transition_working_clears_marker
+# --- fm_backend_herdr_command_signature -------------------------------------
+#
+# The herdr half of fm_backend_pane_command_signature. It reads the same
+# `pane process-info` response fm_backend_herdr_pane_idle_shell_sample already
+# consumes, so the field names are established in-repo rather than assumed; what
+# this pins is the shape it produces and, just as importantly, that every way of
+# not answering produces NOTHING - the value the contract reads as "not
+# answered", which leaves a wedge escalation on its unchanged schedule instead
+# of letting an unreadable endpoint silence it.
+test_herdr_command_signature_shapes() {
+  local dir script out
+  dir="$TMP_ROOT/command-signature"; mkdir -p "$dir"
+  script="$dir/probe.sh"
+  cat > "$script" <<'PROBE'
+. "$ROOT/bin/backends/herdr.sh"
+fm_backend_herdr_cli() {
+  case "${FM_FAKE_PROCESS_INFO:-}" in
+    fail) return 1 ;;
+    *) printf '%s\n' "$FM_FAKE_PROCESS_INFO" ;;
+  esac
+}
+OK='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","foreground_processes":[{"pid":204,"name":"/bin/bash"},{"pid":103,"name":"/opt/homebrew/bin/claude"}]}}}'
+NO_LIST='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2"}}}'
+FM_FAKE_PROCESS_INFO="$OK" fm_backend_herdr_command_signature fmtest:w1:p2
+printf '|'
+FM_FAKE_PROCESS_INFO="$OK" fm_backend_herdr_command_signature fmtest:w9:p9
+printf '|'
+FM_FAKE_PROCESS_INFO="$NO_LIST" fm_backend_herdr_command_signature fmtest:w1:p2
+printf '|'
+FM_FAKE_PROCESS_INFO=fail fm_backend_herdr_command_signature fmtest:w1:p2
+printf '|'
+FM_FAKE_PROCESS_INFO="$OK" fm_backend_herdr_command_signature fmtest
+printf '|'
+PROBE
+  out=$(ROOT="$ROOT" bash "$script")
+  [ "$out" = "103:claude 204:bash|||||" ] \
+    || fail "herdr command signature shapes did not match: $out"
+  pass "herdr command signature sorts the foreground set by pid and answers nothing for every unreadable case"
+}
+
 test_clear_transition_removes_task_marker
 test_apply_transition_defer_and_fallback_are_noops
 test_wait_transition_no_panes_returns_2
@@ -4663,3 +4703,4 @@ test_wait_transition_stream_absorb_clears_then_timeout
 test_wait_transition_reader_failure_returns_2
 test_wait_transition_bad_ack_returns_2_and_cleans_up
 test_wait_transition_clean_timeout_returns_1
+test_herdr_command_signature_shapes

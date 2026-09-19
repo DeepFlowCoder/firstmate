@@ -221,6 +221,25 @@ fm_backend_tmux_foreground_comms() {  # <target>
       done
 }
 
+# fm_backend_tmux_command_signature: the tmux half of
+# fm_backend_pane_command_signature (bin/fm-backend.sh owns that contract).
+# Same foreground-process-group scope and same raw-pane-read caveat as
+# fm_backend_tmux_foreground_comms above; it carries the pid as well as the
+# name, because two runs of the same command are two different commands and a
+# name-only signature would report a turning-over poll loop as frozen.
+# Empty on any failure, which the contract reads as "not answered".
+fm_backend_tmux_command_signature() {  # <target>
+  local target=$1 tty pid pgid tpgid comm
+  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
+  [ -n "$tty" ] || return 0
+  LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
+    | while read -r pid pgid tpgid comm; do
+        [ -n "$comm" ] || continue
+        [ "$pgid" = "$tpgid" ] || continue
+        printf '%s:%s\n' "$pid" "${comm##*/}"
+      done | LC_ALL=C sort | tr '\n' ' '
+}
+
 fm_backend_tmux_foreground_argv0s() {  # <target>
   local target=$1 tty pid pgid tpgid comm args argv0
   tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0

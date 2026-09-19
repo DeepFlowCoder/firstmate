@@ -3113,6 +3113,31 @@ fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
 # gets real semantics" per the design report. See
 # fm_backend_herdr_classify_agent_status for the status->busy/idle/unknown
 # mapping.
+# fm_backend_herdr_command_signature: the herdr half of
+# fm_backend_pane_command_signature (bin/fm-backend.sh owns that contract),
+# read from the same `pane process-info` report
+# fm_backend_herdr_pane_idle_shell_sample already consumes, and scoped to the
+# foreground process list that report names. Deliberately a direct pane query
+# rather than fm_backend_herdr_target_ready, which would start the herdr server
+# as a side effect - wrong for a passive probe, exactly as
+# fm_backend_target_exists spells out. Empty on any failure, which the contract
+# reads as "not answered".
+fm_backend_herdr_command_signature() {  # <target>
+  local target=$1 session pane info
+  session=${target%%:*}
+  pane=${target#*:}
+  [ -n "$session" ] && [ -n "$pane" ] && [ "$pane" != "$target" ] || return 0
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 0
+  printf '%s' "$info" | jq -j --arg pane "$pane" '
+    select(.result.type == "pane_process_info" and .result.process_info.pane_id == $pane)
+    | .result.process_info.foreground_processes
+    | select(type == "array")
+    | map(select(.pid != null) | "\(.pid):\((.name // "?") | split("/") | last)")
+    | sort
+    | join(" ")
+  ' 2>/dev/null || return 0
+}
+
 fm_backend_herdr_busy_state() {  # <target>
   fm_backend_herdr_target_ready "$1" || { printf 'unknown'; return 0; }
   fm_backend_herdr_classify_agent_status \
