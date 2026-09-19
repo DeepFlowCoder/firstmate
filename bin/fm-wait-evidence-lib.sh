@@ -51,6 +51,13 @@
 # Only an OPEN row (`- [ ] `) answers. A closed task's worker is not waiting on
 # anything, and a closed row that kept its hold annotations is exactly the shape
 # bin/fm-captain-hold.sh repairs rather than a live wait.
+#
+# What this reading is NOT, which bounds where a caller may use it: a hold says
+# the CAPTAIN owes an answer, never that the worker stopped. So it belongs on an
+# idle-pane classification, where the worker has already gone quiet, and never on
+# a path that would absorb a pane still reading as busy - there it would silence
+# supervision with no reading of the worker at all. bin/fm-watch.sh's
+# busy_turn_bound_check is the gate that keeps that line and owns the reasoning.
 # <today> is the ISO date the date gate is judged against; callers other than
 # tests leave it empty and get the current date.
 fm_wait_captain_held_ids() {  # <home> [today-YYYY-MM-DD]

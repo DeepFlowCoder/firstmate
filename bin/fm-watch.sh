@@ -8,12 +8,14 @@
 # otherwise, so a crew that finishes (or stops and waits) without a current
 # working signal is never silently swallowed. The stale path applies that rule
 # plus the idle absorb classes. A declared wait - a paused: external wait, a
-# verified captain-held transfer, or the backlog's own active captain hold for
-# the task, which says the same thing without depending on the worker having
-# appended anything - re-surfaces only on its long bounded
+# verified captain-held transfer, or, on the IDLE path only, the backlog's own
+# active captain hold for the task, which says the same thing without depending
+# on the worker having appended anything - re-surfaces only on its long bounded
 # cadence, although its initial no-verb status signal still surfaces in normal
 # mode, and an authoritative parked or done state is a healthy idle wait; the
-# stale: reason below owns all of them.
+# stale: reason below owns all of them. The hold never reaches the busy-pane
+# bound, because it reports that the CAPTAIN owes an answer and says nothing
+# about the worker's health (busy_turn_bound_check owns why).
 # bin/fm-wait-evidence-lib.sh is the single owner of the durable records that
 # say a quiet worker's silence belongs to something other than a wedge.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
@@ -86,7 +88,9 @@
 #                          only up to BUSY_TURN_MAX_SECS with no completed turn
 #                          (state/<id>.turn-ended, or the spawn record before any
 #                          turn completes). Past that bound, a declared external
-#                          wait or verified captain-held transfer uses the long
+#                          wait or verified captain-held transfer - the status
+#                          VERBS only, never the backlog hold, which says nothing
+#                          about the worker - uses the long
 #                          pause recheck cadence (under afk it is instead handed
 #                          to the daemon as this plain reason, once per
 #                          declaration; busy_turn_bound_check owns that handoff);
@@ -453,8 +457,10 @@ task_is_captain_held() {  # <task> <last-status-line>
 
 # wait_is_declared: 0 iff this worker's silence is declared by one of the
 # durable records above - a worker-declared `paused:`, a `captain-held:` verb,
-# or the backlog's own captain hold. The shared gate every stale route reads, so
-# a hold cannot be honored on one route and ignored on the next.
+# or the backlog's own captain hold. The shared gate the IDLE-pane stale routes
+# read, so a hold cannot be honored on one of them and ignored on the next.
+# The busy-pane bound deliberately does NOT read it and keeps the status verbs
+# alone; busy_turn_bound_check owns that split and why it exists.
 wait_is_declared() {  # <task> <last-status-line>
   local task=$1 last=$2
   status_is_paused_or_captain_held "$last" && return 0
@@ -1121,10 +1127,21 @@ handle_healthy_idle_stale() {  # <window> <task> <hash> <class>
 # remains daemon-owned and receives the undecorated wake identity for its own
 # classification, which is why the declaration is read before the afk branch
 # rather than after it.
+#
+# This gate reads the STATUS VERBS ALONE, deliberately, and is the one declared-wait
+# gate that does not honor the backlog's captain hold. A hold is evidence that the
+# CAPTAIN owes an answer; it is not evidence about the worker's health, and letting
+# it absorb a still-busy pane would silence supervision with no reading of the
+# worker at all - exactly the patience-instead-of-evidence this whole path exists
+# to refuse. A busy pane that is not advancing is the case the escalation exists to
+# catch, so a worker whose only declared wait is a hold escalates here on the
+# unchanged timer, count and demand-deep-inspection ladder. The hold's reach is the
+# idle-pane classification (pause_state_class), where the worker has already
+# stopped; nothing else in this function changes.
 busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-file>
   local win=$1 task=$2 h=$3 since_file=$4 escalation_file=$5 key statusf declared
   statusf="$STATE/$task.status"
-  if wait_is_declared "$task" "$(last_status_line "$statusf")"; then
+  if status_is_paused_or_captain_held "$(last_status_line "$statusf")"; then
     if afk_present; then
       # Away mode is daemon-owned, so this bound hands off the PLAIN wake identity
       # and lets the daemon classify the declaration itself - the undecorated

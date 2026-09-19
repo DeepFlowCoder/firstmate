@@ -115,12 +115,6 @@ prime_turnend_seen() {  # <file>
   printf '%s' "$(seen_sig "$f")" > "$(dirname "$f")/.seen-$base"
 }
 
-record_pi_busy() {  # <state-dir> <id>
-  local state=$1 id=$2 gen
-  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
-  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
-    --source pi-ext --event agent-start
-}
 
 # reap comes from tests/lib.sh, which owns its bound.
 

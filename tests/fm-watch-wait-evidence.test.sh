@@ -344,6 +344,84 @@ EOF
   pass "a task held for the captain in the backlog is absorbed on the bounded recheck, and lifting the hold restores the surface"
 }
 
+# --- the hold's boundary: it never reaches a busy pane -----------------------
+#
+# Decided by firstmate when the review raised it: a captain hold is evidence
+# that the CAPTAIN owes an answer, never evidence about the worker's health, so
+# it belongs on the idle-pane classification and must not absorb a pane still
+# reading as busy - not past the completed-turn bound, and with no other
+# concession. Honoring it there would silence supervision with no reading of the
+# worker at all, which is the patience-instead-of-evidence this whole change
+# exists to refuse, and a busy pane that is not advancing is exactly what the
+# escalation exists to catch. The verb still works on that path, and this case
+# drives both so the split cannot quietly collapse into one.
+test_busy_pane_past_the_bound_ignores_the_backlog_hold() {
+  local dir state fakebin home out capture_file window key statusf pid
+  dir=$(make_case busy-hold-boundary); state="$dir/state"; fakebin="$dir/fakebin"
+  home="$dir/home"; out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-busy-held"
+  statusf="$state/busyheld.status"
+  mkdir -p "$home/data"
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+- [ ] busyheld - the captain owes an answer on one question (repo: demo) (hold: awaiting the captain's word) (hold-kind: captain)
+EOF
+  printf 'Working... (7200.4s) security find-generic-password' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busyheld.meta"
+  record_pi_busy "$state" busyheld
+  # The worker declares NOTHING: the hold is the only wait on record, and it is
+  # the captain's, not the worker's.
+  printf 'working: still driving the fix round\n' > "$statusf"
+  printf '%s' "$(seen_sig_for_status "$statusf")" > "$state/.seen-busyheld_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  # No completed turn since the spawn record, aged past any bound.
+  touch -t 200001010000 "$state/busyheld.meta"
+
+  # Phase A: busy, past the bound, held for the captain - and it must still
+  # wedge-escalate, because nothing here read the worker.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$dir/config" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (pi-ext)' \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=1 FM_PAUSE_RESURFACE_SECS=999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "a busy pane past the bound was absorbed by a backlog captain hold"; }
+  grep -F "possible wedge" "$out" >/dev/null \
+    || fail "the held busy pane did not escalate as a possible wedge: $(cat "$out")"
+  [ ! -e "$state/.paused-$key" ] \
+    || fail "a backlog hold armed the declared-wait cadence on a busy pane"
+  [ -s "$state/.wedge-escalations-$key" ] \
+    || fail "the held busy pane's escalation was not counted"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the held busy-pane escalation"
+
+  # Phase B, the other direction: the SAME busy, over-age pane once firstmate
+  # transfers the hold onto the worker's own log. That verb is the one record
+  # that reports the worker stopped for the captain, so the bound honors it and
+  # the pane takes the long recheck instead.
+  printf 'captain-held [key=signoff]: tracked by the captain inventory\n' > "$statusf"
+  printf '%s' "$(seen_sig_for_status "$statusf")" > "$state/.seen-busyheld_status"
+  rm -f "$state/.stale-since-$key" "$state/.wedge-escalations-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$dir/config" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: pane · harness busy (pi-ext)' \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=1 FM_PAUSE_RESURFACE_SECS=999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_poll_cycle "$state" "$pid" \
+    || { reap "$pid"; fail "a verified captain-held transfer on a busy pane was escalated: $(cat "$out")"; }
+  reap "$pid"
+  [ ! -s "$out" ] || fail "the captain-held busy pane printed a wake reason: $(cat "$out")"
+  [ -e "$state/.paused-$key" ] || fail "the verb did not arm the declared-wait cadence on the busy pane"
+  [ ! -e "$state/.stale-since-$key" ] || fail "the verb still started a wedge timer on the busy pane"
+  pass "a backlog captain hold never absorbs a busy pane past the bound, while the captain-held verb still does"
+}
+
 # --- shape 3: an instruction queued behind a running command -----------------
 
 # The measured shape: firstmate steers a worker that is inside a blocking call.
@@ -477,4 +555,5 @@ test_captain_hold_reader
 test_command_movement_reader
 test_running_commands_defers_the_wedge_and_a_frozen_one_escalates
 test_backlog_captain_hold_absorbs_and_an_unheld_pane_surfaces
+test_busy_pane_past_the_bound_ignores_the_backlog_hold
 test_steer_behind_a_running_command_is_not_a_stuck_worker

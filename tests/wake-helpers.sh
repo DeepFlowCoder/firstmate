@@ -352,6 +352,16 @@ set_mtime() {  # <epoch> <file>
 }
 
 
+# Arm a task's semantic busy record through the production writer, so a fixture
+# pane reads as genuinely busy rather than through a rendered-text guess.
+# Shared for the same reason as the beacon helpers above.
+record_pi_busy() {  # <state-dir> <id>
+  local state=$1 id=$2 gen
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
+    --source pi-ext --event agent-start
+}
+
 hash_text() {
   if command -v md5 >/dev/null 2>&1; then
     printf '%s' "$1" | md5 -q
