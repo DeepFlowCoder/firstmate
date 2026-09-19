@@ -416,7 +416,7 @@ window_key() {  # <window>
 # too: their pane-staleness exemption is about quiet panes being healthy,
 # while an unacknowledged instruction past the ladder is a stuck steer.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -445,13 +445,24 @@ inbox_steer_check() {  # <window> <task>
       # is not idle but empty. Surface it once, accurately, and mark the ladder
       # escalated so due_action goes quiet until the record is handled or the
       # endpoint gets a worker again.
-      if [ "$ring_rc" = 3 ]; then
-        triage_log "steer-inbox delivery attempt: $task ${rec##*/} result=3 (no agent reading the endpoint)"
+      # A 4 means the endpoint is showing a recognized vendor dialog: an agent
+      # IS there, but it is reading keypresses, not text, so more ring attempts
+      # would only press keys at a menu. Same ladder treatment as 3 - surface
+      # once, accurately - because the fix is to answer the dialog, not to ring
+      # harder (bin/fm-task-inbox-lib.sh owns both gates).
+      if [ "$ring_rc" = 3 ] || [ "$ring_rc" = 4 ]; then
+        if [ "$ring_rc" = 4 ]; then
+          triage_log "steer-inbox delivery attempt: $task ${rec##*/} result=4 (endpoint showing a vendor dialog)"
+          why="$w is showing a dialog, so it is reading keypresses rather than text and the line was deliberately not typed into it; answer the dialog with bin/fm-control.sh $task dialog, and the record stays durable until a worker reads it"
+        else
+          triage_log "steer-inbox delivery attempt: $task ${rec##*/} result=3 (no agent reading the endpoint)"
+          why="$w has no agent reading it - the endpoint holds a shell, not a worker, so the line was deliberately not typed into it; the record stays durable for a replacement worker"
+        fi
         if [ ! -d "${rec%/*}" ] || [ ! -f "$rec" ]; then
           fm_task_inbox_due_action "$STATE" "$task" >/dev/null || true
           return 0
         fi
-        reason="stale: $w (undeliverable firstmate instruction: $rec cannot be rung because $w has no agent reading it - the endpoint holds a shell, not a worker, so the line was deliberately not typed into it; the record stays durable for a replacement worker)"
+        reason="stale: $w (undeliverable firstmate instruction: $rec cannot be rung because $why)"
         fm_wake_append stale "$w" "$reason" || exit 1
         if ! fm_task_inbox_record_escalated "$STATE" "$task" "$rec"; then
           echo "error: stale wake was queued for $task but its inbox escalation marker could not be written" >&2

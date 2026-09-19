@@ -82,6 +82,9 @@ _FM_TASK_INBOX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # sourcing it here is safe for every inbox consumer.
 # shellcheck source=/dev/null
 . "$_FM_TASK_INBOX_LIB_DIR/fm-control-lib.sh"
+# The registered vendor-dialog classes, for the ring's second safety gate.
+# shellcheck source=/dev/null
+. "$_FM_TASK_INBOX_LIB_DIR/fm-dialog-lib.sh"
 
 FM_TASK_INBOX_SCHEMA='fm-task-inbox.v1'
 FM_TASK_INBOX_GRACE_DEFAULT=90
@@ -272,8 +275,10 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # Returns 0 rang, 1 skipped because the composer PROVENLY holds pending text
 # (the watcher re-rings later), 2 the backend send failed, 3 skipped because the
 # backend PROVED the endpoint is a bare shell prompt, which would execute the
-# line instead of reading it. No return value is delivery proof; the
-# acknowledgement move is the only delivery signal.
+# line instead of reading it, 4 skipped because the endpoint is showing a
+# recognized vendor dialog, which would read the line as its own keybindings.
+# No return value is delivery proof; the acknowledgement move is the only
+# delivery signal.
 # The composer skip is deliberately narrow: only an exact `pending` verdict
 # defers, because there our submit press could submit someone's real half-typed
 # content. `pending-unproven` and `unknown` still ring - the worst outcome is a
@@ -290,10 +295,26 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # running an unrecognized process is still not a shell prompt, so this question
 # survives the same drift. Every unproven, unreadable, or unanswerable case
 # rings exactly as before.
+#
+# The dialog gate is the same safety question asked of the other way an
+# endpoint can be unable to READ a line. A vendor modal has no composer, and
+# every character of the doorbell is one of its keybindings: measured on codex,
+# a single stray character selected "Yes, continue" on a directory-trust
+# dialog. The doorbell is a constant line today, so today it would press a
+# constant set of keys - which is safety by accident of its wording, not by
+# design. Like the shell gate it refuses only on PROOF from a viewport read,
+# and the record stays durable either way, so the worker still finds the steer
+# once the dialog is answered (bin/fm-dialog-lib.sh owns recognition).
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label] [harness]
-  local backend=$1 target=$2 rec=$3 label=${4:-} harness=${5:-} line cstate verdict submit_key
+  local backend=$1 target=$2 rec=$3 label=${4:-} harness=${5:-} line cstate verdict submit_key dialog_screen
   line=$(fm_task_inbox_doorbell_line "$rec")
   ! fm_backend_pane_is_bare_shell "$backend" "$target" 2>/dev/null || return 3
+  if fm_dialog_harness_supported "$harness"; then
+    dialog_screen=$(fm_backend_capture_visible "$backend" "$target" 2>/dev/null || true)
+    [ -z "$dialog_screen" ] \
+      || ! fm_dialog_recognize "$harness" "$dialog_screen" >/dev/null 2>&1 \
+      || return 4
+  fi
   cstate=$(fm_backend_composer_state "$backend" "$target" "$label" 2>/dev/null) || cstate=unknown
   case "$cstate" in
     pending) return 1 ;;
