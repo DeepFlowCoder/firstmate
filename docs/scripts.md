@@ -24,6 +24,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-fleet-view.sh`       | Render the fleet snapshot as a human Markdown view                                   |
 | `fm-bearings-snapshot.sh` | Project the fleet snapshot to the compact TOON bearings view; local-only unless `--include-prs` |
 | `fm-bearings-board.sh`   | Build and arm the stable interactive `/bearings lavish` fleet board                  |
+| `fm-landed-lib.sh`       | One owner of the Recently Landed selector and its artifact-display rule, shared by the fleet and bearings snapshot projections |
 | `fm-secondmate-reconcile.sh` | Ask each secondmate to reconcile an inventory mismatch through its durable inbox, limited by a per-home cooldown |
 | `fm-stow-cascade.sh`     | Enumerate this home's registered secondmates for an internal /stow cascade           |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |

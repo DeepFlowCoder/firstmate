@@ -405,6 +405,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/upstream-subsystem-adoption.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/verification/captain-landing.md",
       "audience": "maintainer-verification"
     },
