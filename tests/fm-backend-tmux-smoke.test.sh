@@ -144,6 +144,132 @@ case "$large" in
 esac
 pass "real tmux: fm_backend_tmux_capture's -S -N bound trims old history for a small window and reaches it for a large one"
 
+# --- visible viewport vs scrollback -------------------------------------------
+# fm_backend_capture_visible answers "what is on screen NOW", and the whole
+# reason it is a separate primitive is that fm_backend_capture cannot: a
+# generous scrollback read still carries text that has already scrolled away.
+# That is not a hypothetical - it is the defect that made a dialog recognizer
+# built on the scrollback read report a dialog on a pane that was plainly back
+# at a prompt. Pin both halves of the divergence so neither can quietly become
+# the other: the scrolled-away marker must be ABSENT from the visible read and
+# PRESENT in the deep one, against the same pane at the same moment.
+fm_backend_tmux_send_text_line "$TARGET" "echo scrolled-away-marker-xyz"
+wait_for_capture_text "$TARGET" "scrolled-away-marker-xyz" \
+  || fail "the scrollback marker never appeared"
+fm_backend_tmux_send_text_line "$TARGET" "for i in \$(seq 1 120); do echo push-\$i; done"
+wait_for_capture_text "$TARGET" "push-120" \
+  || fail "the pushing output did not complete before capture"
+visible=$(fm_backend_capture_visible tmux "$TARGET") \
+  || fail "fm_backend_capture_visible failed on a live pane"
+[ -n "$visible" ] || fail "fm_backend_capture_visible returned nothing for a live pane"
+case "$visible" in
+  *scrolled-away-marker-xyz*)
+    fail "fm_backend_capture_visible must not see text that has scrolled out of the viewport"$'\n'"$visible" ;;
+esac
+case "$visible" in
+  *push-120*) : ;;
+  *) fail "fm_backend_capture_visible must show the pane's current bottom"$'\n'"$visible" ;;
+esac
+deep=$(fm_backend_tmux_capture "$TARGET" 400) || fail "deep capture failed"
+case "$deep" in
+  *scrolled-away-marker-xyz*) : ;;
+  *) fail "the divergence is vacuous: a 400-line scrollback read did not reach the marker either, so the visible read proved nothing" ;;
+esac
+pass "real tmux: fm_backend_capture_visible reads only the viewport while fm_backend_capture still reaches the same scrolled-away text"
+
+# --- agent pids over real processes -------------------------------------------
+# fm_backend_agent_pids names the processes the unresponsive-exit escalation
+# would signal, so it must name the agent and nothing else. Drive it with a
+# real process whose name the shared vocabulary classifies as an agent, and a
+# real one it must not: a signal aimed at the wrong pid is the expensive error.
+# The probe processes need real, distinct PROCESS NAMES, which is what the
+# shared vocabulary classifies. A `#!/usr/bin/env bash` script would run as a
+# process named `bash`, and copying a system binary under a new name is killed
+# outright by macOS code signing (measured: SIGKILL). `exec -a <name>` renames
+# the process the kernel reports without copying anything, so a long blocking
+# binary can appear under either name on both supported platforms.
+SLEEP_BIN=$(command -v sleep) || fail "no sleep binary to build the process-name probes from"
+PIDWIN="fm-pids1"
+# Target the probe windows by the session:window name form the control plane
+# passes, so the exact-window membership check agent_pids shares with
+# agent_state and capture_visible is what these assertions exercise.
+fm_backend_tmux_create_task "$SESSION" "$PIDWIN" "$HOME" \
+  || fail "could not create the agent-pid probe window"
+PIDTARGET="$SESSION:$PIDWIN"
+# A freshly created window's shell can exist before it accepts a submitted
+# line, exactly as the readiness dance above this file already handles for the
+# main target, so keep offering the line until the process actually takes the
+# pane. Without that, the emptiness asserted below would only prove the shell
+# had not started anything yet.
+# Wait on the argv[0] source, not on #{pane_current_command}. `exec -a` renames
+# argv[0] while the executable stays `sleep`, and those are exactly the two
+# independent name sources the vocabulary reads; tmux's field reports the
+# executable, so watching it would never see the name this probe is about.
+#
+# The rename runs in a SUBSHELL rather than replacing the pane's own shell,
+# because that is how a real agent sits in a pane: a foreground child of the
+# interactive shell. Replacing the shell would make the window close the moment
+# the probe is signalled, which would test the probe's shape instead of the
+# escalation's promise that the endpoint survives.
+take_pane() {  # <target> <process-name>
+  local target=$1 name=$2 i=0
+  while [ "$i" -lt 60 ]; do
+    case "$(fm_backend_tmux_foreground_argv0s "$target")" in
+      *"$name"*) return 0 ;;
+    esac
+    [ $((i % 10)) -ne 0 ] \
+      || fm_backend_tmux_send_text_line "$target" "( exec -a $name '$SLEEP_BIN' 600 )"
+    sleep 0.25
+    i=$((i + 1))
+  done
+  return 1
+}
+take_pane "$PIDTARGET" notanagent \
+  || fail "the non-agent probe process never took the pane, so its emptiness would prove nothing"
+pids=$(fm_backend_agent_pids tmux "$PIDTARGET")
+[ -z "$pids" ] \
+  || fail "fm_backend_agent_pids named pids for a pane running no agent: $pids"
+pass "real tmux: fm_backend_agent_pids names nothing for a real non-agent foreground process"
+
+PIDWIN2="fm-pids2"
+fm_backend_tmux_create_task "$SESSION" "$PIDWIN2" "$HOME" \
+  || fail "could not create the second agent-pid probe window"
+PIDTARGET2="$SESSION:$PIDWIN2"
+take_pane "$PIDTARGET2" codex \
+  || fail "the agent-named probe process never took the pane"
+pids=$(fm_backend_agent_pids tmux "$PIDTARGET2")
+[ -n "$pids" ] || fail "fm_backend_agent_pids named nothing for a pane whose foreground process is an agent"
+for p in $pids; do
+  case "$p" in ''|*[!0-9]*) fail "fm_backend_agent_pids printed a non-pid: '$p'" ;; esac
+  kill -0 "$p" 2>/dev/null || fail "fm_backend_agent_pids printed pid $p, which is not a live process"
+  args=$(LC_ALL=C ps -p "$p" -o args= 2>/dev/null)
+  args=${args#"${args%%[![:space:]]*}"}
+  case "${args%%[[:space:]]*}" in
+    codex) : ;;
+    *) fail "fm_backend_agent_pids printed pid $p whose argv0 is '${args%%[[:space:]]*}', not the agent" ;;
+  esac
+done
+# The escalation's own move, against a real process: SIGTERM, then the same
+# recovery-grade classifier must report the agent gone.
+for p in $pids; do kill -TERM "$p" 2>/dev/null || true; done
+i=0
+while [ "$i" -lt 40 ]; do
+  state=$(fm_backend_agent_state tmux "$PIDTARGET2")
+  [ "$state" = alive ] || break
+  sleep 0.25; i=$((i + 1))
+done
+[ "$state" != alive ] \
+  || fail "SIGTERM to the pids fm_backend_agent_pids named left the endpoint still classifying 'alive'"
+tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$PIDWIN2" \
+  || fail "signalling the agent must not remove its endpoint"
+pass "real tmux: fm_backend_agent_pids names exactly the agent process, and SIGTERM to it clears the agent state while the endpoint survives"
+fm_backend_tmux_kill "$PIDTARGET"
+fm_backend_tmux_kill "$PIDTARGET2"
+pids=$(fm_backend_agent_pids tmux "$PIDTARGET")
+[ -z "$pids" ] \
+  || fail "fm_backend_agent_pids named pids for a killed window instead of could-not-establish: $pids"
+pass "real tmux: fm_backend_agent_pids names nothing for a window that no longer exists"
+
 # --- resolve_bare_selector (live-window-listing) -----------------------------
 
 resolved=$(fm_backend_tmux_resolve_bare_selector "$WINDOW") \
@@ -168,6 +294,42 @@ state=$(fm_backend_agent_state tmux "$TARGET")
 # Best-effort contract: killing an already-gone window must not error.
 fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead target must stay best-effort (never fail)"
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
+
+# --- capture_visible refuses a killed window --------------------------------
+# tmux serves an absent capture target from the session's ACTIVE window rather
+# than failing, which would read - and then let a caller answer - a dialog on
+# some other worker's pane. Make a known window active with a distinctive
+# marker, prove that window is what a wrong-pane capture would return, then
+# prove a visible capture aimed at the dead target neither succeeds nor returns
+# it.
+SURVIVOR="fm-survivor"
+SURVIVOR_TARGET="$SESSION:$SURVIVOR"
+fm_backend_tmux_create_task "$SESSION" "$SURVIVOR" "$HOME" >/dev/null \
+  || fail "could not create the survivor window"
+SURVIVOR_READY=false
+for _ in $(seq 1 100); do
+  tmux send-keys -t "$SURVIVOR_TARGET" C-c
+  tmux send-keys -t "$SURVIVOR_TARGET" -l "printf 'survivor-marker-%s\\n' zzz"
+  tmux send-keys -t "$SURVIVOR_TARGET" Enter
+  if wait_for_capture_text "$SURVIVOR_TARGET" "survivor-marker-zzz" 10; then
+    SURVIVOR_READY=true
+    break
+  fi
+done
+[ "$SURVIVOR_READY" = true ] || fail "the survivor window never became ready to seed its marker"
+tmux select-window -t "$SURVIVOR_TARGET" || fail "could not make the survivor window active"
+survivor_view=$(tmux capture-pane -p -t "$SURVIVOR_TARGET" -S 0 -E -) \
+  || fail "capturing the survivor window's viewport failed"
+case "$survivor_view" in
+  *survivor-marker-zzz*) : ;;
+  *) fail "the survivor window's viewport does not carry the marker, so the wrong-pane assertion would be vacuous" ;;
+esac
+if visible=$(fm_backend_capture_visible tmux "$TARGET"); then
+  fail "fm_backend_capture_visible must refuse a killed window, but it returned content"$'\n'"$visible"
+fi
+[ -z "$visible" ] \
+  || fail "fm_backend_capture_visible returned the survivor window's content for a killed target"$'\n'"$visible"
+pass "real tmux: fm_backend_capture_visible refuses a killed window instead of returning the active window's content"
 
 cleanup_all
 trap - EXIT

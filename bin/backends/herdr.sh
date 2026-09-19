@@ -86,6 +86,12 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-transition-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
 
+# Shared process-name vocabulary (agent|shell|other). Owned by
+# bin/fm-process-name-lib.sh, so this adapter and the tmux one answer
+# "is this process the agent?" with one table rather than two.
+# shellcheck source=bin/fm-process-name-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-process-name-lib.sh"
+
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
@@ -1875,6 +1881,40 @@ fm_backend_herdr_pane_shell_only() {  # <session> <pane_id>
   fm_backend_herdr_pane_idle_shell_sample "$1" "$2" >/dev/null 2>&1
 }
 
+# fm_backend_herdr_agent_pids: the herdr half of fm_backend_agent_pids
+# (bin/fm-backend.sh owns that contract), taking the adapter's
+# "<session>:<pane_id>" target form. Prints the pids in the pane's foreground
+# process group whose name or argv0 the shared classifier calls `agent`.
+#
+# It reads herdr's own pane process-info rather than the process table, so the
+# pids it names are the ones herdr itself attributes to this exact pane - the
+# same source the idle-shell proof above uses, and the reason a pid belonging
+# to some other pane can never appear here. Empty on any read failure, which is
+# "could not establish", never "there is none".
+fm_backend_herdr_agent_pids() {  # <target>
+  local info rows pid name argv0
+  fm_backend_herdr_parse_target "$1" || return 0
+  info=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane process-info \
+    --pane "$FM_BACKEND_HERDR_PANE" 2>/dev/null) || return 0
+  printf '%s' "$info" | jq -e --arg pane "$FM_BACKEND_HERDR_PANE" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+  ' >/dev/null 2>&1 || return 0
+  rows=$(printf '%s' "$info" | jq -r '
+    .result.process_info.foreground_processes // []
+    | .[]
+    | [ (.pid // empty | tostring),
+        (.name // ""),
+        (.argv0 // (.argv // [])[0] // "") ]
+    | @tsv
+  ' 2>/dev/null) || return 0
+  printf '%s\n' "$rows" | while IFS=$'\t' read -r pid name argv0; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "$(fm_process_classify_name "${name:-$argv0}" "$argv0")" = agent ] || continue
+    printf '%s\n' "$pid"
+  done
+}
+
 # fm_backend_herdr_pane_is_bare_shell: the herdr half of
 # fm_backend_pane_is_bare_shell (bin/fm-backend.sh owns that contract), taking
 # the adapter's "<session>:<pane_id>" target form. An unparseable target proves
@@ -2647,6 +2687,30 @@ fm_backend_herdr_capture() {  # <target> <lines>
   case "$fetch" in ''|*[!0-9]*) fetch=200 ;; *) [ "$fetch" -ge 200 ] || fetch=200 ;; esac
   out=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent --lines "$fetch" 2>/dev/null) || return 1
   printf '%s' "$out" | tail -n "$lines"
+}
+
+# fm_backend_herdr_capture_visible: the VISIBLE pane only, plain text, no
+# scrollback. herdr's `pane read` takes an explicit snapshot source, and
+# `visible` is its viewport one (`--source` accepts visible, recent,
+# recent-unwrapped, detection; the adapter's other reads use `recent`).
+# No --lines bound is passed, so the empty-read quirk documented above - which
+# is about a bound BELOW the viewport height - cannot apply here.
+# bin/fm-backend.sh's fm_backend_capture_visible owns why a caller needs this
+# rather than the bounded recent capture.
+#
+# Deliberately NOT routed through fm_backend_herdr_target_ready, unlike the
+# recent capture above: that helper ensures the herdr server as a side effect,
+# which is right for an operation about to USE the pane and wrong for a passive
+# probe. This read is a passive probe - the steering doorbell asks it on every
+# ring attempt, before deciding whether the endpoint can read a line at all -
+# so starting a server to answer it would be a side effect nobody asked for.
+# It queries the pane directly instead, exactly as fm_backend_target_exists and
+# the idle-shell proof do. A server that is down has no pane to read, which
+# fails here and means "could not establish", never "no dialog".
+fm_backend_herdr_capture_visible() {  # <target>
+  fm_backend_herdr_parse_target "$1" || return 1
+  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" \
+    --source visible 2>/dev/null
 }
 
 fm_backend_herdr_capture_ansi() {  # <target> <lines>

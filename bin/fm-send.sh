@@ -1054,6 +1054,7 @@ else
       1) echo "fm-send: doorbell skipped (composer visibly holds pending text); the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
       2) echo "fm-send: doorbell did not reach $T; the steer is durably recorded at $INBOX_RECORD and the watcher will re-ring" >&2 ;;
       3) echo "fm-send: doorbell not rung because $T is sitting at a shell prompt, where the line would be executed instead of read; the steer is durably recorded at $INBOX_RECORD and waits there for a worker" >&2 ;;
+      4) echo "fm-send: doorbell not rung because $T is showing a dialog, where the line would be read as keypresses instead of text; the steer is durably recorded at $INBOX_RECORD and will be read once the dialog is answered" >&2 ;;
     esac
     exit 0
   fi

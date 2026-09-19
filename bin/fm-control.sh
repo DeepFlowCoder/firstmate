@@ -3,9 +3,10 @@
 # lifecycle verbs addressed to an exact task id.
 #
 # Usage: fm-control.sh <task-id> interrupt
-#        fm-control.sh <task-id> exit
+#        fm-control.sh <task-id> exit [--unresponsive]
+#        fm-control.sh <task-id> dialog [--answer <name>]
 #        fm-control.sh <task-id> relaunch [--harness <name>] [--model <name>]
-#                                         [--effort <level>]
+#                                         [--effort <level>] [--unresponsive]
 #                                         (--note <text> | --note-file <path>)
 #        fm-control.sh <task-id> recover  [--harness <name>] [--model <name>]
 #                                         [--effort <level>]
@@ -29,11 +30,29 @@
 #              classify that. Cancellation is confirmed only from an adapter-
 #              owned acknowledgement and otherwise reported unconfirmed. Busy
 #              state is never rewritten as proof of the action.
+#   dialog     Answer a vendor modal the agent is waiting inside. With no
+#              --answer it only INSPECTS: it names the recognized dialog class
+#              and lists each answer with what choosing it would do. With
+#              --answer <name> it delivers that answer's keystroke and verifies
+#              the dialog closed with the agent still running.
+#              Only a dialog class registered in bin/fm-dialog-lib.sh can be
+#              answered, the caller names an answer rather than a key, and the
+#              live screen must prove the menu still matches the registered
+#              shape before anything is pressed. Nothing here can send an
+#              arbitrary key to a pane.
 #   exit       Stop the agent, preserving its terminal endpoint, worktree, and
 #              every uncommitted change. Interrupts first when the task reads
 #              busy, then submits the harness's exit command. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
 #              Already-stopped is success (idempotent).
+#              Refuses BEFORE typing anything when a registered dialog is on
+#              screen: those keystrokes would be read as the dialog's own
+#              keybindings, not as a command (measured - see bin/fm-dialog-lib.sh).
+#              --unresponsive is the escalation for an agent that will not stop:
+#              after the ordinary exit command fails its postcondition, it sends
+#              SIGTERM to the agent's own processes and re-proves the same
+#              postcondition. It never escalates past SIGTERM, and it touches
+#              neither the endpoint nor the worktree nor one byte of the work.
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME endpoint and SAME worktree, on the same or a newly chosen
 #              harness/model/effort - so switching harness is one ordinary use
@@ -74,6 +93,16 @@
 # endpoint, or discarding work stays with bin/fm-teardown.sh, which owns the
 # landed-work test.
 #
+# --unresponsive is NOT a force flag, and nothing about it relaxes that
+# boundary. Forcing in this house means overriding a refusal that protects
+# unlanded work; this signals the agent PROCESS, which is the same thing `exit`
+# already achieves by asking the agent to stop, reached without needing the
+# agent to be able to read. The endpoint, the worktree, the branch, and every
+# uncommitted change are untouched either way, and the postcondition proved
+# afterwards is the identical one. It exists because an agent stuck inside a
+# modal it will not leave is otherwise unreplaceable: `exit` cannot make it
+# stop, and `relaunch` will not start until `exit` proves it did.
+#
 # `resume` is not a verb: it is not deterministic across the verified adapters
 # (bin/fm-control-lib.sh's header owns that reasoning). `relaunch` covers the
 # same need for every adapter because the brief on disk, not a harness-private
@@ -109,6 +138,8 @@
 #   FM_CONTROL_EXIT_WAIT         alive->dead wait after the exit command (30)
 #   FM_CONTROL_LAUNCH_WAIT       dead->alive wait after a relaunch or recover (90)
 #   FM_CONTROL_EXIT_RETRIES      Enter retries for the exit command (3)
+#   FM_CONTROL_DIALOG_WAIT       wait for an answered dialog to close (15)
+#   FM_CONTROL_SIGNAL_WAIT       alive->dead wait after SIGTERM (20)
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,6 +181,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
+# shellcheck source=bin/fm-dialog-lib.sh
+. "$SCRIPT_DIR/fm-dialog-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -160,6 +193,8 @@ SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
 EXIT_WAIT=${FM_CONTROL_EXIT_WAIT:-30}
 LAUNCH_WAIT=${FM_CONTROL_LAUNCH_WAIT:-90}
 EXIT_RETRIES=${FM_CONTROL_EXIT_RETRIES:-3}
+DIALOG_WAIT=${FM_CONTROL_DIALOG_WAIT:-15}
+SIGNAL_WAIT=${FM_CONTROL_SIGNAL_WAIT:-20}
 
 die() {  # <message>
   echo "error: $1" >&2
@@ -168,6 +203,9 @@ die() {  # <message>
 
 CONTROL_LOCK=
 CONTROL_LOCK_HELD=0
+# Which verb the operator actually asked for, so a refusal raised inside the
+# shared exit path names `relaunch` when that is what they ran.
+EXIT_CALLER_VERB='exit'
 RELAUNCH_ACTIVE=0
 RELAUNCH_PHASE=start
 RECOVER_ACTIVE=0
@@ -223,6 +261,9 @@ MODEL_SET=0
 EFFORT_SET=0
 NOTE=
 NOTE_SET=0
+ANSWER=
+ANSWER_SET=0
+UNRESPONSIVE=0
 control_want_value=
 for control_arg in "$@"; do
   if [ -n "$control_want_value" ]; then
@@ -233,6 +274,7 @@ for control_arg in "$@"; do
       harness) NEW_HARNESS=$control_arg; HARNESS_SET=1 ;;
       model) NEW_MODEL=$control_arg; MODEL_SET=1 ;;
       effort) NEW_EFFORT=$control_arg; EFFORT_SET=1 ;;
+      answer) ANSWER=$control_arg; ANSWER_SET=1 ;;
       note) NOTE=$control_arg; NOTE_SET=1 ;;
       note_file)
         [ -f "$control_arg" ] || die "--note-file '$control_arg' is not a readable file"
@@ -250,6 +292,9 @@ for control_arg in "$@"; do
     --model=*) NEW_MODEL=${control_arg#--model=}; MODEL_SET=1 ;;
     --effort) control_want_value=effort ;;
     --effort=*) NEW_EFFORT=${control_arg#--effort=}; EFFORT_SET=1 ;;
+    --answer) control_want_value=answer ;;
+    --answer=*) ANSWER=${control_arg#--answer=}; ANSWER_SET=1 ;;
+    --unresponsive) UNRESPONSIVE=1 ;;
     --note) control_want_value=note ;;
     --note=*) NOTE=${control_arg#--note=}; NOTE_SET=1 ;;
     --note-file) control_want_value=note_file ;;
@@ -273,6 +318,15 @@ case "$VERB" in
       || die "--harness, --model, --effort, and --note apply to 'relaunch' and 'recover' only"
     ;;
 esac
+case "$VERB" in
+  dialog) ;;
+  *) [ "$ANSWER_SET" = 0 ] || die "--answer applies to 'dialog' only" ;;
+esac
+case "$VERB" in
+  exit|relaunch) ;;
+  *) [ "$UNRESPONSIVE" = 0 ] || die "--unresponsive applies to 'exit' and 'relaunch' only" ;;
+esac
+[ "$ANSWER_SET" = 0 ] || [ -n "$ANSWER" ] || die "--answer requires a non-empty value"
 [ "$HARNESS_SET" = 0 ] || [ -n "$NEW_HARNESS" ] || die "--harness requires a non-empty value"
 [ "$MODEL_SET" = 0 ] || [ -n "$NEW_MODEL" ] || die "--model requires a non-empty value"
 [ "$EFFORT_SET" = 0 ] || [ -n "$NEW_EFFORT" ] || die "--effort requires a non-empty value"
@@ -371,6 +425,208 @@ wait_agent_state() {  # <timeout> <wanted>...
   done
   printf '%s' "$state"
   return 1
+}
+
+# --- vendor dialogs ---------------------------------------------------------
+#
+# A harness can sit inside a modal of its own that is waiting for a keypress,
+# not for composer text. bin/fm-dialog-lib.sh owns which of those firstmate may
+# answer and what proof it demands first; everything below is the live half -
+# read the screen, hand it to that owner, deliver only what it sanctions, and
+# verify the result.
+
+# dialog_capture: the VISIBLE screen, never a scrollback read. A dialog is a
+# claim about what is on the pane right now, and a bounded scrollback capture
+# still carries a dialog that was answered and scrolled away - measured while
+# building this verb (bin/fm-backend.sh's fm_backend_capture_visible owns that
+# evidence). A backend with no viewport source yields nothing here, which under
+# the proof-only stance below means "no dialog established", never a guess.
+dialog_capture() {
+  fm_backend_capture_visible "$BACKEND" "$T" 2>/dev/null || true
+}
+
+# dialog_current: print the registered class on screen right now, or nothing.
+# Deliberately silent about WHY it found nothing: "no dialog" and "this harness
+# registers none" are different facts, and the callers that need to tell them
+# apart ask fm_dialog_harness_supported themselves.
+dialog_current() {
+  local capture
+  fm_dialog_harness_supported "$HARNESS" || return 0
+  capture=$(dialog_capture)
+  [ -n "$capture" ] || return 0
+  fm_dialog_recognize "$HARNESS" "$capture" 2>/dev/null || true
+}
+
+# dialog_answer_hint: the exact commands that would answer <class>, one per
+# line, each with the consequence spelled out. This is what turns a refusal
+# into a next step instead of a dead end.
+dialog_answer_hint() {  # <class>
+  local class=$1 answer
+  while IFS= read -r answer; do
+    [ -n "$answer" ] || continue
+    printf '  bin/fm-control.sh %s dialog --answer %s\n      %s\n' \
+      "$ID" "$answer" "$(fm_dialog_answer_consequence "$HARNESS" "$class" "$answer")"
+  done <<EOF
+$(fm_dialog_answer_names "$HARNESS" "$class")
+EOF
+}
+
+# dialog_wait_gone: poll until <class> is no longer on screen. Prints nothing;
+# returns 0 once the class is gone, 1 if it is still there at the bound.
+dialog_wait_gone() {  # <class> <timeout>
+  local class=$1 timeout=$2 elapsed=0 capture
+  while :; do
+    capture=$(dialog_capture)
+    if [ -n "$capture" ] && ! fm_dialog_class_present "$HARNESS" "$class" "$capture"; then
+      return 0
+    fi
+    awk -v e="$elapsed" -v t="$timeout" 'BEGIN{exit !(e < t)}' || break
+    sleep "$POLL"
+    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+  done
+  return 1
+}
+
+# refuse_if_dialog_blocks_input: the guard that makes the measured failure
+# impossible to repeat. A registered dialog on screen reads every keystroke as
+# its own keybinding, so typing an exit command into one does not exit - it
+# presses whatever those characters happen to be bound to. Refuse while
+# nothing has been touched, and name the way out.
+#
+# It refuses on PROOF and never defers on doubt, matching the bare-shell gate
+# in bin/fm-task-inbox-lib.sh that answers the same shape of question. An
+# unreadable screen, an empty capture, or a harness with no registered class
+# all proceed exactly as they did before this guard existed, so nothing that
+# works today starts refusing because a capture hiccuped. The cost of that
+# choice is the case this guard cannot see - an unrecognized modal - and that
+# case is exactly what `exit --unresponsive` is for.
+refuse_if_dialog_blocks_input() {
+  local verb=$EXIT_CALLER_VERB class
+  class=$(dialog_current)
+  [ -n "$class" ] || return 0
+  {
+    echo "error: task $ID is sitting in a $HARNESS dialog ($class): $(fm_dialog_title "$HARNESS" "$class")."
+    case "$verb" in
+      interrupt) echo "'$verb' sends this harness's interrupt key, and a dialog reads that as one of its own keybindings rather than as a cancellation - on a selection view it can dismiss with a default, which is a choice nobody made. Nothing was sent." ;;
+      *) echo "'$verb' types the harness's exit command into the composer, but a dialog has no composer - those characters would be read as its own keybindings and could select an option nobody chose. Nothing was sent." ;;
+    esac
+    echo "Answer the dialog first, with one of:"
+    dialog_answer_hint "$class"
+    case "$verb" in
+      interrupt) ;;
+      *)
+        echo "Or, if the agent must go rather than be answered, escalate with:"
+        echo "  bin/fm-control.sh $ID $verb --unresponsive ..."
+        ;;
+    esac
+  } >&2
+  exit 1
+}
+
+# require_viewport_backend: the dialog verb needs to know what is on screen
+# NOW, and a backend with no viewport source cannot say. Refusing by name beats
+# reporting "no dialog found" at a backend that could not have found one.
+require_viewport_backend() {
+  fm_backend_capture_visible "$BACKEND" "$T" >/dev/null 2>&1 && return 0
+  die "task $ID runs on the $BACKEND backend, which cannot report what is currently on its screen (only tmux and herdr expose a viewport read), so no dialog here could be recognized before a key was pressed or proven gone after; refusing rather than answering a menu blind"
+}
+
+do_dialog_inspect() {
+  local class
+  fm_dialog_harness_supported "$HARNESS" \
+    || die "harness $HARNESS has no registered dialog class, so there is nothing here this plane is allowed to answer; bin/fm-dialog-lib.sh is where a measured one gets registered"
+  require_viewport_backend
+  class=$(dialog_current)
+  [ -n "$class" ] \
+    || die "no registered $HARNESS dialog is on task $ID's screen. If the worker is stuck behind a modal this plane does not know, it stays unanswerable on purpose - register it in bin/fm-dialog-lib.sh from a real measurement, or replace the agent with bin/fm-control.sh $ID exit --unresponsive"
+  echo "dialog $ID class=$class harness=$HARNESS backend=$BACKEND"
+  echo "  $(fm_dialog_title "$HARNESS" "$class")"
+  echo "  provenance: $(fm_dialog_provenance "$HARNESS" "$class")"
+  echo "answers:"
+  dialog_answer_hint "$class"
+  dialog_declined_hint "$class"
+}
+
+# dialog_declined_hint: name the options on screen that this plane will not
+# press, and why. Without it the operator sees a menu of three and an offer of
+# two, and has to guess whether the third was declined or forgotten.
+dialog_declined_hint() {  # <class>
+  local class=$1 rows ordinal label why
+  rows=$(fm_dialog_unanswerable "$HARNESS" "$class") || return 0
+  [ -n "$rows" ] || return 0
+  echo "not offered:"
+  while IFS=$'\t' read -r ordinal label why; do
+    [ -n "$ordinal" ] || continue
+    printf '  option %s (%s)\n      %s\n' "$ordinal" "$label" "$why"
+  done <<EOF
+$rows
+EOF
+}
+
+do_dialog_answer() {  # <answer>
+  local answer=$1 class capture ordinal select_key confirm_key state
+  fm_dialog_harness_supported "$HARNESS" \
+    || die "harness $HARNESS has no registered dialog class; refusing to press a key at an adapter whose menus have never been measured"
+  require_viewport_backend
+  class=$(dialog_current)
+  [ -n "$class" ] \
+    || die "no registered $HARNESS dialog is on task $ID's screen, so there is nothing to answer; refusing to press a key into whatever is actually there"
+  ordinal=$(fm_dialog_answer_ordinal "$HARNESS" "$class" "$answer") || {
+    {
+      echo "error: '$answer' is not an answer of the $class dialog. Its answers are:"
+      dialog_answer_hint "$class"
+    } >&2
+    exit 2
+  }
+  # Re-read rather than reusing the recognition capture: the proof must be
+  # about the screen as it is at the moment of pressing, not a moment earlier.
+  capture=$(dialog_capture)
+  fm_dialog_answer_proven "$HARNESS" "$class" "$answer" "$capture" \
+    || die "task $ID's screen no longer matches the registered shape of the $class dialog, so option $ordinal cannot be proven to still be '$answer'; refusing to press it. Re-inspect with bin/fm-control.sh $ID dialog"
+  select_key=$(fm_dialog_select_key "$HARNESS" "$ordinal") \
+    || die "the $class dialog's option $ordinal has no verified selection key for $HARNESS"
+  # A printable option key goes out on the literal path: it is a character, not
+  # a named chord, so no backend has to spell it (see fm_backend_send_literal).
+  fm_backend_send_literal "$BACKEND" "$T" "$select_key" "$LABEL" \
+    || die "the selection key for '$answer' was not delivered to task $ID on $BACKEND; the dialog is untouched"
+  if ! dialog_wait_gone "$class" "$DIALOG_WAIT"; then
+    # Still up: this view wanted an explicit confirmation rather than acting on
+    # the selection key. That is now an observed fact, so the confirm key is a
+    # sanctioned next step rather than the speculative second press that
+    # sending both at once would have been.
+    confirm_key=$(fm_dialog_confirm_key "$HARNESS") \
+      || die "the $class dialog is still on screen after selecting option $ordinal, and $HARNESS has no verified confirmation key; the selection is highlighted but uncommitted - inspect task $ID before acting again"
+    # The timeout alone cannot tell "still up, wants confirmation" from "the
+    # viewport went empty". Re-prove the dialog is still on screen before
+    # pressing the confirm key, so a pane that disappeared mid-wait never
+    # receives a blind Enter.
+    capture=$(dialog_capture)
+    [ -n "$capture" ] \
+      || die "task $ID's screen became unreadable while the $class dialog waited for confirmation, so pressing $confirm_key cannot be proven to target it; refusing to press blind"
+    fm_dialog_class_present "$HARNESS" "$class" "$capture" \
+      || die "task $ID's screen no longer shows the $class dialog after selecting option $ordinal, so $confirm_key would press whatever replaced it; refusing"
+    fm_control_backend_supports_key "$BACKEND" "$confirm_key" \
+      || die "the $class dialog needs $confirm_key to commit the selection, which the $BACKEND backend cannot deliver; option $ordinal is highlighted but uncommitted on task $ID"
+    fm_backend_send_key "$BACKEND" "$T" "$confirm_key" "$LABEL" \
+      || die "option $ordinal is highlighted on task $ID but $confirm_key was not delivered, so the choice is uncommitted"
+    dialog_wait_gone "$class" "$DIALOG_WAIT" \
+      || die "the $class dialog is still on task $ID's screen after selecting option $ordinal and confirming it; the answer did not land and no further key will be pressed"
+  fi
+  # The dialog is gone. The other half of "it worked" is that the agent is
+  # still there: an answer that closed the dialog by ending the agent is a
+  # legitimate outcome for some options, but it must be reported as what it is
+  # rather than as the worker going back to work.
+  state=alive
+  if fm_control_backend_state_verified "$BACKEND"; then
+    state=$(agent_state)
+  else
+    state=unverified
+  fi
+  echo "dialog-answered $ID class=$class answer=$answer option=$ordinal harness=$HARNESS backend=$BACKEND verified=closed agent=$state"
+  case "$state" in
+    alive|unverified) ;;
+    *) echo "note: $(fm_dialog_answer_consequence "$HARNESS" "$class" "$answer"); the agent is now '$state' and its endpoint, local copy, and uncommitted changes are untouched" >&2 ;;
+  esac
 }
 
 require_state_verified_backend() {  # <verb>
@@ -491,6 +747,22 @@ do_exit() {
     missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop; recover it with bin/fm-control.sh $ID recover --note '<what happened>' rather than exit or relaunch" ;;
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
+  # Before ANY key or character goes to this endpoint, including the interrupt
+  # below: a registered dialog reads every one of them as its own keybinding.
+  #
+  # With --unresponsive the operator has already decided this agent goes rather
+  # than gets answered, and the refusal below is the message that told them so.
+  # Blocking them here would make that instruction impossible to follow. Skip
+  # straight to the signal instead of typing first: a recognized dialog is
+  # proof the exit command CANNOT land, so attempting it would only press its
+  # characters into the menu - the exact failure this whole path exists to end.
+  if [ "$UNRESPONSIVE" = 1 ] && [ -n "$(dialog_current)" ]; then
+    stop_unresponsive_agent "skipped: agent parked in a dialog, so no keystroke could reach it" || return $?
+    retire_busy_incarnation
+    printf 'stopped-unresponsive'
+    return 0
+  fi
+  refuse_if_dialog_blocks_input
   # A busy agent is interrupted first before the exit command is submitted.
   case "$(busy_verdict)" in
     busy*)
@@ -523,12 +795,48 @@ do_exit() {
   [ "$verdict" != send-failed ] \
     || die "the exit command could not be sent to task $ID on $BACKEND"
   state=$(wait_agent_state "$EXIT_WAIT" dead) || {
-    die "exit-delivered $ID interrupt=$interrupt_result exit-command=delivered agent-state=$state exit=unconfirmed; the agent did not stop within ${EXIT_WAIT}s"
+    if [ "$UNRESPONSIVE" = 1 ]; then
+      stop_unresponsive_agent "$interrupt_result" || return $?
+      retire_busy_incarnation
+      printf 'stopped-unresponsive'
+      return 0
+    fi
+    die "exit-delivered $ID interrupt=$interrupt_result exit-command=delivered agent-state=$state exit=unconfirmed; the agent did not stop within ${EXIT_WAIT}s. If it has stopped reading its input at all, escalate with bin/fm-control.sh $ID exit --unresponsive, which signals the agent's own processes and proves the same postcondition without touching the endpoint, the local copy, or any uncommitted change"
   }
   # The incarnation is over: retire its busy wiring so no stale record or
   # orphaned generation survives the agent that produced it.
   retire_busy_incarnation
   printf 'stopped'
+}
+
+# stop_unresponsive_agent: the escalation for an agent that took the exit
+# command and did not stop, because it is no longer reading its input at all.
+#
+# It reaches the agent as a PROCESS instead of through its input loop, which is
+# the one channel a modal cannot intercept. SIGTERM only: a process that
+# ignores SIGTERM is refusing to shut down cleanly, and deciding to destroy it
+# anyway is a captain's call about that worker's in-memory state, not one this
+# script may make on its own. The postcondition is the same recovery-grade
+# classifier every other stop here is proven with, so `stopped-unresponsive`
+# means exactly what `stopped` means.
+#
+# Nothing here touches the endpoint, the worktree, the branch, or any
+# uncommitted change; `exit`'s preservation contract is unchanged.
+stop_unresponsive_agent() {  # <interrupt-result>
+  local interrupt_result=$1 pids pid signalled=0 state
+  pids=$(fm_backend_agent_pids "$BACKEND" "$T")
+  [ -n "$pids" ] \
+    || die "exit-delivered $ID interrupt=$interrupt_result exit-command=delivered exit=unconfirmed; the agent did not stop, and --unresponsive could not establish which processes on $BACKEND are its own, so there is nothing safe to signal. Nothing was killed"
+  for pid in $pids; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    kill -TERM "$pid" 2>/dev/null && signalled=$((signalled + 1))
+  done
+  [ "$signalled" -gt 0 ] \
+    || die "exit-delivered $ID exit=unconfirmed; --unresponsive found the agent's processes ($(printf '%s' "$pids" | tr '\n' ' ')) but could not signal any of them. Nothing was killed"
+  state=$(wait_agent_state "$SIGNAL_WAIT" dead) || {
+    die "exit-delivered $ID exit=unconfirmed; SIGTERM reached $signalled of the agent's processes and it is still '$state' after ${SIGNAL_WAIT}s. It is refusing a clean shutdown, and this plane escalates no further - the work at $WT is untouched, and destroying the process is the captain's call"
+  }
+  echo "note: $ID's agent stopped only after SIGTERM to $signalled of its own processes; its endpoint, local copy, and uncommitted changes are untouched" >&2
 }
 
 # --- transactional relaunch -------------------------------------------------
@@ -819,6 +1127,7 @@ do_relaunch() {
   local exit_result state note_line
   local -a spawn_args
 
+  EXIT_CALLER_VERB=relaunch
   require_state_verified_backend relaunch
   resolve_launch_profile relaunch
 
@@ -1028,12 +1337,24 @@ case "$VERB" in
       dead|missing) die "no agent is running at task $ID's recorded endpoint (state: $state); there is nothing to interrupt" ;;
       *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle key into an unattributed endpoint" ;;
     esac
+    # An interrupt key is still a key, and a registered dialog would read it as
+    # one of its own - on a selection view that can dismiss with a default,
+    # which is a choice nobody made. The dialog verb is the way to answer one.
+    EXIT_CALLER_VERB=interrupt
+    refuse_if_dialog_blocks_input
     proof=$(do_interrupt)
     echo "interrupt-delivered $ID harness=$HARNESS backend=$BACKEND verified=$proof"
     ;;
   exit)
     result=$(do_exit)
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
+    ;;
+  dialog)
+    if [ "$ANSWER_SET" = 1 ]; then
+      do_dialog_answer "$ANSWER"
+    else
+      do_dialog_inspect
+    fi
     ;;
   relaunch)
     do_relaunch

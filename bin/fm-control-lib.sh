@@ -18,7 +18,12 @@
 #
 #   1. Verb allowlist. There is no arbitrary-text and no generic raw-key entry
 #      point on the control plane; a caller either names an allowlisted verb or
-#      is refused.
+#      is refused. The `dialog` verb does deliver a keystroke, and it is the
+#      exception that proves the rule: the caller names an ANSWER of a dialog
+#      class registered in bin/fm-dialog-lib.sh, that file derives the key, and
+#      the live screen must independently prove the menu still has the shape
+#      the class describes before anything is pressed. There is still no way to
+#      say "send key K to pane P".
 #   2. Per-harness control mechanics: which key interrupts a running turn, how
 #      many times it must be sent, whether the composer needs clearing after
 #      that key, which adapter-owned cancellation acknowledgement is observable,
@@ -50,12 +55,13 @@ interrupt
 exit
 relaunch
 recover
+dialog
 EOF
 }
 
 fm_control_verb_allowed() {  # <verb>
   case "${1-}" in
-    interrupt|exit|relaunch|recover) return 0 ;;
+    interrupt|exit|relaunch|recover|dialog) return 0 ;;
   esac
   return 1
 }
