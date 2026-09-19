@@ -434,6 +434,18 @@ The update is fast-forward only: dirty, diverged, offline, and off-default targe
 Local homes share the guarded fast-forward helper, while remote updates delegate the same safety decision to the configured host through the generic transport.
 The mechanics are owned by the `/updatefirstmate` skill and firstmate's operating manual in [`AGENTS.md`](../AGENTS.md) (self-update).
 
+## Upstream absorption is recorded, not remembered
+
+This repository is a fork, and catching up with its upstream is only as cheap as the commit graph's memory of what was already absorbed.
+An upstream merge landed as a squash leaves a commit with a single parent, so the graph never learns the absorption happened, git keeps resolving the merge base to the original fork point, and every later catch-up replays already-absorbed upstream work as conflicts.
+That is measured rather than feared: one squash-landed absorption left 195 conflicted files where 95 were real, and it went unnoticed for twenty days because nothing asserted it.
+
+[`bin/fm-upstream-graft.sh`](../bin/fm-upstream-graft.sh) owns the absorption table, the graft that puts each absorption back into the graph, and the reasoning for a graft over a merge commit.
+Its `verify` is the assertion that was missing: session-start detection runs it against the primary checkout and prints one `UPSTREAM_ANCESTRY:` line only when it positively reads the absorption as lost.
+A recorded absorption and a state it cannot read (objects absent, a shallow checkout, no upstream remote) both stay silent, so an absent line is never a claim that the record is healthy.
+The record changes only `refs/replace/*`, so it moves no content, and it is per-checkout: a fresh clone inherits none of it until that checkout runs `apply`.
+[`docs/verification/upstream-absorption.md`](verification/upstream-absorption.md) holds the measurements and the commands that refresh them.
+
 ## Restart-proof
 
 Fleet state lives in each task's session-provider backend (tmux by hard default, herdr or cmux when selected or auto-detected, zellij/orca when explicitly selected), no-mistakes run records, status event logs, local markdown under `data/` including `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, and persistent secondmate homes.

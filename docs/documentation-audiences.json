@@ -469,6 +469,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/upstream-absorption.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/vendor-dialogs.md",
       "audience": "maintainer-verification"
     },
