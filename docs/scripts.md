@@ -88,8 +88,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-composer-lib.sh`     | Single fleet-wide owner of composer shapes, capability-aware screen classification, and verdicts |
 | `fm-cursor-lib.sh`       | Cursor executable resolution and process identity for spawn, harness, busy, and tmux callers |
 | `fm-process-name-lib.sh` | One owner of the process-name vocabulary (agent, shell, other) shared by every backend that reads process names |
-| `backends/tmux.sh`       | Verified tmux session-provider adapter                                               |
-| `backends/herdr.sh`      | Experimental herdr session-provider adapter                                          |
+| `backends/tmux.sh`       | Portable default tmux session-provider adapter                                       |
+| `backends/herdr.sh`      | Herdr session-provider adapter, required by remote second mates                      |
 | `backends/herdr-eventwait.py` | Wire-transport half of the herdr push-escalation path: subscribe one control socket to pane.agent_status_changed and print one projected line per event |
 | `backends/herdr-workspace-move.py` | Send one narrowly scoped, non-destructive workspace.move request to a Herdr control socket and print the verified response |
 | `backends/zellij.sh`     | Experimental zellij session-provider adapter                                         |

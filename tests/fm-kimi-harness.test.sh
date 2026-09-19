@@ -1142,7 +1142,7 @@ test_kimi_trust_move_key_is_claimed_only_where_it_is_verified() {
   # shellcheck source=/dev/null
   . "$ROOT/bin/fm-control-lib.sh"
   fm_control_backend_supports_key tmux Up \
-    || fail "the verified reference runtime lost its ability to move a dialog highlight"
+    || fail "tmux lost its ability to move a dialog highlight"
   for backend in herdr zellij cmux orca; do
     if fm_control_backend_supports_key "$backend" Up; then
       fail "$backend claims an arrow key with no live evidence behind it"
@@ -1156,7 +1156,7 @@ test_kimi_trust_move_key_is_claimed_only_where_it_is_verified() {
   if fm_control_backend_supports_key orca Escape; then
     fail "Orca gained a key its terminal API cannot deliver"
   fi
-  pass "control plane: the dialog move key is claimed for the verified reference runtime only"
+  pass "control plane: the dialog move key is claimed for tmux only"
 }
 
 test_kimi_detection_uses_ancestry_after_markers() {
