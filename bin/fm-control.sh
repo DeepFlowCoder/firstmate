@@ -595,6 +595,15 @@ do_dialog_answer() {  # <answer>
     # sending both at once would have been.
     confirm_key=$(fm_dialog_confirm_key "$HARNESS") \
       || die "the $class dialog is still on screen after selecting option $ordinal, and $HARNESS has no verified confirmation key; the selection is highlighted but uncommitted - inspect task $ID before acting again"
+    # The timeout alone cannot tell "still up, wants confirmation" from "the
+    # viewport went empty". Re-prove the dialog is still on screen before
+    # pressing the confirm key, so a pane that disappeared mid-wait never
+    # receives a blind Enter.
+    capture=$(dialog_capture)
+    [ -n "$capture" ] \
+      || die "task $ID's screen became unreadable while the $class dialog waited for confirmation, so pressing $confirm_key cannot be proven to target it; refusing to press blind"
+    fm_dialog_class_present "$HARNESS" "$class" "$capture" \
+      || die "task $ID's screen no longer shows the $class dialog after selecting option $ordinal, so $confirm_key would press whatever replaced it; refusing"
     fm_control_backend_supports_key "$BACKEND" "$confirm_key" \
       || die "the $class dialog needs $confirm_key to commit the selection, which the $BACKEND backend cannot deliver; option $ordinal is highlighted but uncommitted on task $ID"
     fm_backend_send_key "$BACKEND" "$T" "$confirm_key" "$LABEL" \

@@ -63,7 +63,7 @@ Because `require_explicit_confirmation` is a per-view decision no caller can rea
 That is a machine change rather than an agent lifecycle action, so the registry counts it - the menu-shape check still requires all three options to be present - and records it as deliberately declined rather than omitting it.
 `bin/fm-control.sh <id> dialog` prints it under `not offered:` with that reason.
 
-Provenance differs by class and is recorded here rather than flattened:
+Provenance differs by class and is stated beside each class in [`bin/fm-dialog-lib.sh`](../../bin/fm-dialog-lib.sh) and recorded here:
 
 - `directory-trust` was captured live from a real pane, at 200 and at 80 columns, and every answer was exercised end to end through `bin/fm-control.sh`.
 - `update-available` was captured live from a real pane (it appeared unprompted on a second launch), and its answers are registered from that rendering.

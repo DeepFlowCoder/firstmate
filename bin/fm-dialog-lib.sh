@@ -95,11 +95,15 @@ fm_dialog_title() {  # <harness> <class>
 
 # The vendor strings that must ALL appear in the flattened capture for the
 # class to be recognized. Each is a static string shipped in the harness
-# binary, never a fragment we invented; docs/verification/vendor-dialogs.md
-# records where each one was read from and on which version.
+# binary, never a fragment we invented. Provenance differs by class and is
+# stated beside each registration below; docs/verification/vendor-dialogs.md
+# records the same facts and the version each one was read from.
 fm_dialog_signals() {  # <harness> <class>
   case "${1-}:${2-}" in
     codex:directory-trust)
+      # Provenance: OBSERVED LIVE on a real codex 0.147.0 pane, captured at
+      # 200 and at 80 columns; every answer exercised end to end through
+      # bin/fm-control.sh.
       cat <<'EOF'
 Do you trust the contents of this directory?
 higher risk of prompt injection
@@ -108,6 +112,10 @@ No, quit
 EOF
       ;;
     codex:rate-limit-switch)
+      # Provenance: COMPOSED FROM the vendor strings shipped in the codex
+      # 0.147.0 binary plus codex-rs/tui/src/chatwidget/rate_limits.rs,
+      # cross-checked against a field measurement. Never triggered on demand:
+      # it fires on a server-side rate-limit signal.
       cat <<'EOF'
 Approaching rate limits
 for lower credit usage?
@@ -117,6 +125,8 @@ Hide future rate limit reminders about switching models.
 EOF
       ;;
     codex:update-available)
+      # Provenance: OBSERVED LIVE on a real codex 0.147.0 pane, appearing
+      # unprompted on a second launch; answers registered from that rendering.
       cat <<'EOF'
 Update available!
 Release notes:
@@ -163,12 +173,12 @@ fm_dialog_unanswerable() {  # <harness> <class>
 # is what becomes a keystroke.
 #
 # <static-label-proof> is the literal text the vendor prints after that
-# ordinal, and the guard requires the live screen to show exactly
-# "<ordinal>. <proof>". A runtime-composed label still carries a static PREFIX
-# ("Switch to " before the model codex is offering), and the prefix is what the
-# table records, so every registered option is pinned to its ordinal by the
-# vendor's own text. An empty proof would fall back to the whole-menu shape
-# check alone; no registered option needs that today.
+# ordinal. A proof that ends in a space is a static PREFIX of a runtime-
+# composed label ("Switch to " before the model codex is offering); every other
+# proof is the option's full label, and the guard requires it to terminate
+# where the next option begins, so a short label cannot bleed into a longer
+# neighbour after a vendor reorder. An empty proof would fall back to the
+# whole-menu shape check alone; no registered option needs that today.
 #
 # <consequence> is what the operator is actually choosing, in plain words,
 # because the caller deciding this is deciding for the captain's account.
@@ -351,13 +361,30 @@ fm_dialog_menu_shape_ok() {  # <harness> <class> <capture>
 # class signal that names its static description plus the shape check, which is
 # weaker than a label match and is why the table keeps the distinction visible.
 fm_dialog_answer_proven() {  # <harness> <class> <answer> <capture>
-  local harness=${1-} class=${2-} answer=${3-} capture=${4-} ordinal proof flat
+  local harness=${1-} class=${2-} answer=${3-} capture=${4-}
+  local ordinal proof flat size next
   ordinal=$(fm_dialog_answer_ordinal "$harness" "$class" "$answer") || return 1
   fm_dialog_class_present "$harness" "$class" "$capture" || return 1
   fm_dialog_menu_shape_ok "$harness" "$class" "$capture" || return 1
   proof=$(fm_dialog_answer_proof "$harness" "$class" "$answer") || return 1
   [ -n "$proof" ] || return 0
   flat=$(fm_dialog_flatten "$capture")
+  case "$proof" in
+    *' ')
+      case "$flat" in
+        *"$ordinal. $proof"*) return 0 ;;
+      esac
+      return 1
+      ;;
+  esac
+  size=$(fm_dialog_menu_size "$harness" "$class") || return 1
+  next=$((ordinal + 1))
+  if [ "$ordinal" -lt "$size" ]; then
+    case "$flat" in
+      *"$ordinal. $proof $next. "*) return 0 ;;
+    esac
+    return 1
+  fi
   case "$flat" in
     *"$ordinal. $proof"*) return 0 ;;
   esac

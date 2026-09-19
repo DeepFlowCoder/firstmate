@@ -236,6 +236,62 @@ test_a_changed_menu_refuses_every_answer() {
   pass "an inserted option refuses every answer instead of pressing a shifted ordinal"
 }
 
+# A vendor swap of two adjacent rows keeps every declared signal on screen and
+# keeps the option count, so recognition and the shape check both still pass;
+# only the ordinal proof can refuse. "Keep current model" is a prefix of "Keep
+# current model (never show again)" and "Skip" is a prefix of "Skip until next
+# version", so an unanchored label match would prove the short label against
+# the long neighbour and press a consequence nobody chose.
+test_a_swapped_menu_refuses_the_shifted_answer() {
+  local swapped
+  swapped='> You are in /tmp/repo
+
+  Approaching rate limits
+  Switch to gpt-5.6-luna for lower credit usage?
+
+› 1. Switch to gpt-5.6-luna
+     Uses fewer credits for upcoming turns.
+  2. Keep current model (never show again)
+     Hide future rate limit reminders about switching models.
+  3. Keep current model
+
+  Press enter to continue'
+  fm_dialog_class_present codex rate-limit-switch "$swapped" \
+    || fail "the swapped rate-limit screen still carries every signal, so this proves nothing about the ordinal proof"
+  fm_dialog_menu_shape_ok codex rate-limit-switch "$swapped" \
+    || fail "the swapped rate-limit screen still has three options, so this proves nothing about the ordinal proof"
+  fm_dialog_answer_proven codex rate-limit-switch switch-cheaper "$swapped" \
+    || fail "switch-cheaper's row did not move, so it must still prove on a swap of the rows below it"
+  if fm_dialog_answer_proven codex rate-limit-switch keep-model "$swapped"; then
+    fail "keep-model must refuse when its row and the never-ask row are swapped, or it would press a permanent silencing nobody chose"
+  fi
+  if fm_dialog_answer_proven codex rate-limit-switch keep-model-never-ask "$swapped"; then
+    fail "keep-model-never-ask must refuse when its row moved"
+  fi
+  # shellcheck disable=SC2016  # the backticks are the vendor's own rendering
+  swapped='
+  ✨ Update available! 0.147.0 -> 0.155.1
+
+  Release notes: https://github.com/openai/codex/releases/latest
+
+› 1. Update now (runs `brew upgrade --cask codex`)
+  2. Skip until next version
+  3. Skip
+
+  Press enter to continue'
+  fm_dialog_class_present codex update-available "$swapped" \
+    || fail "the swapped update screen still carries every signal, so this proves nothing about the ordinal proof"
+  fm_dialog_menu_shape_ok codex update-available "$swapped" \
+    || fail "the swapped update screen still has three options, so this proves nothing about the ordinal proof"
+  if fm_dialog_answer_proven codex update-available skip "$swapped"; then
+    fail "skip must refuse when its row and the skip-until-next-version row are swapped"
+  fi
+  if fm_dialog_answer_proven codex update-available skip-until-next-version "$swapped"; then
+    fail "skip-until-next-version must refuse when its row moved"
+  fi
+  pass "a swapped menu refuses the answers whose rows moved instead of pressing a shifted option"
+}
+
 test_unregistered_harness_and_answer_refuse() {
   local h
   for h in claude opencode pi grok kimi cursor muse nonsense ''; do
@@ -315,7 +371,14 @@ case "${1:-}" in
       printf '%s\n' "$payload" >> "$D/literal"
       # A digit is an option key: the stub's dialog closes on it, which is what
       # real codex does (the shared selection view accepts on the shortcut).
-      if [ -f "$D/pane-after" ]; then
+      # pane-confirm-after models a view that wants an explicit confirmation
+      # (a digit only highlights); pane-empty-on-digit models a pane that
+      # disappears while the confirmation wait is running.
+      if [ -f "$D/pane-confirm-after" ]; then
+        :
+      elif [ -f "$D/pane-empty-on-digit" ]; then
+        : > "$D/pane"
+      elif [ -f "$D/pane-after" ]; then
         case "$payload" in
           [1-9]) cat "$D/pane-after" > "$D/pane" ;;
         esac
@@ -326,6 +389,9 @@ case "${1:-}" in
       fi
     else
       printf '%s\n' "$payload" >> "$D/keys"
+      if [ -f "$D/pane-confirm-after" ] && [ "$payload" = Enter ]; then
+        cat "$D/pane-confirm-after" > "$D/pane"
+      fi
     fi
     exit 0 ;;
   display-message)
@@ -480,6 +546,37 @@ test_answering_the_second_option_presses_its_own_ordinal() {
   pass "a different answer presses its own ordinal, not the highlighted row"
 }
 
+test_confirm_key_is_reproved_before_press() {
+  local dir out rc
+  dir=$(new_case confirm-reproof)
+  add_task "$dir" t1
+  show_dialog "$dir"
+  printf '%s\n' "$WORK_SCREEN" > "$dir/fake/pane-confirm-after"
+  out=$(run_control "$dir" t1 dialog --answer trust); rc=$?
+  expect_code 0 "$rc" "answering a confirmation-required dialog should succeed"$'\n'"$out"
+  [ "$(literals "$dir")" = "1" ] \
+    || fail "the selection key should be exactly option 1, got: $(literals "$dir")"
+  assert_contains "$(cat "$dir/fake/keys")" "Enter" "the confirm key should be pressed while the dialog is still proven on screen"$'\n'"$out"
+  assert_contains "$out" "verified=closed" "the answer must report the dialog verified closed"$'\n'"$out"
+  pass "a confirmation-required dialog is re-proven on screen before the confirm key is pressed"
+}
+
+test_confirm_refuses_when_viewport_goes_empty() {
+  local dir out rc
+  dir=$(new_case confirm-empty)
+  add_task "$dir" t1
+  show_dialog "$dir"
+  : > "$dir/fake/pane-empty-on-digit"
+  out=$(run_control "$dir" t1 dialog --answer trust); rc=$?
+  [ "$rc" -ne 0 ] || fail "a pane that disappears while waiting for confirmation must refuse"$'\n'"$out"
+  [ "$(literals "$dir")" = "1" ] \
+    || fail "the selection key is delivered before the pane disappears, got: $(literals "$dir")"
+  [ ! -s "$dir/fake/keys" ] \
+    || fail "no confirm key may reach a pane that disappeared: $(cat "$dir/fake/keys")"
+  assert_contains "$out" "unreadable" "the refusal must say the screen became unreadable rather than pressing blind"$'\n'"$out"
+  pass "a pane that goes empty mid-confirmation refuses rather than pressing blind"
+}
+
 test_an_unknown_answer_presses_nothing() {
   local dir out rc
   dir=$(new_case bad-answer)
@@ -559,6 +656,7 @@ test_each_class_is_recognized_only_by_its_own_screen
 test_every_declared_signal_is_load_bearing
 test_answers_are_pinned_to_their_ordinal_by_vendor_text
 test_a_changed_menu_refuses_every_answer
+test_a_swapped_menu_refuses_the_shifted_answer
 test_a_dangerous_option_is_counted_but_never_offered
 test_unregistered_harness_and_answer_refuse
 test_select_key_is_the_ordinal_and_is_bounded
@@ -569,6 +667,8 @@ test_exit_is_unchanged_when_no_dialog_is_up
 test_inspect_lists_the_answers_and_their_consequences
 test_answering_presses_the_ordinal_and_verifies_closure
 test_answering_the_second_option_presses_its_own_ordinal
+test_confirm_key_is_reproved_before_press
+test_confirm_refuses_when_viewport_goes_empty
 test_an_unknown_answer_presses_nothing
 test_answering_with_no_dialog_on_screen_presses_nothing
 test_an_unregistered_harness_refuses_the_verb
