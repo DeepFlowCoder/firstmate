@@ -1093,6 +1093,44 @@ EOF
   pass "captain-held tasks of any kind reach Captain's Call, structured deferral is honored, and landed excludes answered calls"
 }
 
+# Recently Landed asks whether a closed row DELIVERED something, which is not the
+# same question as whether it closed while annotated with a captain hold. Selecting
+# on the hold annotation alone got all three edge classes wrong at once, and every
+# one of them is a row the captain reads as a statement about shipped work:
+#   - a scout whose report IS its delivery vanished whenever answering it raised a
+#     captain call, because the answer leaves hold-kind behind on the closed row;
+#   - an explicit scout that recorded NO report rendered as shipped work carrying
+#     an empty artifact, because it had no artifact to contradict the selector;
+#   - an answered captain question rendered as shipped work once its hold was
+#     released, because releasing the hold is exactly what clears the annotation.
+# bin/fm-landed-lib.sh owns the rule for both programs that assemble the section.
+test_landed_selects_deliveries_not_answered_calls_or_silent_scouts() {
+  local home fakebin json
+  home=$(make_home landed-delivery)
+  mkdir -p "$home/data"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+
+## Done
+- [x] merged-ship - Ordinary merged delivery https://github.com/acme/repo/pull/7 (repo: firstmate) (kind: ship) (merged 2026-07-10)
+- [x] scout-reported - Investigation that recorded data/scout-reported/report.md (repo: firstmate) (kind: scout) (reported 2026-07-09) (hold: captain call raised while answering) (hold-kind: captain)
+- [x] scout-silent - Investigation that recorded no report at all (repo: firstmate) (kind: scout) (reported 2026-07-08)
+- [x] answered-question - Captain question answered and released (repo: firstmate) (kind: captain) (done 2026-07-07)
+EOF
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json --all-landed)
+  printf '%s' "$json" | jq -e '
+    (.landed | any(.[]; .id == "merged-ship" and .artifact == "https://github.com/acme/repo/pull/7"))
+      and (.landed | any(.[]; .id == "scout-reported" and .artifact == "data/scout-reported/report.md"))
+      and (.landed | any(.[]; .id == "scout-silent") | not)
+      and (.landed | any(.[]; .id == "answered-question") | not)
+      and (.landed | any(.[]; .artifact == "-") | not)
+  ' >/dev/null || fail "Recently Landed must select deliveries, not hold annotations: $json"
+  pass "landed keeps a reported scout that raised a captain call and drops silent scouts and answered questions"
+}
+
 # The captain holding work that is ALREADY UNDER WAY is the most urgent call
 # there is, and it used to be the only class Captain's Call could not see: the
 # row landed in Charted Next among ordinary queued work and the digest reported
@@ -2594,6 +2632,7 @@ test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
 test_collapsed_captain_call_deferral_and_landed
+test_landed_selects_deliveries_not_answered_calls_or_silent_scouts
 test_in_flight_captain_hold_reaches_captains_call
 test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call
 test_main_and_secondmate_render_a_held_row_identically
