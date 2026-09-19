@@ -196,9 +196,9 @@ fm_control_submit_key() {  # <harness>
 # Up is the arrow that moves a selection UP a vendor dialog list, needed only by
 # Kimi's workspace-trust prompt on a build whose highlight does not already
 # start on the accept row (bin/fm-kimi-trust-lib.sh). It is claimed for tmux
-# alone, because tmux is the verified reference backend and `send-keys Up` is
-# its own documented key name; herdr, zellij, cmux, and orca have verified key
-# vocabularies covering only the keys above (docs/verification/runtime-backends.md),
+# alone, because `send-keys Up` is tmux's own documented key name; herdr,
+# zellij, cmux, and orca have verified key vocabularies covering only the keys
+# above (docs/verification/runtime-backends.md),
 # and an arrow spelling none of them has been proven to accept would be a guess.
 # Claiming it falsely is the expensive direction: the caller refuses loudly and
 # leaves the worker alive when the key is unavailable, but a key that silently

@@ -1,6 +1,8 @@
 # Herdr runtime backend
 
-Herdr is an experimental agent-native terminal backend with native per-pane agent state and push events.
+Herdr is an agent-native terminal backend with native per-pane agent state and push events.
+It implements more of the backend contract than any other adapter, and a remote second mate always runs on it, so it is a hard requirement there rather than an option ([`remote-secondmates.md`](remote-secondmates.md)).
+Unlike tmux it is not present by default on a new machine, which is why tmux and not Herdr is the portable default ([`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend)).
 Firstmate requires Herdr protocol 14 or newer; broad backend verification covers versions 0.7.1, 0.7.3, 0.7.4, 0.7.5, and 0.8.0, while protocol-16 features remain gated by availability.
 Default-on presentation spaces have a higher floor of Herdr 0.8.0 for the reason given under [Presentation spaces](#presentation-spaces).
 Herdr provides the terminal session while Treehouse continues to provide task worktrees.
@@ -8,7 +10,7 @@ Herdr provides the terminal session while Treehouse continues to provide task wo
 
 ## Setup
 
-Pick Herdr when you want native busy, idle, and blocked state and accept the experimental limits below.
+Pick Herdr when you want native busy, idle, and blocked state and accept the current limits below.
 
 Prerequisites:
 
@@ -324,7 +326,8 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 
 ## Active limits
 
-- Herdr remains experimental.
+- Herdr must be installed from herdr.dev; it is not present by default on a new machine the way tmux is.
+- Selecting Herdr by runtime auto-detection rather than explicitly still prints a one-time opt-out notice on stderr; that notice's wording still carries an older `EXPERIMENTAL` label, which is stale text rather than a current maturity claim.
 - Presentation ordering needs protocol 16 and Python and is best-effort only.
 - Mutable labels can collide; they are never placement or destructive authority.
 - A Firstmate outside Herdr cannot resolve a launcher workspace, so a colliding home label refuses new spawns until the collision is cleared.
