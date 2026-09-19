@@ -27,6 +27,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-secondmate-reconcile.sh` | Ask each secondmate to reconcile an inventory mismatch through its durable inbox, limited by a per-home cooldown |
 | `fm-stow-cascade.sh`     | Enumerate this home's registered secondmates for an internal /stow cascade           |
 | `fm-update.sh`           | Fast-forward-only self-update of firstmate and local or remote secondmate homes       |
+| `fm-upstream-graft.sh`   | Record this fork's upstream absorption as a replace graft and own its apply/undo/verify/status contract |
 | `fm-on.sh`               | Execute one tracked Firstmate command in a configured remote secondmate home, using its job worker except for the doctor bootstrap |
 | `fm-remote-entrypoint.sh` | Fixed remote entrypoint for fm-on.sh: validate one tracked fm-*.sh command and stage it for the remote job worker |
 | `fm-remote-file.sh`      | Path-confined remote file transfer for fm-on.sh                                      |
