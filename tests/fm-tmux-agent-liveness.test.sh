@@ -401,9 +401,26 @@ pass "command signature: a pane turning over commands moves its set"
 # A target that does not exist answers NOTHING rather than an empty set, because
 # the contract reads empty as "not answered" and an unreadable endpoint must
 # leave a wedge escalation on its unchanged schedule.
+#
+# This is the one direction where a borrowed answer is silently dangerous: a
+# task whose window is gone is a worker that is already DEAD, and tmux answers
+# an absent target from the current window instead of failing. That pane
+# belongs to some unrelated live worker whose command set keeps MOVING, and the
+# supervisor reads movement as "this worker is running commands" - so without
+# the membership guard the wedge alarm would be deferred on the very target
+# that most needs it. The current window is pinned to a pane that is genuinely
+# turning over commands, and the raw read is asserted to still answer for the
+# absent target, so this case proves the guard rather than tmux happening to
+# fail here.
+"$REAL_TMUX" -L "$SOCKET" select-window -t "$SESSION:sigbusy" \
+  || fail "could not pin the current window for the fallback case"
+[ -n "$(fm_backend_tmux_foreground_comms "$SESSION:no-such-window-here")" ] \
+  || fail "tmux did not answer the absent target from another pane, so this case would prove nothing"
+[ "$(fm_backend_tmux_window_state "$SESSION:no-such-window-here")" = missing ] \
+  || fail "an absent window in a readable session must read missing"
 [ -z "$(fm_backend_pane_command_signature tmux "$SESSION:no-such-window-here")" ] \
   || fail "an unreadable target produced a signature"
-pass "command signature: an unreadable target answers nothing"
+pass "command signature: an absent target answers nothing even though tmux's fallback still answers for it"
 
 cleanup_all
 trap - EXIT
