@@ -6,8 +6,10 @@
 //   MODE is the state of the answer channel the board is opened against:
 //   `accept` (default, Lavish present and taking answers), `absent` (the board
 //   is being read outside Lavish, so window.lavish does not exist), `reject`
-//   (the channel is there and refuses), or `throw` (the channel is there and
-//   blows up). Everything but `accept` is an answer that never left the tab.
+//   (the channel is there and refuses), `throw` (the channel is there and
+//   blows up), or `accept-then-fail` (Lavish takes the first answers, then the
+//   channel breaks for a re-submit). Everything but `accept` is an answer that
+//   never left the tab.
 // Prints one JSON document describing the rendered yard:
 //   { headline, headlineSub, flowNote, stats:[{n,label}],
 //     lanes:[{name, reading, badges, launch, tone, flow, berths, empty}],
@@ -20,7 +22,7 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(process.argv[2], "utf8");
 const channel = (process.argv.slice(3).find((a) => a.startsWith("--lavish=")) || "--lavish=accept")
   .slice("--lavish=".length);
-if (!["accept", "absent", "reject", "throw"].includes(channel)) {
+if (!["accept", "absent", "reject", "throw", "accept-then-fail"].includes(channel)) {
   throw new Error("unknown --lavish mode: " + channel);
 }
 
@@ -167,7 +169,10 @@ const takers = {
   reject: () => false,
   throw: () => { throw new Error("the answer channel is gone"); },
 };
-globalThis.window = channel === "absent" ? {} : { lavish: { queuePrompt: takers[channel] } };
+const flipToFail = channel === "accept-then-fail";
+globalThis.window = channel === "absent"
+  ? {}
+  : { lavish: { queuePrompt: takers[flipToFail ? "accept" : channel] } };
 globalThis.TextEncoder = TextEncoder;
 globalThis.FormData = class {
   constructor(form) {
@@ -474,20 +479,30 @@ const findAll = (root, tag) => {
   return out;
 };
 
-// pick the first pickable order in every lane, then queue the dispatch order
+// pick the first pickable order in every lane, then queue the dispatch order,
+// then answer every Captain's Call card with its first option.
 const picks = yard.querySelectorAll(".bb-pick");
-if (picks.length) {
-  picks[0].checked = true;
-  picks[0].dispatch("change");
-  node("bb-dispatch-btn").dispatch("click");
+const callForms = findAll(node("bb-call"), "form");
+const driveOnce = () => {
+  if (picks.length) {
+    picks[0].checked = true;
+    picks[0].dispatch("change");
+    node("bb-dispatch-btn").dispatch("click");
+  }
+  for (const form of callForms) {
+    const radio = findAll(form, "input").find((i) => i.type === "radio");
+    if (radio) radio.checked = true;
+    form.dispatch("submit");
+  }
+  runTimers();
+};
+driveOnce();
+if (flipToFail) {
+  window.lavish.queuePrompt = takers.throw;
+  if (callForms.length) callForms[0].dispatch("submit");
+  if (picks.length) node("bb-dispatch-btn").dispatch("click");
+  runTimers();
 }
-// answer every Captain's Call card with its first option
-for (const form of findAll(node("bb-call"), "form")) {
-  const radio = findAll(form, "input").find((i) => i.type === "radio");
-  if (radio) radio.checked = true;
-  form.dispatch("submit");
-}
-runTimers();
 
 const answers = queued.map((q) => ({
   question: q.opts?.data?.question ?? null,

@@ -1064,14 +1064,16 @@ __FM_BEARINGS_BOARD_DATA__
       /* The tick and the deal to the next card are what tell the captain the
          answer is safely held. Both belong to the accepted branch only: a card
          that said "queued" over an answer that went nowhere is the whole bug. */
-      card.classList.toggle("is-queued", outcome.ok);
-      card.classList.toggle("is-lost", !outcome.ok);
-      if (!outcome.ok) {
+      if (outcome.ok) {
+        card.classList.add("is-queued");
+        card.classList.remove("is-lost");
+        lostWhy.textContent = "";
+        /* deal the next card once this one is safely held */
+        setTimeout(function () { showCard(active < cards.length - 1 ? active + 1 : active); }, 450);
+      } else {
+        card.classList.add("is-lost");
         lostWhy.textContent = outcome.why;
-        return;
       }
-      /* deal the next card once this one is safely held */
-      setTimeout(function () { showCard(active < cards.length - 1 ? active + 1 : active); }, 450);
     });
 
     pad.appendChild(form);
@@ -1410,9 +1412,14 @@ __FM_BEARINGS_BOARD_DATA__
       );
       /* the dispatch order is an answer like any other, so it gets the card's
          own honesty: the tick only for an order Lavish actually took */
-      bar.classList.toggle("is-queued", outcome.ok);
-      bar.classList.toggle("is-lost", !outcome.ok);
-      if (!outcome.ok) dispatchLostWhy.textContent = outcome.why;
+      if (outcome.ok) {
+        bar.classList.add("is-queued");
+        bar.classList.remove("is-lost");
+        dispatchLostWhy.textContent = "";
+      } else {
+        bar.classList.add("is-lost");
+        dispatchLostWhy.textContent = outcome.why;
+      }
     });
   }
   } catch (e) {

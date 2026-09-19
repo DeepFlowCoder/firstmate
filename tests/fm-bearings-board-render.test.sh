@@ -1255,6 +1255,39 @@ test_an_accepted_answer_still_reads_as_it_always_did() {
 }
 
 # ---------------------------------------------------------------------------
+# A delivered answer is a fact once it is handed over: a later failed re-submit
+# must never retract the tick that fact earned. The later failure is its own,
+# separate signal, shown beside the tick rather than instead of it, so a changed
+# answer that does not go out cannot be mistaken for the one that already did.
+# ---------------------------------------------------------------------------
+test_a_late_failed_resubmit_never_retracts_a_captured_answer() {
+  local home out
+  home=$(make_home resubmit)
+  out=$(render "$home" "$answerable_board" "accept-then-fail")
+
+  printf '%s' "$out" | jq -e '
+    .cards[0].queuedClass == true
+    and .cards[0].tick.present and .cards[0].tick.display != "none"
+    and .cards[0].lostClass == true
+    and .cards[0].notCaptured.present and .cards[0].notCaptured.display != "none"
+    and .cards[0].why.present and .cards[0].why.display != "none"
+    and (.cards[0].why.text | contains("Lavish broke while taking the answer"))
+    and (.cards[0].why.text | contains("the answer went nowhere"))
+    and (.cards[0].why.text | contains("Reopen the board from firstmate and answer there"))
+  ' >/dev/null || fail "a failed resubmit erased the delivered tick or hid the new failure: $out"
+
+  printf '%s' "$out" | jq -e '
+    .dispatch.queuedClass == true and .dispatch.lostClass == true
+    and .dispatch.tick.present and .dispatch.tick.display != "none"
+    and .dispatch.notCaptured.present and .dispatch.notCaptured.display != "none"
+    and .dispatch.why.present and .dispatch.why.display != "none"
+    and (.dispatch.why.text | contains("Lavish broke while taking the answer"))
+  ' >/dev/null || fail "the dispatch bar dropped one of the two signals: $out"
+
+  pass "a later failed attempt sits beside the delivered tick, never instead of it"
+}
+
+# ---------------------------------------------------------------------------
 # Answering a card holds the answer in the tab; only "Send to Agent" sends it.
 # That is the one thing the captain must know BEFORE answering, so the board
 # has to say it in the open on every board, including a board with nothing to
@@ -1311,4 +1344,5 @@ test_a_lane_whose_launches_are_all_undated_promises_no_launch
 test_work_on_the_ways_shows_state_and_never_an_invented_age
 test_an_answer_the_channel_never_took_is_never_confirmed
 test_an_accepted_answer_still_reads_as_it_always_did
+test_a_late_failed_resubmit_never_retracts_a_captured_answer
 test_the_board_says_an_answer_stays_in_the_tab_until_it_is_sent
