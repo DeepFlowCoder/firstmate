@@ -1654,6 +1654,175 @@ EOF
   pass "a captain call with no routed work, a verified transfer, an open decision, and an answered call all stay silent"
 }
 
+# Seed one origin investigation with the metadata, status log, and report the
+# completion gate reads, and report the home.
+seed_review_home() {  # <name> <origin-id>
+  local home origin=$2
+  home=$(make_home "$1")
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Investigate sample retention" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the investigation fixture"
+  write_origin_meta "$home" "$origin"
+  printf 'working: report drafted\n' > "$home/state/$origin.status"
+  printf '# Sample retention review\n' > "$home/data/$origin/report.md"
+  printf '%s\n' "$home"
+}
+
+# Register a captain call and record the captain's answer on it.
+seed_answered_call() {  # <home> <task-id>
+  local home=$1 id=$2
+  run_captain "$home" hold "$id" --title "Choose the sample route" \
+    --reason "captain route choice pending" --repo sample >/dev/null \
+    || fail "could not register $id"
+  printf 'The captain chose the northern route.\n' > "$home/decision-$id.txt"
+  run_captain "$home" answer "$id" --decision-file "$home/decision-$id.txt" >/dev/null \
+    || fail "could not record the captain answer on $id"
+}
+
+# Retention keeps only the newest Done rows in data/backlog.md and moves the
+# rest to data/done-archive.md. Pruning to zero is the same move the configured
+# done_keep makes on its own once enough work completes; it changes no policy.
+prune_done_to_archive() {  # <home>
+  tasks_in "$1" prune --keep 0 >/dev/null || fail "could not prune Done to the archive"
+}
+
+# Retention pruning an ANSWERED captain call out of the live backlog used to
+# make its investigation impossible to complete or tear down, forever: the gate
+# proved durability against data/backlog.md alone, and the prune moves the
+# proof, intact, into data/done-archive.md. Measured over thirteen finished
+# investigations at once, none of which could be retired. Nothing is lost by the
+# prune, so nothing may be blocked by it.
+test_pruned_answer_still_proves_the_captains_call() {
+  local home origin id
+  origin=sample-retention-review
+  id=sample-pruned-call
+  home=$(seed_review_home pruned-answer "$origin")
+  seed_answered_call "$home" "$id"
+
+  run_captain "$home" complete "$origin" "$id" >/dev/null \
+    || fail "the completion gate refused an answered call before any pruning"
+  run_captain "$home" verify "$origin" >/dev/null \
+    || fail "verify refused an answered call before any pruning"
+
+  prune_done_to_archive "$home"
+  assert_no_grep "- [x] $id " "$home/data/backlog.md" \
+    "setup error: the answered call was not pruned out of the live backlog"
+  assert_grep "- [x] $id " "$home/data/done-archive.md" \
+    "setup error: the answered call did not reach the archive"
+  assert_grep "Resolution recorded by fm-captain-hold" "$home/data/done-archive.md" \
+    "setup error: the archived call lost the captain's recorded answer"
+
+  run_captain "$home" verify "$origin" > "$home/verify.out" 2> "$home/verify.err" \
+    || fail "verify refused an answered call that retention had archived: $(cat "$home/verify.err")"
+  run_captain "$home" complete "$origin" "$id" > "$home/complete.out" 2> "$home/complete.err" \
+    || fail "a later review pass refused an archived answered call: $(cat "$home/complete.err")"
+  run_teardown "$home" "$origin" >/dev/null 2> "$home/teardown.err" \
+    || fail "the investigation could not be retired after the prune: $(cat "$home/teardown.err")"
+  pass "a captain call answered before retention archived it still proves its investigation complete"
+}
+
+# The other direction, and the one that decides whether this is a fix or a
+# loosening: reading the archive must not turn the gate permissive. A call the
+# captain never answered still blocks whether it was pruned or not, and an entry
+# that exists in neither record still blocks under its own name.
+test_pruned_inventory_still_blocks_an_unanswered_call() {
+  local home origin out
+  origin=sample-retention-falsifier
+  home=$(seed_review_home pruned-falsifier "$origin")
+
+  # A call closed as ordinary work: the captain's answer was never recorded.
+  run_captain "$home" hold sample-silent-call --title "Choose the sample colour" \
+    --reason "captain colour choice pending" --repo sample >/dev/null \
+    || fail "could not register the silently closed call"
+  tasks_in "$home" unhold sample-silent-call >/dev/null \
+    || fail "could not lift the hold for the out-of-band close"
+  tasks_in "$home" "done" sample-silent-call --no-prune >/dev/null \
+    || fail "could not close the call without an answer"
+  prune_done_to_archive "$home"
+  assert_grep "- [x] sample-silent-call " "$home/data/done-archive.md" \
+    "setup error: the unanswered call did not reach the archive"
+
+  printf 'decisions_reviewed=1\ndecision_keys=sample-silent-call\n' >> "$home/state/$origin.meta"
+  set +e
+  out=$(run_captain "$home" verify "$origin" 2>&1)
+  set -e
+  [ -n "$out" ] || fail "an archived call with no recorded captain answer passed the gate silently"
+  case "$out" in
+    *"verified:"*) fail "an archived call with no recorded captain answer passed the gate: $out" ;;
+  esac
+  assert_contains "$out" "sample-silent-call" \
+    "the refusal did not name the call it refused: $out"
+  assert_contains "$out" "recorded captain answer" \
+    "the refusal did not give the proof it was missing: $out"
+
+  # An entry that exists in neither the backlog nor the archive still blocks,
+  # and must say WHICH entry: the gate used to lose the name and refuse a blank
+  # one, which reads as a damaged attestation instead of a missing call.
+  printf 'decisions_reviewed=1\ndecision_keys=sample-vanished-call\n' >> "$home/state/$origin.meta"
+  set +e
+  out=$(run_captain "$home" verify "$origin" 2>&1)
+  set -e
+  case "$out" in
+    *"verified:"*) fail "an inventory entry that names no record at all passed the gate: $out" ;;
+  esac
+  assert_contains "$out" "sample-vanished-call" \
+    "the refusal did not name the missing entry: $out"
+  assert_not_contains "$out" "captain-held task  is" \
+    "the refusal still reported a blank entry name: $out"
+  assert_contains "$out" "done-archive.md" \
+    "the refusal did not name both records it looked in: $out"
+
+  # And a live captain call still open in front of the captain still passes.
+  run_captain "$home" hold sample-open-call --title "Choose the sample cadence" \
+    --reason "captain cadence choice pending" --repo sample >/dev/null \
+    || fail "could not register the still-open call"
+  printf 'decisions_reviewed=1\ndecision_keys=sample-open-call\n' >> "$home/state/$origin.meta"
+  run_captain "$home" verify "$origin" >/dev/null \
+    || fail "a call still held in front of the captain stopped passing the gate"
+  pass "an unanswered captain call still blocks completion whether or not retention archived it"
+}
+
+# A blank inventory entry was read as "an empty entry got attested"; it never
+# was. `complete` validates every id it records, so the only blank an operator
+# can see comes from a hand edit - and the gate skipped it in silence, which is
+# the one outcome a safety gate may not have. It now refuses by name and says
+# which command repairs it.
+test_blank_inventory_entry_refuses_and_is_repairable() {
+  local home origin out
+  origin=sample-blank-entry-review
+  home=$(seed_review_home blank-entry "$origin")
+  seed_answered_call "$home" sample-real-call
+
+  if run_captain "$home" complete "$origin" "" > "$home/blank.out" 2> "$home/blank.err"; then
+    fail "the completion gate attested a blank inventory entry"
+  fi
+  assert_no_grep "decisions_reviewed=1" "$home/state/$origin.meta" \
+    "a refused blank entry still recorded an attestation"
+
+  printf 'decisions_reviewed=1\ndecision_keys=,sample-real-call\n' >> "$home/state/$origin.meta"
+  set +e
+  out=$(run_captain "$home" verify "$origin" 2>&1)
+  set -e
+  case "$out" in
+    *"verified:"*) fail "a blank inventory entry passed the gate in silence: $out" ;;
+  esac
+  assert_contains "$out" "$origin" "the refusal did not name the damaged attestation: $out"
+  assert_contains "$out" "complete" "the refusal did not name the command that repairs it: $out"
+
+  # The named repair has to actually work: re-reviewing the inventory drops the
+  # blank and leaves the real call attested.
+  run_captain "$home" complete "$origin" sample-real-call >/dev/null \
+    || fail "the repair the refusal names could not re-review the inventory"
+  run_captain "$home" verify "$origin" >/dev/null \
+    || fail "the repaired attestation still failed the gate"
+  # meta_value reads the LAST decision_keys line, so that is what the repair has
+  # to leave behind.
+  [ "$(grep '^decision_keys=' "$home/state/$origin.meta" | tail -1)" = "decision_keys=sample-real-call" ] \
+    || fail "the repair did not drop the blank entry: $(grep '^decision_keys=' "$home/state/$origin.meta" | tail -1)"
+  pass "a blank inventory entry refuses by name and the repair the refusal names works"
+}
+
 test_crewmate_context_cannot_close_a_captain_call
 test_lock_owning_session_still_resolves_captain_calls
 test_undeterminable_context_refuses
@@ -1678,3 +1847,6 @@ test_chat_channel_feeds_the_same_keyed_answer_intake
 test_origin_slug_validation_precedes_path_construction
 test_status_resolution_over_an_open_hold_is_signalled
 test_legitimate_holds_produce_no_divergence_signal
+test_pruned_answer_still_proves_the_captains_call
+test_pruned_inventory_still_blocks_an_unanswered_call
+test_blank_inventory_entry_refuses_and_is_repairable
