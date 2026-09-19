@@ -824,6 +824,61 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
   esac
 }
 
+# fm_backend_capture_visible: the pane's VISIBLE viewport only, with no
+# scrollback whatsoever. Returns nonzero when the backend cannot produce one.
+#
+# The distinction from fm_backend_capture is not a detail. That function reads
+# a bounded window of recent output, which INCLUDES text that has already
+# scrolled away, and any caller asking "what is on screen right now" gets a
+# wrong answer from it the moment the screen has moved on. Measured while
+# building the dialog verb: after a trust dialog was answered and the session
+# went back to work, a 60-line fm_backend_capture still carried the dialog's
+# text, so a recognizer reading it declared the dialog present on a pane that
+# was plainly working. Answering that phantom would have typed an option key
+# into a live composer.
+#
+# Only the two backends with a native viewport source answer: tmux's
+# `capture-pane -S 0 -E -` and herdr's `pane read --source visible`. Every
+# other backend returns nonzero rather than silently degrading to a scrollback
+# read, because degrading is exactly the substitution that produced the wrong
+# answer above.
+fm_backend_capture_visible() {  # <backend> <target>
+  local backend=$1 target=$2
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux) fm_backend_tmux_capture_visible "$target" ;;
+    herdr) fm_backend_herdr_capture_visible "$target" ;;
+    *) return 1 ;;
+  esac
+}
+
+# fm_backend_send_literal: send TEXT as literal, UNSUBMITTED input. Every
+# adapter already implements this primitive for the submit path; this is the
+# shared entry point, added for the one caller that needs literal input WITHOUT
+# a submission behind it - bin/fm-control.sh's dialog verb, whose keystroke is
+# an ordinary printable character the vendor's menu reads as an option key.
+#
+# It is deliberately NOT routed through fm_backend_send_key. That path carries
+# a named-key vocabulary each backend spells differently (herdr wants `ctrl+s`,
+# not `C-s`), and bin/fm-control-lib.sh's capability table exists to stop a
+# caller claiming a named key a backend was never proven to accept. A printable
+# character raises neither question: there is no name to translate and nothing
+# to mis-spell, which is why it belongs on the literal path instead of growing
+# that table by ten digits per backend.
+fm_backend_send_literal() {  # <backend> <target> <text> [expected-label]
+  local backend=$1
+  shift
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux) fm_backend_tmux_send_literal "$@" ;;
+    herdr) fm_backend_herdr_send_literal "$@" ;;
+    zellij) fm_backend_zellij_send_literal "$@" ;;
+    orca) fm_backend_orca_send_literal "$@" ;;
+    cmux) fm_backend_cmux_send_literal "$@" ;;
+    *) echo "error: no send-literal implementation for backend '$backend'" >&2; return 1 ;;
+  esac
+}
+
 # fm_backend_send_text_submit: type text once, then submit and verify,
 # retrying only the submission (never retyping). Echoes the backend's
 # proof-carrying verdict; callers require exact empty for confirmed delivery.
@@ -1009,6 +1064,32 @@ fm_backend_agent_alive() {  # <backend> <target>
     alive) printf 'alive' ;;
     dead|missing) printf 'dead' ;;
     *) printf 'unknown' ;;
+  esac
+}
+
+# fm_backend_agent_pids: the pids of the harness agent processes running in
+# <target>'s foreground, one per line, for the ONE caller that needs to reach
+# the agent as a process rather than through its input loop -
+# bin/fm-control.sh's unresponsive exit escalation, for an agent that has
+# stopped reading its composer at all.
+#
+# Only the two recovery-grade backends answer, and they answer from the exact
+# process set their own `alive` verdict is built on: tmux reads the pane tty's
+# foreground process group, herdr reads its own pane process-info. A backend
+# with no recovery-grade classifier prints nothing, because naming a process to
+# signal on an endpoint whose state cannot be proven is precisely the blind
+# action the control plane refuses.
+#
+# Empty output is "could not establish", NEVER "there is no agent". A caller
+# must not read emptiness as licence to conclude anything; the agent-state
+# contract above remains the only authority on whether an agent is there.
+fm_backend_agent_pids() {  # <backend> <target>
+  local backend=$1 target=$2
+  fm_backend_source "$backend" || return 0
+  case "$backend" in
+    tmux) fm_backend_tmux_agent_pids "$target" ;;
+    herdr) fm_backend_herdr_agent_pids "$target" ;;
+    *) return 0 ;;
   esac
 }
 
