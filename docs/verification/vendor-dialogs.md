@@ -116,6 +116,9 @@ Measured while building this: after a trust dialog was answered and the session 
 `fm_backend_capture_visible` (tmux `capture-pane -S 0 -E -`, herdr `pane read --source visible`) is the separate primitive that answers "what is on screen now".
 `tests/fm-backend-tmux-smoke.test.sh` pins both halves of that divergence against a real tmux pane: the scrolled-away marker must be absent from the visible read and present in a deep one, taken at the same moment.
 
+The two wrong-pane guards that smoke test also pins - `fm_backend_tmux_capture_visible` refusing a killed window instead of returning the active window's content, and `fm_backend_tmux_agent_pids` returning nothing for a gone window - were NOT seen working live in this delivery: tmux is not installed on this machine, so that smoke test and `tests/fm-codex-dialog-live-e2e.test.sh` both skip with `tmux not found` rather than passing empty.
+The same user-visible behaviours were driven live through the herdr backend against real codex-cli 0.147.0 instead, in an isolated lab with a throwaway `CODEX_HOME`.
+
 A backend with no viewport source answers nothing, and the dialog verb refuses there by name rather than reading scrollback instead.
 
 ## Other harnesses
