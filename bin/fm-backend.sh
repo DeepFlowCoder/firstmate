@@ -954,6 +954,43 @@ fm_backend_busy_state() {  # <backend> <target>
   esac
 }
 
+# fm_backend_pane_command_signature: a stable identity of the processes
+# currently in <target>'s FOREGROUND process group, or nothing when this backend
+# cannot report them. One line, sorted, "<pid>:<command>" per member.
+#
+# It exists so a supervisor can tell a worker that is running commands from one
+# that is frozen, which is the difference between a legitimate wait inside a
+# blocking call and a wedge, and which no pane capture or harness busy verdict
+# can answer. bin/fm-wait-evidence-lib.sh owns what a CHANGE between two
+# samples means and is the only place that interprets this value; nothing here
+# classifies anything.
+#
+# This is deliberately NOT a busy-state source and must never become one: the
+# semantic busy contract (bin/fm-busy-lib.sh) owns busy/idle/unknown/dead from
+# each adapter's own lifecycle events, and explicitly excludes child processes
+# and CPU from that verdict. The role this plays is the one
+# crew_worktree_written_since already plays - physical corroboration read once,
+# at the moment a wedge alarm would fire, never a state reading.
+#
+# The foreground process GROUP, not the pane's descendants: a helper the harness
+# left running in the background of an otherwise idle pane must not read as the
+# worker executing something, exactly as fm_backend_tmux_foreground_comms
+# already scopes its liveness probe.
+# Empty output means "not answered". A backend with no process report, an
+# unreadable pane, or a failed probe all answer nothing, which leaves every
+# caller on its unchanged schedule rather than letting an unreadable endpoint
+# silence an alarm.
+fm_backend_pane_command_signature() {  # <backend> <target>
+  local backend=$1
+  shift
+  fm_backend_source "$backend" || return 0
+  case "$backend" in
+    tmux) fm_backend_tmux_command_signature "$@" ;;
+    herdr) fm_backend_herdr_command_signature "$@" ;;
+    *) return 0 ;;
+  esac
+}
+
 # fm_backend_composer_state: classify the composer/input area of <target> as
 # empty|pending|pending-unproven|unknown for callers that need a pre-submit
 # input guard, a submit acknowledgement, or a launch-readiness check. It is

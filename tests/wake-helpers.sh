@@ -292,6 +292,75 @@ wait_for_exit() {
   reap "$pid"
   return 124
 }
+# Shared with every suite that drives a real fm-watch.sh subprocess:
+# both moved here from tests/fm-watch-triage.test.sh when a second
+# watcher-behavior suite needed them, so the beacon-cycle contract has one
+# owner rather than a copy per file.
+# Portable mtime in epoch seconds. Platform-detected, never the `stat -f || stat -c`
+# fallback (which writes a partial filesystem dump on Linux; see fm-watch.sh).
+file_mtime() {
+  if [ "$(uname)" = Darwin ]; then stat -f %m "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi
+}
+
+# Wait until <pid>'s watcher has completed a whole poll cycle, or exited first.
+# A fixed wait_live budget only proves the process is still ALIVE: fm-watch.sh
+# does bounded startup work (the recovery-marker snapshot, lock acquisition)
+# before its first stale scan, so on a loaded
+# machine a short fixed budget can reap a round before the cycle it asserts on
+# ever ran - and then every "no wake, no marker" assertion passes vacuously
+# while every "marker written" assertion fails spuriously.
+# The liveness beacon is touched at the TOP of every poll, so this drops any
+# beacon left by an earlier round, waits for THIS watcher to write a fresh one
+# (some poll's top), then waits for that one to advance (the next poll's top) -
+# and the whole cycle in between is what the caller's assertions describe.
+# 0 if the watcher is still alive after a completed cycle, 1 if it exited.
+wait_poll_cycle() {  # <state> <pid> [limit-ticks]
+  local state=$1 pid=$2 limit=${3:-300} beat first now i=0
+  beat="$state/.last-watcher-beat"
+  rm -f "$beat"
+  first=""
+  while [ "$i" -lt "$limit" ]; do
+    kill -0 "$pid" 2>/dev/null || return 1
+    first=$(file_mtime "$beat")
+    [ -n "$first" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  while [ "$i" -lt "$limit" ]; do
+    kill -0 "$pid" 2>/dev/null || return 1
+    now=$(file_mtime "$beat")
+    if [ -n "$now" ] && [ "$now" != "$first" ]; then
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Set <file>'s mtime to exactly <epoch> seconds, for aging a busy-turn marker by
+# a precise amount (touch -t takes a local-time stamp, not an epoch, on both
+# platforms, so convert via BSD `date -r` or GNU `date -d @`).
+set_mtime() {  # <epoch> <file>
+  local epoch=$1 f=$2 stamp
+  if stamp=$(date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null); then
+    touch -t "$stamp" "$f"
+  else
+    stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S)
+    touch -t "$stamp" "$f"
+  fi
+}
+
+
+# Arm a task's semantic busy record through the production writer, so a fixture
+# pane reads as genuinely busy rather than through a rendered-text guess.
+# Shared for the same reason as the beacon helpers above.
+record_pi_busy() {  # <state-dir> <id>
+  local state=$1 id=$2 gen
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
+    --source pi-ext --event agent-start
+}
 
 hash_text() {
   if command -v md5 >/dev/null 2>&1; then
