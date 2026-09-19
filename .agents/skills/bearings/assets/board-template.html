@@ -289,8 +289,9 @@ a { color: inherit; text-decoration: none; }
   border-radius: var(--radius-xs); padding: 5px 9px 4px;
 }
 .is-queued .bb-queued { display: inline-flex; }
-/* The answer's other outcome: the board could not hand it to Lavish at all, so
-   it says so where the tick would have gone instead of pretending it landed. */
+/* The failed submit's own outcome: this answer was not handed to Lavish. The
+   chip never retracts a tick an earlier answer earned, so a delivered answer
+   stays delivered and a later failed re-submit shows both signals. */
 .bb-lost {
   display: none; align-items: center; gap: 6px; min-width: 0;
   font-size: var(--fs-2xs); font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em;
