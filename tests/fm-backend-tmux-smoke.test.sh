@@ -242,10 +242,11 @@ pids=$(fm_backend_agent_pids tmux "$PIDTARGET2")
 for p in $pids; do
   case "$p" in ''|*[!0-9]*) fail "fm_backend_agent_pids printed a non-pid: '$p'" ;; esac
   kill -0 "$p" 2>/dev/null || fail "fm_backend_agent_pids printed pid $p, which is not a live process"
-  comm=$(LC_ALL=C ps -p "$p" -o comm= 2>/dev/null)
-  case "${comm##*/}" in
-    *codex*) : ;;
-    *) fail "fm_backend_agent_pids printed pid $p whose process is '$comm', not the agent" ;;
+  args=$(LC_ALL=C ps -p "$p" -o args= 2>/dev/null)
+  args=${args#"${args%%[![:space:]]*}"}
+  case "${args%%[[:space:]]*}" in
+    codex) : ;;
+    *) fail "fm_backend_agent_pids printed pid $p whose argv0 is '${args%%[[:space:]]*}', not the agent" ;;
   esac
 done
 # The escalation's own move, against a real process: SIGTERM, then the same
