@@ -219,6 +219,7 @@ Firstmate's skills live in two separate places with different audiences:
 - [docs/supervision-protocols/](docs/supervision-protocols/) - rendered primary-harness watcher protocols for Claude, Codex, OpenCode, Pi and `pi-signed`, Grok, Cursor, and unknown harness fallback.
 - [docs/scripts.md](docs/scripts.md) - the `bin/` toolbelt reference.
 - [docs/documentation-audiences.md](docs/documentation-audiences.md) - documentation audiences and the machine-checked placement boundary.
+- [docs/upstream-subsystem-adoption.md](docs/upstream-subsystem-adoption.md) - how to adopt a whole subsystem from the `upstream` remote, and the measured pitfalls of doing it by commit instead.
 - [`AGENTS.md`](AGENTS.md) - the distro's always-loaded operating contract and routing index for conditional procedures.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - how to contribute, including the dev/test commands.
 
