@@ -239,12 +239,25 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # Empty on any read failure, and empty is never proof of absence - it is the
 # same "could not establish" the liveness probe treats as unreadable.
 #
+# The exact recorded window must appear in the session inventory before the
+# tty is resolved, for the same reason the liveness probe and the visible
+# capture check it: tmux serves an absent target from the active window.
+#
 # It reuses the exact process set and the exact classifier the liveness verdict
 # above is built from, deliberately: the only pids this can ever name are the
 # ones that made the endpoint read `alive` in the first place, so nothing it
 # reports is a process the state contract does not already consider the agent.
 fm_backend_tmux_agent_pids() {  # <target>
-  local target=$1 tty pid pgid tpgid comm args argv0
+  local target=$1 session window windows tty pid pgid tpgid comm args argv0
+  case "$target" in
+    *:*:*|'':*|*:'') return 0 ;;
+    *:*) ;;
+    *) return 0 ;;
+  esac
+  session=${target%%:*}
+  window=${target#*:}
+  windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null) || return 0
+  printf '%s\n' "$windows" | grep -Fqx "$window" || return 0
   tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
   [ -n "$tty" ] || return 0
   LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \

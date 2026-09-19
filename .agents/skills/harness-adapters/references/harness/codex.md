@@ -24,11 +24,11 @@ Answer one only through `../../../../bin/fm-control.sh <task-id> dialog`, which 
 
 Registered classes, all answered by their option's own digit, which selects and acts immediately:
 
-| Class | Asking | Answers |
-|---|---|---|
-| `directory-trust` | `Do you trust the contents of this directory?` | `trust`, `decline-and-quit` |
-| `rate-limit-switch` | `Approaching rate limits`, offering a cheaper model | `switch-cheaper`, `keep-model`, `keep-model-never-ask` |
-| `update-available` | `Update available!`, offering to upgrade the install | `skip`, `skip-until-next-version` |
+| Class | Asking | Answers | Provenance |
+|---|---|---|---|
+| `directory-trust` | `Do you trust the contents of this directory?` | `trust`, `decline-and-quit` | Captured live from a real codex 0.147.0 pane |
+| `rate-limit-switch` | `Approaching rate limits`, offering a cheaper model | `switch-cheaper`, `keep-model`, `keep-model-never-ask` | Inferred from codex-cli 0.147.0 binary strings; never seen on screen |
+| `update-available` | `Update available!`, offering to upgrade the install | `skip`, `skip-until-next-version` | Captured live from a real codex 0.147.0 pane |
 
 `update-available`'s first option runs a package-manager upgrade of the captain's codex, so it is recorded as declined and never offered as an answer.
 The trust decision persists for the repository, so later worktrees of the same project skip that dialog.

@@ -541,6 +541,7 @@ do_dialog_inspect() {
     || die "no registered $HARNESS dialog is on task $ID's screen. If the worker is stuck behind a modal this plane does not know, it stays unanswerable on purpose - register it in bin/fm-dialog-lib.sh from a real measurement, or replace the agent with bin/fm-control.sh $ID exit --unresponsive"
   echo "dialog $ID class=$class harness=$HARNESS backend=$BACKEND"
   echo "  $(fm_dialog_title "$HARNESS" "$class")"
+  echo "  provenance: $(fm_dialog_provenance "$HARNESS" "$class")"
   echo "answers:"
   dialog_answer_hint "$class"
   dialog_declined_hint "$class"

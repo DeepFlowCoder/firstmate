@@ -93,17 +93,28 @@ fm_dialog_title() {  # <harness> <class>
   esac
 }
 
+# One plain line stating how this class's registered shape was established -
+# captured live from a real pane, or inferred from the harness binary - so an
+# operator deciding an answer can tell a measured shape from an asserted one.
+# The full measurement, and which codex version each class was read from, lives
+# in docs/verification/vendor-dialogs.md; this line points at it rather than
+# restating it.
+fm_dialog_provenance() {  # <harness> <class>
+  case "${1-}:${2-}" in
+    codex:directory-trust) printf 'captured live from a real codex 0.147.0 pane; every answer exercised end to end' ;;
+    codex:rate-limit-switch) printf 'inferred from codex-cli 0.147.0 binary strings and codex-rs/tui/src/chatwidget/rate_limits.rs; this shape has never been seen on screen' ;;
+    codex:update-available) printf 'captured live from a real codex 0.147.0 pane' ;;
+    *) return 1 ;;
+  esac
+}
+
 # The vendor strings that must ALL appear in the flattened capture for the
 # class to be recognized. Each is a static string shipped in the harness
-# binary, never a fragment we invented. Provenance differs by class and is
-# stated beside each registration below; docs/verification/vendor-dialogs.md
-# records the same facts and the version each one was read from.
+# binary, never a fragment we invented; docs/verification/vendor-dialogs.md
+# records where each one was read from and on which version.
 fm_dialog_signals() {  # <harness> <class>
   case "${1-}:${2-}" in
     codex:directory-trust)
-      # Provenance: OBSERVED LIVE on a real codex 0.147.0 pane, captured at
-      # 200 and at 80 columns; every answer exercised end to end through
-      # bin/fm-control.sh.
       cat <<'EOF'
 Do you trust the contents of this directory?
 higher risk of prompt injection
@@ -112,10 +123,6 @@ No, quit
 EOF
       ;;
     codex:rate-limit-switch)
-      # Provenance: COMPOSED FROM the vendor strings shipped in the codex
-      # 0.147.0 binary plus codex-rs/tui/src/chatwidget/rate_limits.rs,
-      # cross-checked against a field measurement. Never triggered on demand:
-      # it fires on a server-side rate-limit signal.
       cat <<'EOF'
 Approaching rate limits
 for lower credit usage?
@@ -125,8 +132,6 @@ Hide future rate limit reminders about switching models.
 EOF
       ;;
     codex:update-available)
-      # Provenance: OBSERVED LIVE on a real codex 0.147.0 pane, appearing
-      # unprompted on a second launch; answers registered from that rendering.
       cat <<'EOF'
 Update available!
 Release notes:

@@ -63,13 +63,15 @@ Because `require_explicit_confirmation` is a per-view decision no caller can rea
 That is a machine change rather than an agent lifecycle action, so the registry counts it - the menu-shape check still requires all three options to be present - and records it as deliberately declined rather than omitting it.
 `bin/fm-control.sh <id> dialog` prints it under `not offered:` with that reason.
 
-Provenance differs by class and is stated beside each class in [`bin/fm-dialog-lib.sh`](../../bin/fm-dialog-lib.sh) and recorded here:
+Provenance differs by class and is stated by the `fm_dialog_provenance` accessor in [`bin/fm-dialog-lib.sh`](../../bin/fm-dialog-lib.sh), surfaced by `bin/fm-control.sh <id> dialog`, and recorded in full here:
 
 - `directory-trust` was captured live from a real pane, at 200 and at 80 columns, and every answer was exercised end to end through `bin/fm-control.sh`.
 - `update-available` was captured live from a real pane (it appeared unprompted on a second launch), and its answers are registered from that rendering.
 - `rate-limit-switch` is registered from the vendor's own strings shipped in the 0.147.0 binary plus the option order and description text in `codex-rs/tui/src/chatwidget/rate_limits.rs`, cross-checked against the captain's field measurement of the same dialog (three numbered options awaiting Enter, composer deaf).
   It has not been triggered on demand, because it fires on a server-side rate-limit signal.
   The live guard re-measures whichever classes it can trigger; a class it cannot trigger stays registered from these sources and is re-checked when it next appears.
+
+A later live capture that contradicts a class's registered shape is a defect in the registry, never a registry to adjust afterwards so it appears to have been right: fix the registry from the new measurement, then refresh this record.
 
 ### Rendering captured
 

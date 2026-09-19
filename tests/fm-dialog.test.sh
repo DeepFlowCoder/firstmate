@@ -308,6 +308,27 @@ test_unregistered_harness_and_answer_refuse() {
   pass "a harness with no registered class, and an unknown answer name, both refuse"
 }
 
+test_every_registered_class_has_a_provenance_line() {
+  local class line
+  for class in $(fm_dialog_classes codex); do
+    line=$(fm_dialog_provenance codex "$class") \
+      || fail "class '$class' has no provenance line"
+    [ -n "$line" ] \
+      || fail "class '$class' provenance line is empty"
+  done
+  case "$(fm_dialog_provenance codex rate-limit-switch)" in
+    *inferred*) : ;;
+    *) fail "rate-limit-switch's provenance must say its shape was inferred, not measured" ;;
+  esac
+  if fm_dialog_provenance codex not-a-class >/dev/null 2>&1; then
+    fail "an unregistered class must not have a provenance line"
+  fi
+  if fm_dialog_provenance claude directory-trust >/dev/null 2>&1; then
+    fail "an unregistered harness must not have a provenance line"
+  fi
+  pass "every registered class has a provenance line, and unknown classes refuse"
+}
+
 test_select_key_is_the_ordinal_and_is_bounded() {
   local k
   k=$(fm_dialog_select_key codex 1) || fail "codex option 1 has no select key"
@@ -514,6 +535,7 @@ test_inspect_lists_the_answers_and_their_consequences() {
   out=$(run_control "$dir" t1 dialog); rc=$?
   expect_code 0 "$rc" "inspect should succeed at a recognized dialog"$'\n'"$out"
   assert_contains "$out" "class=directory-trust" "inspect must name the class"$'\n'"$out"
+  assert_contains "$out" "provenance: captured live from a real codex 0.147.0 pane" "inspect must carry the class provenance"$'\n'"$out"
   assert_contains "$out" "grants this directory trust" "inspect must say what choosing an answer does"$'\n'"$out"
   [ ! -s "$dir/fake/literal" ] && [ ! -s "$dir/fake/keys" ] \
     || fail "inspect must be read-only, but something was sent"
@@ -659,6 +681,7 @@ test_a_changed_menu_refuses_every_answer
 test_a_swapped_menu_refuses_the_shifted_answer
 test_a_dangerous_option_is_counted_but_never_offered
 test_unregistered_harness_and_answer_refuse
+test_every_registered_class_has_a_provenance_line
 test_select_key_is_the_ordinal_and_is_bounded
 test_recognition_survives_line_wrapping
 test_exit_refuses_at_a_dialog_without_typing_anything

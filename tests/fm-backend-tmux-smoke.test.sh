@@ -190,11 +190,12 @@ pass "real tmux: fm_backend_capture_visible reads only the viewport while fm_bac
 # binary can appear under either name on both supported platforms.
 SLEEP_BIN=$(command -v sleep) || fail "no sleep binary to build the process-name probes from"
 PIDWIN="fm-pids1"
-# Target the probe windows by the stable window id create_task returns, not by
-# name: that id is exactly what it exists to hand back, and it keeps these
-# assertions about agent pids rather than about name resolution.
-PIDTARGET=$(fm_backend_tmux_create_task "$SESSION" "$PIDWIN" "$HOME") \
+# Target the probe windows by the session:window name form the control plane
+# passes, so the exact-window membership check agent_pids shares with
+# agent_state and capture_visible is what these assertions exercise.
+fm_backend_tmux_create_task "$SESSION" "$PIDWIN" "$HOME" \
   || fail "could not create the agent-pid probe window"
+PIDTARGET="$SESSION:$PIDWIN"
 # A freshly created window's shell can exist before it accepts a submitted
 # line, exactly as the readiness dance above this file already handles for the
 # main target, so keep offering the line until the process actually takes the
@@ -231,8 +232,9 @@ pids=$(fm_backend_agent_pids tmux "$PIDTARGET")
 pass "real tmux: fm_backend_agent_pids names nothing for a real non-agent foreground process"
 
 PIDWIN2="fm-pids2"
-PIDTARGET2=$(fm_backend_tmux_create_task "$SESSION" "$PIDWIN2" "$HOME") \
+fm_backend_tmux_create_task "$SESSION" "$PIDWIN2" "$HOME" \
   || fail "could not create the second agent-pid probe window"
+PIDTARGET2="$SESSION:$PIDWIN2"
 take_pane "$PIDTARGET2" codex \
   || fail "the agent-named probe process never took the pane"
 pids=$(fm_backend_agent_pids tmux "$PIDTARGET2")
@@ -262,6 +264,10 @@ tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$PIDWIN2" \
 pass "real tmux: fm_backend_agent_pids names exactly the agent process, and SIGTERM to it clears the agent state while the endpoint survives"
 fm_backend_tmux_kill "$PIDTARGET"
 fm_backend_tmux_kill "$PIDTARGET2"
+pids=$(fm_backend_agent_pids tmux "$PIDTARGET")
+[ -z "$pids" ] \
+  || fail "fm_backend_agent_pids named pids for a killed window instead of could-not-establish: $pids"
+pass "real tmux: fm_backend_agent_pids names nothing for a window that no longer exists"
 
 # --- resolve_bare_selector (live-window-listing) -----------------------------
 
