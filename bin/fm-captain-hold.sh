@@ -170,11 +170,26 @@
 # `verify` is read-only and is called by scout teardown, so teardown cannot
 # erase a source before this gate has succeeded: every recorded inventory
 # entry must still be durable and no keyed status decision may be open.
+#
+# BOTH RECORDS OF A CLOSED CALL COUNT. Durability is proved against
+# data/backlog.md AND data/done-archive.md, because retention keeps only the
+# newest Done rows in the backlog and moves the rest, byte for byte, into the
+# archive. Reading the backlog alone made a prune permanent: once retention
+# carried off a captain call the captain HAD answered, its investigation could
+# never be completed or torn down again, and thirteen finished investigations
+# were stuck at once. What proves a call durable does not change with the file
+# it sits in - an archived row still needs the recorded captain answer, so a
+# call closed without one blocks whether it was pruned or not. Retention policy
+# is `.tasks.toml`'s and is untouched by this.
+#
 # Metadata compatibility: the attestation keeps the historical
 # `decisions_reviewed=1` and `decision_keys=` keys, and an inventory entry that
 # names no existing task resolves through the legacy `<origin>-decision-<entry>`
 # identity, so pre-collapse metadata written by fm-decision-hold.sh verifies
-# unchanged. An entry that exists as a task id is always that task.
+# unchanged. An entry that exists as a task id is always that task. A blank
+# entry is refused by name rather than skipped: `complete` validates every id it
+# records, so a blank one can only come from a hand edit, and re-running
+# `complete` drops it.
 #
 # `diverged` is the read-only guard over the seam between the two records of
 # one captain call. See "record divergence" beside command_diverged below.
@@ -191,6 +206,13 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+# tasks-axi resolves both paths from `.tasks.toml` relative to FM_HOME, which is
+# also the directory tasks_axi below runs in, so these mirror that backend and
+# not firstmate's own DATA override. Retention keeps only the newest Done rows in
+# the backlog and moves the rest into the archive, unchanged;
+# bin/fm-fleet-snapshot.sh mirrors the same two paths for the same reason.
+BACKLOG="$FM_HOME/data/backlog.md"
+BACKLOG_ARCHIVE="$FM_HOME/data/done-archive.md"
 
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
@@ -411,12 +433,14 @@ list_has_key() {  # <comma-list> <key>
   esac
 }
 
+# Blank entries are dropped, not carried forward: a re-review is the repair
+# verify_entry_durable names for an attestation a hand edit left with one.
 sorted_key_union() {  # <comma-list> <newline-or-space-separated-new-keys>
   local existing=$1 new=$2
   {
     printf '%s\n' "$existing" | tr ',' '\n'
     printf '%s\n' "$new" | tr ' ' '\n'
-  } | sed '/^$/d' | LC_ALL=C sort -u | paste -sd, -
+  } | sed '/^[[:space:]]*$/d' | LC_ALL=C sort -u | paste -sd, -
 }
 
 meta_value() {  # <meta> <key>
@@ -485,7 +509,7 @@ resolution_block() {  # <mode>
 # surviving even when a date gate has expired) or a recorded captain answer.
 verify_hold_durable() {  # <task-id>
   local id=$1 show state hold_kind body
-  show=$(task_show "$id") || fail "captain-held task $id is absent from $FM_HOME/data/backlog.md"
+  show=$(task_show "$id") || fail "captain-held task $id is absent from $BACKLOG"
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
   body=$(show_field "$show" body)
@@ -498,8 +522,102 @@ verify_hold_durable() {  # <task-id>
   fail "captain-held task $id is neither held for the captain nor closed with a recorded captain answer"
 }
 
-# Resolve one inventory entry or channel key to the task that carries it: the
-# exact task id when it exists, else the legacy derived identity.
+# The archive's copies of one task id, each terminated by an ASCII record
+# separator so an id archived more than once stays separable. tasks-axi cannot
+# read this file - its rows live under `## Archived <date>` headings rather than
+# the section names its parser knows - so the record is extracted here: the row
+# line plus the indented body beneath it, up to the next row or heading.
+archived_task_copies() {  # <task-id>
+  [ -f "$BACKLOG_ARCHIVE" ] || return 1
+  awk -v want="$1" '
+    function flush() { if (inrec) { printf "%c", 30; inrec = 0 } }
+    /^[-*][ \t]+\[[ xX]\][ \t]+/ {
+      flush()
+      row = $0
+      sub(/^[-*][ \t]+\[[ xX]\][ \t]+/, "", row)
+      id = row
+      sub(/[ \t].*$/, "", id)
+      if (id != want) next
+      inrec = 1
+      found = 1
+      print
+      next
+    }
+    /^(##|[-*][ \t])/ { flush(); next }
+    inrec { print }
+    END { flush(); exit(found ? 0 : 1) }
+  ' "$BACKLOG_ARCHIVE"
+}
+
+# What the archive proves about one captain call. Retention moves a completed
+# row out of the backlog without changing a byte of it, so an answer recorded
+# before the prune is still the captain's own words - just filed elsewhere. What
+# counts as proof does not move with it: a recorded answer, exactly as in the
+# live record above, and nothing weaker. An id archived while still open proves
+# nothing, because a call out of the live book no longer reaches the captain.
+#   0 - an archived copy records the captain's answer
+#   1 - the id is archived, but no copy records an answer
+#   2 - the id is not in the archive at all
+archived_answer_state() {  # <task-id>
+  local copies copy
+  copies=$(archived_task_copies "$1") || return 2
+  while IFS= read -r -d $'\036' copy; do
+    if body_has_resolution_record "$copy"; then
+      return 0
+    fi
+  done <<EOF
+$copies
+EOF
+  return 1
+}
+
+# Resolve one attested inventory entry to the record that carries it and prove
+# that record durable, in one act. Resolution and verification are deliberately
+# not two commands: a refusal raised while resolving must stop the gate under
+# the entry's OWN name. Splitting them across a command substitution swallowed
+# the resolution failure and re-reported it as a blank task id, which reads as a
+# damaged attestation rather than the missing call it actually was.
+verify_entry_durable() {  # <origin-or-empty> <entry>
+  local origin=$1 entry=$2 legacy='' archived
+  case "$entry" in
+    *[![:space:]]*) : ;;
+    *)
+      fail "$(printf '%s\n' \
+        "the captain-call inventory attested for origin $origin contains a blank entry, so the gate cannot tell which call it names." \
+        "Nothing recorded here is ever blank - complete validates every id it writes - so a blank entry came from a hand edit, and a gate that passed over it in silence would be guarding nothing." \
+        "Repair it by re-running: fm-captain-hold.sh complete $origin <task-id>... naming the calls this origin actually raised." \
+        "That re-review drops the blank entry and keeps every id already recorded.")"
+      ;;
+  esac
+  if task_show "$entry" >/dev/null 2>&1; then
+    verify_hold_durable "$entry"
+    return 0
+  fi
+  if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
+    legacy=$(legacy_hold_id "$origin" "$entry")
+    if task_show "$legacy" >/dev/null 2>&1; then
+      verify_hold_durable "$legacy"
+      return 0
+    fi
+  fi
+  archived=0
+  archived_answer_state "$entry" || archived=$?
+  if [ "$archived" = 2 ] && [ -n "$legacy" ]; then
+    archived=0
+    archived_answer_state "$legacy" || archived=$?
+  fi
+  case "$archived" in
+    0) return 0 ;;
+    1) fail "captain-held task $entry is archived in $BACKLOG_ARCHIVE with no recorded captain answer, so it is neither held for the captain nor closed with one" ;;
+  esac
+  fail "no captain-held task $entry in $BACKLOG or $BACKLOG_ARCHIVE${legacy:+, and no legacy identity $legacy in either}"
+}
+
+# Resolve one channel key to the live task that carries it: the exact task id
+# when it exists, else the legacy derived identity. The keyed-answer intake is
+# this function's only caller, and it stays live-only on purpose: its job is to
+# find a task it can still CLOSE, and an archived row is already closed, so the
+# archive the completion gate reads above would offer it nothing to act on.
 resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
   local origin=$1 entry=$2 legacy
   if task_show "$entry" >/dev/null 2>&1; then
@@ -512,9 +630,9 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
       printf '%s' "$legacy"
       return 0
     fi
-    fail "no captain-held task $entry and no legacy identity $legacy in $FM_HOME/data/backlog.md"
+    fail "no captain-held task $entry and no legacy identity $legacy in $BACKLOG"
   fi
-  fail "no captain-held task $entry in $FM_HOME/data/backlog.md"
+  fail "no captain-held task $entry in $BACKLOG"
 }
 
 command_hold() {
@@ -958,8 +1076,7 @@ command_complete() {
   keys=$(sorted_key_union "$previous" "$supplied")
   if [ -n "$keys" ]; then
     while IFS= read -r entry; do
-      [ -n "$entry" ] || continue
-      verify_hold_durable "$(resolve_entry "$origin" "$entry")"
+      verify_entry_durable "$origin" "$entry"
     done <<EOF
 $(printf '%s\n' "$keys" | tr ',' '\n')
 EOF
@@ -1012,8 +1129,7 @@ command_verify() {
   keys=$(meta_value "$meta" decision_keys)
   if [ -n "$keys" ]; then
     while IFS= read -r entry; do
-      [ -n "$entry" ] || continue
-      verify_hold_durable "$(resolve_entry "$origin" "$entry")"
+      verify_entry_durable "$origin" "$entry"
     done <<EOF
 $(printf '%s\n' "$keys" | tr ',' '\n')
 EOF
