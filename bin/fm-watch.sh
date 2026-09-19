@@ -483,7 +483,7 @@ crew_is_running_commands() {  # <window> <marker>
   sig=$(fm_backend_pane_command_signature "$backend" "$win" 2>/dev/null) || sig=
   fm_wait_command_moved "$marker" "$sig" && moved=0
   [ "$moved" -eq 0 ] || return 1
-  [ "$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null || echo unknown)" != dead ]
+  [ "$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null || echo unknown)" = alive ]
 }
 
 # Give <marker> a baseline without asking whether it moved, so a route that is

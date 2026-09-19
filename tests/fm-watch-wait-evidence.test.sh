@@ -272,6 +272,74 @@ test_running_commands_defers_the_wedge_and_a_frozen_one_escalates() {
   pass "a worker whose command set is moving is deferred, while a frozen one still wedge-escalates on the same schedule"
 }
 
+# The liveness gate's fail-open direction: a worker whose harness is GONE but
+# whose poll loop survives as an orphan keeps turning over the foreground set,
+# and that borrowed movement must NOT read as "this worker is running commands".
+# The liveness verdict there is `ambiguous`, which answers nothing, so the wedge
+# escalation keeps its unchanged ladder. Paired with the live-worker direction
+# (the same phase A just above) so the confident-alive gate narrows and fires
+# on one fixture rather than two.
+test_orphaned_loop_without_harness_still_escalates() {
+  local dir state fakebin out drain_out capture_file table window key pane_hash pid back
+  dir=$(make_command_case orphaned-loop-escalates); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  capture_file="$dir/pane.txt"; table="$dir/ps.txt"
+  window="test:fm-orphan-loop"
+  printf 'Bash(while ! gh pr checks; do sleep 60; done)' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/orphan.meta"
+  printf 'working: opened the PR, waiting on checks\n' > "$state/orphan.status"
+  printf '%s' "$(seen_sig_for_status "$state/orphan.status")" > "$state/.seen-orphan_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "$(cat "$capture_file")")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '101 101 101 claude\n102 101 101 bash\n103 101 101 gh\n' > "$table"
+
+  # Phase 0: one absorbed poll records the baseline through production code.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_PS_TABLE="$table" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "watcher exited while arming the wedge timer: $(cat "$out")"
+  fi
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-0 watcher stop"
+  [ -s "$state/.command-sig-$key" ] || fail "arming the wedge timer recorded no command baseline"
+
+  # Phase A: the quiet window is past the threshold and the harness is GONE -
+  # no claude in the foreground group - but the orphaned poll loop has turned
+  # over (new gh pid), so the command set still moves. The liveness verdict is
+  # `ambiguous`, which answers nothing, so the wedge escalation must fire on its
+  # unchanged ladder instead of borrowing that movement as proof of life.
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  printf '102 101 101 bash\n107 101 101 gh\n' > "$table"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_PS_TABLE="$table" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no current-state source available' \
+    FM_STALE_ESCALATE_SECS=240 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "a harness-less orphaned loop was deferred instead of wedge-escalated: $(cat "$out")"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "the orphaned-loop escalation did not print a stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the orphaned-loop escalation did not flag a possible wedge"
+  [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || true)" = 1 ] \
+    || fail "the orphaned-loop escalation was not counted"
+  [ ! -e "$state/.running-since-$key" ] \
+    || fail "the orphaned loop's borrowed movement armed the running-command deferral chain"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the orphaned-loop escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null \
+    || fail "the orphaned-loop escalation was not queued"
+  pass "a harness-less orphaned loop still wedge-escalates, while a live worker's movement still defers"
+}
+
 # --- shape 2: a finished worker whose task the captain holds -----------------
 
 # The measured shape: a worker that finished and was stopped to free a lane
@@ -554,6 +622,7 @@ test_steer_behind_a_running_command_is_not_a_stuck_worker() {
 test_captain_hold_reader
 test_command_movement_reader
 test_running_commands_defers_the_wedge_and_a_frozen_one_escalates
+test_orphaned_loop_without_harness_still_escalates
 test_backlog_captain_hold_absorbs_and_an_unheld_pane_surfaces
 test_busy_pane_past_the_bound_ignores_the_backlog_hold
 test_steer_behind_a_running_command_is_not_a_stuck_worker
