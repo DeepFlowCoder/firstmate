@@ -467,6 +467,14 @@ wait_is_declared() {  # <task> <last-status-line>
   fm_wait_id_in_list "$task" "$CAPTAIN_HELD_IDS"
 }
 
+# crew_agent_confidently_alive: 0 iff <window>'s endpoint confidently holds a
+# live agent right now. The liveness half of every command-movement consumer:
+# a non-confident verdict answers nothing, so it never defers or holds an alarm.
+crew_agent_confidently_alive() {  # <window>
+  local win=$1
+  [ "$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null || echo unknown)" = alive ]
+}
+
 # crew_is_running_commands: 0 iff this worker is provably INSIDE a command right
 # now - its endpoint still holds an agent, and the pane's foreground command set
 # has moved since the last sample taken on <marker>.
@@ -478,12 +486,10 @@ wait_is_declared() {  # <task> <last-status-line>
 # on the poll that observed it rather than waiting to be mistaken for progress
 # later.
 crew_is_running_commands() {  # <window> <marker>
-  local win=$1 marker=$2 backend sig moved=1
-  backend=$(window_backend "$win")
-  sig=$(fm_backend_pane_command_signature "$backend" "$win" 2>/dev/null) || sig=
-  fm_wait_command_moved "$marker" "$sig" && moved=0
-  [ "$moved" -eq 0 ] || return 1
-  [ "$(fm_backend_agent_alive "$backend" "$win" 2>/dev/null || echo unknown)" = alive ]
+  local win=$1 marker=$2 sig
+  sig=$(fm_backend_pane_command_signature "$(window_backend "$win")" "$win" 2>/dev/null) || sig=
+  fm_wait_command_moved "$marker" "$sig" || return 1
+  crew_agent_confidently_alive "$win"
 }
 
 # Give <marker> a baseline without asking whether it moved, so a route that is
@@ -624,7 +630,7 @@ inbox_steer_check() {  # <window> <task>
         triage_log "absorbed steer-inbox escalation (worker is running commands, ${rec##*/} stays durable and queued): $w"
         return 0
       fi
-      if command_window_too_young "$STATE/.command-sig-steer-$key"; then
+      if crew_agent_confidently_alive "$w" && command_window_too_young "$STATE/.command-sig-steer-$key"; then
         # An unchanged command set read this soon after its own sample proves
         # nothing, so hold rather than name a frozen worker on it. Bounded by one
         # delivery grace, and reached only right after a sample first landed or

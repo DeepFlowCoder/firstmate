@@ -89,16 +89,6 @@ fm_wait_captain_held_ids() {  # <home> [today-YYYY-MM-DD]
   ' "$backlog"
 }
 
-# fm_wait_captain_hold_active: 0 iff <task-id> carries an active captain hold in
-# <home>'s backlog. The single-task form of the scan above, for a caller that
-# holds one id rather than a fleet.
-fm_wait_captain_hold_active() {  # <home> <task-id> [today-YYYY-MM-DD]
-  local home=$1 id=$2 today=${3:-} found
-  [ -n "$id" ] || return 1
-  found=$(fm_wait_captain_held_ids "$home" "$today" | LC_ALL=C grep -Fx -- "$id") || return 1
-  [ -n "$found" ]
-}
-
 # fm_wait_id_in_list: 0 iff <id> appears as a whole line in <list>. Lets a
 # caller scan the backlog once per poll and then ask per window, instead of
 # paying one scan per window. Compares whole lines literally rather than

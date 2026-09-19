@@ -122,7 +122,7 @@ SH
 # --- pure readers ------------------------------------------------------------
 
 test_captain_hold_reader() {
-  local dir home
+  local dir home ids
   dir=$(make_case hold-reader); home="$dir/home"
   mkdir -p "$home/data"
   cat > "$home/data/backlog.md" <<'EOF'
@@ -133,30 +133,31 @@ test_captain_hold_reader() {
 - [ ] gated-task - deferred by the captain (repo: demo) (hold: lo veo luego) (hold-kind: captain) (hold-until: 2026-09-20)
 - [x] closed-task - answered and closed (repo: demo) (hold: was the captain's) (hold-kind: captain)
 EOF
-  fm_wait_captain_hold_active "$home" held-task 2026-09-18 \
+  ids=$(fm_wait_captain_held_ids "$home" 2026-09-18)
+  fm_wait_id_in_list held-task "$ids" \
     || fail "an active captain hold was not read from the backlog"
-  fm_wait_captain_hold_active "$home" plain-task 2026-09-18 \
+  fm_wait_id_in_list plain-task "$ids" \
     && fail "a task with no hold was read as captain-held"
-  fm_wait_captain_hold_active "$home" parked-task 2026-09-18 \
+  fm_wait_id_in_list parked-task "$ids" \
     && fail "a non-captain hold was read as captain-held"
-  fm_wait_captain_hold_active "$home" closed-task 2026-09-18 \
+  fm_wait_id_in_list closed-task "$ids" \
     && fail "a closed task's surviving hold annotations were read as a live wait"
   # tasks-axi's date gate is inactive ON and after the date, so a hold must stop
   # answering the moment it expires or a forgotten hold would silence a pane
   # forever.
-  fm_wait_captain_hold_active "$home" gated-task 2026-09-19 \
+  fm_wait_id_in_list gated-task "$(fm_wait_captain_held_ids "$home" 2026-09-19)" \
     || fail "a dated captain hold was not active the day before its gate"
-  fm_wait_captain_hold_active "$home" gated-task 2026-09-20 \
+  fm_wait_id_in_list gated-task "$(fm_wait_captain_held_ids "$home" 2026-09-20)" \
     && fail "a captain hold was still active ON its expiry date"
-  fm_wait_captain_hold_active "$home" gated-task 2026-09-25 \
+  fm_wait_id_in_list gated-task "$(fm_wait_captain_held_ids "$home" 2026-09-25)" \
     && fail "an expired captain hold was still active after its gate"
   # A prefix of a real id must not borrow its hold.
-  fm_wait_captain_hold_active "$home" held 2026-09-18 \
+  fm_wait_id_in_list held "$ids" \
     && fail "a task id prefix matched another task's hold"
-  fm_wait_captain_hold_active "$home" '' 2026-09-18 \
+  fm_wait_id_in_list '' "$ids" \
     && fail "an empty task id matched a hold"
   # No backlog at all is the ordinary case for a home that keeps none.
-  fm_wait_captain_hold_active "$dir/no-such-home" held-task 2026-09-18 \
+  fm_wait_id_in_list held-task "$(fm_wait_captain_held_ids "$dir/no-such-home" 2026-09-18)" \
     && fail "a missing backlog answered a hold"
   pass "the backlog reader answers only an OPEN task's live captain hold"
 }
@@ -619,6 +620,96 @@ test_steer_behind_a_running_command_is_not_a_stuck_worker() {
   pass "an instruction queued behind a running command is not a stuck worker, and the escalation still fires once the worker stops executing"
 }
 
+# The steer path's fail-open direction: a worker whose harness is GONE but whose
+# orphaned poll loop keeps turning over the foreground set borrows that movement
+# as fresh evidence on every poll. That borrowed movement must not hold the
+# unread-instruction ladder; the escalation must still fire. Paired with the
+# live-worker direction (run 3 below) so the confident-alive gate narrows and
+# fires on one fixture rather than two.
+test_steer_orphaned_loop_without_harness_still_escalates() {
+  local dir state fakebin out capture_file table window key inbox pid
+  dir=$(make_command_case steer-orphaned-loop); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; table="$dir/ps.txt"
+  window="test:fm-steer-orphan"
+  printf 'Bash(while ! gh pr checks; do sleep 60; done)' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/steerorphan.meta"
+  printf 'working: waiting on checks\n' > "$state/steerorphan.status"
+  printf '%s' "$(seen_sig_for_status "$state/steerorphan.status")" > "$state/.seen-steerorphan_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  inbox="$state/steerorphan.inbox"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1/bin/fm-lock-lib.sh"
+    . "$1/bin/fm-task-inbox-lib.sh"
+    fm_task_inbox_write "$2" steerorphan "check the orphaned-loop finding before you continue"
+  ' _ "$ROOT" "$state" >/dev/null || fail "could not enqueue the steer record under test"
+  printf '101 101 101 claude\n102 101 101 bash\n103 101 101 gh\n' > "$table"
+
+  # Run 1, the control: nothing has sampled this endpoint yet, so the ladder
+  # escalates exactly as it always did and leaves the command baseline the next
+  # run measures against.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_PS_TABLE="$table" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_TASK_INBOX_GRACE_SECS=0 FM_TASK_INBOX_RING_MAX=0 \
+    FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "an unacknowledged steer with no command evidence did not escalate"; }
+  grep -F "unread firstmate instruction" "$out" >/dev/null \
+    || fail "the first unacknowledged-steer escalation did not print its reason: $(cat "$out")"
+  [ -s "$state/.command-sig-steer-$key" ] || fail "the steer probe recorded no command sample"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first steer escalation"
+
+  # Run 2, the regression: the harness is GONE but its orphaned poll loop has
+  # turned over, so the command set moves while liveness reads ambiguous. That
+  # borrowed movement must not hold the unread-instruction ladder; the escalation
+  # must fire on its unchanged budget.
+  rm -f "$inbox/.escalated"
+  set_mtime "$(( $(date +%s) - 600 ))" "$inbox/001.msg"
+  printf '102 101 101 bash\n107 101 101 gh\n' > "$table"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_PS_TABLE="$table" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_TASK_INBOX_GRACE_SECS=300 FM_TASK_INBOX_RING_MAX=0 \
+    FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "an orphaned loop was held instead of escalating its unread instruction: $(cat "$out")"; }
+  grep -F "unread firstmate instruction" "$out" >/dev/null \
+    || fail "the orphaned-loop escalation did not print its reason: $(cat "$out")"
+  [ -s "$inbox/.escalated" ] || fail "the orphaned-loop escalation did not mark the ladder escalated"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the orphaned-loop escalation"
+
+  # Run 3, the other direction: a LIVE worker whose set moves must still defer,
+  # so the confident-alive gate narrows without silencing the legitimate wait.
+  rm -f "$inbox/.escalated"
+  printf '101 101 101 claude\n108 101 101 bash\n109 101 101 gh\n' > "$table"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_PS_TABLE="$table" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)' \
+    FM_TASK_INBOX_GRACE_SECS=0 FM_TASK_INBOX_RING_MAX=0 \
+    FM_STALE_ESCALATE_SECS=999 FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a live worker's moving set was reported as an unread instruction: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "the live-worker absorb printed a wake reason: $(cat "$out")"; }
+  [ ! -e "$inbox/.escalated" ] || { reap "$pid"; fail "the live-worker absorb consumed the ladder"; }
+  [ -f "$inbox/001.msg" ] || { reap "$pid"; fail "the steer record did not stay durable through the absorb"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional run-3 watcher stop"
+
+  pass "an orphaned loop still escalates its unread instruction, while a live worker's movement still defers"
+}
+
 test_captain_hold_reader
 test_command_movement_reader
 test_running_commands_defers_the_wedge_and_a_frozen_one_escalates
@@ -626,3 +717,4 @@ test_orphaned_loop_without_harness_still_escalates
 test_backlog_captain_hold_absorbs_and_an_unheld_pane_surfaces
 test_busy_pane_past_the_bound_ignores_the_backlog_hold
 test_steer_behind_a_running_command_is_not_a_stuck_worker
+test_steer_orphaned_loop_without_harness_still_escalates
