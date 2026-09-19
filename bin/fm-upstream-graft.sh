@@ -53,7 +53,7 @@
 # repository inherits NO graft and measures the full unrepaired cost until
 # someone runs `apply` in it. Measured: a fresh clone of a repository carrying
 # the graft inherited zero replace refs and measured the full 262-commit gap and
-# 190 conflicts again. A graft is per-checkout, and that is its real limitation:
+# 195 conflicts again. A graft is per-checkout, and that is its real limitation:
 # every checkout that wants the cheaper catch-up runs `apply` once. Pushing
 # refs/replace/* to a remote and fetching it with an explicit
 # `refs/replace/*:refs/replace/*` refspec does propagate it, but only to
@@ -159,7 +159,7 @@ require_repo() {
 }
 
 do_apply() {
-  local rec squash absorbed parents before after changed=0
+  local rec squash absorbed parents before after changed=0 na=0
   for rec in "${ABSORPTIONS[@]}"; do
     read -r squash absorbed _ <<EOF
 $rec
@@ -173,6 +173,7 @@ EOF
     fi
     if ! applicable "$squash"; then
       printf 'not applicable: %s is not in this history\n' "${squash:0:8}"
+      na=1
       continue
     fi
     parents=$(true_parents "$squash")
@@ -188,7 +189,13 @@ EOF
     printf 'recorded: %s absorbed %s (tree unchanged: %s)\n' "${squash:0:8}" "${absorbed:0:8}" "${before:0:8}"
     changed=1
   done
-  [ "$changed" = 1 ] || printf 'nothing to do; every absorption was already on record\n'
+  if [ "$changed" != 1 ]; then
+    if [ "$na" = 1 ]; then
+      printf 'nothing to do\n'
+    else
+      printf 'nothing to do; every absorption was already on record\n'
+    fi
+  fi
 }
 
 do_undo() {

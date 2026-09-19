@@ -36,6 +36,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 GRAFT="$ROOT/bin/fm-upstream-graft.sh"
+BOOTSTRAP="$ROOT/bin/fm-bootstrap.sh"
 TMP=$(fm_test_tmproot fm-upstream-graft)
 fm_git_identity fmtest fmtest@example.invalid
 
@@ -272,6 +273,90 @@ test_rejects_bad_usage() {
   pass "bad usage is refused with the usage exit code"
 }
 
+# Session-start detection wires the guard into the existing detect phase, so the
+# ancestry break that went unnoticed for twenty days is caught without anyone
+# remembering to run `verify`. These cases drive bin/fm-bootstrap.sh's real
+# detection through its own interface against the same synthetic fixtures, and
+# assert the four behaviours each fails for a different reason: a lost
+# absorption prints exactly one actionable line, a recorded one prints nothing,
+# an unreadable one prints nothing and never claims health, and the check never
+# touches the network.
+
+run_bootstrap_detect() {  # <fixture> <records>
+  FM_UPSTREAM_GRAFT_RECORDS="$2" \
+    FM_BOOTSTRAP_NETWORK=skip FM_BOOTSTRAP_DETECT_ONLY=1 \
+    FM_ROOT_OVERRIDE="$1" FM_HOME="$1" \
+    "$BOOTSTRAP" 2>/dev/null
+}
+
+ancestry_line_count() {  # <output>
+  printf '%s\n' "$1" | grep -c '^UPSTREAM_ANCESTRY:' || true
+}
+
+test_bootstrap_ancestry_guard_reports_lost() {
+  local dir="$TMP/bs-lost" squash absorbed rec out count
+  read -r squash absorbed < <(build_fork "$dir")
+  rec=$(records_file "$dir" "$squash" "$absorbed")
+
+  out=$(run_bootstrap_detect "$dir" "$rec")
+  count=$(ancestry_line_count "$out")
+  [ "$count" = 1 ] || fail "bootstrap must print exactly one UPSTREAM_ANCESTRY line when LOST (got $count): $out"
+  assert_contains "$out" "bin/fm-upstream-graft.sh apply" "the UPSTREAM_ANCESTRY line must name the remedy command"
+  pass "bootstrap prints exactly one UPSTREAM_ANCESTRY line when the absorption is LOST"
+}
+
+test_bootstrap_ancestry_guard_silent_when_recorded() {
+  local dir="$TMP/bs-recorded" squash absorbed rec out
+  read -r squash absorbed < <(build_fork "$dir")
+  rec=$(records_file "$dir" "$squash" "$absorbed")
+  run_graft "$dir" "$rec" apply >/dev/null
+
+  out=$(run_bootstrap_detect "$dir" "$rec")
+  assert_not_contains "$out" "UPSTREAM_ANCESTRY" "bootstrap must stay silent when the absorption is recorded"
+  pass "bootstrap stays silent when the absorption is recorded"
+}
+
+test_bootstrap_ancestry_guard_silent_when_unreadable() {
+  local dir="$TMP/bs-unknown" rec out
+  fm_git_init_commit "$dir"
+  rec=$(records_file "$dir" \
+    "1111111111111111111111111111111111111111" \
+    "2222222222222222222222222222222222222222")
+
+  out=$(run_bootstrap_detect "$dir" "$rec")
+  assert_not_contains "$out" "UPSTREAM_ANCESTRY" "bootstrap must stay silent when the state cannot be read"
+  assert_not_contains "$out" "ancestry" "bootstrap must not print any ancestry claim when the state cannot be read"
+  pass "bootstrap stays silent, and claims nothing, when the ancestry cannot be read"
+}
+
+test_bootstrap_ancestry_guard_does_not_network() {
+  local dir="$TMP/bs-nonet" squash absorbed rec fakebin sentinel real_git out count
+  read -r squash absorbed < <(build_fork "$dir")
+  rec=$(records_file "$dir" "$squash" "$absorbed")
+  real_git=$(command -v git) || fail "git must be on PATH"
+  fakebin=$(fm_fakebin "$TMP/bs-nonet-fake")
+  sentinel="$TMP/bs-nonet-fetch-attempted"
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+for _a in "\$@"; do
+  case "\$_a" in
+    fetch|pull|ls-remote|clone) : > "$sentinel"; echo "fake git: network \$_a attempted" >&2; exit 1 ;;
+  esac
+done
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
+
+  out=$(PATH="$fakebin:$PATH" FM_UPSTREAM_GRAFT_RECORDS="$rec" \
+    FM_BOOTSTRAP_NETWORK=skip FM_BOOTSTRAP_DETECT_ONLY=1 \
+    FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" \
+    "$BOOTSTRAP" 2>/dev/null)
+  [ ! -e "$sentinel" ] || fail "the ancestry check attempted a network subcommand (sentinel present)"
+  count=$(ancestry_line_count "$out")
+  [ "$count" = 1 ] || fail "the no-network run must still report the lost absorption (got $count): $out"
+  pass "the ancestry check performs no network access and still reports LOST"
+}
+
 test_apply_records_absorption_and_cuts_conflicts
 test_undo_restores_the_original_state
 test_apply_and_undo_are_idempotent
@@ -280,3 +365,7 @@ test_absorption_outside_this_history_is_not_reported_lost
 test_unreadable_objects_report_unknown_not_fine
 test_status_reports_without_failing
 test_rejects_bad_usage
+test_bootstrap_ancestry_guard_reports_lost
+test_bootstrap_ancestry_guard_silent_when_recorded
+test_bootstrap_ancestry_guard_silent_when_unreadable
+test_bootstrap_ancestry_guard_does_not_network

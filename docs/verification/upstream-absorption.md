@@ -70,6 +70,12 @@ By directory, unrecorded then recorded: `tests/` 80 then 32, `bin/` 56 then 39, 
 `git replace --graft` rewrites only a commit's parent list, so the replacement keeps the original's tree object.
 `apply` re-reads the tree after installing the graft and removes it rather than leaving a record that moved content; the run above reports `tree unchanged: 3300deab`, and `git status --porcelain` listed no tracked change afterwards.
 
+## Session-start detection
+
+`bin/fm-bootstrap.sh`'s detect phase runs `verify` against the primary checkout at every session start, in the local detect-only pass, so it adds no network call and no blocking wait.
+It prints one `UPSTREAM_ANCESTRY:` line only when `verify` positively reads the absorption as LOST (exit 3); a recorded absorption (exit 0), an unreadable state (exit 4, such as a shallow checkout or one that never fetched upstream), a checkout with no named branch, and a missing script are all silent.
+Silence is never a claim that the record is healthy: the line speaks only on a positive lost reading, and the remedy it names is per-checkout.
+
 ## Why not a merge commit
 
 An `ours`-strategy merge commit records the same fact as ordinary history and a fresh clone inherits it with nothing configured, which is strictly better than a graft on that axis.

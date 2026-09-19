@@ -23,6 +23,7 @@
 #                 "HOME_SUMMARY: <ledger never published|not republished since
 #                 <stamp>>; <n> failed attempt(s) ... last: <recorded failure>",
 #                 "TANGLE: <remediation>",
+#                 "UPSTREAM_ANCESTRY: <remediation>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
@@ -58,6 +59,11 @@
 #          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
+#          A UPSTREAM_ANCESTRY line means this fork's recorded upstream
+#          absorption is not on record in the primary checkout's history; it is
+#          emitted only on a positive lost reading and stays silent when the
+#          state cannot be read, so an absent line never claims the record is
+#          healthy.
 #          A DISK_SPACE report line means free space on this home's filesystem is
 #          below the configured refusal threshold; above it, and when the space
 #          cannot be measured, the report is silent. A DISK_SPACE invalid line
@@ -1374,6 +1380,18 @@ detect_local_config() {
     else
       echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"
     fi
+  fi
+  # Upstream-absorption guard, scoped to the primary checkout exactly like the
+  # tangle check above: linked worktrees and secondmate homes sit on detached
+  # HEAD and never trip either. It calls the graft script's own verify rather
+  # than reimplementing the check, so it stays silent on every exit other than
+  # 3 (LOST) and never fetches.
+  if git -C "$FM_ROOT" symbolic-ref --quiet --short HEAD >/dev/null 2>&1 \
+    && [ -x "$SCRIPT_DIR/fm-upstream-graft.sh" ]; then
+    ( cd "$FM_ROOT" && "$SCRIPT_DIR/fm-upstream-graft.sh" verify >/dev/null 2>&1 )
+    case $? in
+      3) echo "UPSTREAM_ANCESTRY: this fork's absorption of upstream is not on record; catch-up will replay already-absorbed work as conflicts - restore it with: bin/fm-upstream-graft.sh apply" ;;
+    esac
   fi
   crew=
   [ -f "$CONFIG/crew-harness" ] && crew=$(tr -d '[:space:]' < "$CONFIG/crew-harness" || true)
