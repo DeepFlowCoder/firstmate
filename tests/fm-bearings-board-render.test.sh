@@ -1163,11 +1163,22 @@ answerable_board='{
      "dispatchable":true,"since":"2026-08-22"}
   ]}'
 
+# The diagnosis the board must print for each failure mode, so a board that was
+# right there and refused is never reported as one that is not connected.
+lost_diagnosis() {  # <channel>
+  case $1 in
+    absent) printf '%s' 'This board is not connected to Lavish' ;;
+    reject) printf '%s' 'Lavish refused the answer' ;;
+    throw)  printf '%s' 'Lavish broke while taking the answer' ;;
+  esac
+}
+
 test_an_answer_the_channel_never_took_is_never_confirmed() {
-  local channel home out
+  local channel diagnosis home out
   for channel in absent reject throw; do
     home=$(make_home "lost-$channel")
     out=$(render "$home" "$answerable_board" "$channel")
+    diagnosis=$(lost_diagnosis "$channel")
 
     printf '%s' "$out" | jq -e '.answers == []' >/dev/null \
       || fail "the $channel channel somehow received an answer: $out"
@@ -1179,13 +1190,16 @@ test_an_answer_the_channel_never_took_is_never_confirmed() {
       and ([.cards[] | .tick.display == "none"] | all)
     ' >/dev/null || fail "an uncaptured answer was still confirmed with a tick: $out"
 
-    # ... and the card says so, in words that are on screen.
-    printf '%s' "$out" | jq -e '
+    # ... and the card says so, in words that are on screen and name the one
+    # failure this channel actually saw, while the recovery stays identical.
+    printf '%s' "$out" | jq -e --arg d "$diagnosis" '
       [.cards[] | .lostClass] == [true, true]
       and ([.cards[] | .notCaptured.present and .why.present] | all)
       and ([.cards[] | .notCaptured.display != "none"] | all)
       and ([.cards[] | .why.display != "none"] | all)
-      and ([.cards[] | .why.text | test("not connected to Lavish")] | all)
+      and ([.cards[] | .why.text | contains($d)] | all)
+      and ([.cards[] | .why.text | contains("the answer went nowhere")] | all)
+      and ([.cards[] | .why.text | contains("Reopen the board from firstmate and answer there")] | all)
     ' >/dev/null || fail "an uncaptured answer left the card looking answered: $out"
 
     # The deck does not deal on, so the captain is left on the card that failed
@@ -1194,13 +1208,15 @@ test_an_answer_the_channel_never_took_is_never_confirmed() {
       || fail "the deck dealt past an answer that was never captured: $out"
 
     # The dispatch bar is an answer channel too, and gets the same treatment.
-    printf '%s' "$out" | jq -e '
+    printf '%s' "$out" | jq -e --arg d "$diagnosis" '
       .dispatch.queuedClass == false and .dispatch.lostClass == true
       and .dispatch.tick.present and .dispatch.notCaptured.present and .dispatch.why.present
       and .dispatch.tick.display == "none"
       and .dispatch.notCaptured.display != "none"
       and .dispatch.why.display != "none"
-      and (.dispatch.why.text | test("not connected to Lavish"))
+      and (.dispatch.why.text | contains($d))
+      and (.dispatch.why.text | contains("the answer went nowhere"))
+      and (.dispatch.why.text | contains("Reopen the board from firstmate and answer there"))
     ' >/dev/null || fail "the dispatch bar still claimed an uncaptured order: $out"
   done
   pass "an answer no channel took is reported as not captured, never as queued"

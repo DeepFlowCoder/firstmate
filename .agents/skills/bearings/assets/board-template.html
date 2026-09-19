@@ -650,21 +650,33 @@ __FM_BEARINGS_BOARD_DATA__
   var CHECK_SVG = '<svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
   var ALERT_SVG = '<svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
 
-  /* Why an answer could not even be handed over. The board is served inside
-     Lavish's frame, so a missing channel means this page is being read outside
-     it - a loose file, a stale tab - and nothing typed here can go anywhere. */
-  var LOST_WHY = "This board is not connected to Lavish, so the answer went nowhere. Reopen the board from firstmate and answer there.";
+  /* Why an answer could not even be handed over. The board names the failure it
+     actually saw, because a board that says "not connected" over a Lavish that
+     was right there and refused is telling the captain the same lie this fix
+     exists to stop. The recovery is the same in every case, so it is written
+     once and never varies. */
+  var LOST_ACTION = "the answer went nowhere. Reopen the board from firstmate and answer there.";
+  var LOST_WHY = {
+    absent: "This board is not connected to Lavish, so " + LOST_ACTION,
+    refused: "Lavish refused the answer, so " + LOST_ACTION,
+    broken: "Lavish broke while taking the answer, so " + LOST_ACTION
+  };
 
   /* The single gate every answer passes through. Queuing is the only thing the
      page can do and the only thing it may claim: it reports whether Lavish took
      the answer, never that firstmate received it - that still needs "Send to
-     Agent". A missing channel, a throw, or an explicit refusal are all a no. */
+     Agent". A missing channel, a throw, or an explicit refusal are all a no,
+     each carrying the reason why. */
   function handToLavish(prompt, options) {
-    if (!window.lavish || typeof window.lavish.queuePrompt !== "function") return false;
+    if (!window.lavish || typeof window.lavish.queuePrompt !== "function") {
+      return { ok: false, why: LOST_WHY.absent };
+    }
     try {
-      return window.lavish.queuePrompt(prompt, options) !== false;
+      return window.lavish.queuePrompt(prompt, options) === false
+        ? { ok: false, why: LOST_WHY.refused }
+        : { ok: true };
     } catch (e) {
-      return false;
+      return { ok: false, why: LOST_WHY.broken };
     }
   }
 
@@ -1019,7 +1031,8 @@ __FM_BEARINGS_BOARD_DATA__
     lost.innerHTML = ALERT_SVG + " not captured";
     lost.setAttribute("role", "alert");
     foot.appendChild(lost);
-    foot.appendChild(el("span", "bb-lost__why", LOST_WHY));
+    var lostWhy = el("span", "bb-lost__why");
+    foot.appendChild(lostWhy);
     var answerLimit = el("span", "bb-limit");
     answerLimit.setAttribute("role", "alert");
     foot.appendChild(answerLimit);
@@ -1043,7 +1056,7 @@ __FM_BEARINGS_BOARD_DATA__
          captain-gated work item instead of completing a question task */
       var ctxData = { question: item.key, answer: answer };
       if (item.close) ctxData.close = item.close;
-      var accepted = handToLavish(
+      var outcome = handToLavish(
         "Captain's Call answer - " + item.title + ": " + answer,
         { tag: "choice", text: item.title + " -> " + answer, element: form,
           data: ctxData }
@@ -1051,9 +1064,12 @@ __FM_BEARINGS_BOARD_DATA__
       /* The tick and the deal to the next card are what tell the captain the
          answer is safely held. Both belong to the accepted branch only: a card
          that said "queued" over an answer that went nowhere is the whole bug. */
-      card.classList.toggle("is-queued", accepted);
-      card.classList.toggle("is-lost", !accepted);
-      if (!accepted) return;
+      card.classList.toggle("is-queued", outcome.ok);
+      card.classList.toggle("is-lost", !outcome.ok);
+      if (!outcome.ok) {
+        lostWhy.textContent = outcome.why;
+        return;
+      }
       /* deal the next card once this one is safely held */
       setTimeout(function () { showCard(active < cards.length - 1 ? active + 1 : active); }, 450);
     });
@@ -1377,9 +1393,7 @@ __FM_BEARINGS_BOARD_DATA__
   bar.hidden = !anyPickable;
   if (anyPickable) {
     refreshBar();
-    /* stated once, the way the cards state it, so what the bar says is governed
-       by the stylesheet's is-lost rule and not by who last wrote to it */
-    document.getElementById("bb-dispatch-lost-why").textContent = LOST_WHY;
+    var dispatchLostWhy = document.getElementById("bb-dispatch-lost-why");
     barBtn.addEventListener("click", function () {
       var ids = pickedIds();
       var dispatchAnswer = ids.join(",");
@@ -1388,7 +1402,7 @@ __FM_BEARINGS_BOARD_DATA__
         refreshBar("Selection is too long to queue (512 bytes maximum). ");
         return;
       }
-      var accepted = handToLavish(
+      var outcome = handToLavish(
         "Dispatch order - start this queued work now: " + ids.join(", "),
         { tag: "choice", text: "Dispatch: " + ids.join(", "), element: bar,
           queueKey: "dispatch.charted",
@@ -1396,8 +1410,9 @@ __FM_BEARINGS_BOARD_DATA__
       );
       /* the dispatch order is an answer like any other, so it gets the card's
          own honesty: the tick only for an order Lavish actually took */
-      bar.classList.toggle("is-queued", accepted);
-      bar.classList.toggle("is-lost", !accepted);
+      bar.classList.toggle("is-queued", outcome.ok);
+      bar.classList.toggle("is-lost", !outcome.ok);
+      if (!outcome.ok) dispatchLostWhy.textContent = outcome.why;
     });
   }
   } catch (e) {
