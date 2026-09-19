@@ -20,10 +20,18 @@ Use the tool's exact skill form, or natural language only when no separate comma
 A successful send or key return is not proof of submission; require the tool-specific postcondition.
 Popup, queued-input, and readiness handling belongs to `../../../bin/fm-composer-lib.sh` and the selected backend.
 
+## Vendor dialogs
+
+A tool can park the agent in a modal with no composer, where every character is one of that modal's keybindings rather than text.
+Never type at one, and never improvise a keypress to clear it.
+The control plane's `dialog` verb answers only the classes `../../../../bin/fm-dialog-lib.sh` registers, by named answer rather than by key, and verifies the dialog closed; the selected tool reference lists that tool's registered classes, and a tool with none refuses by name.
+Interrupt, exit, and relaunch all refuse at a registered dialog and print the commands that answer it.
+
 ## Interrupt and exit
 
 Use the control plane so capabilities are checked first.
 Interrupt preserves the agent and work; exit stops only the agent and preserves its endpoint, isolated copy, and uncommitted changes.
+An agent that will not stop because it has stopped reading its input at all is replaced with exit's explicit unresponsive escalation, which signals the agent's own processes and proves the same postcondition while touching neither the endpoint nor the isolated copy nor any uncommitted change.
 Cleanup and discard are not lifecycle verbs.
 The tool reference records repeat, acknowledgement, and clearing behavior, while the executable owner sends or refuses the sequence.
 

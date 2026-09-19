@@ -15,9 +15,24 @@ Verified on 2026-06-11 with codex-cli 0.139.0 unless a fact gives a newer versio
 | Effort flag | `-c 'model_reasoning_effort="<low\|medium\|high\|xhigh>"'`, verified on codex-cli 0.142.1 whose installed schema contains `model_reasoning_effort`, active config uses it, and bundled catalog advertises only these four values while omitting `max`. |
 | Model discovery | Open the current interactive session's `/model` picker. |
 
-A directory trust dialog appears on the first run for a repository root: "Do you trust the contents of this directory?"
-Accept it with Enter and verify the instructions begin processing.
-The decision persists for the repository, so later worktrees of the same project skip it.
+## Modal dialogs
+
+Codex parks the agent in numbered modal dialogs that have no composer, and while one is up the agent is deaf to every text channel, including its own exit command.
+Never type at one and never improvise a keypress: a dialog reads each character as one of its keybindings, and typing `/quit` at the trust dialog was measured to select "Yes, continue" and submit the leftovers as a prompt while the agent kept running.
+Answer one only through `../../../../bin/fm-control.sh <task-id> dialog`, which names the class and each answer's consequence, then `--answer <name>` to deliver it and verify the dialog closed.
+`interrupt`, `exit`, and `relaunch` refuse at a registered dialog and print those commands; `exit --unresponsive` replaces an agent that must go instead of being answered.
+
+Registered classes, all answered by their option's own digit, which selects and acts immediately:
+
+| Class | Asking | Answers |
+|---|---|---|
+| `directory-trust` | `Do you trust the contents of this directory?` | `trust`, `decline-and-quit` |
+| `rate-limit-switch` | `Approaching rate limits`, offering a cheaper model | `switch-cheaper`, `keep-model`, `keep-model-never-ask` |
+| `update-available` | `Update available!`, offering to upgrade the install | `skip`, `skip-until-next-version` |
+
+`update-available`'s first option runs a package-manager upgrade of the captain's codex, so it is recorded as declined and never offered as an answer.
+The trust decision persists for the repository, so later worktrees of the same project skip that dialog.
+`../../../../bin/fm-dialog-lib.sh` owns the registry and `../../../../docs/verification/vendor-dialogs.md` owns the measurements; a class absent from that registry stays unanswerable on purpose.
 
 ## Skill popup
 

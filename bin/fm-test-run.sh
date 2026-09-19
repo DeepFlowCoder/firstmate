@@ -282,12 +282,14 @@ family_for_basename() {
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
     fm-send-inbox-doorbell-live-e2e.test.sh|\
     fm-gh-repo-resolution-live-e2e.test.sh|\
-    fm-herdr-submit-confirm-live-e2e.test.sh)
+    fm-herdr-submit-confirm-live-e2e.test.sh|\
+    fm-codex-dialog-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
     fm-tmux-agent-liveness.test.sh|\
     fm-control.test.sh|fm-control-relaunch.test.sh|fm-control-recover.test.sh|\
+    fm-dialog.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|\
     fm-send-inbox.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|fm-spawn-git-editor.test.sh|\
@@ -524,6 +526,7 @@ tests/fm-backend-cmux.test.sh 3584
 tests/fm-backend-herdr-focus-flash-e2e.test.sh 64
 tests/fm-backend-orca.test.sh 15548
 tests/fm-backend-tmux-smoke.test.sh 398
+tests/fm-dialog.test.sh 40
 tests/fm-backend-zellij-smoke.test.sh 22
 tests/fm-backend-zellij.test.sh 8651
 tests/fm-backend.test.sh 17623
@@ -1238,6 +1241,22 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
+      ;;
+    bin/fm-dialog-lib.sh)
+      # The registered vendor-dialog classes are vendor-rendered signal plus a
+      # vendor-owned menu shape, so a change re-selects the live guard that
+      # measures both against the real CLI alongside the portable families.
+      printf '%s\n' backend-dispatch
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' live-harness-optin
+      ;;
+    bin/fm-process-name-lib.sh)
+      # The one process-name vocabulary: both backends' liveness verdicts, the
+      # agent-pid lookup the unresponsive stop signals, and the live drift guard
+      # that re-measures it against every installed harness.
+      printf '%s\n' backend-dispatch
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' live-harness-optin
       ;;
     bin/fm-kimi-trust-lib.sh)
       # Kimi's workspace-trust contract is vendor-rendered signal plus a
