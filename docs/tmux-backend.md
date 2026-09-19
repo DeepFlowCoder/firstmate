@@ -2,7 +2,7 @@
 
 tmux is Firstmate's portable default runtime backend: it ships with, or installs from the package manager of, nearly every machine, so it is the one backend a home can reach without installing anything first.
 That portability is why it stays the default, and it is a separate question from how much of the backend contract an adapter implements.
-Local secondmate homes run on it; a remote second mate always runs on Herdr instead ([`remote-secondmates.md`](remote-secondmates.md)).
+Local secondmate homes default to it but otherwise keep their ordinary backend selection; a remote second mate always runs on Herdr instead ([`remote-secondmates.md`](remote-secondmates.md)).
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared backend selection and metadata semantics.
 
 ## Setup
@@ -100,7 +100,7 @@ Without that baseline, an `unknown` verdict is preserved untouched, so a busy-lo
 
 ## Limits and regression entry points
 
-- tmux is the portable default path and hosts local secondmate homes, but it exposes no native busy primitive and no native transition events, so its supervision is driven entirely by the watcher's poll loop.
+- tmux is the portable default path and the default backend for local secondmate homes, which otherwise keep their ordinary backend selection, but it exposes no native busy primitive and no native transition events, so its supervision is driven entirely by the watcher's poll loop.
 - A remote second mate cannot run on tmux; it always runs on Herdr ([`remote-secondmates.md`](remote-secondmates.md)).
 
 ```sh
