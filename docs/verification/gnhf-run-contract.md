@@ -139,5 +139,11 @@ It is also untracked scratch that no commit carries and that disappears with the
 ## Refreshing this record
 
 Re-run the commands above after any `gnhf` upgrade.
-The two findings that would change the guard's design are the slug shape in `slugifyPrompt` and the worktree path in `makeWorktreePath`; locate both in the installed bundle with `grep -o 'gnhf/\${prompt[^`]*' /opt/homebrew/lib/node_modules/gnhf/dist/cli.mjs` and `grep -o '[^ ]*-gnhf-worktrees[^`]*' /opt/homebrew/lib/node_modules/gnhf/dist/cli.mjs`.
+The two findings that would change the guard's design are the slug shape in `slugifyPrompt` and the worktree path in `makeWorktreePath`; locate both in the installed bundle:
+
+```
+grep -o 'gnhf/\${prompt[^`]*' /opt/homebrew/lib/node_modules/gnhf/dist/cli.mjs
+grep -o '[^ ]*-gnhf-worktrees[^`]*' /opt/homebrew/lib/node_modules/gnhf/dist/cli.mjs
+```
+
 A change in either means re-reading `bin/fm-gnhf-reconcile.sh`'s assumptions before trusting its silence.
