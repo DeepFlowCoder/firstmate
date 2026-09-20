@@ -58,6 +58,18 @@
 # gaps in omitted[] and, when invalid, a Charted Next gate line so the four-section
 # chat cannot claim an empty fleet while main current state is broken.
 #
+# Every count bound below cuts a flat prefix off a COMBINED list, so the rows it
+# drops are not spread evenly over the fleet: a whole project can fall past the
+# index. omitted[] states that fleet-wide ("gates showing 20 of 104") and cannot
+# say which project went quiet, so omitted_by_repo states the same truncation
+# per repo - the field any reader that groups by project, the bearings board
+# included, needs before it may read a project's silence as having nothing
+# queued, nothing in flight and nothing waiting on the captain. It is always
+# present: an empty array means nothing was cut from those three surfaces, which
+# is a fact and not a silence. Landed is deliberately not among them, because a
+# launch the bounded baseline left out only makes a project read as LESS
+# finished, never as more.
+#
 # The landed section merges this home's Done with the canonical snapshot's
 # secondmate_landed roll-up (fm-fleet-snapshot.sh), so merges a secondmate managed -
 # recorded in ITS OWN backlog, never the main one - are visible. It stays bounded by
@@ -150,7 +162,16 @@ Default fields: schema, home, generated, prs, in_flight{id,kind,repo,state,doing
   secondmate_reconcile{id,spawn_gen,host,kind,ids},
   decisions_open{id,key,verb,summary,owner,repo}, landed{id,what,repo,artifact,owner,landed_on},
   gates{id,title,blocked_by,reason,owner,repo,since}, reports{id,path}, recorded_prs{id,url},
-  unhealthy_endpoints{...} (only when non-empty), omitted{surface,reveal}.
+  unhealthy_endpoints{...} (only when non-empty),
+  omitted_by_repo{repo,in_flight,decisions_open,gates}, omitted{surface,reveal}.
+omitted_by_repo is omitted[]'s count bounds resolved per project: one row per repo
+  that lost at least one in_flight, decisions_open or gates row to a count bound,
+  with how many of each. The bounds cut a flat prefix off a combined list, so a
+  whole project can fall past the index; a reader that groups by project needs
+  this before it may read a project's silence as having nothing. Always present,
+  and empty when nothing was cut from those three surfaces. Landed carries no
+  entry: a launch its bounded baseline left out makes a project read as LESS
+  finished, never as more.
 repo is the backlog row's own recorded repo, null when the row records none. It is what
   groups work by project rather than by errand; the bearings board uses it as its lane key.
   Two rows are null for a different reason: a registered secondmate's own in_flight row
@@ -619,6 +640,29 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        | select(($all_reports == 1) or (($rel_ids | index($r.id)) != null))
        | {id, path} ]) as $reports_all
   | ([ .tasks[] | select(.kind != "secondmate" and .pr.url != null and .pr.source == "meta") | {id, url:.pr.url} ]) as $recorded_prs_all
+  # Which PROJECT each truncated row belonged to. The three count bounds above
+  # each cut a flat prefix off a combined list, so a whole project can fall past
+  # the index while its landed rows survive, and a fleet-wide "showing N of M"
+  # cannot say which project went quiet. A reader that groups by repo - the
+  # bearings board is one, and repo is its lane key - would otherwise have to
+  # read the silence of that project as having nothing queued, nothing in
+  # flight and nothing waiting on the captain, which is the one thing the
+  # prefix cannot support. The counts come off the same slices the sections
+  # render, so what is disclosed here and what was dropped there cannot drift.
+  # Landed is deliberately absent: it is bounded too, but a launch the baseline
+  # left out only makes a project read as LESS finished, never as more.
+  | ([ (if $all_in_flight == 1 then [] else $in_flight_all[$in_flight_n:] end)[]
+       | {repo:(.repo // null), surface:"in_flight"} ]
+     + [ (if $all_decisions == 1 then [] else $decisions_all[$decisions_n:] end)[]
+       | {repo:(.repo // null), surface:"decisions_open"} ]
+     + [ (if $all_queued == 1 then [] else $gates_all[$gates_n:] end)[]
+       | {repo:(.repo // null), surface:"gates"} ]) as $omitted_rows
+  | ([ $omitted_rows | group_by(.repo)[]
+       | {repo:(.[0].repo),
+          in_flight:([.[] | select(.surface == "in_flight")] | length),
+          decisions_open:([.[] | select(.surface == "decisions_open")] | length),
+          gates:([.[] | select(.surface == "gates")] | length)} ]
+     | sort_by([(.repo == null), (.repo // "")])) as $omitted_by_repo
   | . as $snap
   | {
       schema: "fm-bearings.v1",
@@ -636,7 +680,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
                             landed_on:((.completion.date // null) | trunc(40))})),
       gates: (if $all_queued == 1 then $gates_all else $gates_all[:$gates_n] end),
       reports: (if $all_reports == 1 then $reports_all else $reports_all[:$reports_n] end),
-      recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end)
+      recorded_prs: (if $all_recorded_prs == 1 then $recorded_prs_all else $recorded_prs_all[:$recorded_prs_n] end),
+      omitted_by_repo: $omitted_by_repo
     }
   | . + (if ($unhealthy_all | length) > 0 then
            {unhealthy_endpoints:(if $all_unhealthy == 1 then $unhealthy_all else $unhealthy_all[:$unhealthy_n] end)}

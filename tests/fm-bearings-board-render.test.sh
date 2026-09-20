@@ -93,8 +93,11 @@ test_two_projects_with_the_same_queue_read_differently() {
 
   printf '%s' "$fm" | jq -e '.reading == "4 hulls on the ways"' >/dev/null \
     || fail "the building lane does not say what it is building: $fm"
-  # the idle lane reads as available capacity, not as the captain's debt
-  printf '%s' "$bg" | jq -e '.reading == "clear to start - 18 orders wait for a crew"' >/dev/null \
+  # the idle lane reads as available capacity, not as the captain's debt, and
+  # names only what it HAS: the older wording ("clear to start - 18 orders wait
+  # for a crew") also asserted that nothing was on its ways, which an
+  # independently bounded underway feed can hide
+  printf '%s' "$bg" | jq -e '.reading == "18 orders clear to start"' >/dev/null \
     || fail "the idle lane does not read as available capacity: $bg"
   printf '%s' "$bg" | jq -e '.launch == "last launch today"' >/dev/null \
     || fail "a lane that delivered today does not say so: $bg"
@@ -616,9 +619,15 @@ test_an_empty_lane_names_which_empty_it_is() {
       {"id":"held-only","repo":"stalled","title":"Stalled order","reason":"waiting on upstream",
        "dispatchable":false,"since":"2026-08-02"}
     ]}')
+  # Each reading names the stage the lane actually has something standing in,
+  # and nothing else. The held lane no longer opens with "nothing building" and
+  # the launched lane no longer calls itself quiet: both were claims about
+  # buckets fed by independently bounded lists, so ordinary truncation could
+  # falsify either. The launch chip still carries the recency the second one
+  # used to borrow.
   printf '%s' "$out" | jq -e '
-    ([.lanes[] | select(.name == "stalled") | .reading] == ["nothing building - 1 order is held"])
-      and ([.lanes[] | select(.name == "quiet") | .reading] == ["quiet since the last launch"])
+    ([.lanes[] | select(.name == "stalled") | .reading] == ["1 order held in dry dock"])
+      and ([.lanes[] | select(.name == "quiet") | .reading] == ["launched work here"])
       and ([.lanes[] | select(.name == "quiet") | .launch] == ["last launch 7 days ago"])
   ' >/dev/null || fail "the empty lanes do not read as distinct kinds of empty: $out"
   # the yard report must agree with the sub-line under it: nothing is clear to
@@ -1043,9 +1052,10 @@ test_a_forward_dated_launch_does_not_hide_a_real_one() {
       {t:"Landed on a mistyped year", w:""}
     ]
   ' >/dev/null || fail "the real launch lost its age, or the mistyped one gained one: $lane"
-  # and the reading it prints has a date behind it
-  printf '%s' "$lane" | jq -e '.reading == "quiet since the last launch"' >/dev/null \
-    || fail "a lane with a datable launch stopped reading as quiet since it: $lane"
+  # the date rides the chip; the reading beside it still names only what the
+  # lane holds, so a bounded feed can never falsify it
+  printf '%s' "$lane" | jq -e '.reading == "launched work here"' >/dev/null \
+    || fail "the lane reading stopped naming what it actually holds: $lane"
   # one bad row must not silence the fleet-level recency line
   printf '%s' "$out" | jq -e '.headlineSub | test("last launch 6 days ago")' >/dev/null \
     || fail "one mistyped row dropped the yard report's last-launch line: $out"
@@ -1314,6 +1324,231 @@ test_the_board_says_an_answer_stays_in_the_tab_until_it_is_sent() {
   pass "the board always says answers stay in the tab until they are sent"
 }
 
+# ---------------------------------------------------------------------------
+# The defect this section exists for: every feed behind a lane is bounded on
+# its own and each bound cuts a flat prefix off a fleet-wide list, so a project
+# can lose its whole order book to one while its launches survive. Told only
+# what it HAS, that lane read "quiet since the last launch" over an order book
+# drawn as 0, which is the fleet's own record saying a project is finished when
+# the truth is that the board was never handed its work. `lanes_more` is the
+# composer saying so per lane; these are the readings that must come out of it.
+# ---------------------------------------------------------------------------
+test_a_lane_whose_orders_were_withheld_never_reads_as_finished() {
+  local home out lane
+  home=$(make_home withheld-orders)
+  out=$(render "$home" '{
+    "landed": [
+      {"id":"gamma-done","repo":"gamma","what":"Landed the last one","owner":"firstmate",
+       "landed_on":"2026-08-24"}
+    ],
+    "charted_more": 13,
+    "lanes_more": [{"repo":"gamma","queued":13,"underway":0,"call":0}]}')
+  lane=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "gamma")')
+
+  # the reading names the withheld orders rather than the silence they left
+  printf '%s' "$lane" | jq -e '.reading == "13 orders in the book, not charted here"' \
+    >/dev/null || fail "a lane whose order book was withheld still read as finished: $lane"
+  # and nothing in it says the lane is done, quiet, or clear
+  printf '%s' "$lane" | jq -e '
+    (.reading | test("quiet|launched work here|clear to start") | not)
+  ' >/dev/null || fail "the reading still claims an absence the bound can fake: $lane"
+  # the order book is disclosed beside the lane, not only in a fleet-wide count
+  # that names no project
+  printf '%s' "$lane" | jq -e '.more == ["+13 more queued - not charted on this board"]' \
+    >/dev/null || fail "the lane did not say what it was not handed: $lane"
+  # the stages still count only rows the board actually holds: a withheld row
+  # has no known disposition, so it enters neither queued stage
+  printf '%s' "$lane" | jq -e '
+    [.berths[] | {(.label): .count}] | add
+      == {"Dry dock":"0","Clear to start":"0","On the ways":"0","Launched":"1"}
+  ' >/dev/null || fail "a withheld row was placed in a stage it was never described to: $lane"
+  pass "a lane whose orders were withheld never reads as finished"
+}
+
+# ---------------------------------------------------------------------------
+# The sharpest form of the same defect: when EVERY row of a project falls past
+# a bound, no row survives to create its lane, so the project simply is not on
+# the board. The omission record is itself something recorded, so it seeds the
+# lane it is about.
+# ---------------------------------------------------------------------------
+test_a_project_with_no_surviving_row_still_gets_its_lane() {
+  local home out
+  home=$(make_home wholly-withheld)
+  out=$(render "$home" "$(jq -n \
+    --argjson q "$(rows nearshore 3 true '' 2026-08-10)" '{
+      charted: $q,
+      charted_more: 9,
+      lanes_more: [{repo:"drydock-yard", queued:9, underway:0, call:0}]}')")
+
+  printf '%s' "$out" | jq -e '[.lanes[].name] | index("drydock-yard") != null' >/dev/null \
+    || fail "a project whose every row was withheld never reached the board: $out"
+  printf '%s' "$out" | jq -e '
+    .lanes[] | select(.name == "drydock-yard")
+      | .reading == "9 orders in the book, not charted here"
+        and .more == ["+9 more queued - not charted on this board"]
+        # a lane with no row at all draws no route: four empty stages there
+        # would be four claims about rows it was never given
+        and .flow == false
+  ' >/dev/null || fail "the seeded lane does not read as a project the board was not handed: $out"
+  # and it is not buried under the lanes that happen to hold a row
+  printf '%s' "$out" | jq -e '[.lanes[].name] == ["nearshore","drydock-yard"]' >/dev/null \
+    || fail "the withheld lane sorted below every lane holding any row: $out"
+  pass "a project with no surviving row still gets its lane"
+}
+
+# ---------------------------------------------------------------------------
+# Live work and the Captain's Call deck are bounded the same way, so the same
+# silence is available to them. The withheld reading mirrors the route: live
+# work first, then the order book, then the captain's own gate.
+# ---------------------------------------------------------------------------
+test_every_withheld_feed_is_named_in_the_lane_it_belongs_to() {
+  local home out
+  home=$(make_home withheld-feeds)
+  out=$(render "$home" '{
+    "landed": [
+      {"id":"a-done","repo":"alpha","what":"Landed","owner":"firstmate","landed_on":"2026-08-24"},
+      {"id":"b-done","repo":"beta","what":"Landed","owner":"firstmate","landed_on":"2026-08-24"},
+      {"id":"c-done","repo":"gamma","what":"Landed","owner":"firstmate","landed_on":"2026-08-24"}
+    ],
+    "charted_more": 2,
+    "lanes_more": [
+      {"repo":"alpha","queued":2,"underway":4,"call":0},
+      {"repo":"beta","queued":0,"underway":0,"call":3},
+      {"repo":"gamma","queued":0,"underway":1,"call":1}
+    ]}')
+
+  printf '%s' "$out" | jq -e '
+    ([.lanes[] | select(.name == "alpha")
+      | .reading == "4 hulls on the ways, not charted here"
+        and .more == ["+2 more queued · +4 more on the ways - not charted on this board"]])
+    == [true]
+  ' >/dev/null || fail "withheld live work is not named ahead of a withheld order book: $out"
+  printf '%s' "$out" | jq -e '
+    ([.lanes[] | select(.name == "beta")
+      | .reading == "3 items needing you, not charted here"
+        and .more == ["+3 more needing you - not charted on this board"]])
+    == [true]
+  ' >/dev/null || fail "a withheld captain call is not named in its own lane: $out"
+  printf '%s' "$out" | jq -e '
+    ([.lanes[] | select(.name == "gamma") | .reading]) == ["1 hull on the ways, not charted here"]
+  ' >/dev/null || fail "the withheld reading does not follow the route order: $out"
+  pass "every withheld feed is named in the lane it belongs to"
+}
+
+# ---------------------------------------------------------------------------
+# A lane the composer DID hand in full still reads by what it holds: the
+# withheld reading never appears where nothing was withheld, and a lane with
+# live work leads with that work rather than with what it lost.
+# ---------------------------------------------------------------------------
+test_a_lane_handed_in_full_never_claims_a_withheld_row() {
+  local home out
+  home=$(make_home no-withholding)
+  out=$(render "$home" '{
+    "underway": [
+      {"id":"live","repo":"busy","kind":"ship","state":"working","doing":"building"}
+    ],
+    "landed": [
+      {"id":"done","repo":"still","what":"Shipped","owner":"firstmate","landed_on":"2026-08-25"}
+    ],
+    "charted_more": 6,
+    "lanes_more": [{"repo":"busy","queued":6,"underway":0,"call":0}]}')
+
+  # the busy lane leads with its live work, and still discloses beside it
+  printf '%s' "$out" | jq -e '
+    ([.lanes[] | select(.name == "busy")
+      | .reading == "1 hull on the ways"
+        and .more == ["+6 more queued - not charted on this board"]]) == [true]
+  ' >/dev/null || fail "a lane with live work stopped leading with it: $out"
+  # the lane nobody withheld from says nothing about withheld rows
+  printf '%s' "$out" | jq -e '
+    ([.lanes[] | select(.name == "still") | {reading, more}])
+      == [{reading:"launched work here", more:[]}]
+  ' >/dev/null || fail "a lane handed in full invented a withheld row: $out"
+  pass "a lane handed in full never claims a withheld row"
+}
+
+# ---------------------------------------------------------------------------
+# The falsifier for the whole chain, driven from a real oversized backlog
+# rather than from a hand-written payload: more queued rows than the bound
+# allows, with one project standing ENTIRELY past the cut and another keeping
+# only a landed row. The composer step here is the mechanical part of the
+# bearings skill's board rules - carry `omitted_by_repo` into `lanes_more` and
+# its queued total into `charted_more` - so what is under test is that the
+# snapshot discloses enough for that step to be possible at all, and that the
+# board refuses the finished reading once it is done.
+# ---------------------------------------------------------------------------
+test_an_oversized_backlog_never_reads_as_a_finished_project() {
+  local home out snap lane
+  home=$(make_home oversized)
+  mkdir -p "$home/projects" "$home/config" "$TMP_ROOT/oversized-root"
+  {
+    printf '## In flight\n\n## Queued\n'
+    # more than the bound allows, from one project, so the prefix is spent
+    # before any later project is reached
+    for i in $(seq 1 22); do
+      printf -- '- [ ] near-%s - Order %s (repo: nearshore) (kind: ship) (since 2026-08-01)\n' "$i" "$i"
+    done
+    # the project that keeps a launch and loses its whole order book
+    printf -- '- [ ] gam-1 - Late order (repo: gamma) (kind: ship) (since 2026-08-02)\n'
+    # and the project that loses every row it has
+    printf -- '- [ ] dry-1 - Dry order (repo: drydock-yard) (kind: ship) (since 2026-08-03)\n'
+    printf '\n## Done\n'
+    printf -- '- [x] gam-0 - Landed the last one (repo: gamma) (kind: ship) (merged 2026-08-24)\n'
+  } > "$home/data/backlog.md"
+
+  snap=$(FM_ROOT_OVERRIDE="$TMP_ROOT/oversized-root" FM_HOME="$home" \
+    FM_BEARINGS_NOW=2026-08-26T00:00:00Z "$ROOT/bin/fm-bearings-snapshot.sh" --json) \
+    || fail "the fleet snapshot did not run"
+  # the bound really did fire, and really did take whole projects with it
+  printf '%s' "$snap" | jq -e '
+    (.gates | length) == 20
+    and ([.gates[].repo] | index("gamma")) == null
+    and ([.gates[].repo] | index("drydock-yard")) == null
+    and ([.omitted_by_repo[] | select(.gates > 0) | .repo] | sort
+         == ["drydock-yard","gamma","nearshore"])
+  ' >/dev/null || fail "the fixture did not truncate whole projects out of the chart: $snap"
+
+  printf '%s' "$snap" | jq '{
+    schema:"fm-bearings-board.v2", home:.home, generated:.generated, prs_live:false,
+    captains_call:[],
+    underway:[.in_flight[] | {id, repo, kind, state, doing}],
+    landed:[.landed[] | {id, repo, what, owner, landed_on}],
+    charted:[.gates[] | {id, repo, title, reason:"", dispatchable:true, since}],
+    charted_more:([.omitted_by_repo[].gates] | add // 0),
+    lanes_more:[.omitted_by_repo[]
+      | {repo, queued:.gates, underway:.in_flight, call:.decisions_open}]
+  }' > "$home/payload.json" || fail "the board payload could not be composed"
+
+  PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$BOARD" build "$home/payload.json" >/dev/null || fail "the board did not build"
+  out=$(node "$HARNESS" "$home/.lavish/bearings-board.html") \
+    || fail "the built board could not be rendered"
+
+  # the project that kept only a launch: it must not read as finished, and its
+  # order book must not be drawn as empty without saying so
+  lane=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "gamma")')
+  [ -n "$lane" ] || fail "the truncated project lost its lane entirely: $out"
+  printf '%s' "$lane" | jq -e '.reading == "1 order in the book, not charted here"' \
+    >/dev/null || fail "a project whose order book was cut still reads as finished: $lane"
+  printf '%s' "$lane" | jq -e '.more == ["+1 more queued - not charted on this board"]' \
+    >/dev/null || fail "the cut is still invisible in the lane it happened to: $lane"
+
+  # the project that lost every row still reaches the board
+  printf '%s' "$out" | jq -e '
+    .lanes[] | select(.name == "drydock-yard")
+      | .reading == "1 order in the book, not charted here"
+  ' >/dev/null || fail "a wholly truncated project never reached the board: $out"
+
+  # and no lane anywhere on this board reads as done while rows were withheld
+  printf '%s' "$out" | jq -e '
+    [.lanes[] | select(.more != []) | .reading]
+      | length == 3 and (map(select(test("launched work here|quiet"))) | length) == 0
+  ' >/dev/null || fail "a lane with withheld rows still read as launched and quiet: $out"
+  pass "an oversized backlog never reads as a finished project"
+}
+
 test_two_projects_with_the_same_queue_read_differently
 test_every_lane_draws_the_same_route_in_the_same_order
 test_the_board_never_states_a_rate_or_a_change
@@ -1346,3 +1581,8 @@ test_an_answer_the_channel_never_took_is_never_confirmed
 test_an_accepted_answer_still_reads_as_it_always_did
 test_a_late_failed_resubmit_never_retracts_a_captured_answer
 test_the_board_says_an_answer_stays_in_the_tab_until_it_is_sent
+test_a_lane_whose_orders_were_withheld_never_reads_as_finished
+test_a_project_with_no_surviving_row_still_gets_its_lane
+test_every_withheld_feed_is_named_in_the_lane_it_belongs_to
+test_a_lane_handed_in_full_never_claims_a_withheld_row
+test_an_oversized_backlog_never_reads_as_a_finished_project

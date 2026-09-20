@@ -96,6 +96,24 @@
 # only the rows it can actually place and discloses the remainder as standing
 # off the route, while the yard still reports the true order-book depth.
 #
+# `charted_more` is a FLEET figure, and every feed behind a lane is bounded
+# independently, so it cannot say which project the withheld rows belonged to.
+# Optional `lanes_more` is that same disclosure resolved per lane: one entry per
+# lane the composer could not hand over in full, `{repo, queued, underway,
+# call}`, each count a non-negative integer and at least one of them above zero,
+# with `repo` carrying the same deliberate no-project marker every row uses and
+# appearing at most once. It is what keeps the cut from being invisible lane by
+# lane: without it a project whose whole order book fell past a bound reads as
+# launched-and-quiet, or does not appear at all, because no row survived to
+# create its lane. So the template seeds a lane from an entry that has none,
+# prints the withheld counts in it, and states them in the lane reading, which
+# is why the entry must never be all zeros. The queued counts may not add up
+# past `charted_more`; the other two have no fleet counterpart to reconcile
+# against, because the payload carries no `underway_more` and no `landed_more`,
+# which is also why the rail below names only the KIND of those bounds.
+# `landed` has no per-lane entry either: a launch the bounded baseline left out
+# makes a lane read as LESS finished, never as more.
+#
 # The rail's note under the stages carries every bound its figures stand under,
 # in route order and joined by the same separator the board's other joined
 # lines use. The `charted_more` disclosure above is the conditional part. The
@@ -184,6 +202,19 @@ validate_payload() {  # <data.json>
         or ((.recommend_value | slug(128))
           and (.recommend_value as $recommend | [.options[].value] | index($recommend) != null)))
       and (if .type == "merge" then (.risk | nonempty_string) else true end);
+    def count_field($name):
+      has($name) and (.[$name] | type == "number") and (.[$name] >= 0)
+      and (.[$name] | floor == .);
+    # One lane the composer could not hand over in full, and how many rows of
+    # each feed it held back. A repo appears at most once, because two entries
+    # for one lane would be two different answers to the same question, and an
+    # entry that omits nothing is not an omission and would seed a lane with
+    # nothing to say.
+    def lane_more_item:
+      type == "object"
+      and repo_marker
+      and count_field("queued") and count_field("underway") and count_field("call")
+      and ((.queued + .underway + .call) > 0);
     def underway_item:
       type == "object" and repo_marker and (.id | nonempty_string)
       and (.state | nonempty_string) and (.doing | nonempty_string) and (.kind | nonempty_string);
@@ -216,6 +247,19 @@ validate_payload() {  # <data.json>
       or ((.charted_more | type == "number") and (.charted_more >= 0) and (.charted_more | floor == .)))
     and ((has("charted_warning_more") | not)
       or ((.charted_warning_more | type == "number") and (.charted_warning_more >= 0) and (.charted_warning_more | floor == .)))
+    and ((has("lanes_more") | not)
+      or ((.lanes_more | type == "array")
+        and ([.lanes_more[] | lane_more_item] | all)
+        and ([.lanes_more[] | ((.repo // "") | gsub("^\\s+|\\s+$"; ""))]
+          | length == (unique | length))
+        # The lanes may not between them claim more withheld queued work than
+        # the yard admits: the rail counts the order book as what it was handed
+        # plus `charted_more`, so lane chips adding up past that would print a
+        # depth the yard itself denies. A composer that can name the lanes can
+        # name the total, so withholding queued work without declaring it is
+        # refused rather than quietly under-counted.
+        and (([.lanes_more[].queued] | add // 0) as $lane_queued
+          | $lane_queued == 0 or ((.charted_more // -1) >= $lane_queued))))
     and ([.captains_call[] | call_item] | all)
     and ([.underway[] | underway_item] | all)
     and ([.landed[] | landed_item] | all)

@@ -12,7 +12,7 @@
 //   never left the tab.
 // Prints one JSON document describing the rendered yard:
 //   { headline, headlineSub, flowNote, stats:[{n,label}],
-//     lanes:[{name, reading, badges, launch, tone, flow, berths, empty}],
+//     lanes:[{name, reading, badges, launch, tone, flow, berths, more, empty}],
 //     berths:[{label, count, none, rows, shown, more:{n,hint,rows}}],
 //     notices:[{title,sub,badges}], noticeMore, yardEmpty, more, answers,
 //     channel, cards, dispatch, sendNote,
@@ -270,6 +270,9 @@ const lanes = kids(yard, "bb-lane").map((lane) => {
     // stages" is observable and not merely an empty berth list
     flow: lane.children.some((c) => has(c, "bb-flow")),
     berths: berthsOf(lane),
+    // what the lane says it was NOT handed, so "the cut is visible per lane" is
+    // observable as rendered text rather than inferred from the payload
+    more: kids(lane, "bb-morechip").map((c) => c.textContent),
     empty: kids(lane, "bb-empty").map((c) => c.textContent),
   };
 });

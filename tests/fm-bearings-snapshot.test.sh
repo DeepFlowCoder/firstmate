@@ -1508,6 +1508,47 @@ test_section_caps_and_expansion_flags() {
   pass "all fleet-sized sections are capped with counted opt-in expansion"
 }
 
+# Every count bound cuts a flat prefix off a COMBINED list, so the rows it drops
+# are not spread evenly over the fleet: whole projects fall past the index while
+# others keep everything. "gates showing 2 of 5" states that fleet-wide and
+# cannot say which project went quiet, which is all a reader that groups by
+# project - the bearings board, whose lane key is repo - would have to go on
+# before reading that silence as nothing queued, nothing in flight and nothing
+# waiting on the captain.
+test_count_bounds_name_the_projects_they_cut() {
+  local home fakebin json expanded
+  home=$(make_home per-repo-omission); write_large_fixture "$home" 5
+  fakebin=$(make_fakebin "$home")
+  json=$(FM_BEARINGS_IN_FLIGHT=2 FM_BEARINGS_DECISIONS=2 FM_BEARINGS_GATES=2 \
+    run "$home" "$fakebin" --json)
+  # three projects lost a queued row and a captain call each, and the live rows
+  # this fixture records no project for keep the same deliberate no-project
+  # marker their rendered rows carry rather than being dropped or merged into a
+  # named project. That marker sorts last, after every named project.
+  printf '%s' "$json" | jq -e '
+    ([.omitted_by_repo[].repo] == ["repo-3","repo-4","repo-5",null])
+    and ([.omitted_by_repo[] | select(.repo != null) | {gates, in_flight, decisions_open}]
+         | unique == [{gates:1, in_flight:0, decisions_open:1}])
+    and ([.omitted_by_repo[] | select(.repo == null)]
+         == [{repo:null, in_flight:3, decisions_open:0, gates:0}])
+  ' >/dev/null || fail "the bounds did not name the projects they cut: $json"
+  # what is disclosed per project and what the sections actually rendered are
+  # two readings of one cut, so they may never disagree
+  printf '%s' "$json" | jq -e '
+    ([.omitted_by_repo[].gates] | add) == (5 - (.gates | length))
+    and ([.omitted_by_repo[].in_flight] | add) == (5 - (.in_flight | length))
+    and ([.omitted_by_repo[].decisions_open] | add) == (5 - (.decisions_open | length))
+    and ([.gates[].repo] | map(select(. == "repo-5")) | length) == 0
+  ' >/dev/null || fail "the per-project counts disagree with the rendered rows: $json"
+  # an empty array is a fact and not a silence: nothing was cut, so nothing is
+  # named, and the field is still there to say so
+  expanded=$(FM_BEARINGS_IN_FLIGHT=2 FM_BEARINGS_DECISIONS=2 FM_BEARINGS_GATES=2 \
+    run "$home" "$fakebin" --json --all-in-flight --all-decisions --all-queued)
+  printf '%s' "$expanded" | jq -e 'has("omitted_by_repo") and .omitted_by_repo == []' \
+    >/dev/null || fail "revealing every row still reported a project as cut: $expanded"
+  pass "every count bound names the projects it cut"
+}
+
 test_pr_repository_cap_and_expansion() {
   local home fakebin json expanded
   home=$(make_home repo-caps); write_large_fixture "$home" 5
@@ -2636,6 +2677,7 @@ test_landed_selects_deliveries_not_answered_calls_or_silent_scouts
 test_in_flight_captain_hold_reaches_captains_call
 test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call
 test_main_and_secondmate_render_a_held_row_identically
+test_count_bounds_name_the_projects_they_cut
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed
