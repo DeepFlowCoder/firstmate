@@ -24,6 +24,8 @@
 #                 <stamp>>; <n> failed attempt(s) ... last: <recorded failure>",
 #                 "TANGLE: <remediation>",
 #                 "UPSTREAM_ANCESTRY: <remediation>",
+#                 "GNHF_RECONCILE: <id> is queued in the book, but published
+#                 branch <branch> in <repo> already records work on it - <commit>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
@@ -64,6 +66,14 @@
 #          emitted only on a positive lost reading and stays silent when the
 #          state cannot be read, so an absent line never claims the record is
 #          healthy.
+#          A GNHF_RECONCILE line means an overnight `gnhf` run published work for
+#          a task the backlog still lists as queued. It reads only
+#          remote-tracking refs this checkout already holds, so it adds no
+#          network call, and it reports without ever reconciling anything.
+#          bin/fm-gnhf-reconcile.sh owns how a task id is recovered from a
+#          branch, why the branch NAME cannot carry one, and its bounds; like
+#          UPSTREAM_ANCESTRY it degrades to silence, so an absent line never
+#          means the book is reconciled.
 #          A DISK_SPACE report line means free space on this home's filesystem is
 #          below the configured refusal threshold; above it, and when the space
 #          cannot be measured, the report is silent. A DISK_SPACE invalid line
@@ -1368,6 +1378,20 @@ capacity_arm() {
   "$SCRIPT_DIR/fm-capacity-check.sh" arm >/dev/null 2>&1 || true
 }
 
+# Work an overnight gnhf run published that the backlog still lists as queued.
+# It belongs in the LOCAL phase because it reads remote-tracking refs this
+# checkout already holds and never fetches, so session start's blocking path
+# gains no network call; the deferred stage's clone refresh is what keeps those
+# refs current. bin/fm-gnhf-reconcile.sh owns the matching contract, its known
+# hole, and its bounds, and it only ever reports - reconciling the book is
+# firstmate's own decision on its turn.
+gnhf_reconcile_detect() {
+  [ -x "$SCRIPT_DIR/fm-gnhf-reconcile.sh" ] || return 0
+  while IFS= read -r line; do
+    [ -z "$line" ] || echo "GNHF_RECONCILE: $line"
+  done < <("$SCRIPT_DIR/fm-gnhf-reconcile.sh" report 2>/dev/null || true)
+}
+
 detect_local_config() {
   # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
   # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
@@ -1407,6 +1431,7 @@ detect_local_config() {
     echo "MISSING_MANUAL: cursor-agent (instructions: $(manual_install_url cursor-agent))"
   fi
   crew_dispatch_validate
+  gnhf_reconcile_detect
   disk_space_detect
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
     && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
