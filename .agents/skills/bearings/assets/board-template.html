@@ -1268,8 +1268,8 @@ __FM_BEARINGS_BOARD_DATA__
     return "launched work here";
   }
   function laneTone(l) {
-    if (l.call.length) return "call";
-    if (l.ways.length) return "building";
+    if (l.call.length || l.more.call) return "call";
+    if (l.ways.length || l.more.underway) return "building";
     if (l.order.length) return "ready";
     return "quiet";
   }

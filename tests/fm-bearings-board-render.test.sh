@@ -1612,6 +1612,52 @@ test_the_clear_yard_headline_names_a_withheld_call() {
 }
 
 # ---------------------------------------------------------------------------
+# A lane's tone is the border colour that reads its state at a glance. The
+# `buildingLanes` hedge made a withheld-underway lane count as building in the
+# headline and the lane reading, but its sibling classifier `laneTone` still
+# bordered it quiet. A withheld in-flight row is live work and a withheld call
+# is waiting on the captain, so each tones like its handed counterpart; a
+# withheld queued row has unknown disposition, so it keeps falling through
+# unchanged.
+# ---------------------------------------------------------------------------
+test_a_lane_with_withheld_work_tones_like_its_withheld_counterpart() {
+  local home out
+  home=$(make_home tone-withheld-ways)
+  out=$(render "$home" '{
+    "underway": [
+      {"id":"busy-1","repo":"busy","kind":"ship","state":"working","doing":"fitting the keel"}
+    ],
+    "lanes_more": [
+      {"repo":"cut","queued":0,"underway":4,"call":0}
+    ]}')
+
+  # the lane whose ways were withheld must not border quiet beside a headline
+  # and reading that both call it building
+  printf '%s' "$out" | jq -e '
+    .lanes[] | select(.name == "cut") | .tone == "building"
+  ' >/dev/null || fail "a lane with withheld ways still toned quiet: $out"
+
+  # a withheld call tones as call, matching its handed counterpart
+  out=$(render "$(make_home tone-withheld-call)" '{
+    "lanes_more": [{"repo":"cut","queued":0,"underway":0,"call":3}]}')
+  printf '%s' "$out" | jq -e '
+    .lanes[] | select(.name == "cut") | .tone == "call"
+  ' >/dev/null || fail "a lane with a withheld call did not tone as call: $out"
+
+  # a lane whose only withheld rows are queued keeps its usual quiet tone:
+  # a withheld queued row has unknown disposition, so nothing may assert it is
+  # ready to start
+  out=$(render "$(make_home tone-withheld-queued)" '{
+    "charted_more": 3,
+    "lanes_more": [{"repo":"cut","queued":3,"underway":0,"call":0}]}')
+  printf '%s' "$out" | jq -e '
+    .lanes[] | select(.name == "cut") | .tone == "quiet"
+  ' >/dev/null || fail "a withheld-queued lane was toned ready without a disposition: $out"
+
+  pass "a lane with withheld ways or call tones as its withheld counterpart"
+}
+
+# ---------------------------------------------------------------------------
 # The falsifier for the whole chain, driven from a real oversized backlog
 # rather than from a hand-written payload: more queued rows than the bound
 # allows, with one project standing ENTIRELY past the cut and another keeping
@@ -1732,5 +1778,6 @@ test_the_fleet_headline_and_rail_name_withheld_work_instead_of_claiming_none
 test_the_headline_counts_a_lane_with_withheld_ways_as_building
 test_the_call_deck_empty_state_names_a_withheld_call
 test_the_clear_yard_headline_names_a_withheld_call
+test_a_lane_with_withheld_work_tones_like_its_withheld_counterpart
 test_a_lane_handed_in_full_never_claims_a_withheld_row
 test_an_oversized_backlog_never_reads_as_a_finished_project
