@@ -13,6 +13,7 @@
 #   - a local-only gnhf branch is scratch, not published work;
 #   - a gnhf branch already merged into the default branch holds nothing ahead;
 #   - a non-gnhf branch is ordinary fleet work the book already knows about;
+#   - an id that appears only in a commit BODY is a mention, not a claim;
 #   - a longer id that merely CONTAINS a queued id is a different task;
 #   - a book that cannot be read authoritatively is left alone, not guessed at;
 #   - a plain directory inside the home's gitignored projects/ still resolves to
@@ -113,7 +114,13 @@ test_reports_published_work_for_a_queued_task() {
   assert_contains "$out" "gnhf/trabaja-cuatro-defec-94a635" \
     "the line must name the published branch as the evidence"
   assert_contains "$out" "Fixed defect 1 of 4" \
-    "the line must carry the commit that claims the work"
+    "the line must carry the commit subject that names the task"
+  # The line must claim only what it knows. Naming is the whole of the evidence,
+  # so a stronger verdict would be one the evidence cannot carry.
+  assert_contains "$out" "names it" \
+    "the line must say the branch NAMES the task"
+  assert_not_contains "$out" "records work on it" \
+    "the line must not claim the branch did the work"
   # The same run holds a queued task nothing published names. It must not be
   # dragged in, or the report would be a list of the backlog rather than of
   # contradictions.
@@ -179,6 +186,38 @@ test_silent_on_non_gnhf_branch() {
     "a published non-gnhf branch is tracked fleet work and must stay silent"
 
   pass "fm-gnhf-reconcile: silent on published non-gnhf branches"
+}
+
+# An id in a commit BODY is a mention, not a claim of work: a run dispatched
+# against several tasks routinely names the ones it did NOT do ("remaining: ..."),
+# links a related task, or leaves a comment naming a sibling. Reporting those as
+# named work was a false alarm, so only the SUBJECT is read.
+test_silent_on_body_only_mention() {
+  local repo="$TMP_ROOT/body-only" out moved
+  make_repo "$repo"
+  git -C "$repo" checkout -q -b gnhf/objetivo-cuerpo-666666
+  git -C "$repo" commit -q --allow-empty \
+    -m 'gnhf 1: fixed something else entirely' \
+    -m 'remaining: fm-readme-mencionar-tablero'
+  git -C "$repo" push -q origin gnhf/objetivo-cuerpo-666666
+  git -C "$repo" checkout -q main
+
+  out=$(run_guard "$repo" "fm-readme-mencionar-tablero")
+  assert_not_contains "$out" "fm-readme-mencionar-tablero" \
+    "an id mentioned only in a commit body must not be reported"
+
+  # Drive the one input apart: the SAME id, moved into the subject of a second
+  # published commit, must report. Without this the silence above could come
+  # from an inert fixture rather than from subject-only matching.
+  git -C "$repo" checkout -q gnhf/objetivo-cuerpo-666666
+  git -C "$repo" commit -q --allow-empty -m 'gnhf 2: fixed fm-readme-mencionar-tablero'
+  git -C "$repo" push -q origin gnhf/objetivo-cuerpo-666666
+  git -C "$repo" checkout -q main
+  moved=$(run_guard "$repo" "fm-readme-mencionar-tablero")
+  assert_contains "$moved" "fm-readme-mencionar-tablero" \
+    "the identical id in a commit SUBJECT must be reported"
+
+  pass "fm-gnhf-reconcile: reads commit subjects, never bodies"
 }
 
 # Task ids share prefixes. A commit about fm-tablero-capacidad says nothing
@@ -290,6 +329,7 @@ test_reports_published_work_for_a_queued_task
 test_silent_on_local_only_branch
 test_silent_when_branch_already_merged
 test_silent_on_non_gnhf_branch
+test_silent_on_body_only_mention
 test_silent_on_prefix_collision
 test_silent_when_backlog_backend_is_manual
 test_nested_plain_directory_is_not_a_second_repo

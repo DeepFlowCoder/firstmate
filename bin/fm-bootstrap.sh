@@ -25,7 +25,7 @@
 #                 "TANGLE: <remediation>",
 #                 "UPSTREAM_ANCESTRY: <remediation>",
 #                 "GNHF_RECONCILE: <id> is queued in the book, but published
-#                 branch <branch> in <repo> already records work on it - <commit>",
+#                 branch <branch> in <repo> names it - <commit subject>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
@@ -66,14 +66,16 @@
 #          emitted only on a positive lost reading and stays silent when the
 #          state cannot be read, so an absent line never claims the record is
 #          healthy.
-#          A GNHF_RECONCILE line means an overnight `gnhf` run published work for
-#          a task the backlog still lists as queued. It reads only
-#          remote-tracking refs this checkout already holds, so it adds no
+#          A GNHF_RECONCILE line means a published branch from an overnight
+#          `gnhf` run names a task the backlog still lists as queued. It reads
+#          only remote-tracking refs this checkout already holds, so it adds no
 #          network call, and it reports without ever reconciling anything.
+#          The line says the branch NAMES the task rather than that it did the
+#          work, because naming is the whole of the evidence.
 #          bin/fm-gnhf-reconcile.sh owns how a task id is recovered from a
-#          branch, why the branch NAME cannot carry one, and its bounds; like
-#          UPSTREAM_ANCESTRY it degrades to silence, so an absent line never
-#          means the book is reconciled.
+#          branch's commit subjects, why the branch NAME cannot carry one, and
+#          its bounds; like UPSTREAM_ANCESTRY it degrades to silence, so an
+#          absent line never means the book is reconciled.
 #          A DISK_SPACE report line means free space on this home's filesystem is
 #          below the configured refusal threshold; above it, and when the space
 #          cannot be measured, the report is silent. A DISK_SPACE invalid line

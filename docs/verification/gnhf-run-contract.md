@@ -47,7 +47,7 @@ gnhf/trabaja-cuatro-defec-d9b401
 That one run was dispatched against four named backlog tasks, and its name records none of them.
 This is why the cheap path of reading task ids out of branch names does not hold, and why the reconciliation guard reads commit messages instead.
 
-## The commit messages do carry the task id
+## The commit subjects do carry the task id
 
 The same branch names its tasks in the commits, because the prompt firstmate wrote asked the run to name the defect it fixed:
 
@@ -58,8 +58,39 @@ gnhf 1: Fixed defect 1 of 4 (fm-readme-mencionar-tablero): README.md now names t
 ```
 
 This is a property of the prompt, not of `gnhf`, and it is the guard's known hole.
-A run whose commits never name the task is invisible to the guard, which is why the guard degrades to silence rather than to a false alarm.
+A run whose commit subjects never name the task is invisible to the guard, which is why the guard stays silent rather than guessing.
 Two of the four dispatched tasks appear above; the run committed nothing for the other two, so a branch also proves less than the prompt intended.
+
+## The id is in the subject, never only in the body
+
+The guard reads commit subjects and not bodies, and this is the measurement that supports it.
+Across every commit that a `gnhf` ref holds ahead of the default branch in this repository, no task id appears in a body at all, so reading subjects loses no measured recall.
+Reading bodies, by contrast, admitted a false alarm: an id merely mentioned in a body, such as a `remaining:` note listing the tasks a run did NOT do, was reported as named work.
+
+The body probe prints nothing:
+
+```
+$ for ref in $(git for-each-ref --format='%(refname)' 'refs/heads/gnhf' 'refs/remotes/*/gnhf'); do git log --format='%b' "origin/main..$ref"; done | grep -oE '\bfm-[a-z0-9-]+|\bbitagora-[a-z0-9-]+' | sort -u
+```
+
+An empty result means nothing on its own, so the identical probe over subjects is recorded beside it; it is non-empty, which is what makes the silence above evidence rather than a vacuous measurement:
+
+```
+$ for ref in $(git for-each-ref --format='%(refname)' 'refs/heads/gnhf' 'refs/remotes/*/gnhf'); do git log --format='%s' "origin/main..$ref"; done | grep -oE '\bfm-[a-z0-9-]+' | sort -u
+fm-bearings-snapshot
+fm-fixture-sed-bsd-enmascarado
+fm-readme-mencionar-tablero
+fm-tablero
+```
+
+Both probes restrict themselves to `origin/main..<ref>`, and that restriction is load-bearing rather than decorative.
+`gnhf` branches descend from the default branch, so a probe scoped only by `--branches='gnhf/*'` still walks all of the default branch's history and reports ids from unrelated commits.
+Adding `--all` is worse still, because it makes the branch restriction inert entirely.
+
+`fm-tablero` in the subject output is honest evidence of the guard's remaining limit rather than a flaw to hide.
+It comes from a subject naming the file `bin/fm-tablero.sh`, not from any claim of work on a task.
+That is exactly why the reported line says the branch NAMES the task instead of claiming it recorded work on it: narrowing to subjects removes the mere-mention path but does not remove the collision, and this repository's convention of scripts and tasks sharing names keeps the collision realistic.
+No bare `fm-tablero` task is queued today, so it is not a live false alarm.
 
 ## Most work stays local
 

@@ -18,8 +18,17 @@
 #            bin/fm-bootstrap.sh, which adds the GNHF_RECONCILE: prefix.
 #
 # Output line (one per contradicted task, without the caller's prefix):
-#   <id> is queued in the book, but published branch <branch> in <repo> already
-#   records work on it - <matching commit subject>
+#   <id> is queued in the book, but published branch <branch> in <repo> names it
+#   - <matching commit subject>
+#
+# THE LINE CLAIMS ONLY WHAT IT KNOWS. It says the branch NAMES the task, not that
+# it did the work, because naming is the whole of the evidence. Reading subjects
+# rather than bodies removes the mere-mention path but does not remove the
+# collision: a subject naming the file bin/fm-tablero.sh still yields the exact
+# token fm-tablero, and this repository's convention of scripts and tasks sharing
+# names makes that realistic. Since the collision survives, a stronger claim
+# would be a verdict the evidence cannot carry. Naming is enough for the reader
+# to go and decide.
 #
 # WHAT "PUBLISHED" MEANS HERE, AND WHY NO NETWORK CALL. A branch counts as
 # published when this checkout holds a remote-tracking ref for it under
@@ -36,17 +45,16 @@
 # carries no task id at all, and the real branch from the measured incident is
 # named gnhf/trabaja-cuatro-defec-94a635 while it worked four named tasks.
 # docs/verification/gnhf-run-contract.md records that measurement. The id is
-# instead recovered from the COMMIT MESSAGES of the commits the branch holds
-# ahead of its remote's default branch, which is where a run that was asked to
-# name the task it fixed actually names it.
+# instead recovered from the SUBJECTS of the commits the branch holds ahead of
+# its remote's default branch, which is where a run that was asked to name the
+# task it fixed actually names it.
 #
 # That makes the guard a net with a known hole rather than a guarantee: it fires
-# only when the run's commits name the task, which is a property of the prompt
-# firstmate wrote, not something gnhf promises. It degrades to SILENCE, never to
-# a false alarm, so an absent line never means the book is reconciled - the same
-# stance bin/fm-bootstrap.sh's UPSTREAM_ANCESTRY check takes. Keep naming the
-# task id in the prompt of any gnhf run dispatched against backlog work, or this
-# net stops catching that run.
+# only when a run's commit subject names the task, which is a property of the
+# prompt firstmate wrote, not something gnhf promises. An absent line therefore
+# never means the book is reconciled - the same stance bin/fm-bootstrap.sh's
+# UPSTREAM_ANCESTRY check takes. Keep naming the task id in the prompt of any
+# gnhf run dispatched against backlog work, or this net stops catching that run.
 #
 # Matching is whole-token and exact: a commit naming fm-tablero-capacidad never
 # matches the shorter queued id fm-tablero, because candidate tokens are
@@ -85,7 +93,12 @@ ACTION=${1:-report}
 case "$ACTION" in
   report) ;;
   -h|--help|help)
-    sed -n '2,69p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # Derive the header's extent instead of naming line numbers: a hardcoded
+    # range silently truncates help the moment the header grows, which it
+    # already did once. Print from line 2 while lines are still comments, then
+    # stop at the first line that is not.
+    LC_ALL=C awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
+      "${BASH_SOURCE[0]}"
     exit 0
     ;;
   *)
@@ -141,11 +154,19 @@ remote_base_ref() {  # <repo> <remote>
   return 1
 }
 
-# Print "<id>\001<subject>" for every queued id named by a commit that <ref>
-# holds ahead of <base>. One git read and one awk pass per branch.
+# Print "<id>\001<subject>" for every queued id named by the SUBJECT of a commit
+# that <ref> holds ahead of <base>. One git read and one awk pass per branch.
+#
+# Only the subject is read, never the body. Measured across every real gnhf
+# commit in this repository, task ids appear in subjects and never body-only, so
+# reading subjects loses no measured recall - while reading bodies added a false
+# alarm: an id merely MENTIONED in a body ("remaining: fm-candado-dos-lectores-pid",
+# a related-task link, or a code comment naming a sibling task) was reported as
+# worked, which the incident's own shape makes concrete, since that run was
+# dispatched against four tasks and committed only two.
 branch_matches() {  # <repo> <base> <ref>
   local repo=$1 base=$2 ref=$3
-  git -C "$repo" log --max-count="$MAX_COMMITS" --format=$'\001%s\002%B' "$base..$ref" 2>/dev/null \
+  git -C "$repo" log --max-count="$MAX_COMMITS" --format=$'\001%s' "$base..$ref" 2>/dev/null \
     | LC_ALL=C awk -v idsfile="$QUEUED_FILE" '
       BEGIN {
         # The id file is read line by line, so RS is switched to the commit
@@ -156,11 +177,10 @@ branch_matches() {  # <repo> <base> <ref>
         RS = "\001"
       }
       {
-        if ($0 == "") next
-        p = index($0, "\002")
-        if (p == 0) next
-        subject = substr($0, 1, p - 1)
-        n = split(tolower(substr($0, p + 1)), parts, /[^a-z0-9-]+/)
+        subject = $0
+        sub(/\n+$/, "", subject)
+        if (subject == "") next
+        n = split(tolower(subject), parts, /[^a-z0-9-]+/)
         for (i = 1; i <= n; i++) {
           token = parts[i]
           gsub(/^-+|-+$/, "", token)
@@ -178,7 +198,7 @@ emit() {  # <id> <branch> <repo> <subject>
     return 0
   fi
   subject=$(printf '%s' "$subject" | LC_ALL=C tr -d '\000-\037' | cut -c1-140)
-  printf '%s is queued in the book, but published branch %s in %s already records work on it - %s\n' \
+  printf '%s is queued in the book, but published branch %s in %s names it - %s\n' \
     "$id" "$branch" "$repo" "$subject"
   PRINTED=$((PRINTED + 1))
 }

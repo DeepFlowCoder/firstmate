@@ -35,12 +35,13 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `UPSTREAM_ANCESTRY: <remediation>` - the primary checkout's history no longer records that this fork already absorbed upstream, so a catch-up replays already-absorbed work as conflicts.
   Run the printed `bin/fm-upstream-graft.sh apply` to restore it; the remedy is per-checkout because `refs/replace` is not inherited by a clone, and `bin/fm-upstream-graft.sh` owns the absorption table and the verdict.
   This line appears only on a positive lost reading; a state the check could not read stays silent, and an absent line never means the record is healthy.
-- `GNHF_RECONCILE: <id> is queued in the book, but published branch <branch> in <repo> already records work on it - <commit>` - an overnight `gnhf` run worked outside the fleet lifecycle and published work for a task the backlog still lists as queued, so dispatching that task now would pay twice for it.
-  Reconcile before dispatching anything from the queue: read the named branch, decide whether that work is what the task asked for, and then close, re-scope, or leave the task open yourself.
+- `GNHF_RECONCILE: <id> is queued in the book, but published branch <branch> in <repo> names it - <commit subject>` - a published branch from an overnight `gnhf` run, which works outside the fleet lifecycle, names a task the backlog still lists as queued, so dispatching that task now may pay twice for it.
+  Reconcile before dispatching anything from the queue: read the named branch, decide whether what is there is what the task asked for, and then close, re-scope, or leave the task open yourself.
   Nothing is reconciled for you, deliberately - the guard only ever reports, because whether published work actually satisfies a task is a judgement, and the branch may hold a partial or abandoned attempt.
-  The reported commit is the run's own claim about itself, not a verified result; treat it as a pointer to read the branch, never as proof the task is done.
+  Read the line as exactly what it says: the branch NAMES the task, which is the whole of the evidence, and not that it did the work.
+  Naming can come from something other than a claim, because a subject naming a file such as `bin/fm-tablero.sh` yields the token `fm-tablero`, so the quoted commit subject is a pointer to go and read the branch, never proof the task is done.
   Landing that work follows the project's ordinary delivery path like any other change, and the line goes quiet on its own once the branch's commits reach the default branch.
-  Silence never means the book is reconciled: the guard matches only when the run's commits name the task id, so keep naming the task id in the prompt of any `gnhf` run dispatched against backlog work.
+  Silence never means the book is reconciled: the guard matches only when a run's commit SUBJECT names the task id, so keep naming the task id in the prompt of any `gnhf` run dispatched against backlog work.
   [`bin/fm-gnhf-reconcile.sh`](../../../bin/fm-gnhf-reconcile.sh) owns that contract and its bounds, and [`docs/verification/gnhf-run-contract.md`](../../../docs/verification/gnhf-run-contract.md) records the measurements behind it.
 - `STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>` - the visible startup-memory budget is not a safe one-line positive decimal file; do not infer the default or propagate it.
   Correct the local primary file, then rerun session start so the normal convergence path can deliver the validated value to secondmate homes.
