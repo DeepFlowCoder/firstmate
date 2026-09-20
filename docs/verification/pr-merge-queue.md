@@ -103,8 +103,28 @@ Its configured method is no longer needed at all: the merge sends no method, so 
 The forge's refusal sentence was rejected outright as a signal.
 It is vendor prose - the `strings` reading above shows it is gh's own, not GitHub's - and a reworded release would leave this reading every queue as absent, silently, with no symptom other than merges that never land.
 
+## What is live evidence and what is fabricated
+
+One reading here depends on GitHub, and exactly one was taken live against the real forge: the `isMergeQueueEnabled` reading itself, run 2026-09-19 with gh 2.90.0, returning true for `bitagoralabs/bitagora#460` and false for `DeepFlowCoder/firstmate#77`, together with the gh field-description, `gh` help, `gh-axi` help, and branch-rules readings quoted above.
+That is the only reading this fix's correctness rests on, and it is the one that was measured live.
+
+The six behavioural outcomes this fix changes were not driven against the real forge.
+They were exercised by `tests/fm-pr-merge.test.sh` (89 cases) and by a standalone driver against a fabricated forge - stub `gh` and `gh-axi` placed first on `PATH`.
+Those six are:
+
+- a green pull request on a merge-queue base enqueued with no method imposed and reported as queued rather than merged;
+- a green pull request on a queue-less base keeping today's `--squash` and its merged reporting;
+- a red pull request on a merge-queue base refused before any forge call;
+- all five fitness-gate refusals firing the same on a queue base;
+- an unreadable merge queue keeping the `--squash` default and never being folded into queue-less;
+- a caller-named method surviving a queue base, with the refusal naming a methodless retry.
+
+That split is the right evidence rather than a shortfall: the six exercise branches of this repository's own script, which a fabricated forge drives legitimately, while only the signal reading depends on GitHub and that one was taken live.
+No end-to-end merge or enqueue was performed against a real repository, so no reader should take all seven as proven against the real forge.
+
 ## Refreshing this record
 
-Re-run every command above.
+Re-run every command above, which are the live forge readings, against the real forge.
+The six behavioural scenarios are re-run by `tests/fm-pr-merge.test.sh` and by the fabricated-forge driver, never against the real forge.
 The guarantee holds while `isMergeQueueEnabled` is still served, still separates a queue base from one without, and gh still documents that no merge strategy is required on a queue base.
 `tests/fm-pr-merge.test.sh` is what enforces the behaviour itself, including that the fitness gate refuses a red, unfinished, conflicting, unreadable, or unknown-mergeability pull request exactly the same on a queue base.
