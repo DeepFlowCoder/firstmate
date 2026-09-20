@@ -652,11 +652,11 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   # Landed is deliberately absent: it is bounded too, but a launch the baseline
   # left out only makes a project read as LESS finished, never as more.
   | ([ (if $all_in_flight == 1 then [] else $in_flight_all[$in_flight_n:] end)[]
-       | {repo:(.repo // null), surface:"in_flight"} ]
+       | {repo:((.repo // null) | if . == "" then null else . end), surface:"in_flight"} ]
      + [ (if $all_decisions == 1 then [] else $decisions_all[$decisions_n:] end)[]
-       | {repo:(.repo // null), surface:"decisions_open"} ]
+       | {repo:((.repo // null) | if . == "" then null else . end), surface:"decisions_open"} ]
      + [ (if $all_queued == 1 then [] else $gates_all[$gates_n:] end)[]
-       | {repo:(.repo // null), surface:"gates"} ]) as $omitted_rows
+       | {repo:((.repo // null) | if . == "" then null else . end), surface:"gates"} ]) as $omitted_rows
   | ([ $omitted_rows | group_by(.repo)[]
        | {repo:(.[0].repo),
           in_flight:([.[] | select(.surface == "in_flight")] | length),

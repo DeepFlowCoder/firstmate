@@ -688,6 +688,12 @@ __FM_BEARINGS_BOARD_DATA__
   var chartedWarnings = data.charted.filter(isWarning);
   var chartedMoreQueued = data.charted_more || 0;
   var chartedMoreWarnings = data.charted_warning_more || 0;
+  var withheldWays = 0;
+  var withheldCall = 0;
+  (data.lanes_more || []).forEach(function (m) {
+    withheldWays += m.underway || 0;
+    withheldCall += m.call || 0;
+  });
 
   /* ---- honest dates -------------------------------------------------------
      The fleet keeps no prior snapshot, so the board never states a trend, a
@@ -925,14 +931,18 @@ __FM_BEARINGS_BOARD_DATA__
        rows whatever their disposition, so it can never be read as clear to
        start, and a yard whose whole book is held says so rather than
        announcing zero orders above a sub-line that names the held ones. */
-    var stopped = "Nothing is being built right now. ";
+    var opener = withheldWays > 0
+      ? plural(withheldWays, "hull", "hulls") + " on the ways, not charted here. "
+      : "Nothing is being built right now. ";
     if (totalOrder > 0) {
-      headline = stopped + plural(totalOrder, "order is", "orders are") + " clear to start.";
+      headline = opener + plural(totalOrder, "order is", "orders are") + " clear to start.";
     } else if (totalDock > 0) {
-      headline = stopped + plural(totalDock, "order is", "orders are") + " held in dry dock.";
+      headline = opener + plural(totalDock, "order is", "orders are") + " held in dry dock.";
     } else {
-      headline = stopped + plural(totalQueued, "order waits", "orders wait") + " in the order book.";
+      headline = opener + plural(totalQueued, "order waits", "orders wait") + " in the order book.";
     }
+  } else if (withheldWays > 0) {
+    headline = plural(withheldWays, "hull", "hulls") + " on the ways, not charted here.";
   } else if (lanes.length) {
     headline = "The yard is clear - nothing building, nothing ordered.";
   } else {
@@ -973,23 +983,34 @@ __FM_BEARINGS_BOARD_DATA__
      order. Truncated queued rows are queued work of unknown disposition, so
      they can be added to neither queued stage without asserting where they
      stand: the rail says they exist and says they are off it, and only when
-     there are any. The other two apply always, because those stages are always
-     drawn and neither figure is complete occupancy the way the two queued ones
-     are: the underway feed is the snapshot's bounded in-flight projection and
-     the launched feed is its bounded recent-completions baseline. The payload
-     carries no count of what either left out - there is no `underway_more` and
-     no `landed_more` the way `charted_more` exists - so the board can never
-     know whether they truncated, which is exactly why the note names the KIND
-     of bound and never a number, a window, a rate or a change. */
+     there are any. Withheld call rows and withheld underway rows are the same
+     disclosure for their own feeds, named only when `lanes_more` declares
+     them. The two kind lines then apply always, because those stages are
+     always drawn and neither figure is complete occupancy the way the queued
+     ones are: the underway feed is the snapshot's bounded in-flight projection
+     and the launched feed is its bounded recent-completions baseline. The
+     payload carries no count of what the launched feed left out - there is no
+     `landed_more` the way `charted_more` exists - so the board can never know
+     whether it truncated, which is exactly why that note names the KIND of
+     bound and never a number, a window, a rate or a change. */
   var flowBounds = [];
+  if (withheldCall) {
+    flowBounds.push("+" + withheldCall + " more needing you, not charted here");
+  }
   if (chartedMoreQueued) {
     flowBounds.push("+" + chartedMoreQueued + " more queued, not charted here, so no stage counts them");
+  }
+  if (withheldWays) {
+    flowBounds.push("+" + withheldWays + " more on the ways, not charted here");
   }
   flowBounds.push("on the ways counts the live work this board was given, not every worker under way");
   flowBounds.push("launched counts the recent completions this board was given, not every launch on record");
   document.getElementById("bb-flow-note").textContent = flowBounds.join(" · ");
   document.getElementById("bb-call-sub").textContent =
-    callTotal ? plural(callTotal, "item waits", "items wait") + " on you, captain" : "nothing needs you, captain";
+    callTotal ? plural(callTotal, "item waits", "items wait") + " on you, captain"
+    : (withheldCall > 0
+        ? plural(withheldCall, "item", "items") + " needing you, not charted here"
+        : "nothing needs you, captain");
 
   /* ---- Captain's Call deck: every item renders as the same full card ---- */
   var deck = document.getElementById("bb-call");

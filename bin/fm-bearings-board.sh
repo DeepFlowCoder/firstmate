@@ -108,23 +108,27 @@
 # create its lane. So the template seeds a lane from an entry that has none,
 # prints the withheld counts in it, and states them in the lane reading, which
 # is why the entry must never be all zeros. The queued counts may not add up
-# past `charted_more`; the other two have no fleet counterpart to reconcile
-# against, because the payload carries no `underway_more` and no `landed_more`,
-# which is also why the rail below names only the KIND of those bounds.
-# `landed` has no per-lane entry either: a launch the bounded baseline left out
-# makes a lane read as LESS finished, never as more.
+# past `charted_more`; `underway` and `call` have no fleet-wide figure beside
+# it to reconcile against, but their per-lane counts are real, so the rail
+# below sums each across `lanes_more` and names the total when one is declared.
+# When `lanes_more` declares none, the rail still names only the KIND of the
+# underway bound. `landed` has no per-lane entry and no fleet counterpart
+# either: a launch the bounded baseline left out makes a lane read as LESS
+# finished, never as more, so its bound is always named by KIND alone, never a
+# number.
 #
 # The rail's note under the stages carries every bound its figures stand under,
 # in route order and joined by the same separator the board's other joined
-# lines use. The `charted_more` disclosure above is the conditional part. The
-# other two are unconditional, because those stages are always drawn and
-# neither figure is complete current occupancy the way the two queued ones are:
-# `underway` is the snapshot's bounded in-flight projection and `landed` is its
-# bounded recent-completions baseline. Nothing in the payload says how many
-# rows either feed left out - there is no `underway_more` and no `landed_more`
-# beside `charted_more` - so the note names the KIND of bound and never a
-# number, a window length, a rate or a change - the same refusal the route
-# itself is built on.
+# lines use. `charted_more`, the withheld `call` total and the withheld
+# `underway` total are the conditional parts: each is named only when the
+# payload declares it. The two kind lines are unconditional, because those
+# stages are always drawn and neither figure is complete current occupancy the
+# way the queued ones are: `underway` is the snapshot's bounded in-flight
+# projection and `landed` is its bounded recent-completions baseline. Nothing
+# in the payload says how many rows the landed feed left out - there is no
+# `landed_more` beside `charted_more` - so that bound is named by KIND alone
+# and never a number, a window length, a rate or a change - the same refusal
+# the route itself is built on.
 #
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
 # re-invocation rebuilds the same file in place, which keeps the same Lavish

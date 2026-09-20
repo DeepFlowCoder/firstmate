@@ -1549,6 +1549,29 @@ test_count_bounds_name_the_projects_they_cut() {
   pass "every count bound names the projects it cut"
 }
 
+# A repo-less row (null) and an explicitly empty `(repo: )` row are the same
+# lane key once the board trims them, so the snapshot must merge them into one
+# omitted_by_repo entry rather than emitting null and "" as two lanes the board
+# then rejects as a duplicate. Both kinds cut by a bound must group together
+# with the combined count.
+test_empty_and_missing_repo_merge_into_one_omitted_entry() {
+  local home fakebin json
+  home=$(make_home repo-collision)
+  fakebin=$(make_fakebin "$home")
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] kept - Survives the cut (repo: firstmate) (kind: ship)
+- [ ] empty - Empty repo marker (repo: ) (kind: ship)
+- [ ] missing - No repo marker (kind: ship)
+EOF
+  json=$(FM_BEARINGS_GATES=1 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.omitted_by_repo == [{repo:null, in_flight:0, decisions_open:0, gates:2}])
+    and (.gates | length == 1)
+  ' >/dev/null || fail "an empty and a missing repo marker did not merge into one omitted entry: $json"
+  pass "an empty and a missing repo marker group into one omitted entry"
+}
+
 test_pr_repository_cap_and_expansion() {
   local home fakebin json expanded
   home=$(make_home repo-caps); write_large_fixture "$home" 5
@@ -2678,6 +2701,7 @@ test_in_flight_captain_hold_reaches_captains_call
 test_live_worker_does_not_pull_a_captain_hold_out_of_captains_call
 test_main_and_secondmate_render_a_held_row_identically
 test_count_bounds_name_the_projects_they_cut
+test_empty_and_missing_repo_merge_into_one_omitted_entry
 test_pr_repository_cap_and_expansion
 test_per_repository_pr_cap_is_disclosed
 test_projection_and_toon_fail_closed

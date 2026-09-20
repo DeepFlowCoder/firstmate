@@ -1436,6 +1436,61 @@ test_every_withheld_feed_is_named_in_the_lane_it_belongs_to() {
 }
 
 # ---------------------------------------------------------------------------
+# The same discipline at fleet level: the headline, the Captain's Call sub-line
+# and the rail note may not assert an absence when `lanes_more` declares
+# withheld underway or call rows, because the fleet figures count only the rows
+# this board was handed. A payload that hands none but declares withheld work
+# names it at all three sites, and a payload that declares none keeps the old
+# wording untouched.
+# ---------------------------------------------------------------------------
+test_the_fleet_headline_and_rail_name_withheld_work_instead_of_claiming_none() {
+  local home out lane
+  home=$(make_home fleet-hedge)
+  out=$(render "$home" '{
+    "charted": [
+      {"id":"held-only","repo":"sample","title":"Held order","reason":"waiting on the vendor",
+       "dispatchable":false,"since":"2026-08-10"}
+    ],
+    "charted_more": 2,
+    "lanes_more": [
+      {"repo":"alpha","queued":2,"underway":4,"call":1}
+    ]}')
+
+  # no handed underway row, but withheld underway is declared: the headline
+  # names it rather than saying nothing is being built, and keeps the
+  # order-book clause that follows it
+  printf '%s' "$out" | jq -e '
+    .headline == "4 hulls on the ways, not charted here. 1 order is held in dry dock."
+  ' >/dev/null || fail "the headline claimed nothing was being built over withheld live work: $out"
+
+  # no handed captain call, but a withheld one is declared: the sub-line names it
+  printf '%s' "$out" | jq -e '
+    .callSub == "1 item needing you, not charted here"
+      and (.callSub | test("nothing needs you") | not)
+  ' >/dev/null || fail "the Captain's Call sub-line claimed nothing needs the captain: $out"
+
+  # the rail note names both withheld totals, in route order, beside the queued one
+  printf '%s' "$out" | jq -e '
+    .flowNote == "+1 more needing you, not charted here · +2 more queued, not charted here, so no stage counts them · +4 more on the ways, not charted here · on the ways counts the live work this board was given, not every worker under way · launched counts the recent completions this board was given, not every launch on record"
+  ' >/dev/null || fail "the rail note did not name the withheld call and underway counts: $out"
+
+  # the lane the withheld record seeds reads the same presence-anchored way
+  lane=$(printf '%s' "$out" | jq -c '.lanes[] | select(.name == "alpha")')
+  printf '%s' "$lane" | jq -e '.reading == "4 hulls on the ways, not charted here"' \
+    >/dev/null || fail "the seeded lane does not name the withheld live work: $lane"
+
+  # the hedge never leaks onto a board that declares nothing withheld
+  out=$(render "$(make_home fleet-hedge-clean)" "$(jq -n \
+    --argjson q "$(rows sample 5 true '' 2026-08-10)" '{charted: $q}')")
+  printf '%s' "$out" | jq -e '
+    .headline == "Nothing is being built right now. 5 orders are clear to start."
+      and .callSub == "nothing needs you, captain"
+  ' >/dev/null || fail "the withheld hedge leaked onto an ordinary board: $out"
+
+  pass "the fleet headline, call sub-line and rail note name withheld work instead of claiming none"
+}
+
+# ---------------------------------------------------------------------------
 # A lane the composer DID hand in full still reads by what it holds: the
 # withheld reading never appears where nothing was withheld, and a lane with
 # live work leads with that work rather than with what it lost.
@@ -1584,5 +1639,6 @@ test_the_board_says_an_answer_stays_in_the_tab_until_it_is_sent
 test_a_lane_whose_orders_were_withheld_never_reads_as_finished
 test_a_project_with_no_surviving_row_still_gets_its_lane
 test_every_withheld_feed_is_named_in_the_lane_it_belongs_to
+test_the_fleet_headline_and_rail_name_withheld_work_instead_of_claiming_none
 test_a_lane_handed_in_full_never_claims_a_withheld_row
 test_an_oversized_backlog_never_reads_as_a_finished_project
