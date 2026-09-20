@@ -1131,6 +1131,35 @@ That run printed:
 ok - kimi 0.43.1: the workspace-trust dialog exists and opens on the accept row, only its accept row reads as selectable, Up never reaches the row that exits, an accepted grant is recorded, and a declared project MCP server is listed
 ```
 
+### Config comments do not survive the CLI's own rewrites
+
+Measured 2026-09-20 on macOS 26.5.2 arm64 against `kimi --version` 0.43.1, on the operating home's own `~/.kimi-code/config.toml`.
+
+Kimi Code rewrites `config.toml` through a serializer that keeps every value and drops every comment.
+The file that had carried both Firstmate's and Herdr's comment-delimited integration markers held none of them, while both integrations' `[[hooks]]` entries were still present and correct:
+
+```sh
+$ grep -c '^[[:space:]]*#' config.toml                 # comment lines
+0
+$ grep -c 'FIRSTMATE KIMI TURN-END HOOK' config.toml   # Firstmate's markers
+0
+$ grep -c 'herdr kimi integration' config.toml         # Herdr's markers
+0
+$ grep -c '^\[\[hooks\]\]' config.toml                 # hook entries that survived
+13
+```
+
+Two independent tools losing their markers from one file that kept both tools' data is what identifies the cause as a whole-file round-trip rather than either integration's own editing.
+The CLI's migration record and its own dated backups corroborate it: `migrations-effort.json` names a completed `thinking-effort-max-to-high` config migration, and the rewrites left `config.toml.bak-20260913-222908` and `config.toml.bak-20260914-184040` beside the file.
+
+The consequence is the guarantee `bin/fm-kimi-turnend-hook.sh` now carries.
+Comment markers alone cannot identify Firstmate's region across a vendor rewrite, so the script also re-claims an unmarked entry, keyed on the TOML values the round-trip does preserve.
+Before that, this exact config refused every install and every remove with `config.toml references fm-turn-end.sh outside the Firstmate-owned region.`, which refused every Kimi dispatch and left the lane unable to take work.
+
+This measurement needs no live guard against future Kimi releases, because no verdict depends on which way the vendor goes.
+A release that preserved comments would simply keep taking the marked path, and one that keeps dropping them keeps taking the re-claim path.
+The portable regression is `tests/fm-kimi-harness.test.sh`, which drives the round-trip, the re-claim, and the references that must still refuse.
+
 ### Dialog move key by backend
 
 `Up` is claimed only for tmux, whose `send-keys Up` is its own documented key name.
