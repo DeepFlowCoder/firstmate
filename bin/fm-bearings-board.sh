@@ -36,11 +36,11 @@
 # states how long a hold has lasted: the records carry no date for when a hold
 # began.
 #
-# The presentation changed with the route; the payload contract did not. This
-# is still fm-bearings-board.v2 with the same fields and the same validation,
-# so a payload composed for the previous presentation renders unchanged here,
-# and a board already built stays exactly as it was built until the next
-# `build` replaces it.
+# The presentation changed with the route; the payload contract is backward
+# compatible, not unchanged. This is still fm-bearings-board.v2, and a payload
+# composed for the previous presentation still validates and renders unchanged
+# because the new `lanes_more` field is optional, and a board already built
+# stays exactly as it was built until the next `build` replaces it.
 #
 # Usage:
 #   fm-bearings-board.sh build <data.json>
@@ -96,17 +96,39 @@
 # only the rows it can actually place and discloses the remainder as standing
 # off the route, while the yard still reports the true order-book depth.
 #
+# `charted_more` is a FLEET figure, and every feed behind a lane is bounded
+# independently, so it cannot say which project the withheld rows belonged to.
+# Optional `lanes_more` is that same disclosure resolved per lane: one entry per
+# lane the composer could not hand over in full, `{repo, queued, underway,
+# call}`, each count a non-negative integer and at least one of them above zero,
+# with `repo` carrying the same deliberate no-project marker every row uses and
+# appearing at most once. It is what keeps the cut from being invisible lane by
+# lane: without it a project whose whole order book fell past a bound reads as
+# launched-and-quiet, or does not appear at all, because no row survived to
+# create its lane. So the template seeds a lane from an entry that has none,
+# prints the withheld counts in it, and states them in the lane reading, which
+# is why the entry must never be all zeros. The queued counts may not add up
+# past `charted_more`; `underway` and `call` have no fleet-wide figure beside
+# it to reconcile against, but their per-lane counts are real, so the rail
+# below sums each across `lanes_more` and names the total when one is declared.
+# When `lanes_more` declares none, the rail still names only the KIND of the
+# underway bound. `landed` has no per-lane entry and no fleet counterpart
+# either: a launch the bounded baseline left out makes a lane read as LESS
+# finished, never as more, so its bound is always named by KIND alone, never a
+# number.
+#
 # The rail's note under the stages carries every bound its figures stand under,
 # in route order and joined by the same separator the board's other joined
-# lines use. The `charted_more` disclosure above is the conditional part. The
-# other two are unconditional, because those stages are always drawn and
-# neither figure is complete current occupancy the way the two queued ones are:
-# `underway` is the snapshot's bounded in-flight projection and `landed` is its
-# bounded recent-completions baseline. Nothing in the payload says how many
-# rows either feed left out - there is no `underway_more` and no `landed_more`
-# beside `charted_more` - so the note names the KIND of bound and never a
-# number, a window length, a rate or a change - the same refusal the route
-# itself is built on.
+# lines use. `charted_more`, the withheld `call` total and the withheld
+# `underway` total are the conditional parts: each is named only when the
+# payload declares it. The two kind lines are unconditional, because those
+# stages are always drawn and neither figure is complete current occupancy the
+# way the queued ones are: `underway` is the snapshot's bounded in-flight
+# projection and `landed` is its bounded recent-completions baseline. Nothing
+# in the payload says how many rows the landed feed left out - there is no
+# `landed_more` beside `charted_more` - so that bound is named by KIND alone
+# and never a number, a window length, a rate or a change - the same refusal
+# the route itself is built on.
 #
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
 # re-invocation rebuilds the same file in place, which keeps the same Lavish
@@ -184,6 +206,19 @@ validate_payload() {  # <data.json>
         or ((.recommend_value | slug(128))
           and (.recommend_value as $recommend | [.options[].value] | index($recommend) != null)))
       and (if .type == "merge" then (.risk | nonempty_string) else true end);
+    def count_field($name):
+      has($name) and (.[$name] | type == "number") and (.[$name] >= 0)
+      and (.[$name] | floor == .);
+    # One lane the composer could not hand over in full, and how many rows of
+    # each feed it held back. A repo appears at most once, because two entries
+    # for one lane would be two different answers to the same question, and an
+    # entry that omits nothing is not an omission and would seed a lane with
+    # nothing to say.
+    def lane_more_item:
+      type == "object"
+      and repo_marker
+      and count_field("queued") and count_field("underway") and count_field("call")
+      and ((.queued + .underway + .call) > 0);
     def underway_item:
       type == "object" and repo_marker and (.id | nonempty_string)
       and (.state | nonempty_string) and (.doing | nonempty_string) and (.kind | nonempty_string);
@@ -216,6 +251,19 @@ validate_payload() {  # <data.json>
       or ((.charted_more | type == "number") and (.charted_more >= 0) and (.charted_more | floor == .)))
     and ((has("charted_warning_more") | not)
       or ((.charted_warning_more | type == "number") and (.charted_warning_more >= 0) and (.charted_warning_more | floor == .)))
+    and ((has("lanes_more") | not)
+      or ((.lanes_more | type == "array")
+        and ([.lanes_more[] | lane_more_item] | all)
+        and ([.lanes_more[] | ((.repo // "") | gsub("^\\s+|\\s+$"; ""))]
+          | length == (unique | length))
+        # The lanes may not between them claim more withheld queued work than
+        # the yard admits: the rail counts the order book as what it was handed
+        # plus `charted_more`, so lane chips adding up past that would print a
+        # depth the yard itself denies. A composer that can name the lanes can
+        # name the total, so withholding queued work without declaring it is
+        # refused rather than quietly under-counted.
+        and (([.lanes_more[].queued] | add // 0) as $lane_queued
+          | $lane_queued == 0 or ((.charted_more // -1) >= $lane_queued))))
     and ([.captains_call[] | call_item] | all)
     and ([.underway[] | underway_item] | all)
     and ([.landed[] | landed_item] | all)

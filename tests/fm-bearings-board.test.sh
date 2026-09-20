@@ -282,6 +282,71 @@ test_v2_tolerates_a_recorded_date_that_is_not_a_date() {
   pass "a recorded value that is not a date is tolerated, but generated is not"
 }
 
+# `charted_more` is a FLEET count and names no project, so a lane whose rows all
+# fell past a bound had nothing to disclose and read as launched-and-quiet, or
+# never appeared at all. `lanes_more` is that same disclosure per lane, and the
+# template both seeds a lane from an entry and prints its counts, so an entry
+# the board cannot stand behind is refused before the built board is touched.
+test_v2_refuses_lane_omissions_the_board_could_not_stand_behind() {
+  local home data board rc out
+  home=$(make_home lanesmore)
+  board="$home/.lavish/bearings-board.html"
+  data="$home/payload.json"
+
+  refuse() {  # <jq-program> <what>
+    write_valid_payload "$data"
+    jq "$1" "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+    set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+    [ "$rc" -ne 0 ] || fail "$2 was accepted"
+  }
+
+  # an entry that omits nothing would seed a lane with nothing to say
+  refuse '.lanes_more = [{"repo":"sample","queued":0,"underway":0,"call":0}]' \
+    "a lane omission of nothing"
+  # two entries for one lane are two answers to the same question, and the lane
+  # key is the trimmed repo, so a padded repeat is the same lane
+  refuse '.charted_more = 4
+          | .lanes_more = [{"repo":"sample","queued":2,"underway":0,"call":0},
+                           {"repo":" sample ","queued":2,"underway":0,"call":0}]' \
+    "two omission entries for one lane"
+  # the same deliberate-marker discipline every row uses
+  refuse '.charted_more = 2 | .lanes_more = [{"queued":2,"underway":0,"call":0}]' \
+    "a lane omission with no repo marker"
+  refuse '.charted_more = 2 | .lanes_more = [{"repo":"sample","underway":0,"call":0}]' \
+    "a lane omission missing one of its counts"
+  refuse '.charted_more = 2 | .lanes_more = [{"repo":"sample","queued":1.5,"underway":0,"call":0}]' \
+    "a fractional lane omission count"
+  refuse '.charted_more = 2 | .lanes_more = [{"repo":"sample","queued":-1,"underway":1,"call":0}]' \
+    "a negative lane omission count"
+  refuse '.lanes_more = {"sample":2}' "a lane omission that is not an array"
+  # the lanes may not between them claim more withheld queued work than the yard
+  # admits: the rail counts the order book as what it holds plus charted_more
+  refuse '.charted_more = 2 | .lanes_more = [{"repo":"sample","queued":3,"underway":0,"call":0}]' \
+    "lane omissions adding up past the yard total"
+  # and withholding queued work without declaring the total at all would print
+  # lane depth the yard itself denies
+  refuse 'del(.charted_more) | .lanes_more = [{"repo":"sample","queued":3,"underway":0,"call":0}]' \
+    "withheld queued work the yard never declared"
+
+  assert_absent "$board" "a refused payload still produced a board"
+
+  # accepted: the marker null lane, a withheld feed with no fleet counterpart to
+  # reconcile against, and lane counts that fit inside the yard total
+  write_valid_payload "$data"
+  jq '.charted_more = 5
+      | .lanes_more = [{"repo":"sample","queued":3,"underway":1,"call":0},
+                       {"repo":null,"queued":0,"underway":0,"call":2}]' \
+    "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  run_board "$home" build "$data" >/dev/null \
+    || fail "a lane omission the board can stand behind was refused"
+  # a payload that says nothing about lane omissions is still a valid payload:
+  # the field is what a composer uses to disclose, never a new requirement
+  write_valid_payload "$data"
+  run_board "$home" build "$data" >/dev/null \
+    || fail "a payload with no lane omissions at all was refused"
+  pass "v2 refuses lane omissions the board could not stand behind"
+}
+
 test_build_injects_binds_then_arms() {
   local home data board out sid
   home=$(make_home build)
@@ -485,6 +550,7 @@ test_path_is_stable_and_home_scoped
 test_build_refuses_malformed_payloads_before_touching_the_board
 test_v2_refuses_rows_the_yard_could_not_read
 test_v2_tolerates_a_recorded_date_that_is_not_a_date
+test_v2_refuses_lane_omissions_the_board_could_not_stand_behind
 test_charted_kind_is_optional_and_accepts_both_values
 test_build_injects_binds_then_arms
 test_registration_cannot_consume_before_any_origin_binding

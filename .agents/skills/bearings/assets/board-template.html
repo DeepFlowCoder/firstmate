@@ -688,6 +688,57 @@ __FM_BEARINGS_BOARD_DATA__
   var chartedWarnings = data.charted.filter(isWarning);
   var chartedMoreQueued = data.charted_more || 0;
   var chartedMoreWarnings = data.charted_warning_more || 0;
+  var withheldWays = 0;
+  var withheldCall = 0;
+  (data.lanes_more || []).forEach(function (m) {
+    withheldWays += m.underway || 0;
+    withheldCall += m.call || 0;
+  });
+
+  /* ---- the absence-claim sweep -------------------------------------------
+     `withheldWays` and `withheldCall` are the fleet-level sums of the per-lane
+     counts `lanes_more` declares. Every site on this page that ASSERTS AN
+     ABSENCE - in its text or in a lane's visual tone - was audited against
+     them, because a withheld count makes an absence claim false exactly the
+     way a capped feed does. The sites that claimed one are hedged below; the
+     rest were either already presence-anchored or cannot be reached by a
+     withheld count at all.
+
+       HEDGED - presence-anchored when the withheld count is above zero:
+       - the headline opener "Nothing is being built right now." (withheldWays)
+       - the headline branch "The yard is clear - nothing building, nothing
+         ordered." (withheldCall)
+       - the Captain's Call sub-line "nothing needs you, captain" (withheldCall)
+       - the Captain's Call deck empty "Nothing needs your action right now."
+         (withheldCall)
+       - the rail note, which names the withheld underway and call totals
+       - `buildingLanes`, which counts a lane as building when it holds handed
+         ways OR when `lanes_more` declares withheld ways for it
+       - `laneTone`, whose "quiet" border is the visual form of the same
+         absence claim: a lane with withheld call rows tones as "call" and one
+         with withheld ways rows tones as "building", the same precedence the
+         handed-row branches use
+
+       ALREADY PRESENCE-ANCHORED by the original change:
+       - `laneReading`, whose readings name what a lane HAS and fall through to
+         "not charted here" for a lane seeded only by an omission record
+
+       EXAMINED AND EXCLUDED - a withheld count cannot falsify them:
+       - "No projects are on the board." in the headline and the yard body:
+         guarded on an empty lane list, and a `lanes_more` entry seeds its own
+         lane, so no withheld count can reach it
+       - `bb-yard-sub` "nothing queued": `totalQueued` already adds
+         `charted_more`, which validation forces to cover every withheld queued
+         row
+       - the berth marker "none on this board": scoped to the rows this board
+         was handed, it names no source and claims nothing about the world
+       - `bb-dispatch-count` "nothing picked": about the captain's own
+         selection, unrelated to any withheld count
+
+       BLOCKED - needs a fact the payload does not carry, so it is left alone
+       and nothing is invented for it: none. `landed` has no withheld
+       counterpart by design, and no absence claim about launches exists that
+       would need one. */
 
   /* ---- honest dates -------------------------------------------------------
      The fleet keeps no prior snapshot, so the board never states a trend, a
@@ -797,19 +848,41 @@ __FM_BEARINGS_BOARD_DATA__
      deliberately records no repo lands in one explicit unassigned lane rather
      than being dropped or silently merged into a real project. */
   var UNASSIGNED = " unassigned";
+  /* What each lane was NOT handed. Every feed behind a lane is bounded on its
+     own, and each bound cuts a flat prefix off a fleet-wide list, so a project
+     can lose its entire order book to one while its launches survive. A lane
+     told only what it HAS would then read as launched and quiet, and a project
+     that lost every row would not appear at all, because no row survived to
+     create its lane. `lanes_more` is the composer stating that per lane, so the
+     board can say it where the captain reads the project rather than only in a
+     fleet-wide count that names no project. It is never guessed: with no entry
+     there is nothing to disclose, which is why no reading below claims a lane
+     is empty of anything. */
+  var NO_MORE = { queued: 0, underway: 0, call: 0, total: 0 };
+  var laneMore = Object.create(null);
+  (data.lanes_more || []).forEach(function (m) {
+    var repo = m && typeof m.repo === "string" ? m.repo.trim() : "";
+    var queued = m.queued || 0, underway = m.underway || 0, call = m.call || 0;
+    laneMore[repo || UNASSIGNED] =
+      { queued: queued, underway: underway, call: call,
+        total: queued + underway + call };
+  });
   var lanes = [];
   var laneByKey = Object.create(null);
-  function lane(row) {
-    var repo = row && typeof row.repo === "string" ? row.repo.trim() : "";
-    var key = repo || UNASSIGNED;
+  function laneFor(key, repo) {
     var found = laneByKey[key];
     if (!found) {
       found = { key: key, name: repo || "no project recorded", named: repo !== "",
-                call: [], ways: [], dock: [], order: [], launched: [] };
+                call: [], ways: [], dock: [], order: [], launched: [],
+                more: laneMore[key] || NO_MORE };
       laneByKey[key] = found;
       lanes.push(found);
     }
     return found;
+  }
+  function lane(row) {
+    var repo = row && typeof row.repo === "string" ? row.repo.trim() : "";
+    return laneFor(repo || UNASSIGNED, repo);
   }
   data.captains_call.forEach(function (item) { lane(item).call.push(item); });
   data.underway.forEach(function (t) { lane(t).ways.push(t); });
@@ -817,6 +890,14 @@ __FM_BEARINGS_BOARD_DATA__
   chartedWork.forEach(function (t) {
     var l = lane(t);
     if (t.dispatchable) l.order.push(t); else l.dock.push(t);
+  });
+  /* A project whose rows ALL fell past a bound has no row left to create its
+     lane, which is the sharpest form of this: the board simply would not show
+     the project. Its omission record is itself something recorded, so it seeds
+     the lane it is about, and that lane then reads as what it is - a project
+     with work this board was not given. */
+  Object.keys(laneMore).forEach(function (key) {
+    laneFor(key, key === UNASSIGNED ? "" : key);
   });
 
   /* A launch is any task the fleet recorded as complete, whatever the
@@ -847,6 +928,12 @@ __FM_BEARINGS_BOARD_DATA__
       || (b.order.length - a.order.length)
       || (b.dock.length - a.dock.length)
       || (b.launched.length - a.launched.length)
+      /* A lane whose rows were withheld has no rows to be busy WITH, so without
+         this it would sort below every lane the board happens to hold a row
+         for - including quiet ones - which is the same invisibility by another
+         route. It ranks last among the real stages because a withheld count
+         says how much is off this board, never what is standing where. */
+      || (b.more.total - a.more.total)
       || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   });
 
@@ -855,7 +942,7 @@ __FM_BEARINGS_BOARD_DATA__
   var totalOrder = chartedWork.filter(function (t) { return t.dispatchable; }).length;
   var totalDock = chartedWork.length - totalOrder;
   var totalQueued = chartedWork.length + chartedMoreQueued;
-  var buildingLanes = lanes.filter(function (l) { return l.ways.length > 0; }).length;
+  var buildingLanes = lanes.filter(function (l) { return l.ways.length > 0 || l.more.underway > 0; }).length;
   var yardLastLaunch = lanes.reduce(function (best, l) {
     return l.lastLaunch !== null && (best === null || l.lastLaunch > best) ? l.lastLaunch : best;
   }, null);
@@ -889,16 +976,22 @@ __FM_BEARINGS_BOARD_DATA__
        rows whatever their disposition, so it can never be read as clear to
        start, and a yard whose whole book is held says so rather than
        announcing zero orders above a sub-line that names the held ones. */
-    var stopped = "Nothing is being built right now. ";
+    var opener = withheldWays > 0
+      ? plural(withheldWays, "hull", "hulls") + " on the ways, not charted here. "
+      : "Nothing is being built right now. ";
     if (totalOrder > 0) {
-      headline = stopped + plural(totalOrder, "order is", "orders are") + " clear to start.";
+      headline = opener + plural(totalOrder, "order is", "orders are") + " clear to start.";
     } else if (totalDock > 0) {
-      headline = stopped + plural(totalDock, "order is", "orders are") + " held in dry dock.";
+      headline = opener + plural(totalDock, "order is", "orders are") + " held in dry dock.";
     } else {
-      headline = stopped + plural(totalQueued, "order waits", "orders wait") + " in the order book.";
+      headline = opener + plural(totalQueued, "order waits", "orders wait") + " in the order book.";
     }
+  } else if (withheldWays > 0) {
+    headline = plural(withheldWays, "hull", "hulls") + " on the ways, not charted here.";
   } else if (lanes.length) {
-    headline = "The yard is clear - nothing building, nothing ordered.";
+    headline = withheldCall > 0
+      ? plural(withheldCall, "item", "items") + " needing you, not charted here."
+      : "The yard is clear - nothing building, nothing ordered.";
   } else {
     headline = "No projects are on the board.";
   }
@@ -937,23 +1030,34 @@ __FM_BEARINGS_BOARD_DATA__
      order. Truncated queued rows are queued work of unknown disposition, so
      they can be added to neither queued stage without asserting where they
      stand: the rail says they exist and says they are off it, and only when
-     there are any. The other two apply always, because those stages are always
-     drawn and neither figure is complete occupancy the way the two queued ones
-     are: the underway feed is the snapshot's bounded in-flight projection and
-     the launched feed is its bounded recent-completions baseline. The payload
-     carries no count of what either left out - there is no `underway_more` and
-     no `landed_more` the way `charted_more` exists - so the board can never
-     know whether they truncated, which is exactly why the note names the KIND
-     of bound and never a number, a window, a rate or a change. */
+     there are any. Withheld call rows and withheld underway rows are the same
+     disclosure for their own feeds, named only when `lanes_more` declares
+     them. The two kind lines then apply always, because those stages are
+     always drawn and neither figure is complete occupancy the way the queued
+     ones are: the underway feed is the snapshot's bounded in-flight projection
+     and the launched feed is its bounded recent-completions baseline. The
+     payload carries no count of what the launched feed left out - there is no
+     `landed_more` the way `charted_more` exists - so the board can never know
+     whether it truncated, which is exactly why that note names the KIND of
+     bound and never a number, a window, a rate or a change. */
   var flowBounds = [];
+  if (withheldCall) {
+    flowBounds.push("+" + withheldCall + " more needing you, not charted here");
+  }
   if (chartedMoreQueued) {
     flowBounds.push("+" + chartedMoreQueued + " more queued, not charted here, so no stage counts them");
+  }
+  if (withheldWays) {
+    flowBounds.push("+" + withheldWays + " more on the ways, not charted here");
   }
   flowBounds.push("on the ways counts the live work this board was given, not every worker under way");
   flowBounds.push("launched counts the recent completions this board was given, not every launch on record");
   document.getElementById("bb-flow-note").textContent = flowBounds.join(" · ");
   document.getElementById("bb-call-sub").textContent =
-    callTotal ? plural(callTotal, "item waits", "items wait") + " on you, captain" : "nothing needs you, captain";
+    callTotal ? plural(callTotal, "item waits", "items wait") + " on you, captain"
+    : (withheldCall > 0
+        ? plural(withheldCall, "item", "items") + " needing you, not charted here"
+        : "nothing needs you, captain");
 
   /* ---- Captain's Call deck: every item renders as the same full card ---- */
   var deck = document.getElementById("bb-call");
@@ -1107,7 +1211,10 @@ __FM_BEARINGS_BOARD_DATA__
     showCard(0);
   } else {
     deck.classList.add("bb-call--empty");
-    deck.appendChild(el("div", "bb-empty", "Nothing needs your action right now."));
+    deck.appendChild(el("div", "bb-empty",
+      withheldCall > 0
+        ? plural(withheldCall, "item", "items") + " needing you, not charted here"
+        : "Nothing needs your action right now."));
     stackNav.hidden = true;
   }
 
@@ -1129,36 +1236,44 @@ __FM_BEARINGS_BOARD_DATA__
 
   /* An empty lane is calm, never "abandoned": the fleet records current state,
      not intent, so the board says WHICH empty this is and stops there.
-     laneReading returns, in cascade order: "N hulls on the ways", "clear to
-     start - N orders wait for a crew", "nothing building - N orders are held",
-     "waiting on your word", "quiet since the last launch", and "launched work
-     here". That last one names what the board HAS rather than what it
-     lacks, and must stay phrased that way: every bucket it could claim to be
-     empty of is fed by an independently capped, flat-prefix list, so an absence
-     claim here is falsifiable by a payload the composer truncated, while a
-     presence claim survives it. One further reading,
-     "no recorded activity in the current baseline", is deferred with
-     its producer: a lane exists only because a row created it, so a wholly
-     unrecorded project has no lane to read. It needs lanes seeded from a known
-     project list, which is separate queued work, and it returns together with
-     that seeding rather than as an unreachable branch here. */
+     laneReading returns, in cascade order: "N hulls on the ways", "N orders
+     clear to start", "N orders held in dry dock", "waiting on your word", a
+     withheld-rows reading, and "launched work here".
+     EVERY one of them names something the lane HAS, and they must all stay
+     phrased that way. Each of the four buckets is fed by an independently
+     bounded, flat-prefix list, so any claim that a lane is empty of one is
+     falsifiable by a payload the composer truncated, while a presence claim
+     survives it. That is why "clear to start - N orders wait for a crew" and
+     "nothing building - N orders are held" are gone: both silently asserted
+     that nothing was on the ways, which is exactly what a bound can hide.
+     "quiet since the last launch" went with them - "quiet" is a claim about
+     everything the lane is not doing, and the launch chip in the same head
+     already carries the recency it was there for.
+     The withheld reading is the positive form of the same discipline: a lane
+     with nothing standing in it but a count of rows this board was not given
+     says so, which is a fact about what the record holds, not an inference
+     from silence. It mirrors the cascade above it, naming the most
+     consequential feed first. One further reading, "no recorded activity in
+     the current baseline", is deferred with its producer: `lanes_more` seeds a
+     lane for a project whose rows were WITHHELD, but a project with no
+     recorded activity at all produces no row and no omission, so it still
+     needs lanes seeded from a known project list, which is separate queued
+     work. */
   function laneReading(l) {
     if (l.ways.length) return plural(l.ways.length, "hull", "hulls") + " on the ways";
-    if (l.order.length) return "clear to start - " + plural(l.order.length, "order waits", "orders wait") + " for a crew";
-    if (l.dock.length) return "nothing building - " + plural(l.dock.length, "order is", "orders are") + " held";
+    if (l.order.length) return plural(l.order.length, "order", "orders") + " clear to start";
+    if (l.dock.length) return plural(l.dock.length, "order", "orders") + " held in dry dock";
     /* A call is not a berth - it lives in the Captain's Call deck - but it IS
        recorded activity, so a lane holding only one must not read as empty. */
     if (l.call.length) return "waiting on your word";
-    /* The reading and the launch chip beside it must agree: a lane can only say
-       it has been quiet SINCE a launch when it has a launch date to show. With
-       no date to anchor it, the lane names the launch rows it does hold, which
-       is the one fact still standing at this point and needs no date to tell. */
-    if (l.lastLaunch !== null) return "quiet since the last launch";
+    if (l.more.underway) return plural(l.more.underway, "hull", "hulls") + " on the ways, not charted here";
+    if (l.more.queued) return plural(l.more.queued, "order", "orders") + " in the book, not charted here";
+    if (l.more.call) return plural(l.more.call, "item", "items") + " needing you, not charted here";
     return "launched work here";
   }
   function laneTone(l) {
-    if (l.call.length) return "call";
-    if (l.ways.length) return "building";
+    if (l.call.length || l.more.call) return "call";
+    if (l.ways.length || l.more.underway) return "building";
     if (l.order.length) return "ready";
     return "quiet";
   }
@@ -1352,6 +1467,22 @@ __FM_BEARINGS_BOARD_DATA__
       }, { show: STAGE_SHOW, hint: "open to read them" });
 
       card.appendChild(flow);
+    }
+
+    /* The stages above count only rows this board was handed, and a withheld
+       row has no known disposition, so it may not be added to one - the same
+       rule `charted_more` follows at the rail. The chip is where the lane says
+       it anyway, beside its own stages rather than in a fleet-wide count that
+       names no project: an order book drawn as empty next to "+13 more queued"
+       is read as bounded, and an order book drawn as empty on its own is read
+       as finished. */
+    if (l.more.total) {
+      var withheld = [];
+      if (l.more.queued) withheld.push("+" + l.more.queued + " more queued");
+      if (l.more.underway) withheld.push("+" + l.more.underway + " more on the ways");
+      if (l.more.call) withheld.push("+" + l.more.call + " more needing you");
+      card.appendChild(el("span", "bb-morechip",
+        withheld.join(" · ") + " - not charted on this board"));
     }
 
     yard.appendChild(card);
