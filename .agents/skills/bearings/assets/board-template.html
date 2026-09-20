@@ -209,6 +209,40 @@ a { color: inherit; text-decoration: none; }
 .bb-flowrail__foot .fm-sign--muted { white-space: normal; min-width: 0; overflow-wrap: anywhere; }
 .bb-flowrail__note { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); min-width: 0; overflow-wrap: anywhere; }
 
+/* ---- the capacity band: at what capacity the fleet is operating ----
+   The one band on this page that is not a count of work. It answers a
+   different question from the rail above it - not where the work stands, but
+   whether the yard can take more of it - which is why it is drawn as three
+   separate gauges rather than folded into the rail's tiles.
+   The lead line carries the delivery gate's colour and is the ONLY advice
+   anywhere on this board. Everything else in the band is a reading. There is
+   deliberately no tile, no line and no room here for "you can run N more
+   orders": the fleet has two measured points, and a threshold drawn from two
+   points would be invention wearing a number's clothes. */
+.bb-cap__lead {
+  display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; min-width: 0;
+  border-radius: var(--radius-md); border: 2px solid var(--cap-tone, var(--border-default));
+  background: var(--cap-tone-soft, var(--surface-card-warm));
+  font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: 600;
+  color: var(--text-strong); overflow-wrap: anywhere;
+}
+.bb-cap__lead--green { --cap-tone: var(--status-online); --cap-tone-soft: var(--status-online-soft); }
+.bb-cap__lead--amber { --cap-tone: var(--status-warn);   --cap-tone-soft: var(--status-warn-soft); }
+.bb-cap__lead--red   { --cap-tone: var(--status-danger); --cap-tone-soft: var(--status-danger-soft); }
+.bb-cap__lead svg { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 1px; color: var(--cap-tone); }
+.bb-cap__gauges { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; min-width: 0; }
+.bb-cap__gauge {
+  display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; min-width: 0; flex: 1 1 220px;
+  background: var(--surface-card-warm); border: 1px solid var(--border-soft); border-radius: var(--radius-md);
+}
+.bb-cap__name {
+  font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-muted); overflow-wrap: anywhere;
+}
+.bb-cap__read { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-body); overflow-wrap: anywhere; }
+.bb-cap__read--faint { color: var(--text-faint); }
+.bb-cap__note { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); min-width: 0; overflow-wrap: anywhere; }
+
 .bb-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .bb-section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 /* fm-sign is nowrap by design-system contract, which is right for a short
@@ -509,6 +543,19 @@ a { color: inherit; text-decoration: none; }
       <span class="bb-flowrail__note" id="bb-flow-note"></span>
     </div>
   </div>
+
+  <section class="bb-section" id="bb-capacity-section" hidden>
+    <div class="bb-section__head">
+      <span class="fm-sign fm-sign--eyebrow">
+        <svg class="fm-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4"/><path d="m16.5 8.5-3.1 3.1"/><path d="M3.3 17a9 9 0 1 1 17.4 0"/></svg>
+        Capacity
+      </span>
+      <span class="fm-sign fm-sign--muted" id="bb-cap-sub"></span>
+    </div>
+    <div class="bb-cap__lead" id="bb-cap-lead"></div>
+    <div class="bb-cap__gauges" id="bb-cap-gauges"></div>
+    <span class="bb-cap__note" id="bb-cap-note"></span>
+  </section>
 
   <section class="bb-section">
     <div class="bb-section__head">

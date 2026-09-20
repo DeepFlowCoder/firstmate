@@ -91,6 +91,30 @@
 #     warning out of the lanes entirely, out of every stage of the route, and
 #     out of every count of work, in its own Yard Notices band.
 #
+# The optional `capacity` object is the one reading on the board that is not a
+# count of work: at what capacity the fleet is operating, so the captain can
+# decide whether to add or remove parallel work. bin/fm-capacity-gauges.sh owns
+# what its three gauges mean and how they are measured; this script's job is to
+# refuse a payload that could misreport them, and the template's job is to draw
+# them. It stays optional so a payload composed without it still builds - the
+# board then simply draws no capacity band.
+#
+# Four invariants, all the same deliberate-marker discipline `repo` and the two
+# date fields already use, and each one exists because the reading it guards
+# would otherwise be indistinguishable from a worse one:
+#   - `machine.cpu_measured` false requires both CPU figures null, and
+#     `machine.memory_measured` false requires both memory figures null, so a
+#     gauge nobody could read can never be drawn as a gauge reading zero.
+#   - `quota.measured` false requires an empty lane list and a non-empty `why`,
+#     and true requires `why` null, so an unreadable quota states its cause
+#     rather than rendering as a fleet with no providers.
+#   - a `gate.outcome` of `timeout` or `refused` requires `tone` red. The gate
+#     is the only gauge the board draws a recommendation from, and a probe that
+#     never answered has established exactly one thing: nothing can be
+#     delivered.
+# Nothing here carries or admits a predictive figure - no "you can run N more" -
+# because the fleet has two measured points and two points are not a curve.
+#
 # `charted_more` counts queued rows the composer omitted, and their disposition
 # is unknown, so the template adds them to NEITHER queued stage: the rail counts
 # only the rows it can actually place and discloses the remainder as standing
@@ -192,6 +216,50 @@ validate_payload() {  # <data.json>
       and (.what | nonempty_string) and (.owner | nonempty_string)
       and optional_https_url("pr_url")
       and date_marker("landed_on");
+    def optional_number($name): (.[$name] == null) or (.[$name] | type == "number");
+    def quota_lane:
+      type == "object"
+      and (.id | nonempty_string)
+      and (.state as $state
+        | ["dispatchable", "window", "credential", "exhausted", "unmeasured"]
+        | index($state) != null)
+      and (.stale | type == "boolean")
+      and optional_number("remaining")
+      and (.finite | type == "boolean")
+      and ((.ends_at == null) or (.ends_at | type == "string"))
+      and ((.resets_at == null) or (.resets_at | type == "string"));
+    def capacity_item:
+      type == "object"
+      and (.at | nonempty_string)
+      and (.machine | type == "object")
+      and (.machine.cores | type == "number")
+      and (.machine.cpu_measured | type == "boolean")
+      and (.machine.memory_measured | type == "boolean")
+      and (.machine | optional_number("load1"))
+      and (.machine | optional_number("cpu_fleet"))
+      and (.machine | optional_number("cpu_other"))
+      and (.machine | optional_number("memory_gb"))
+      and (.machine | optional_number("swap_used_gb"))
+      # an unread gauge is never drawn as a gauge reading zero
+      and (if .machine.cpu_measured then true
+           else .machine.cpu_fleet == null and .machine.cpu_other == null end)
+      and (if .machine.memory_measured then true
+           else .machine.memory_gb == null and .machine.swap_used_gb == null end)
+      and (.gate | type == "object")
+      and (.gate.tone as $tone | ["green", "amber", "red"] | index($tone) != null)
+      and (.gate.ms | type == "number")
+      and (.gate.ms >= 0)
+      and (.gate.outcome as $outcome
+        | ["answered", "refused", "timeout"] | index($outcome) != null)
+      # a probe that never answered proves exactly one thing, and it is not green
+      and (if .gate.outcome == "answered" then true else .gate.tone == "red" end)
+      and (.quota | type == "object")
+      and (.quota.measured | type == "boolean")
+      and (.quota.lanes | type == "array")
+      and ([.quota.lanes[] | quota_lane] | all)
+      and (if .quota.measured
+           then .quota.why == null
+           else (.quota.why | nonempty_string) and (.quota.lanes | length) == 0 end);
     def charted_item:
       type == "object" and repo_marker and (.id | slug(128))
       and (.title | nonempty_string) and (.reason | type == "string")
@@ -216,6 +284,7 @@ validate_payload() {  # <data.json>
       or ((.charted_more | type == "number") and (.charted_more >= 0) and (.charted_more | floor == .)))
     and ((has("charted_warning_more") | not)
       or ((.charted_warning_more | type == "number") and (.charted_warning_more >= 0) and (.charted_warning_more | floor == .)))
+    and ((has("capacity") | not) or (.capacity | capacity_item))
     and ([.captains_call[] | call_item] | all)
     and ([.underway[] | underway_item] | all)
     and ([.landed[] | landed_item] | all)

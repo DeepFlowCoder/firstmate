@@ -79,7 +79,9 @@
 // Output: exactly one line on stdout when the guard should fire, and nothing at
 //         all when it should not. Silence is the contract, not an omission: a
 //         routine "capacity fine" line on every poll is what trains a captain to
-//         skip the section that carries the real warning.
+//         skip the section that carries the real warning. The one exception is
+//         `--emit gauge`, which serves a DISPLAY rather than an alarm and so
+//         emits on every snapshot; see `gauge` below for why that inverts.
 // Exit:   0 whenever a verdict was reached, fired or silent.
 //         2 on a usage error. 3 when the snapshot cannot be read as a quota-axi
 //         report - unusable evidence is reported as such by the caller and never
@@ -128,12 +130,15 @@ function usage() {
     "fm-capacity-policy.mjs - classify a quota-axi snapshot into a fleet capacity verdict.",
     "",
     "Usage:",
-    "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record] < <quota-axi --json output>",
+    "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record|gauge] < <quota-axi --json output>",
     "",
     "Prints one line when the fleet is worth reporting and nothing when it is not.",
     "--min-lanes 0 retires the guard: the verdict is always silent.",
     "--emit record prefixes the repeat-suppression digest and a TAB, for callers",
     "that suppress an unchanged repeat; --emit line (the default) omits it.",
+    "--emit gauge prints the same classification as one JSON object on every",
+    "snapshot, fired or silent, for a caller that displays lanes rather than",
+    "alarms on them.",
     "",
     "Exit: 0 verdict reached (fired or silent), 2 usage error, 3 unusable snapshot.",
   ].join("\n");
@@ -155,7 +160,9 @@ function parseArguments(argv) {
     if (name === "--emit") {
       if (i + 1 >= argv.length) throw new Error("--emit requires a value");
       emit = argv[i + 1];
-      if (emit !== "line" && emit !== "record") throw new Error(`--emit must be line or record, got '${emit}'`);
+      if (emit !== "line" && emit !== "record" && emit !== "gauge") {
+        throw new Error(`--emit must be line, record or gauge, got '${emit}'`);
+      }
       i += 1;
       continue;
     }
@@ -442,6 +449,32 @@ function digestOf(lanes, dispatchable) {
   return `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}`;
 }
 
+/**
+ * The same classification, rendered for a caller that DISPLAYS the lanes
+ * instead of alarming on them - the capacity gauges the fleet board draws
+ * (bin/fm-capacity-gauges.sh). It re-renders `verdict`'s own lane records and
+ * derives nothing: what a quota snapshot means is decided once, above, and a
+ * second opinion here is exactly the drift the one-owner rule exists to stop.
+ *
+ * Unlike `line` and `record`, this emits on EVERY snapshot, because a gauge
+ * that goes blank on a healthy fleet reads as a broken gauge rather than as
+ * good news. `remaining` and `finite` are populated only for a lane that still
+ * has headroom; every other lane carries its cause and nothing invented.
+ */
+export function gauge(result) {
+  return {
+    lanes: result.lanes.map((lane) => ({
+      id: lane.id,
+      state: lane.cause,
+      stale: lane.stale === true,
+      remaining: lane.cause === "dispatchable" ? lane.remaining : null,
+      finite: lane.cause === "dispatchable" && lane.finite === true,
+      ends_at: lane.endsAt ?? null,
+      resets_at: lane.resetsAt ?? null,
+    })),
+  };
+}
+
 function main(argv) {
   let options;
   try {
@@ -474,6 +507,10 @@ function main(argv) {
   } catch (error) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n`);
     return 3;
+  }
+  if (options.emit === "gauge") {
+    process.stdout.write(`${JSON.stringify(gauge(result))}\n`);
+    return 0;
   }
   if (!result.fire) return 0;
   // `record` prefixes the repeat-suppression digest and a TAB, so the caller gets

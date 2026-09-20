@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # fm-timing-lib.sh - the single owner of the deferred network stage's elapsed-time
-# instrumentation.
+# instrumentation, and of this repo's one millisecond clock.
 #
 # Sourced, never executed.
+#
+# Two consumers, and they use different halves. The deferred network stage
+# (bin/fm-startup-network.sh) uses the whole recorder below. The capacity gauges
+# (bin/fm-capacity-gauges.sh) use only `fm_timing_now_ms`, to time the delivery
+# gate's probe; they record nothing here, so FM_TIMING_LOG stays unset for them
+# and every recorder helper stays the no-op it is by default.
 #
 # WHY THIS EXISTS. The deferred stage (bin/fm-startup-network.sh) publishes one
 # aggregate started/finished pair, so a run that took a minute could not be
