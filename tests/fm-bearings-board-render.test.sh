@@ -1523,6 +1523,41 @@ test_a_lane_handed_in_full_never_claims_a_withheld_row() {
 }
 
 # ---------------------------------------------------------------------------
+# The fleet headline's "in X of Y projects" counts only lanes the board was
+# handed underway rows for. A lane whose `lanes_more` declares withheld
+# underway rows IS building - the work is live, only cut from the projection -
+# so that lane must count too, or the headline asserts an absence the withheld
+# record falsifies.
+# ---------------------------------------------------------------------------
+test_the_headline_counts_a_lane_with_withheld_ways_as_building() {
+  local home out
+  home=$(make_home withheld-ways-count)
+  out=$(render "$home" '{
+    "underway": [
+      {"id":"busy-1","repo":"busy","kind":"ship","state":"working","doing":"fitting the keel"}
+    ],
+    "lanes_more": [
+      {"repo":"cut","queued":0,"underway":4,"call":0}
+    ]}')
+
+  printf '%s' "$out" | jq -e '.headline == "1 hull on the ways in 2 of 2 projects."' \
+    >/dev/null || fail "the headline undercounted a project whose ways were withheld: $out"
+  printf '%s' "$out" | jq -e '
+    .lanes[] | select(.name == "cut") | .reading == "4 hulls on the ways, not charted here"
+  ' >/dev/null || fail "the withheld-ways lane did not name the withheld work: $out"
+
+  # and with no withheld ways declared, the count is exactly what it was before
+  out=$(render "$(make_home withheld-ways-clean)" '{
+    "underway": [
+      {"id":"busy-1","repo":"busy","kind":"ship","state":"working","doing":"fitting the keel"}
+    ]}')
+  printf '%s' "$out" | jq -e '.headline == "1 hull on the ways in 1 of 1 project."' \
+    >/dev/null || fail "the withheld-ways fix changed the count on an ordinary board: $out"
+
+  pass "the headline counts a lane with withheld ways as building"
+}
+
+# ---------------------------------------------------------------------------
 # The falsifier for the whole chain, driven from a real oversized backlog
 # rather than from a hand-written payload: more queued rows than the bound
 # allows, with one project standing ENTIRELY past the cut and another keeping
@@ -1640,5 +1675,6 @@ test_a_lane_whose_orders_were_withheld_never_reads_as_finished
 test_a_project_with_no_surviving_row_still_gets_its_lane
 test_every_withheld_feed_is_named_in_the_lane_it_belongs_to
 test_the_fleet_headline_and_rail_name_withheld_work_instead_of_claiming_none
+test_the_headline_counts_a_lane_with_withheld_ways_as_building
 test_a_lane_handed_in_full_never_claims_a_withheld_row
 test_an_oversized_backlog_never_reads_as_a_finished_project

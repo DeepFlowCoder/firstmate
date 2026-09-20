@@ -36,11 +36,11 @@
 # states how long a hold has lasted: the records carry no date for when a hold
 # began.
 #
-# The presentation changed with the route; the payload contract did not. This
-# is still fm-bearings-board.v2 with the same fields and the same validation,
-# so a payload composed for the previous presentation renders unchanged here,
-# and a board already built stays exactly as it was built until the next
-# `build` replaces it.
+# The presentation changed with the route; the payload contract is backward
+# compatible, not unchanged. This is still fm-bearings-board.v2, and a payload
+# composed for the previous presentation still validates and renders unchanged
+# because the new `lanes_more` field is optional, and a board already built
+# stays exactly as it was built until the next `build` replaces it.
 #
 # Usage:
 #   fm-bearings-board.sh build <data.json>

@@ -897,7 +897,7 @@ __FM_BEARINGS_BOARD_DATA__
   var totalOrder = chartedWork.filter(function (t) { return t.dispatchable; }).length;
   var totalDock = chartedWork.length - totalOrder;
   var totalQueued = chartedWork.length + chartedMoreQueued;
-  var buildingLanes = lanes.filter(function (l) { return l.ways.length > 0; }).length;
+  var buildingLanes = lanes.filter(function (l) { return l.ways.length > 0 || l.more.underway > 0; }).length;
   var yardLastLaunch = lanes.reduce(function (best, l) {
     return l.lastLaunch !== null && (best === null || l.lastLaunch > best) ? l.lastLaunch : best;
   }, null);
