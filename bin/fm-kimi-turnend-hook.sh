@@ -7,6 +7,15 @@
 # and remove excises only that region. Missing, malformed, symlinked, partially
 # marked, or otherwise surprising config is refused without a config write.
 #
+# Those markers are comments, and comments do not survive a config round-trip:
+# the Kimi CLI's own migrations rewrite config.toml through a serializer that
+# keeps every value and drops every comment, which strands Firstmate's hook entry
+# in place with nothing left to identify it. An unmarked entry is therefore
+# re-claimed, but only on proof carried by the TOML the vendor does preserve:
+# exactly one hooks entry may reference the hook, and it must equal the entry
+# install writes, key for key. Re-claiming restores the markers and changes no
+# TOML value; every other config that mentions the hook still refuses.
+#
 # The installed Stop hook always exits 0 and stays silent. It reads cwd from the
 # hook payload, checks for a .fm-kimi-turnend pointer before registry work, and
 # touches a task turn-end marker only when the pointer names a Firstmate-created
@@ -95,6 +104,22 @@ touch -- "$target" 2>/dev/null || true
 exit 0
 '''
 
+# The single owner of the hook entry Firstmate installs. BODY is the text the
+# marked region carries, and HOOK_ENTRY is that same text read as TOML, so the
+# bytes install writes and the values re-claiming compares against can never
+# drift apart.
+BODY = b"".join(
+    line + b"\n"
+    for line in (
+        b"[[hooks]]",
+        b'event = "Stop"',
+        b'matcher = "^$"',
+        b'command = "bash \\"$HOME/.kimi-code/fm-turn-end.sh\\" >/dev/null 2>&1 || true"',
+        b"timeout = 1",
+    )
+)
+HOOK_ENTRY = tomllib.loads(BODY.decode("utf-8"))["hooks"][0]
+
 
 def refuse(reason: str) -> None:
     print(f"fm-kimi-turnend-hook: refused: {reason}", file=sys.stderr)
@@ -156,18 +181,73 @@ def locate_region(data: bytes):
 
 
 def block(marker: bytes) -> bytes:
-    return b"\n".join(
-        (
-            marker,
-            b"[[hooks]]",
-            b'event = "Stop"',
-            b'matcher = "^$"',
-            b'command = "bash \\"$HOME/.kimi-code/fm-turn-end.sh\\" >/dev/null 2>&1 || true"',
-            b"timeout = 1",
-            END,
-            b"",
-        )
-    )
+    return marker + b"\n" + BODY + END + b"\n"
+
+
+def locate_unmarked_region(data: bytes, parsed):
+    """Locate a Firstmate hook entry whose comment markers a round-trip erased.
+
+    Ownership is proved from the values the vendor's serializer preserves rather
+    than from any formatting it may have rewritten: exactly one hooks entry may
+    reference the hook, and it must equal the entry install writes, key for key.
+    The byte span is then proved rather than assumed - it must read back as that
+    one entry on its own, and removing it must leave the rest of the config
+    parsing to exactly what it parsed to before. Anything less returns None and
+    leaves the caller refusing.
+    """
+    hooks = parsed.get("hooks") or []
+    matches = [
+        entry
+        for entry in hooks
+        if isinstance(entry, dict)
+        and isinstance(entry.get("command"), str)
+        and HOOK_NAME.decode("utf-8") in entry["command"]
+    ]
+    if len(matches) != 1 or matches[0] != HOOK_ENTRY:
+        return None
+
+    lines = data.split(b"\n")
+    referencing = [index for index, line in enumerate(lines) if HOOK_NAME in line]
+    if len(referencing) != 1:
+        return None
+    at = referencing[0]
+
+    head = at
+    while head >= 0 and lines[head].strip() != b"[[hooks]]":
+        if lines[head].lstrip().startswith(b"["):
+            return None
+        head -= 1
+    if head < 0:
+        return None
+    tail = at + 1
+    while tail < len(lines) and not lines[tail].lstrip().startswith(b"["):
+        tail += 1
+    while tail > at + 1 and not lines[tail - 1].strip():
+        tail -= 1
+
+    offsets = []
+    position = 0
+    for line in lines:
+        offsets.append(position)
+        position += len(line) + 1
+    start = offsets[head]
+    end = offsets[tail] if tail < len(lines) else len(data)
+
+    remainder = data[:start] + data[end:]
+    if HOOK_NAME in remainder:
+        return None
+    expected = {key: value for key, value in parsed.items() if key != "hooks"}
+    survivors = [entry for entry in hooks if entry is not matches[0]]
+    if survivors:
+        expected["hooks"] = survivors
+    try:
+        if tomllib.loads(data[start:end].decode("utf-8")) != {"hooks": [HOOK_ENTRY]}:
+            return None
+        if tomllib.loads(remainder.decode("utf-8")) != expected:
+            return None
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    return start, end, BEGIN
 
 
 def without_region(data: bytes, region) -> bytes:
@@ -223,8 +303,10 @@ try:
     config_info = regular_not_symlink(CONFIG, "Kimi config")
     with open(CONFIG, "rb") as stream:
         original = stream.read()
-    parse_toml(original, "config.toml")
+    parsed = parse_toml(original, "config.toml")
     region = locate_region(original)
+    if region is None and HOOK_NAME in original:
+        region = locate_unmarked_region(original, parsed)
     outside = original if region is None else without_region(original, region)
     if HOOK_NAME in outside:
         refuse("config.toml references fm-turn-end.sh outside the Firstmate-owned region.")

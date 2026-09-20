@@ -426,6 +426,267 @@ PY
   pass "Kimi hook removal preserves owned newline boundaries and pristine bytes"
 }
 
+assert_same_toml_values() {  # <file-a> <file-b> <msg>
+  "$PYTHON_BIN" - "$1" "$2" <<'PY' || fail "$3"
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as first, open(sys.argv[2], "rb") as second:
+    raise SystemExit(0 if tomllib.load(first) == tomllib.load(second) else 1)
+PY
+}
+
+# A comment-dropping config round-trip, modelled on the one the Kimi CLI's own
+# rewrites perform: every value the operator set survives, every comment does
+# not. Both halves are asserted here, because a simulation that quietly stopped
+# erasing the markers - or quietly started editing values - would leave the cases
+# built on it passing while exercising nothing.
+kimi_round_trip_config() {  # <config-path>
+  local config=$1 before
+  before=$(mktemp "$TMP_ROOT/round-trip-before.XXXXXX")
+  cp "$config" "$before"
+  grep -v '^#' "$before" > "$config"
+  ! grep -q '^#' "$config" \
+    || fail "the round-trip left a comment behind, so it no longer erases the Firstmate markers this case is about"
+  grep -Fq 'FIRSTMATE KIMI TURN-END HOOK' "$before" \
+    || fail "there was no Firstmate marker to erase, so this case never reaches the state it exists for"
+  ! grep -Fq 'FIRSTMATE KIMI TURN-END HOOK' "$config" \
+    || fail "the Firstmate markers survived the round-trip, so this case never reaches the state it exists for"
+  assert_same_toml_values "$before" "$config" \
+    "the round-trip changed a TOML value, so these cases would be measuring that instead of the lost markers"
+  grep -Fq 'fm-turn-end.sh' "$config" \
+    || fail "the round-trip dropped the hook entry itself, so there is nothing left to re-claim"
+  rm -f "$before"
+}
+
+# The markers this guard identifies its own region by are TOML comments, and the
+# Kimi CLI rewrites config.toml through a serializer that keeps every value and
+# drops every comment. That strands Firstmate's own hook entry with nothing left
+# to identify it, and the guard then refused install AND remove alike - correctly,
+# since it could no longer tell that entry from a stranger's, but with no way
+# back, so the lane could take no work at all however much quota it had.
+test_kimi_hook_reclaims_its_own_entry_after_a_comment_dropping_round_trip() {
+  local home config original once
+  home="$TMP_ROOT/config-round-trip"
+  config="$home/.kimi-code/config.toml"
+  original="$home/original.toml"
+  once="$home/once.toml"
+  mkdir -p "$home/.kimi-code"
+  cat > "$config" <<'EOF'
+# Captain's leading comment.
+
+[ui]
+theme = "night"
+
+# Foreign hook the captain owns.
+[[hooks]]
+timeout = 17
+command = "printf foreign"
+matcher = ""
+event = "Stop"
+
+[providers.example]
+model = "some/model"
+EOF
+  cp "$config" "$original"
+  HOME="$home" "$KIMI_HOOK" install || fail "Kimi hook install refused a realistic config"
+
+  kimi_round_trip_config "$config"
+  cp "$config" "$home/stranded.toml"
+
+  HOME="$home" "$KIMI_HOOK" install \
+    || fail "an entry Firstmate itself installed stayed unusable once a round-trip erased its markers"
+  assert_grep '# BEGIN FIRSTMATE KIMI TURN-END HOOK' "$config" \
+    "re-claiming the stranded entry did not restore the markers that identify it"
+  # Re-claiming must be a comment-only repair. If it ever adds, drops, or edits a
+  # value it has stopped recognizing Firstmate's own entry and started rewriting
+  # somebody's config, which is the thing this guard exists to prevent.
+  assert_same_toml_values "$home/stranded.toml" "$config" \
+    "re-claiming the stranded entry changed a TOML value instead of only restoring its markers"
+
+  cp "$config" "$once"
+  HOME="$home" "$KIMI_HOOK" install || fail "install after a re-claim failed"
+  cmp -s "$once" "$config" || fail "install after a re-claim was not idempotent"
+
+  HOME="$home" "$KIMI_HOOK" remove || fail "remove stayed blocked after a round-trip erased the markers"
+  # The captain's own comments went with the round-trip and are not Firstmate's
+  # to restore, so what removal owes here is every value they configured, with
+  # nothing of Firstmate's left anywhere in the file.
+  assert_same_toml_values "$original" "$config" \
+    "removal after a re-claim did not restore the captain's configuration"
+  assert_no_grep 'fm-turn-end.sh' "$config" "removal after a re-claim left the hook reference behind"
+  assert_no_grep 'FIRSTMATE KIMI TURN-END HOOK' "$config" "removal after a re-claim left a Firstmate marker behind"
+  assert_absent "$home/.kimi-code/fm-turn-end.sh" "removal after a re-claim left the Firstmate hook script"
+  assert_absent "$home/.kimi-code/fm-turn-end.d" "removal after a re-claim left the Firstmate registry"
+  pass "Kimi hook re-claims its own entry after a round-trip erases the markers, and removal still restores the original"
+}
+
+# Install appends its region, so a stranded entry is usually the last thing in
+# the file - but a serializer is free to group the hook tables together and put
+# other tables after them, which is exactly what the measured config does. Then
+# the entry has neighbours on both sides, and re-claiming has to find where it
+# ends rather than reading to the end of the file.
+test_kimi_hook_reclaims_an_entry_that_is_not_the_last_table() {
+  local home config stranded
+  home="$TMP_ROOT/config-mid-array"
+  config="$home/.kimi-code/config.toml"
+  stranded="$home/stranded.toml"
+  mkdir -p "$home/.kimi-code"
+  cat > "$config" <<'EOF'
+default_model = "test"
+
+[[hooks]]
+event = "SessionStart"
+command = "bash '/opt/another-tool/state.sh' session"
+timeout = 10
+
+# BEGIN FIRSTMATE KIMI TURN-END HOOK
+[[hooks]]
+event = "Stop"
+matcher = "^$"
+command = "bash \"$HOME/.kimi-code/fm-turn-end.sh\" >/dev/null 2>&1 || true"
+timeout = 1
+# END FIRSTMATE KIMI TURN-END HOOK
+
+[[hooks]]
+event = "Interrupt"
+command = "bash '/opt/another-tool/state.sh' idle"
+timeout = 10
+
+[providers.trailing]
+model = "some/model"
+EOF
+  kimi_round_trip_config "$config"
+  cp "$config" "$stranded"
+
+  HOME="$home" "$KIMI_HOOK" install \
+    || fail "a stranded entry with tables on both sides was not re-claimed"
+  assert_same_toml_values "$stranded" "$config" \
+    "re-claiming an entry mid-file changed a TOML value instead of only restoring its markers"
+  # The markers must land around Firstmate's own entry and nowhere else, so the
+  # neighbouring tool's two hooks have to survive outside them untouched.
+  "$PYTHON_BIN" - "$config" <<'PY' || fail "re-claiming mid-file did not enclose exactly the Firstmate entry"
+import re
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    text = stream.read().decode("utf-8")
+region = re.search(
+    r"^# BEGIN FIRSTMATE KIMI TURN-END HOOK\n(.*?)^# END FIRSTMATE KIMI TURN-END HOOK\n",
+    text,
+    re.S | re.M,
+)
+if region is None:
+    raise SystemExit(1)
+enclosed = tomllib.loads(region.group(1))["hooks"]
+outside = tomllib.loads(text.replace(region.group(0), ""))["hooks"]
+raise SystemExit(
+    0
+    if len(enclosed) == 1
+    and "fm-turn-end.sh" in enclosed[0]["command"]
+    and len(outside) == 2
+    and not any("fm-turn-end.sh" in entry["command"] for entry in outside)
+    else 1
+)
+PY
+  pass "Kimi hook re-claims a stranded entry that has tables on both sides of it"
+}
+
+# The other half of the same contract, and the reason re-claiming is safe: it is
+# keyed on the entry install writes, value for value, not on the hook's mere name.
+# Every config below mentions fm-turn-end.sh and none of them is Firstmate's, so
+# each must still refuse without writing anything - otherwise the repair above
+# would have bought the lane back by giving up the protection it was built for.
+test_kimi_hook_refuses_every_hook_reference_that_is_not_its_own_entry() {
+  local index=0
+  # assert_unclaimable <label>, config on stdin: install must refuse it, name the
+  # reason, and leave the config and the hook script exactly as it found them.
+  assert_unclaimable() {
+    local label=$1 home config out rc=0
+    index=$((index + 1))
+    home="$TMP_ROOT/config-foreign-$index"
+    config="$home/.kimi-code/config.toml"
+    mkdir -p "$home/.kimi-code"
+    cat > "$config"
+    cp "$config" "$home/before.toml"
+    out=$(HOME="$home" "$KIMI_HOOK" install 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "install claimed $label, which is not the entry Firstmate writes"
+    assert_contains "$out" "references fm-turn-end.sh outside the Firstmate-owned region" \
+      "refusing $label lost its concrete reason"
+    cmp -s "$home/before.toml" "$config" || fail "refusing $label changed config bytes"
+    assert_absent "$home/.kimi-code/fm-turn-end.sh" "refusing $label wrote the hook script"
+  }
+
+  assert_unclaimable "a captain's own flags on the same script" <<'EOF'
+default_model = "test"
+
+[[hooks]]
+event = "Stop"
+command = "bash $HOME/.kimi-code/fm-turn-end.sh --the-captains-own-flag"
+timeout = 5
+EOF
+  assert_unclaimable "an extra key on an otherwise identical entry" <<'EOF'
+default_model = "test"
+
+[[hooks]]
+event = "Stop"
+matcher = "^$"
+command = "bash \"$HOME/.kimi-code/fm-turn-end.sh\" >/dev/null 2>&1 || true"
+timeout = 1
+note = "the captain added this"
+EOF
+  assert_unclaimable "a different timeout" <<'EOF'
+default_model = "test"
+
+[[hooks]]
+event = "Stop"
+matcher = "^$"
+command = "bash \"$HOME/.kimi-code/fm-turn-end.sh\" >/dev/null 2>&1 || true"
+timeout = 9
+EOF
+  assert_unclaimable "a different event" <<'EOF'
+default_model = "test"
+
+[[hooks]]
+event = "Interrupt"
+matcher = "^$"
+command = "bash \"$HOME/.kimi-code/fm-turn-end.sh\" >/dev/null 2>&1 || true"
+timeout = 1
+EOF
+  assert_unclaimable "an entry with no matcher" <<'EOF'
+default_model = "test"
+
+[[hooks]]
+event = "Stop"
+command = "bash \"$HOME/.kimi-code/fm-turn-end.sh\" >/dev/null 2>&1 || true"
+timeout = 1
+EOF
+  # The case re-claiming must never try to be clever about: the first entry IS
+  # Firstmate's exact entry, so a rule that stopped at "find mine" would claim it
+  # and leave the second one behind, silently owning a stranger's hook.
+  assert_unclaimable "a second, foreign reference beside its own entry" <<'EOF'
+default_model = "test"
+
+[[hooks]]
+event = "Stop"
+matcher = "^$"
+command = "bash \"$HOME/.kimi-code/fm-turn-end.sh\" >/dev/null 2>&1 || true"
+timeout = 1
+
+[[hooks]]
+event = "Interrupt"
+command = "bash \"$HOME/.kimi-code/fm-turn-end.sh\""
+timeout = 1
+EOF
+  # And a bare mention in a value the guard has no business touching at all.
+  assert_unclaimable "a plain value that merely mentions the hook" <<'EOF'
+note = "see fm-turn-end.sh for details"
+EOF
+  unset -f assert_unclaimable
+  pass "Kimi hook re-claiming is keyed on its own exact entry, so every other hook reference still refuses unwritten"
+}
+
 test_kimi_hook_fails_closed_on_missing_malformed_or_partial_config() {
   local missing malformed partial out rc
   missing="$TMP_ROOT/config-missing"
@@ -541,6 +802,33 @@ test_kimi_spawn_refuses_unsafe_global_config_before_pane_creation() {
     fail "unsafe Kimi config refusal created a tmux container or pane"
   fi
   pass "fm-spawn: unsafe Kimi global config refuses before pane creation"
+}
+
+# The measure the field failure was reported against: with the markers erased,
+# every Kimi dispatch refused before it created a pane, so a lane with quota to
+# spare could take no work at all. This is that spawn, on that config.
+test_kimi_spawn_dispatches_after_a_round_trip_erased_its_markers() {
+  local id rec out rc task_tmp
+  id="kimi-round-trip-z9-$$"
+  task_tmp="/tmp/fm-$id"
+  KIMI_RUNTIME_TASK_TMP=$task_tmp
+  rm -rf "$task_tmp"
+  rec=$(make_spawn_case round-trip "$id")
+  read_spawn_record "$rec"
+  HOME="$HOME_DIR" "$KIMI_HOOK" install \
+    || fail "Kimi hook install refused the spawn fixture's config"
+  kimi_round_trip_config "$HOME_DIR/.kimi-code/config.toml"
+
+  out=$(run_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id")
+  rc=$?
+  expect_code 0 "$rc" "a Kimi spawn stayed refused on a config whose markers a round-trip erased"
+  assert_not_contains "$out" "the global turn-end hook could not be installed safely" \
+    "the Kimi spawn still refused over its own stranded hook entry"
+  assert_contains "$out" "spawned $id harness=kimi" "the recovered Kimi spawn did not report success"
+  assert_grep 'BEGIN FIRSTMATE KIMI TURN-END HOOK' "$HOME_DIR/.kimi-code/config.toml" \
+    "the recovered Kimi spawn did not restore its guarded hook region"
+  assert_grep 'token=' "$WT_DIR/.fm-kimi-turnend" "the recovered Kimi spawn wrote no token pointer"
+  pass "fm-spawn: a Kimi dispatch recovers after a config round-trip erases its hook markers"
 }
 
 test_kimi_teardown_removes_pointer_and_registry_token() {
@@ -1317,11 +1605,15 @@ test_kimi_bordered_prompt_needs_no_override() {
 
 test_kimi_hook_install_is_surgical_idempotent_and_removable
 test_kimi_hook_remove_preserves_owned_newline_boundary
+test_kimi_hook_reclaims_its_own_entry_after_a_comment_dropping_round_trip
+test_kimi_hook_reclaims_an_entry_that_is_not_the_last_table
+test_kimi_hook_refuses_every_hook_reference_that_is_not_its_own_entry
 test_kimi_hook_fails_closed_on_missing_malformed_or_partial_config
 test_kimi_hook_install_refuses_without_jq
 test_kimi_launch_then_send_is_verified
 test_kimi_hook_is_silent_and_requires_registered_workspace_token
 test_kimi_spawn_refuses_unsafe_global_config_before_pane_creation
+test_kimi_spawn_dispatches_after_a_round_trip_erased_its_markers
 test_kimi_teardown_removes_pointer_and_registry_token
 test_kimi_falls_back_to_expanded_home_binary
 test_kimi_missing_binary_refuses_before_pane_creation
