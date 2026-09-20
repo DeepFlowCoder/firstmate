@@ -695,6 +695,47 @@ __FM_BEARINGS_BOARD_DATA__
     withheldCall += m.call || 0;
   });
 
+  /* ---- the absence-claim sweep -------------------------------------------
+     `withheldWays` and `withheldCall` are the fleet-level sums of the per-lane
+     counts `lanes_more` declares. Every site on this page that ASSERTS AN
+     ABSENCE was audited against them, because a withheld count makes an
+     absence claim false exactly the way a capped feed does. Two sites still
+     claimed an absence over a withheld count; both are now hedged to name the
+     withheld count instead. The rest were either already hedged or cannot be
+     reached by a withheld count at all.
+
+       HEDGED - presence-anchored when the withheld count is above zero:
+       - the headline opener "Nothing is being built right now." (withheldWays)
+       - the headline branch "The yard is clear - nothing building, nothing
+         ordered." (withheldCall)
+       - the Captain's Call sub-line "nothing needs you, captain" (withheldCall)
+       - the Captain's Call deck empty "Nothing needs your action right now."
+         (withheldCall)
+       - the rail note, which names the withheld underway and call totals
+       - `buildingLanes`, which counts a lane as building when it holds handed
+         ways OR when `lanes_more` declares withheld ways for it
+
+       ALREADY PRESENCE-ANCHORED by the original change:
+       - `laneReading`, whose readings name what a lane HAS and fall through to
+         "not charted here" for a lane seeded only by an omission record
+
+       EXAMINED AND EXCLUDED - a withheld count cannot falsify them:
+       - "No projects are on the board." in the headline and the yard body:
+         guarded on an empty lane list, and a `lanes_more` entry seeds its own
+         lane, so no withheld count can reach it
+       - `bb-yard-sub` "nothing queued": `totalQueued` already adds
+         `charted_more`, which validation forces to cover every withheld queued
+         row
+       - the berth marker "none on this board": scoped to the rows this board
+         was handed, it names no source and claims nothing about the world
+       - `bb-dispatch-count` "nothing picked": about the captain's own
+         selection, unrelated to any withheld count
+
+       BLOCKED - needs a fact the payload does not carry, so it is left alone
+       and nothing is invented for it: none. `landed` has no withheld
+       counterpart by design, and no absence claim about launches exists that
+       would need one. */
+
   /* ---- honest dates -------------------------------------------------------
      The fleet keeps no prior snapshot, so the board never states a trend, a
      velocity or a change since yesterday. It states only the two ages the
@@ -944,7 +985,9 @@ __FM_BEARINGS_BOARD_DATA__
   } else if (withheldWays > 0) {
     headline = plural(withheldWays, "hull", "hulls") + " on the ways, not charted here.";
   } else if (lanes.length) {
-    headline = "The yard is clear - nothing building, nothing ordered.";
+    headline = withheldCall > 0
+      ? plural(withheldCall, "item", "items") + " needing you, not charted here."
+      : "The yard is clear - nothing building, nothing ordered.";
   } else {
     headline = "No projects are on the board.";
   }
@@ -1164,7 +1207,10 @@ __FM_BEARINGS_BOARD_DATA__
     showCard(0);
   } else {
     deck.classList.add("bb-call--empty");
-    deck.appendChild(el("div", "bb-empty", "Nothing needs your action right now."));
+    deck.appendChild(el("div", "bb-empty",
+      withheldCall > 0
+        ? plural(withheldCall, "item", "items") + " needing you, not charted here"
+        : "Nothing needs your action right now."));
     stackNav.hidden = true;
   }
 

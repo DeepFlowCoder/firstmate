@@ -1558,6 +1558,60 @@ test_the_headline_counts_a_lane_with_withheld_ways_as_building() {
 }
 
 # ---------------------------------------------------------------------------
+# The Captain's Call deck empty message is keyed only on handed cards, so a
+# payload that hands none but declares withheld call rows used to print
+# "Nothing needs your action right now." directly above the sub-line that names
+# them. The empty deck now names the withheld count instead.
+# ---------------------------------------------------------------------------
+test_the_call_deck_empty_state_names_a_withheld_call() {
+  local home out
+  home=$(make_home deck-withheld-call)
+  out=$(render "$home" '{
+    "lanes_more": [{"repo":"cut","queued":0,"underway":0,"call":3}]}')
+
+  printf '%s' "$out" | jq -e '.callEmpty == ["3 items needing you, not charted here"]' \
+    >/dev/null || fail "the call deck claimed nothing needs action over a withheld call: $out"
+  printf '%s' "$out" | jq -e '
+    (.callEmpty | map(test("Nothing needs your action")) | any) == false
+  ' >/dev/null || fail "the call deck still claimed an absence over a withheld call: $out"
+
+  # with nothing withheld, the empty deck keeps its usual words
+  out=$(render "$(make_home deck-empty-clean)" '{}')
+  printf '%s' "$out" | jq -e '.callEmpty == ["Nothing needs your action right now."]' \
+    >/dev/null || fail "the withheld hedge leaked onto an ordinary empty deck: $out"
+
+  pass "the call deck empty state names a withheld call instead of claiming none"
+}
+
+# ---------------------------------------------------------------------------
+# The headline's "The yard is clear" branch asserts an empty yard. It is only
+# reachable with nothing building and nothing queued, but a withheld call row
+# can still be declared, and then the claim of a clear yard sits above the
+# sub-line that names the withheld items. It now names them instead.
+# ---------------------------------------------------------------------------
+test_the_clear_yard_headline_names_a_withheld_call() {
+  local home out
+  home=$(make_home clear-yard-withheld-call)
+  out=$(render "$home" '{
+    "lanes_more": [{"repo":"cut","queued":0,"underway":0,"call":3}]}')
+
+  printf '%s' "$out" | jq -e '.headline == "3 items needing you, not charted here."' \
+    >/dev/null || fail "the clear-yard headline claimed nothing was ordered over a withheld call: $out"
+  printf '%s' "$out" | jq -e '
+    (.headline | test("The yard is clear") | not)
+  ' >/dev/null || fail "the headline still claimed a clear yard over a withheld call: $out"
+
+  # with nothing withheld, the clear-yard wording is untouched
+  out=$(render "$(make_home clear-yard-clean)" '{
+    "landed": [{"id":"done","repo":"still","what":"Shipped","owner":"firstmate",
+                "landed_on":"2026-08-25"}]}')
+  printf '%s' "$out" | jq -e '.headline == "The yard is clear - nothing building, nothing ordered."' \
+    >/dev/null || fail "the withheld hedge changed the clear-yard wording when nothing was withheld: $out"
+
+  pass "the clear-yard headline names a withheld call instead of claiming none"
+}
+
+# ---------------------------------------------------------------------------
 # The falsifier for the whole chain, driven from a real oversized backlog
 # rather than from a hand-written payload: more queued rows than the bound
 # allows, with one project standing ENTIRELY past the cut and another keeping
@@ -1676,5 +1730,7 @@ test_a_project_with_no_surviving_row_still_gets_its_lane
 test_every_withheld_feed_is_named_in_the_lane_it_belongs_to
 test_the_fleet_headline_and_rail_name_withheld_work_instead_of_claiming_none
 test_the_headline_counts_a_lane_with_withheld_ways_as_building
+test_the_call_deck_empty_state_names_a_withheld_call
+test_the_clear_yard_headline_names_a_withheld_call
 test_a_lane_handed_in_full_never_claims_a_withheld_row
 test_an_oversized_backlog_never_reads_as_a_finished_project

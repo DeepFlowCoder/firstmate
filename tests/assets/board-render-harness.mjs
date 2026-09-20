@@ -565,6 +565,7 @@ process.stdout.write(
     flowNote: node("bb-flow-note").textContent,
     yardSub: node("bb-yard-sub").textContent,
     callSub: node("bb-call-sub").textContent,
+    callEmpty: kids(node("bb-call"), "bb-empty").map((c) => c.textContent),
     stats,
     lanes,
     notices: noticeRows,
