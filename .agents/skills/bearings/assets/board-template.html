@@ -698,11 +698,11 @@ __FM_BEARINGS_BOARD_DATA__
   /* ---- the absence-claim sweep -------------------------------------------
      `withheldWays` and `withheldCall` are the fleet-level sums of the per-lane
      counts `lanes_more` declares. Every site on this page that ASSERTS AN
-     ABSENCE was audited against them, because a withheld count makes an
-     absence claim false exactly the way a capped feed does. Two sites still
-     claimed an absence over a withheld count; both are now hedged to name the
-     withheld count instead. The rest were either already hedged or cannot be
-     reached by a withheld count at all.
+     ABSENCE - in its text or in a lane's visual tone - was audited against
+     them, because a withheld count makes an absence claim false exactly the
+     way a capped feed does. The sites that claimed one are hedged below; the
+     rest were either already presence-anchored or cannot be reached by a
+     withheld count at all.
 
        HEDGED - presence-anchored when the withheld count is above zero:
        - the headline opener "Nothing is being built right now." (withheldWays)
@@ -714,6 +714,10 @@ __FM_BEARINGS_BOARD_DATA__
        - the rail note, which names the withheld underway and call totals
        - `buildingLanes`, which counts a lane as building when it holds handed
          ways OR when `lanes_more` declares withheld ways for it
+       - `laneTone`, whose "quiet" border is the visual form of the same
+         absence claim: a lane with withheld call rows tones as "call" and one
+         with withheld ways rows tones as "building", the same precedence the
+         handed-row branches use
 
        ALREADY PRESENCE-ANCHORED by the original change:
        - `laneReading`, whose readings name what a lane HAS and fall through to
