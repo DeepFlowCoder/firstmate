@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, UPSTREAM_ANCESTRY, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, CAPACITY, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, UPSTREAM_ANCESTRY, GNHF_RECONCILE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, CAPACITY, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -35,6 +35,14 @@ When any diagnostic needs captain attention, report the plain consequence and re
 - `UPSTREAM_ANCESTRY: <remediation>` - the primary checkout's history no longer records that this fork already absorbed upstream, so a catch-up replays already-absorbed work as conflicts.
   Run the printed `bin/fm-upstream-graft.sh apply` to restore it; the remedy is per-checkout because `refs/replace` is not inherited by a clone, and `bin/fm-upstream-graft.sh` owns the absorption table and the verdict.
   This line appears only on a positive lost reading; a state the check could not read stays silent, and an absent line never means the record is healthy.
+- `GNHF_RECONCILE: <id> is queued in the book, but published branch <branch> in <repo> names it - <commit subject>` - a published branch from an overnight `gnhf` run, which works outside the fleet lifecycle, names a task the backlog still lists as queued, so dispatching that task now may pay twice for it.
+  Reconcile before dispatching anything from the queue: read the named branch, decide whether what is there is what the task asked for, and then close, re-scope, or leave the task open yourself.
+  Nothing is reconciled for you, deliberately - the guard only ever reports, because whether published work actually satisfies a task is a judgement, and the branch may hold a partial or abandoned attempt.
+  Read the line as exactly what it says: the branch NAMES the task, which is the whole of the evidence, and not that it did the work.
+  Naming can come from something other than a claim, because a subject naming a file such as `bin/fm-tablero.sh` yields the token `fm-tablero`, so the quoted commit subject is a pointer to go and read the branch, never proof the task is done.
+  Landing that work follows the project's ordinary delivery path like any other change, and the line goes quiet on its own once the branch's commits reach the default branch.
+  Silence never means the book is reconciled: the guard matches only when a run's commit SUBJECT names the task id, so keep naming the task id in the prompt of any `gnhf` run dispatched against backlog work.
+  [`bin/fm-gnhf-reconcile.sh`](../../../bin/fm-gnhf-reconcile.sh) owns that contract and its bounds, and [`docs/verification/gnhf-run-contract.md`](../../../docs/verification/gnhf-run-contract.md) records the measurements behind it.
 - `STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>` - the visible startup-memory budget is not a safe one-line positive decimal file; do not infer the default or propagate it.
   Correct the local primary file, then rerun session start so the normal convergence path can deliver the validated value to secondmate homes.
 - `CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>` - the optional dispatch profile file exists but failed low-cost bootstrap validation; stop profile-based dispatch, report the actionable error, and require correction of the malformed schema, unverified harness name, or invalid harness/effort pair rather than falling back around it or selecting a bad profile.

@@ -59,6 +59,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-mem-trace.sh`        | Whole-machine memory and time trace, streamed one sample per line, for diagnosing a lane the runner shuts down |
 | `fm-doc-audience-check.sh` | Validate the tracked documentation audience inventory's structure                    |
 | `fm-ensure-agents-md.sh` | Ensure a project's real `AGENTS.md`, its `CLAUDE.md` `@AGENTS.md` pointer, and the canonical self-governance section |
+| `fm-gnhf-reconcile.sh`   | Report published overnight `gnhf` work for backlog tasks the book still lists as queued, without reconciling anything |
 | `fm-guard.sh`            | Warn on primary-checkout tangles, pending queued wakes, and unhealthy supervision    |
 | `fm-primary-scope-lib.sh` | Shared marker-or-plain-checkout primary-home predicate for the tracked hooks and the self-update |
 | `fm-session-lock-lib.sh` | Shared session-lock harness identity (ancestry walk and holder liveness) for fm-lock.sh and the Claude Stop auto-arm |
