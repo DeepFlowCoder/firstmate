@@ -291,7 +291,13 @@ if [ "$watcher_healthy" = false ]; then
       {
         printf '●%s\n' "$rule"
         printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
-        if [ -n "$beatless_cause" ]; then
+        if [ -n "$beatless_cause" ] && [ "$beacon_desc" = never ]; then
+          # A home whose FIRST watcher dies beatless has no beacon at all, and
+          # FM_SUP_BEACON_DESC spells that "never". Attributing it to an earlier
+          # watcher would send the reader looking for a predecessor that never
+          # existed, in the very case this condition exists to describe.
+          watcher_cause=$(printf '%s, and no watcher has ever beaten in this home' "$beatless_cause")
+        elif [ -n "$beatless_cause" ]; then
           watcher_cause=$(printf '%s, so the last beat (%s) is an earlier watcher'\''s' \
             "$beatless_cause" "$beacon_desc")
         elif [ "$watcher_down_reason" = no-watcher ]; then

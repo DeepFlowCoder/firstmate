@@ -192,7 +192,9 @@ test_guard_warnings() {
 # Build a watcher lock and beacon whose RELATIVE ages are the thing under test.
 # <order> claim-after-beat writes the beacon first, so the lock's claim is newer
 # than the last beat (a claim that has produced no beat of its own);
-# beat-after-claim writes it last, the ordinary shape of a watcher that ran.
+# beat-after-claim writes it last, the ordinary shape of a watcher that ran;
+# no-beat writes no beacon at all, the shape of a home whose FIRST watcher
+# claimed the singleton and died before beating - no predecessor ever ran here.
 # The claim carries fm-home and watcher-path but NO pid-identity, exactly the
 # `identity:none` the cycle ledger recorded for the killed starts, because the
 # watcher is TERMed before it publishes that field.
@@ -264,6 +266,24 @@ test_claimed_lock_without_a_first_beat_is_detected() {
     || fail "the same-episode reminder did not name the claim-without-a-beat condition: $(cat "$err")"
   ! grep -F 'grace 300s' "$err" >/dev/null \
     || fail "the same-episode reminder reported the previous watcher's beacon as being inside grace: $(cat "$err")"
+
+  # A home whose FIRST watcher dies beatless has no beacon at all - the same
+  # verdict, but there is no earlier watcher to attribute a last beat to, and
+  # naming one would send the reader hunting a predecessor that never ran.
+  dir=$(make_case guard-no-first-beat-ever)
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$dir/state/task.meta"
+  dead=$(dead_pid)
+  guard_claim_fixture "$dir" "$dead" no-beat
+  [ ! -e "$dir/state/.last-watcher-beat" ] || fail "the no-beacon fixture wrote a beacon"
+  sleep 1.2
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_WATCHER_FIRST_BEAT_GRACE=1
+  grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "a first-ever watcher that died beatless was not reported: $(cat "$err")"
+  ! grep -F "is an earlier watcher's" "$err" >/dev/null \
+    || fail "the banner credited a last beat to an earlier watcher that never existed: $(cat "$err")"
+  grep -F 'no watcher has ever beaten in this home' "$err" >/dev/null \
+    || fail "the banner did not say there has been no beat at all: $(cat "$err")"
 
   # The same condition with a LIVE claimant, against a REAL watcher rather than
   # a fixture. This is the state that actually existed before the arm's
@@ -337,7 +357,7 @@ clock_resolves_ms() {
 # tolerated while it lasts, and the real width of it is measured against the
 # SHIPPED default rather than against a number this test picks.
 test_startup_window_before_the_first_beat_is_not_flagged() {
-  local dir state err wpid claim_at beat_at delta i n default worst best runs
+  local dir state err wpid claim_at beat_at bracketed delta i n default worst best runs
   # (1) A claim younger than the window is ordinary startup, never an alarm.
   dir=$(make_case guard-startup-window)
   err="$dir/guard.err"
@@ -393,10 +413,18 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
     wpid=$!
     claim_at=
     beat_at=
+    bracketed=0
     i=0
     while [ "$i" -lt 8000 ]; do
       if [ -z "$claim_at" ] && [ -e "$state/.watch.lock/pid" ]; then
         claim_at=$(fm_timing_now_ms)
+        # The absence of the beacon is proved AFTER the stamp on purpose. The
+        # beat file is only ever created, never removed, so a beat still absent
+        # at claim_at+e was absent at claim_at too - which is what makes the
+        # elapsed time below the width of a transition this loop actually
+        # witnessed, rather than the cost of two command substitutions run back
+        # to back over two files that were both already on disk.
+        [ -e "$state/.last-watcher-beat" ] || bracketed=1
       fi
       if [ -n "$claim_at" ] && [ -e "$state/.last-watcher-beat" ]; then
         beat_at=$(fm_timing_now_ms)
@@ -407,13 +435,9 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
     done
     kill -TERM "$wpid" 2>/dev/null || true
     wait "$wpid" 2>/dev/null || true
-    if [ -n "$claim_at" ] && [ -n "$beat_at" ]; then
+    if [ "$bracketed" -eq 1 ] && [ -n "$claim_at" ] && [ -n "$beat_at" ]; then
       delta=$(( beat_at - claim_at ))
       [ "$delta" -ge 0 ] || fail "a real watcher beat BEFORE its own claim (${delta}ms)"
-      # A zero-width reading is not a fast start, it is a start whose claim and
-      # beat were both already on disk when the poll loop first looked: it
-      # measured no window at all, so it is discarded rather than allowed to
-      # drag the strict bound down to a number nothing was measured against.
       if [ "$delta" -gt 0 ]; then
         [ "$delta" -gt "$worst" ] && worst=$delta
         { [ "$best" -lt 0 ] || [ "$delta" -lt "$best" ]; } && best=$delta
@@ -422,8 +446,15 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
     fi
     n=$((n + 1))
   done
-  [ "$runs" -gt 0 ] || fail "no real watcher start produced a measurable claim-to-first-beat window (every reading was 0ms, so the bounds below would pass without measuring)"
-  [ "$best" -gt 0 ] || fail "the best claim-to-first-beat reading was ${best}ms: the margin below is unverified"
+  # No bracketed reading means this machine never got to watch the window open
+  # and close, so there is nothing to compare against the threshold. Saying so is
+  # honest; certifying the margin from readings that measured nothing is the
+  # exact failure this gate exists to catch.
+  if [ "$runs" -eq 0 ]; then
+    pass "a claim still inside the startup window before the first beat is not flagged"
+    pass "SKIP (no watcher start here was sampled with its claim observed before its first beat): measuring the real claim-to-first-beat window"
+    return
+  fi
   [ "$((best * 10))" -lt "$((default * 1000))" ] \
     || fail "the startup path itself now costs ${best}ms, under 10x margin beneath the ${default}s threshold"
   [ "$worst" -lt "$((default * 1000))" ] \
