@@ -232,7 +232,9 @@ The guard reports only and never refuses a dispatch.
 ### The validation provider's balance (config/balance-margin-secs)
 
 The same guard takes a second reading no quota lane can supply.
-The validation pipeline runs its own agents on one provider whatever lane a task's worker was dispatched on, that provider is prepaid, and quota-axi reports no such provider at all, so its balance reaching zero is invisible to every lane above and still stops every validation in the fleet at once.
+The validation pipeline runs its own agents, and while it is running them on the prepaid provider it draws on one balance whatever lane each task's worker was dispatched on.
+quota-axi reports no such provider at all, so that balance reaching zero is invisible to every lane above and still stops every validation in the fleet at once.
+Which agent the pipeline prefers is its own setting and can be changed; the guard watches the balance either way, because an agent moved to last resort comes back when the balance does.
 The guard reads that balance directly, on the same cadence and through the same `CAPACITY:` line and watcher check as the lane arm, so there is one place this warning comes from rather than two.
 
 The reading is one bounded request to the provider's read-only balance endpoint: it runs no model, spends no tokens, and launches no work, so measuring the balance is never what finishes it.

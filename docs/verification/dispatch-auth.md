@@ -218,9 +218,13 @@ Verified 2026-09-22 against quota-axi 0.1.42, no-mistakes 1.75.2, and Pi 0.84.2.
 The capacity guard's balance arm rests on four facts: the validation pipeline depends on one provider whatever lane a worker runs on, quota-axi does not report that provider's prepaid balance, the provider does report it without running any work, and the margin the guard judges it against is measured rather than chosen.
 
 **The pipeline's dependency.**
-`~/.no-mistakes/config.yaml` selects `agent: [pi, codex]`, and Pi's `~/.pi/agent/settings.json` selects `defaultProvider: deepseek`.
-Every pipeline step therefore runs on that provider's balance regardless of the harness the task's own worker was dispatched on, which is why a spent balance stops the whole fleet rather than degrading one lane.
-The pipeline's own telemetry confirms it: `model_provider` over `~/.no-mistakes/state.sqlite`'s `agent_invocations` reports `pi`/`deepseek`/`deepseek-v4-pro` for every Pi invocation.
+Pi's `~/.pi/agent/settings.json` selects `defaultProvider: deepseek`, and the pipeline's own telemetry confirms the pairing: `model_provider` over `~/.no-mistakes/state.sqlite`'s `agent_invocations` reports `pi`/`deepseek`/`deepseek-v4-pro` for every Pi invocation.
+Whenever the pipeline runs on Pi, every step of every run draws on that one prepaid balance regardless of the harness the task's own worker was dispatched on, which is why a spent balance stops the whole fleet rather than degrading one lane.
+
+The measured incidents happened under `agent: [pi, codex]`, where Pi was first and every validation therefore burned that balance.
+On 2026-09-22 the captain changed the selection to `agent: [claude, codex, pi]`, which moves Pi to last resort until the balance is recharged.
+That changes how soon this guard's warning matters, not whether it is needed: Pi is still in the chain and returns to it on recharge, and the same silence would follow it back.
+Re-read this selection before concluding how much of a given run's spend lands on that balance.
 
 **quota-axi does not cover it.**
 `quota-axi --help` lists the providers it knows as `claude,codex,cursor,copilot,grok,kimi,zai,agy,alibaba,opencode-go`, and `quota-axi --json --no-credential-refresh` returns exactly those ten in `providers[]`.
