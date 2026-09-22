@@ -195,6 +195,56 @@ test_guarded_pop_cannot_destroy_another_copys_stash() {
   pass "a guarded pop or drop cannot destroy a stash that belongs to another copy"
 }
 
+# --- the known limit --------------------------------------------------------
+
+# This case pins a measured gap, not desired behavior. A stack of two or more
+# entries can only be built where the guard does not apply, so the two entries
+# below are stashed while the repository still has a single working copy. Once a
+# second copy exists and the guard is prepared, a guarded `git stash pop` of that
+# stack is NOT refused: git removes the entry through a reflog rewrite
+# (`git reflog delete --updateref --rewrite`) that fires no reference-transaction
+# hook, so the entry is destroyed with exit 0 and no message. The neighbours that
+# ARE still covered are asserted in the same case, so the boundary is executable.
+test_multi_entry_pop_documents_the_known_limit() {
+  local root primary a hooks out code sha
+  root=$TMP_ROOT/multi-limit
+  primary=$(make_primary "$root")
+
+  # Two entries, stashed while the repository still has a single working copy.
+  printf 'FIRST\n' > "$primary/f.txt"
+  git_env -C "$primary" stash push -q -m first
+  printf 'SECOND\n' > "$primary/f.txt"
+  git_env -C "$primary" stash push -q -m second
+  [ "$(git_env -C "$primary" stash list | wc -l | tr -d ' ')" = 2 ] \
+    || fail "the setup must leave a two-entry stash stack"
+
+  a=$(add_copy "$primary" wa)
+  hooks=$root/hooks
+  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+
+  # The gap: a guarded pop of a multi-entry stack is not refused and removes one
+  # entry, silently and with no reference-transaction hook firing.
+  out=$(guarded "$hooks" git -C "$a" stash pop 2>&1) && code=0 || code=$?
+  [ "$code" -eq 0 ] \
+    || fail "a multi-entry pop must NOT be refused (this documents the gap): $out"
+  [ "$(git_env -C "$primary" stash list | wc -l | tr -d ' ')" = 1 ] \
+    || fail "a multi-entry pop must remove exactly one entry"
+  sha=$(git_env -C "$primary" rev-parse refs/stash)
+
+  # The neighbours that ARE still covered, so the boundary is executable: clear
+  # and the drop of the last remaining entry both go through update-ref -d and
+  # reach the hook.
+  guarded "$hooks" git -C "$a" stash clear >/dev/null 2>&1 \
+    && fail "stash clear must still be refused even on a stack a pop reached"
+  [ "$(git_env -C "$primary" rev-parse refs/stash)" = "$sha" ] \
+    || fail "a refused stash clear must leave the remaining entry in place"
+  guarded "$hooks" git -C "$a" stash drop >/dev/null 2>&1 \
+    && fail "dropping the last remaining entry must still be refused"
+  [ "$(git_env -C "$primary" rev-parse refs/stash)" = "$sha" ] \
+    || fail "a refused last-entry drop must leave the entry in place"
+  pass "a multi-entry pop bypasses the guard while clear and last-entry drop stay refused"
+}
+
 test_guard_stands_aside_for_a_single_working_copy() {
   local root primary hooks
   root=$TMP_ROOT/solo
@@ -359,6 +409,7 @@ test_prepare_is_reported_and_idempotent
 test_prepare_writes_nothing_into_the_repository
 test_guarded_stash_push_is_refused_without_touching_the_tree
 test_guarded_pop_cannot_destroy_another_copys_stash
+test_multi_entry_pop_documents_the_known_limit
 test_guard_stands_aside_for_a_single_working_copy
 test_guard_does_not_disturb_ordinary_git_work
 test_the_repositorys_own_hooks_still_run

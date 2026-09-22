@@ -2707,8 +2707,11 @@ mkdir -p "$TASK_TMP/gotmp"
 # checkout and every pooled task worktree - shares one stash stack. This home
 # dispatches several workers onto one repository as its normal mode, so one
 # worker's `git stash pop` can carry off, and destroy, whatever another worker
-# stashed, with no error on either side. The guard makes git itself refuse that
-# instead. Prepared per task because the hooks it chains are resolved from the
+# stashed, with no error on either side. The guard makes git itself refuse stash
+# creation and the removals that pass through a reference transaction; a pop or
+# drop of a pre-existing multi-entry stack still slips past it, as
+# bin/fm-stash-guard.sh documents. Prepared per task because the hooks it chains
+# are resolved from the
 # repository this task works in; the whole directory dies with TASK_TMP at
 # teardown. Nothing is written into the repository - see the export below.
 #

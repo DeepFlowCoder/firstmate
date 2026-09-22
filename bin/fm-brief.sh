@@ -426,7 +426,9 @@ The report is the only thing that survives, so anything worth keeping must be in
 **Your worktree is isolated; \`git stash\` is NOT.**
 refs/stash lives in the repository's common git directory, so every working copy of this repository shares ONE stash stack, and other workers may be live in those copies right now: a \`git stash pop\` anywhere takes whatever you stashed and drops it, with no error on either side.
 Park changes inside your own copy instead - \`git add -A && git commit -m wip\`, undone later with \`git reset --soft HEAD~1\` - or write them out to a file with \`git diff HEAD > ../parked.patch\`.
-Your git refuses a stash while this repository has more than one working copy; that refusal is correct, so do not work around it.
+Your git refuses stash creation, and some removals, while this repository has more than one working copy.
+That protection is not complete: when more than one entry already exists, a pop or a drop can still destroy another copy's entry silently, with no error.
+Do not use \`git stash\` here at all, and never work around a refusal when one does fire.
 
 # Rules
 1. Never push to any remote and never open a PR.
@@ -558,7 +560,9 @@ If the top-level path is the primary checkout or not the worktree you were launc
 **Your worktree is isolated; \`git stash\` is NOT.**
 refs/stash lives in the repository's common git directory, so every working copy of this repository shares ONE stash stack, and other workers may be live in those copies right now: a \`git stash pop\` anywhere takes whatever you stashed and drops it, with no error on either side.
 Park changes inside your own copy instead - \`git add -A && git commit -m wip\`, undone later with \`git reset --soft HEAD~1\` - or write them out to a file with \`git diff HEAD > ../parked.patch\`.
-Your git refuses a stash while this repository has more than one working copy; that refusal is correct, so do not work around it.
+Your git refuses stash creation, and some removals, while this repository has more than one working copy.
+That protection is not complete: when more than one entry already exists, a pop or a drop can still destroy another copy's entry silently, with no error.
+Do not use \`git stash\` here at all, and never work around a refusal when one does fire.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 

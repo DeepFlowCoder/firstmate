@@ -51,6 +51,24 @@
 #     and names the command that reads it back.
 # Refusing is therefore never the destructive choice. Staying silent is.
 #
+# WHAT THE GUARD DOES NOT COVER
+# A measured, known limit rather than an oversight. The guard sees only
+# reference-transaction events, and git fires that hook only for a stash removal
+# that goes through `update-ref -d`: `git stash clear` and the drop of the LAST
+# remaining entry, both of which the guard refuses. When refs/stash holds MORE
+# THAN ONE entry, `git stash pop`, `git stash drop`, `git stash drop stash@{N}`,
+# and `git stash branch` remove an entry through a reflog rewrite
+# (`git reflog delete --updateref --rewrite`). No reference-transaction hook
+# fires on a reflog rewrite, so the guard neither sees nor refuses that path:
+# the entry is destroyed with exit 0 and no message.
+#
+# The reachable sequence: a stack of two or more entries can only be built where
+# the guard does not apply, which is the captain's unguarded primary checkout or
+# a state predating the worktree pool. A guarded worker's pop, drop, or branch
+# then destroys one of those entries silently. Creation is still refused, so a
+# worker can never ADD to such a stack from a guarded copy, but the pre-existing
+# stack itself stays reachable. That boundary is deliberate and measured.
+#
 # Usage:
 #   fm-stash-guard.sh prepare <hooks-dir> <repository-path>
 #   fm-stash-guard.sh env <hooks-dir>
