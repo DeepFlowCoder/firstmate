@@ -57,6 +57,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-lint-workflows.sh`   | Owner of firstmate's GitHub workflow lint: run pinned actionlint on every .github/workflows file |
 | `fm-install-actionlint.sh` | Install CI's pinned, verified actionlint build                                       |
 | `fm-install-shellcheck.sh` | Install CI's pinned, verified ShellCheck build                                       |
+| `fm-install-bash.sh`    | Install CI's pinned, SHA-256-verified bash floor for the behavior-suite lanes        |
 | `fm-mem-trace.sh`        | Whole-machine memory and time trace, streamed one sample per line, for diagnosing a lane the runner shuts down |
 | `fm-doc-audience-check.sh` | Validate the tracked documentation audience inventory's structure                    |
 | `fm-ensure-agents-md.sh` | Ensure a project's real `AGENTS.md`, its `CLAUDE.md` `@AGENTS.md` pointer, and the canonical self-governance section |
