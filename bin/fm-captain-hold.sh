@@ -134,8 +134,10 @@
 # Everything else refuses: no lock, an unreadable lock, a lock held by another
 # session, an ancestry that cannot be read. A guard that admits the caller when it
 # cannot tell would not have stopped the incident it exists for.
-# The refusal exits 4 and names the legitimate path, because the worker that hits
-# it needs to know what to do instead of being told only that it may not.
+# The refusal exits with the shared captain-answer refusal code
+# (bin/fm-captain-hold-lib.sh, the one definition every relay of this refusal
+# reads) and names the legitimate path, because the worker that hits it needs to
+# know what to do instead of being told only that it may not.
 # When the guard could not READ the ancestry at all, rather than reading it and
 # finding no proof, it also leaves one keyed wake record before refusing. That
 # case is the only one whose likely victim is a captain answer the captain really
@@ -214,6 +216,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 BACKLOG="$FM_HOME/data/backlog.md"
 BACKLOG_ARCHIVE="$FM_HOME/data/done-archive.md"
 
+# shellcheck source=bin/fm-captain-hold-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-captain-hold-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
@@ -250,10 +255,9 @@ fail() {
   exit 1
 }
 
-# The exit code every resolution refusal uses, distinct from the ordinary
-# failures above so a caller or test can recognize "the crewmate guard fired"
-# rather than a usage error or a skipped key.
-FM_CAPTAIN_ANSWER_REFUSE_EXIT=4
+# The exit code every resolution refusal uses is FM_CAPTAIN_ANSWER_REFUSE_EXIT,
+# declared once in bin/fm-captain-hold-lib.sh because the caller that relays this
+# refusal has to recognize the same value.
 
 # Set when the walk below could not READ this process's ancestry, as opposed to
 # reading it and finding no runner. Both refuse, and both must: a guard that
