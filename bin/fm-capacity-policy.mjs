@@ -62,8 +62,19 @@
 //                                                              validations stop
 //   balance-runway     the measured drain reaches zero      -> recharge before
 //                      inside the reaction margin              dispatching more
+//   balance-unestablished the amount has only ever read zero -> this guard
+//                                                              cannot work here
 //   balance-live       zero is further away than the margin -> silent
 //   balance-unmeasured no drain established yet             -> silent
+//
+// WHERE THE WARNING STARTS, which is the answer to "can it cry wolf". It fires
+// when `balance / rate < margin`, and the margin IS how long a validation
+// takes, so rearranged it fires exactly when less than ONE VALIDATION'S worth
+// of spend is left at the rate the fleet has actually been spending. Nobody
+// picked that trigger; it falls out of the margin being a measured duration. A
+// balance holding more than one validation cannot make this speak, and
+// averaging over a longer window only ever moves the trigger lower.
+// tests/fm-capacity.test.sh walks that boundary from both sides.
 //
 // THE MARGIN IS MEASURED, NOT CHOSEN. It is the wall-clock span a validation
 // spends burning that provider, at the 90th percentile of this fleet's own
@@ -462,11 +473,31 @@ function classifyBalance(readings, marginSecs) {
   if (clean.length === 0) return null;
 
   const newest = clean[clean.length - 1];
-  // Spent is read from the vendor's own availability flag as well as the
-  // amount, because a balance can stop serving work before it reaches exactly
-  // zero and the flag is the producer's statement about that, not an inference.
-  if (newest.available === false || newest.balance <= 0) {
-    return { cause: "balance-spent", marginSecs };
+  // The vendor's own availability flag is its statement that this account can
+  // no longer serve work, so it is spent whatever the amount says: a balance
+  // can stop serving before it reaches exactly zero.
+  if (newest.available === false) return { cause: "balance-spent", marginSecs };
+
+  // A ZERO AMOUNT IS ONLY EVIDENCE ONCE THE ACCOUNT HAS BEEN SEEN HOLDING
+  // SOMETHING. This is the same trap the lane arm documents above: grok and
+  // codex both report `credits.remaining: 0` on a perfectly healthy account,
+  // where the zero is a field that never carries headroom rather than a purse
+  // that ran out. An amount that has only ever read zero establishes nothing,
+  // and reading it as spent would arm a warning that fires on every poll
+  // forever - the exact shape a captain learns to scroll past, on the guard
+  // that has to be believed the one day it is right. Having WATCHED it fall is
+  // what makes the zero mean something, and the retained history is what
+  // remembers that after the balance has sat at zero all night.
+  const everPositive = clean.some((entry) => entry.balance > 0);
+  if (newest.balance <= 0) {
+    if (everPositive) return { cause: "balance-spent", marginSecs };
+    // Structurally blind, not merely early. An amount that has only ever read
+    // zero will never produce a runway, so unlike a history that is simply too
+    // short this does not resolve itself by waiting - and a guard that can
+    // never do its job has to say so once rather than sit quiet looking armed.
+    // It says so ONCE: the caller's repeat suppression keys on the cause, so it
+    // does not become the per-poll noise the rule above exists to prevent.
+    return { cause: "balance-unestablished", marginSecs };
   }
 
   // A top-up invalidates every rate measured across it: the drain before a
@@ -476,8 +507,15 @@ function classifyBalance(readings, marginSecs) {
   for (let i = 1; i < clean.length; i += 1) {
     if (clean[i].balance > clean[i - 1].balance) start = i;
   }
-  const window = clean.slice(start);
-  const oldest = window[0];
+  // The rate is averaged over at most two margins, and the history may reach
+  // further back than that. The two are deliberately different spans: the rate
+  // has to describe the CURRENT burn, while the history also has to remember
+  // that this account once held a balance, which is what the zero-amount rule
+  // above rests on. Bounding the rate window here rather than by what was
+  // retained is what lets the second outlive the first.
+  const rateWindowStart = newest.at - 2 * marginSecs;
+  const window = clean.slice(start).filter((entry) => entry.at >= rateWindowStart);
+  const oldest = window.length > 0 ? window[0] : newest;
   const span = newest.at - oldest.at;
   if (window.length < 2 || span <= 0) {
     return { cause: "balance-unmeasured", marginSecs, detail: "one reading since the last top-up" };
@@ -510,6 +548,11 @@ function describeBalance(balance) {
       return (
         `validation provider balance runs out in ${humanSpan(balance.secondsLeft)}, ` +
         `inside the ${humanSpan(balance.marginSecs)} a validation needs - recharge before dispatching`
+      );
+    case "balance-unestablished":
+      return (
+        "validation provider balance has only ever reported zero, so this guard cannot warn " +
+        "before it runs out - check whether that account bills some other way"
       );
     default:
       return `validation provider balance runway not measured (${balance.detail})`;
@@ -561,8 +604,11 @@ export function verdict(snapshot, minLanes, balanceReadings = [], balanceMarginS
   if (minLanes === 0) return { fire: false, lanes, dispatchable };
 
   const balance = classifyBalance(balanceReadings, balanceMarginSecs);
-  const balanceFires =
-    balance !== null && (balance.cause === "balance-spent" || balance.cause === "balance-runway");
+  // `balance-unmeasured` is deliberately absent: too little history yet is the
+  // ordinary state of a home whose guard was armed this morning, and it
+  // resolves itself by waiting. The three below do not.
+  const BALANCE_FIRES = new Set(["balance-spent", "balance-runway", "balance-unestablished"]);
+  const balanceFires = balance !== null && BALANCE_FIRES.has(balance.cause);
 
   // Only a lane PROVEN lost may take the count below the threshold. A lane
   // nobody could measure is disclosed uncertainty, and counting it as lost is

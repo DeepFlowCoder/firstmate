@@ -68,6 +68,10 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Report it as a stop, not a slowdown, and expect any run still in flight to end without a verdict on the work; a run that died this way says so in its own record, and its work is on its branch rather than lost.
 - `CAPACITY: validation provider balance runway not measured (<reason>)` - the balance itself was read, but not enough of its history exists yet to project when it runs out.
   It is disclosure, never an alarm, and never relayed as a healthy balance or as a spent one: it names a blind spot beside whatever else the line reported.
+  It resolves itself as readings accumulate, so it needs no action beyond not mistaking it for an all-clear.
+- `CAPACITY: validation provider balance has only ever reported zero, so this guard cannot warn before it runs out - check whether that account bills some other way` - the amount read is a field that has never carried anything, which is a permanent blind spot rather than a spent balance.
+  Waiting does not fix this one, and it arrives once rather than on every poll.
+  Relay it as a guard that cannot cover this account and ask the captain whether that provider bills some other way; never relay it as a spent balance, and never act on it as one.
 - `CAPACITY: capacity unknown - <reason>` - the quota snapshot could not be read or classified (a probe timeout, an unreadable snapshot file, a missing node, or a report that will not parse), so the guard cannot say whether the fleet is healthy.
   Report it as a blind guard, not as a credential fault: the reason names the actual failure, and evidence that could not be measured is never escalated to a sign-in demand.
 - `CAPACITY: balance unknown - <reason>` - the balance read itself failed, so the guard cannot say how long the validation provider has left.

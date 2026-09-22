@@ -246,8 +246,15 @@ A malformed value is reported and falls back to the default, exactly as the lane
 
 `0` in `config/balance-margin-secs` retires the balance arm alone and leaves the lane arm working, while `0` in `config/capacity-min-lanes` still retires the whole guard, both arms and both vendor calls.
 
-The drain rate is averaged over at least one whole margin of readings, because a prepaid balance is spent in bursts and a rate taken across the last few minutes would read as empty-by-lunchtime every time a validation started.
+Because the margin is how long a validation takes, the warning starts exactly when less than **one validation's worth of spend** is left at the rate the fleet has actually been spending; a balance holding more than that cannot make the guard speak, and averaging over a longer window only ever moves the trigger lower.
+
+The drain rate is averaged over at least one whole margin of readings and at most two, because a prepaid balance is spent in bursts and a rate taken across the last few minutes would read as empty-by-lunchtime every time a validation started.
 Until that much history exists, or when a top-up has just reset it, the guard says the runway is not measured rather than projecting from too little, and an unmeasured runway never fires on its own.
+
+An amount of zero is read as a spent balance only once the account has been seen holding something, because a field that has only ever reported zero is not a purse that ran out.
+Some providers report a permanent zero credits figure on a perfectly healthy account, and treating that as a spent balance would arm a warning that fired on every poll forever.
+Such an account gets one notice that this guard cannot warn it before it runs out, and then silence; the provider's own statement that it can no longer serve work still fires whatever the amount reads.
+The reading history keeps the most recent positive reading however old it is, so a balance that drained to zero overnight still reads as spent the next morning rather than as something the guard could not establish.
 A balance the guard could not read is reported as unknown at session start and stays silent on the watcher's cadence, on the same reasoning as an unreadable quota snapshot.
 A spent balance is reported even when the quota snapshot could not be read at all, so an unrelated vendor timeout cannot silence it.
 

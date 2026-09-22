@@ -441,11 +441,18 @@ acquire_balance() {
 
 # The reading history, newest last, as the JSON array the policy consumes.
 #
-# Readings older than twice the margin are dropped. Twice, because the policy
-# needs a window at least one margin long before it will project at all, and a
-# second margin of slack is what keeps that window available across a poll the
-# watcher missed or a session that was closed. Retaining more would only average
-# the present into a longer past.
+# Readings older than four margins are dropped. Four, because the policy averages
+# its drain rate over at most two and needs a window at least one margin long
+# before it will project at all: a second rate window of slack is what keeps that
+# available across a poll the watcher missed or a session that was closed.
+#
+# THE MOST RECENT POSITIVE READING IS NEVER DROPPED, whatever its age. It is not
+# there for the rate - the policy bounds its own rate window by time, so an old
+# row cannot dilute the present - it is there because "this account has been seen
+# holding a balance" is what makes a later zero mean the purse ran out rather
+# than mean a field that never carries anything. Prune that one row and a balance
+# that died overnight reads as unmeasured by morning, which is the one session
+# that most needs telling.
 history_append() {  # <balance> <available>
   local now retain kept tmp
   now=${FM_CAPACITY_BALANCE_NOW:-$(date +%s)}
@@ -453,8 +460,14 @@ history_append() {  # <balance> <available>
   mkdir -p "$STATE" 2>/dev/null || return 0
   [ ! -L "$HISTORY" ] || return 0
   printf '%s\t%s\t%s\n' "$now" "$1" "$2" >>"$HISTORY" 2>/dev/null || return 0
-  retain=$((now - 2 * MARGIN))
-  kept=$(awk -F'\t' -v cutoff="$retain" '$1 >= cutoff' "$HISTORY" 2>/dev/null) || return 0
+  retain=$((now - 4 * MARGIN))
+  kept=$(awk -F'\t' -v cutoff="$retain" '
+    { rows[NR] = $0; stamp[NR] = $1 + 0; amount[NR] = $2 + 0 }
+    amount[NR] > 0 { last_positive = NR }
+    END {
+      for (i = 1; i <= NR; i++)
+        if (stamp[i] >= cutoff || i == last_positive) print rows[i]
+    }' "$HISTORY" 2>/dev/null) || return 0
   [ -n "$kept" ] || return 0
   # The prune arrives by rename, because session start and the watcher can both
   # be taking a reading: a reader must see the whole history before or the whole

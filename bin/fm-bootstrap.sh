@@ -14,7 +14,7 @@
 #                 "DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB",
 #                 "DISK_SPACE: invalid <config/disk-space-warn-gb|FM_DISK_SPACE_WARN_GB> - <reason>; warning at the default <n> GB",
 #                 "CAPACITY: <n> of <n> provider lanes dispatchable (<why>): <lane>[ | <lane>]...",
-#                 "CAPACITY: validation provider balance <spent|runs out in <span>|runway not measured> ...",
+#                 "CAPACITY: validation provider balance <spent|runs out in <span>|runway not measured|has only ever reported zero> ...",
 #                 "CAPACITY: capacity unknown - <reason>",
 #                 "CAPACITY: balance unknown - <reason>" or
 #                 "CAPACITY: invalid <config/capacity-min-lanes|FM_CAPACITY_MIN_LANES|config/balance-margin-secs|FM_BALANCE_MARGIN_SECS> - <reason>; guarding at the default <n>",

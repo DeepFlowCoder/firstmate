@@ -286,6 +286,8 @@ It asserts that the script accepts no harness, model, or provider input, never c
 `tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic.
 `tests/fm-capacity.test.sh` owns the capacity classification, including that an unopened credential store is neither reported as a sign-out nor counted as a lost lane, and that a lane nobody could measure never sounds the minimum-lane alarm by itself.
 It also owns the balance arm: that a balance heading for zero warns while balance is still left, that a healthy one stays silent, that too little history discloses instead of alarming, that a top-up resets the measurement, that the default margin is the measured value on both sides of it, and that no amount or currency ever reaches the output.
+It walks the firing boundary from both sides in units of one validation's cost, which is where the margin being a measured duration puts it, and it pins the shapes a working fleet actually produces - an idle fleet, rounding jitter, one heavy validation early in the window, and a recharge - as silent.
+It also pins that an amount which has only ever read zero is never called spent, reports its permanent blind spot once, and still yields to the provider's own unavailable flag.
 Every balance case drives the real guard against a fixture reading, so no test reaches a credential, a network, or a real balance.
 `tests/fm-crew-state.test.sh` owns the record's own distinction between a run the provider balance killed and every other failure.
 `tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake schema-5 snapshot per case, served as quota-axi's default TOON.
