@@ -470,11 +470,21 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
     pass "SKIP (healthy starts, but no observable window: claim and first beat were already both on disk, or inside one millisecond, at the first poll): measuring the real claim-to-first-beat window"
     return
   fi
-  [ "$((best * 10))" -lt "$((default * 1000))" ] \
-    || fail "the startup path itself now costs ${best}ms, under 10x margin beneath the ${default}s threshold"
+  # THE NUMBER, AND THE MEASUREMENT IT COMES FROM. 4x puts the tripwire at 7.5s
+  # of the 30s threshold. Measured host noise on this window reached 1.5s in the
+  # worst case observed, so 7.5s keeps roughly five times margin over the noise.
+  # It was loosened from 10x (a 3s tripwire) deliberately and on that data: the
+  # claim-to-first-beat width is dominated by host load, not by the code under
+  # test, so a 3s tripwire bounds the machine as much as the startup path and
+  # reds on a contended runner with nothing changed. This bound hunts
+  # seconds-scale growth, which is how a startup path grows into a 30s threshold;
+  # tightening it back toward the measured noise buys no detection and returns a
+  # flake, and a flake here teaches people to discount every red beside it.
+  [ "$((best * 4))" -lt "$((default * 1000))" ] \
+    || fail "the startup path itself now costs ${best}ms, past the $(( default * 1000 / 4 ))ms tripwire (4x margin beneath the ${default}s threshold)"
   [ "$worst" -lt "$((default * 1000))" ] \
     || fail "a real watcher start took ${worst}ms, past the ${default}s threshold outright"
-  pass "the startup window before the first beat is tolerated and keeps an order of magnitude of margin (best ${best}ms, worst ${worst}ms, of ${default}s over $runs starts)"
+  pass "the startup window before the first beat is tolerated and keeps 4x margin beneath the threshold (best ${best}ms, worst ${worst}ms, of ${default}s over $runs starts)"
 }
 
 test_lock_single_winner_under_concurrency() {
