@@ -954,6 +954,7 @@ NO_MISTAKES_MIN=1.46.0
 # of its floor.
 GH_AXI_MIN=0.1.29
 LAVISH_AXI_MIN=0.1.46
+# Measured evidence behind the chrome-devtools-axi floor: docs/verification/browser-tool-floor.md.
 CHROME_DEVTOOLS_AXI_MIN=0.1.35
 
 treehouse_supports_lease() {
