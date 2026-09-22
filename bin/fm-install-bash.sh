@@ -29,6 +29,12 @@ set -eu
 VERSION=5.3
 # SHA-256 of the official GNU release tarball
 # (https://ftp.gnu.org/gnu/bash/bash-${VERSION}.tar.gz).
+#
+# GNU publishes each patch rollup under its own name and keeps the series base
+# name frozen at the .0 release: bash-5.2.tar.gz is unchanged since 2022 while
+# bash-5.2.37.tar.gz shipped in 2024. A future bash 5.3.1 would be published as
+# bash-5.3.1.tar.gz, and pinning it would require bumping VERSION and SHA256
+# together.
 SHA256=0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba
 
 die() {
@@ -96,7 +102,7 @@ else
   die "need sha256sum or shasum to verify the bash archive"
 fi
 [ "$ACTUAL_SHA256" = "$SHA256" ] || {
-  printf 'fm-install-bash.sh: checksum mismatch for %s (expected %s, got %s)\n' \
+  printf 'fm-install-bash.sh: checksum mismatch for %s: the pinned tarball changed unexpectedly (expected %s, got %s); verify the new release, then re-pin VERSION and SHA256 together\n' \
     "$ARCHIVE" "$SHA256" "$ACTUAL_SHA256" >&2
   exit 1
 }
