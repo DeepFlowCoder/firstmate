@@ -174,6 +174,43 @@ test_verdict_orphaned_when_recorded_pid_is_dead() {
   pass "fm-afk-health: a lock left behind by a dead daemon does not read as alive"
 }
 
+# A daemon that took the lock and then died is orphaned the moment its lock
+# outlives it, even inside the start grace: 'starting' is only for a daemon
+# that has not taken over yet. The lock is newer than the flag's recorded
+# epoch, so it is evidence about THIS session, not prior-session residue.
+test_verdict_orphaned_when_daemon_started_then_died_within_grace() {
+  local dir dead lock
+  dir=$(make_home "$TMP_ROOT/v-died-in-grace")
+  enter_away_mode "$dir" 1
+  dead=999999
+  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
+  lock="$dir/state/.supervise-daemon.lock"
+  mkdir -p "$lock"
+  printf '%s\n' "$dead" > "$lock/pid"
+  printf '%s\n' "fake-identity" > "$lock/pid-identity"
+  expect_verdict "$dir" orphaned "daemon took the lock and died within the start grace"
+  pass "fm-afk-health: a daemon that started and died inside the grace reads 'orphaned', not 'starting'"
+}
+
+# A lock older than the flag is prior-session residue, not proof this session's
+# daemon came and went: an abrupt death leaves its lock behind and nothing on
+# the entry path clears it, so a normal start must not read orphaned because of
+# it. The stale lock is ignored and the age-based 'starting' verdict stands.
+test_verdict_starting_ignores_stale_lock_older_than_flag() {
+  local dir dead lock
+  dir=$(make_home "$TMP_ROOT/v-stale-lock")
+  enter_away_mode "$dir" 1
+  dead=999999
+  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
+  lock="$dir/state/.supervise-daemon.lock"
+  mkdir -p "$lock"
+  printf '%s\n' "$dead" > "$lock/pid"
+  printf '%s\n' "fake-identity" > "$lock/pid-identity"
+  touch -t 202001010000 "$lock"
+  expect_verdict "$dir" starting "stale lock older than the flag is prior-session residue"
+  pass "fm-afk-health: a dead-pid lock older than the flag does not orphan a normal start"
+}
+
 test_verdict_orphaned_on_pid_reuse() {
   local dir pid lock
   dir=$(make_home "$TMP_ROOT/v-pidreuse")
@@ -410,6 +447,8 @@ test_verdict_starting_inside_the_measured_window
 test_verdict_start_grace_boundary
 test_verdict_start_grace_is_configurable
 test_verdict_orphaned_when_recorded_pid_is_dead
+test_verdict_orphaned_when_daemon_started_then_died_within_grace
+test_verdict_starting_ignores_stale_lock_older_than_flag
 test_verdict_orphaned_on_pid_reuse
 test_verdict_orphaned_when_flag_cannot_be_dated
 test_verdict_does_not_depend_on_the_daemon

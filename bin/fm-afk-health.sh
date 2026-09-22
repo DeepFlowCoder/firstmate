@@ -16,12 +16,15 @@
 # Verdicts:
 #   off       state/.afk absent. Away mode is not active.
 #   healthy   flag present, a live identity-matched daemon holds the lock.
-#   starting  flag present, no live daemon yet, flag younger than the start
-#             grace. This is the legitimate window between entering away mode
-#             and the daemon taking over.
-#   orphaned  flag present, no live daemon, flag older than the start grace.
-#             THE BROKEN STATE: supervision is off and every other path is
-#             still standing down for a daemon that is gone.
+#   starting  flag present, no daemon has taken the lock yet, and the flag is
+#             younger than the start grace. This is the legitimate window
+#             between entering away mode and the daemon taking over.
+#   orphaned  flag present with no live daemon: either a daemon took the lock
+#             after the flag and then died (named immediately, whatever the
+#             flag's age), or no daemon ever took it and the flag is older
+#             than the start grace. THE BROKEN STATE: supervision is off and
+#             every other path is still standing down for a daemon that is
+#             gone.
 #
 # Start grace: FM_AFK_START_GRACE, default 300 seconds. It bounds the two real
 # entry paths, both measured on 2026-09-22 (docs/verification/supervision.md
@@ -62,18 +65,14 @@ fm_afk_start_grace() {
   printf '%s' "$grace"
 }
 
-# Seconds since the away-mode flag was written. bin/fm-afk-start.sh's
+# The away-mode flag's absolute entry epoch. bin/fm-afk-start.sh's
 # fm_afk_flag_write stores the entry epoch as the flag's content, which is the
-# authoritative age because it survives a copy that resets mtime - the
+# authoritative epoch because it survives a copy that resets mtime - the
 # launcher's own rollback backup does exactly that. A flag with no usable
-# epoch, or one stamped in the future, falls back to mtime.
-#
-# A flag whose age cannot be established at all prints nothing, and the caller
-# reads that as incoherent rather than young. That bias is safe because age is
-# consulted ONLY after the daemon has already been found absent: the worst a
-# clock step can do is make a genuinely daemonless home say so out loud, and it
-# can never turn a live daemon into a false alarm.
-fm_afk_flag_age() {  # <state-dir>
+# epoch, or one stamped in the future, falls back to mtime. This is the single
+# implementation of the content-then-mtime rule; fm_afk_flag_age and the
+# daemon-lock freshness comparison below both consume it.
+fm_afk_flag_epoch() {  # <state-dir>
   local flag="$1/.afk" stamp now
   [ -f "$flag" ] || return 1
   now=$(date '+%s') || return 1
@@ -86,7 +85,21 @@ fm_afk_flag_age() {  # <state-dir>
   fi
   [ -n "$stamp" ] || return 1
   [ "$stamp" -le "$now" ] || return 1
-  printf '%s' "$((now - stamp))"
+  printf '%s' "$stamp"
+}
+
+# Seconds since the away-mode flag was written.
+#
+# A flag whose age cannot be established at all prints nothing, and the caller
+# reads that as incoherent rather than young. That bias is safe because age is
+# consulted ONLY after the daemon has already been found absent: the worst a
+# clock step can do is make a genuinely daemonless home say so out loud, and it
+# can never turn a live daemon into a false alarm.
+fm_afk_flag_age() {  # <state-dir>
+  local epoch now
+  epoch=$(fm_afk_flag_epoch "$1") || return 1
+  now=$(date '+%s') || return 1
+  printf '%s' "$((now - epoch))"
 }
 
 # Portable mtime: the same two-probe shape the rest of bin/ uses, because
@@ -96,6 +109,24 @@ fm_afk_health_mtime() {  # <path>
   out=$(stat -f '%m' "$1" 2>/dev/null) && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
   out=$(stat -c '%Y' "$1" 2>/dev/null) && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
   return 1
+}
+
+# fm_afk_daemon_lock_postdates_flag <state-dir>
+# True when the daemon lock is evidence about THIS away session: it exists and
+# its timestamp is strictly newer than the flag's recorded entry epoch. A
+# daemon that dies abruptly leaves its lock behind, and nothing on the entry
+# path clears it, so a lock at or before the flag epoch is prior-session
+# residue rather than proof that this session's daemon came and went. Equal
+# timestamps count as residue: second granularity makes a same-second lock
+# ambiguous, and the safe bias is toward no false positive during a normal
+# start.
+fm_afk_daemon_lock_postdates_flag() {  # <state-dir>
+  local lock="$1/.supervise-daemon.lock" flag_epoch lock_mtime
+  [ -e "$lock" ] || [ -L "$lock" ] || return 1
+  flag_epoch=$(fm_afk_flag_epoch "$1" 2>/dev/null) || return 1
+  lock_mtime=$(fm_afk_health_mtime "$lock" 2>/dev/null) || return 1
+  [ -n "$lock_mtime" ] || return 1
+  [ "$lock_mtime" -gt "$flag_epoch" ]
 }
 
 # fm_afk_health <state-dir>
@@ -124,6 +155,15 @@ fm_afk_health() {  # <state-dir>
   grace=$(fm_afk_start_grace)
   age=$(fm_afk_flag_age "$state" 2>/dev/null) || age=
   FM_AFK_HEALTH_AGE=$age
+  if fm_afk_daemon_lock_postdates_flag "$state"; then
+    FM_AFK_HEALTH_VERDICT=orphaned
+    if [ -n "$age" ]; then
+      FM_AFK_HEALTH_DETAIL="away mode was entered ${age}s ago and its supervision daemon started and then died, so nothing is supervising this home."
+    else
+      FM_AFK_HEALTH_DETAIL='away mode is flagged, its supervision daemon started and then died, and its entry time is unreadable, so nothing is supervising this home.'
+    fi
+    return 0
+  fi
   if [ -n "$age" ] && [ "$age" -le "$grace" ]; then
     FM_AFK_HEALTH_VERDICT=starting
     FM_AFK_HEALTH_DETAIL="away mode was entered ${age}s ago and its supervision daemon has not taken over yet (start grace ${grace}s)."
@@ -157,7 +197,7 @@ fm_afk_owns_supervision() {  # <state-dir>
 FM_AFK_ORPHAN_REPAIR='Restart away-mode supervision with the /afk skill, or leave away mode with bin/fm-afk-launch.sh stop, and confirm the result with bin/fm-afk-health.sh.'
 
 fm_afk_health_usage() {
-  sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 fm_afk_health_main() {

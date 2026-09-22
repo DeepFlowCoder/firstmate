@@ -57,7 +57,7 @@ batched digest rather than per-wake injections.
      Restart it or leave away mode; do not proceed.
 
    After that the state is checked for you rather than remembered.
-   The session digest's AFK section, both turn-end guards, and Claude's Stop-owned re-arm all read this same verdict, so an orphaned away mode is named within `FM_AFK_START_GRACE` (default 300s) of the daemon dying instead of being discovered by accident.
+   The session digest's AFK section, both turn-end guards, and Claude's Stop-owned re-arm all read this same verdict, so an orphaned away mode is named immediately when its daemon started and then died; only a daemon that never took over at all waits out `FM_AFK_START_GRACE` (default 300s) before it is named instead of being discovered by accident.
    That check reads the flag and the daemon's own lock from disk, so a dead daemon cannot suppress its own diagnosis.
 
 5. **Do not separately arm `fm-watch.sh`.** The daemon manages the watcher as
