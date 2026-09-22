@@ -235,7 +235,7 @@ run_guard() {  # <dir> [env assignments...]
 # it. Nothing reported that state; it surfaced only when the arm gave up twice.
 # The claim's own timestamp against the beacon's is what tells them apart.
 test_claimed_lock_without_a_first_beat_is_detected() {
-  local dir dead err
+  local dir state dead err wpid live i
   dir=$(make_case guard-no-first-beat)
   err="$dir/guard.err"
   printf 'project=x\n' > "$dir/state/task.meta"
@@ -251,6 +251,38 @@ test_claimed_lock_without_a_first_beat_is_detected() {
     || fail "banner did not name the claim-without-a-beat condition: $(cat "$err")"
   grep -F "$dead" "$err" >/dev/null \
     || fail "banner did not name the claiming process: $(cat "$err")"
+
+  # The same condition with a LIVE claimant, against a REAL watcher rather than
+  # a fixture. This is the state that actually existed before the arm's
+  # confirmation wait terminated it, and it is the one that is still repairable,
+  # so a check that only caught the corpses would be reporting the outage after
+  # the window to do anything about it had closed. SIGSTOP between the claim and
+  # the first beat is what holds a real watcher in it.
+  dir=$(make_case guard-no-first-beat-live)
+  state="$dir/state"
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$state/task.meta"
+  # A beacon from an earlier watcher, well inside its freshness grace: the mask.
+  touch "$state/.last-watcher-beat"
+  sleep 1.1
+  PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2>&1 &
+  wpid=$!
+  i=0
+  while [ "$i" -lt 4000 ] && [ ! -e "$state/.watch.lock/pid" ]; do
+    sleep 0.002
+    i=$((i + 1))
+  done
+  live=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  [ -n "$live" ] || fail "the watcher never claimed the lock"
+  kill -STOP "$live" 2>/dev/null || fail "could not SIGSTOP the claiming watcher"
+  sleep 1.3
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_WATCHER_FIRST_BEAT_GRACE=1
+  kill -CONT "$live" 2>/dev/null || true
+  kill -TERM "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "a LIVE watcher stalled before its first beat was not reported: $(cat "$err")"
 
   # The ordinary stale-beacon lapse must keep its own diagnosis: a watcher that
   # DID beat and then stopped is a different failure with a different repair.
@@ -274,7 +306,7 @@ test_claimed_lock_without_a_first_beat_is_detected() {
 # tolerated while it lasts, and the real width of it is measured against the
 # SHIPPED default rather than against a number this test picks.
 test_startup_window_before_the_first_beat_is_not_flagged() {
-  local dir state err wpid claim_at beat_at delta i default
+  local dir state err wpid claim_at beat_at delta i n default worst best runs
   # (1) A claim younger than the window is ordinary startup, never an alarm.
   dir=$(make_case guard-startup-window)
   err="$dir/guard.err"
@@ -284,30 +316,71 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
   ! grep -F 'never emitted a first beat' "$err" >/dev/null \
     || fail "a claim still inside the startup window was flagged: $(cat "$err")"
 
-  # (2) A REAL watcher start, measured: the claim-to-first-beat width must stay
-  # far below the shipped default, so the default cannot rot into a false
-  # positive as startup work grows.
+  # (2) REAL watcher starts, measured in milliseconds: mtimes are whole seconds,
+  # far too coarse to notice this window growing until it has already swallowed
+  # most of the threshold.
+  #
+  # Two different things are being defended, so they get two different bounds.
+  # Measured here, the width varies with HOST LOAD far more than with how much
+  # work the home holds (0.4s to 1.5s on the same machine, with a crowded home
+  # no slower than an empty one), so a single tight bound on the worst run would
+  # fail on a slow runner without any code having changed. The BEST run is the
+  # closest available reading of what the startup path itself costs, and it is
+  # what rises if that path takes on new work, so it carries the strict margin.
+  # The worst run carries only the loose bound: it must still fit inside the
+  # threshold at all.
+  # shellcheck source=bin/fm-timing-lib.sh
+  . "$ROOT/bin/fm-timing-lib.sh"
   dir=$(make_case guard-startup-measure)
-  state="$dir/state"
-  PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
-    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2>&1 &
-  wpid=$!
-  i=0
-  while [ "$i" -lt 600 ] && [ ! -e "$state/.last-watcher-beat" ]; do
-    sleep 0.05
-    i=$((i + 1))
+  default=$(FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; printf "%s\n" "$FM_WATCHER_FIRST_BEAT_GRACE"' _ "$LIB")
+  worst=0
+  best=-1
+  runs=0
+  n=0
+  while [ "$n" -lt 3 ]; do
+    dir=$(make_case "guard-startup-measure-$n")
+    state="$dir/state"
+    # Work in the home, so the startup path this measures is not the empty-home
+    # best case: it walks task metadata and PR-poll retirement before it beats.
+    i=0
+    while [ "$i" -lt 8 ]; do
+      printf 'project=p%s\nbackend=tmux\nwindow=w%s\n' "$i" "$i" > "$state/t$i.meta"
+      i=$((i + 1))
+    done
+    PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2>&1 &
+    wpid=$!
+    claim_at=
+    beat_at=
+    i=0
+    while [ "$i" -lt 8000 ]; do
+      if [ -z "$claim_at" ] && [ -e "$state/.watch.lock/pid" ]; then
+        claim_at=$(fm_timing_now_ms)
+      fi
+      if [ -n "$claim_at" ] && [ -e "$state/.last-watcher-beat" ]; then
+        beat_at=$(fm_timing_now_ms)
+        break
+      fi
+      sleep 0.002
+      i=$((i + 1))
+    done
+    kill -TERM "$wpid" 2>/dev/null || true
+    wait "$wpid" 2>/dev/null || true
+    if [ -n "$claim_at" ] && [ -n "$beat_at" ]; then
+      delta=$(( beat_at - claim_at ))
+      [ "$delta" -ge 0 ] || fail "a real watcher beat BEFORE its own claim (${delta}ms)"
+      [ "$delta" -gt "$worst" ] && worst=$delta
+      { [ "$best" -lt 0 ] || [ "$delta" -lt "$best" ]; } && best=$delta
+      runs=$((runs + 1))
+    fi
+    n=$((n + 1))
   done
-  claim_at=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_mtime "$2"' _ "$LIB" "$state/.watch.lock/pid")
-  beat_at=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_mtime "$2"' _ "$LIB" "$state/.last-watcher-beat")
-  kill -TERM "$wpid" 2>/dev/null || true
-  wait "$wpid" 2>/dev/null || true
-  [ -n "$claim_at" ] && [ -n "$beat_at" ] || fail "a real watcher start produced no claim or no beat"
-  delta=$(( beat_at - claim_at ))
-  default=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; printf "%s\n" "$FM_WATCHER_FIRST_BEAT_GRACE"' _ "$LIB")
-  [ "$delta" -ge 0 ] || fail "a real watcher beat BEFORE its own claim (delta ${delta}s)"
-  [ "$((delta * 4))" -lt "$default" ] \
-    || fail "measured claim-to-first-beat ${delta}s leaves no margin under the ${default}s default"
-  pass "the startup window before the first beat is tolerated and stays far inside the default (measured ${delta}s of ${default}s)"
+  [ "$runs" -gt 0 ] || fail "no real watcher start produced both a claim and a beat"
+  [ "$((best * 10))" -lt "$((default * 1000))" ] \
+    || fail "the startup path itself now costs ${best}ms, under 10x margin beneath the ${default}s threshold"
+  [ "$worst" -lt "$((default * 1000))" ] \
+    || fail "a real watcher start took ${worst}ms, past the ${default}s threshold outright"
+  pass "the startup window before the first beat is tolerated and keeps an order of magnitude of margin (best ${best}ms, worst ${worst}ms, of ${default}s over $runs starts)"
 }
 
 test_lock_single_winner_under_concurrency() {
