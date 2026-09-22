@@ -291,15 +291,13 @@ if [ "$watcher_healthy" = false ]; then
       {
         printf '●%s\n' "$rule"
         printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
-        if [ -n "$beatless_cause" ] && [ "$beacon_desc" = never ]; then
-          # A home whose FIRST watcher dies beatless has no beacon at all, and
-          # FM_SUP_BEACON_DESC spells that "never". Attributing it to an earlier
-          # watcher would send the reader looking for a predecessor that never
-          # existed, in the very case this condition exists to describe.
-          watcher_cause=$(printf '%s, and no watcher has ever beaten in this home' "$beatless_cause")
-        elif [ -n "$beatless_cause" ]; then
-          watcher_cause=$(printf '%s, so the last beat (%s) is an earlier watcher'\''s' \
-            "$beatless_cause" "$beacon_desc")
+        if [ -n "$beatless_cause" ]; then
+          # The beacon is reported, never attributed. A home whose FIRST watcher
+          # dies beatless has no beacon at all ("never"), so any clause crediting
+          # an earlier watcher would invent a predecessor in the very case this
+          # condition exists to describe; and one sentence that states the beat
+          # without owning it covers that home and a successor's alike.
+          watcher_cause=$(printf '%s (last beat: %s)' "$beatless_cause" "$beacon_desc")
         elif [ "$watcher_down_reason" = no-watcher ]; then
           watcher_cause=$(printf 'no live watcher process holds this home lock (last beat: %s)' "$beacon_desc")
         else

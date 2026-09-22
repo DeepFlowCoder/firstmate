@@ -99,7 +99,8 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 A watcher that takes the singleton lock and goes down before its first beat is its own down-state, separate from a stale beacon.
 The beacon left behind belongs to the previous watcher, so freshness alone reads that home as supervised while nothing is watching it, and the condition surfaces only once the arm has already failed.
 `fm_watcher_claim_without_beat` in `bin/fm-wake-lib.sh` owns the test and dates the claim from `state/.watch.lock/pid`, which is written once at claim time and never rewritten.
-Its verdict is `no-first-beat`, it precedes every supervision-model branch because a fresh beacon hides rather than clears it, and its threshold defaults to the largest production arm confirmation budget, since a watcher the arm could not confirm inside that budget is the one the arm terminates.
+Its verdict is `no-first-beat`, it precedes every supervision-model branch because a fresh beacon hides rather than clears it, and its threshold defaults to the arm confirmation budget actually in force, since a watcher the arm could not confirm inside that budget is the one the arm terminates.
+Raising `FM_ARM_CONFIRM_TIMEOUT` for a slow host therefore raises this threshold with it, so a watcher the arm is still legitimately waiting to confirm is never reported as down; the largest production default (30s) is the floor.
 
 ## Regression coverage
 

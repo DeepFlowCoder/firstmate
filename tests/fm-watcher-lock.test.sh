@@ -16,7 +16,7 @@ LIB="$ROOT/bin/fm-wake-lib.sh"
 # An arm only reports its typed failure after wait_for_healthy_successor has
 # spent the whole confirmation budget, so cases that wait for that failure must
 # outlast the largest production default (30s on MSYS, 10s elsewhere - see
-# ARM_CONFIRM_DEFAULT in bin/fm-watch-arm.sh). This is a ceiling spent only when
+# FM_ARM_CONFIRM_BUDGET in bin/fm-wake-lib.sh). This is a ceiling spent only when
 # an arm genuinely fails to exit; a passing case returns as soon as it does.
 ARM_FAIL_EXIT_POLLS=400
 
@@ -280,10 +280,10 @@ test_claimed_lock_without_a_first_beat_is_detected() {
   run_guard "$dir" FM_GUARD_GRACE=300 FM_WATCHER_FIRST_BEAT_GRACE=1
   grep -F 'never emitted a first beat' "$err" >/dev/null \
     || fail "a first-ever watcher that died beatless was not reported: $(cat "$err")"
-  ! grep -F "is an earlier watcher's" "$err" >/dev/null \
+  ! grep -F "earlier watcher" "$err" >/dev/null \
     || fail "the banner credited a last beat to an earlier watcher that never existed: $(cat "$err")"
-  grep -F 'no watcher has ever beaten in this home' "$err" >/dev/null \
-    || fail "the banner did not say there has been no beat at all: $(cat "$err")"
+  grep -F 'last beat: never' "$err" >/dev/null \
+    || fail "the banner did not report that there has been no beat at all: $(cat "$err")"
 
   # The same condition with a LIVE claimant, against a REAL watcher rather than
   # a fixture. This is the state that actually existed before the arm's

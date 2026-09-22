@@ -137,16 +137,43 @@ fm_watcher_healthy() {
   return 0
 }
 
+# The arm's bounded confirmation budget: how long a freshly forked watcher has
+# to acquire the lock and beat before the arm gives up and TERMs it. Owned here,
+# in the library both sides source, because two consumers must agree on it -
+# bin/fm-watch-arm.sh, which waits exactly this long, and the first-beat grace
+# below, whose whole justification is that it IS this budget. Two copies of the
+# rule would drift the day one of them is edited. Git Bash/MSYS pays a much
+# higher fork cost while the watcher completes its required pre-lock migration,
+# so its default covers that cold start.
+case "${OSTYPE:-}" in
+  msys*|mingw*|cygwin*) FM_ARM_CONFIRM_DEFAULT=30 ;;
+  *) FM_ARM_CONFIRM_DEFAULT=10 ;;
+esac
+FM_ARM_CONFIRM_BUDGET=${FM_ARM_CONFIRM_TIMEOUT:-$FM_ARM_CONFIRM_DEFAULT}
+
 # Seconds a claim may stay beatless before it counts as a watcher that never
 # started supervising. Not a number picked for comfort: a watcher the ARM could
 # not confirm within its own bounded confirmation budget is precisely the one the
-# arm TERMs, so the budget is the honest boundary and this takes the largest
-# production default of it (ARM_CONFIRM_DEFAULT in bin/fm-watch-arm.sh - 30s on
-# MSYS, 10s elsewhere). The real claim-to-first-beat window is far narrower:
-# measured at under a second on an idle home, and pinned against this default by
-# the startup-window regression in tests/fm-watcher-lock.test.sh, which fails if
-# growth in the startup path ever eats the margin.
-FM_WATCHER_FIRST_BEAT_GRACE="${FM_WATCHER_FIRST_BEAT_GRACE:-30}"
+# arm TERMs, so the budget is the honest boundary and this DERIVES from the
+# budget actually in force rather than restating a constant. Raising
+# FM_ARM_CONFIRM_TIMEOUT - the knob an operator reaches for precisely because
+# their host is slow - raises this with it, so a watcher the arm is still
+# legitimately waiting to confirm is never reported as down.
+# The floor is the largest production default (30s): on a host whose budget is
+# lower, a claim still beatless 30s on has outlived every confirmation budget
+# this project ships, and the floor keeps the margin over the real window from
+# narrowing on the hosts that were never the problem.
+# That real claim-to-first-beat window is far narrower: measured at under a
+# second on an idle home, and pinned against this threshold by the startup-window
+# regression in tests/fm-watcher-lock.test.sh, which fails if growth in the
+# startup path ever eats the margin.
+case "$FM_ARM_CONFIRM_BUDGET" in
+  ''|*[!0-9]*) _fm_first_beat_default=30 ;;
+  *) _fm_first_beat_default=$FM_ARM_CONFIRM_BUDGET ;;
+esac
+[ "$_fm_first_beat_default" -ge 30 ] || _fm_first_beat_default=30
+FM_WATCHER_FIRST_BEAT_GRACE="${FM_WATCHER_FIRST_BEAT_GRACE:-$_fm_first_beat_default}"
+unset _fm_first_beat_default
 
 FM_WATCHER_BEATLESS_CLAIM_PID=
 FM_WATCHER_BEATLESS_CLAIM_AGE=
