@@ -67,6 +67,19 @@ add_copy() {  # <primary> <name>
   printf '%s\n' "$path"
 }
 
+# Gives <repo> a hook of its own that touches <marker> when it runs.
+make_hook() {  # <repo> <name> <marker>
+  local repo=$1 name=$2 marker=$3 dir
+  dir=$repo/.git/hooks
+  mkdir -p "$dir"
+  cat > "$dir/$name" <<EOF
+#!/bin/sh
+touch "$marker"
+exit 0
+EOF
+  chmod +x "$dir/$name"
+}
+
 # --- the danger the guard exists for ----------------------------------------
 
 # Baseline, and the reason for everything below: with no guard in the way, one
@@ -98,23 +111,30 @@ test_unguarded_stash_is_shared_between_working_copies() {
 # --- preparing the guard ----------------------------------------------------
 
 test_prepare_is_reported_and_idempotent() {
-  local root primary hooks out
+  local root primary a hooks out
   root=$TMP_ROOT/prepare
   primary=$(make_primary "$root")
-  add_copy "$primary" wa >/dev/null
+  a=$(add_copy "$primary" wa)
   hooks=$root/hooks
 
-  guard status "$hooks" >/dev/null 2>&1 \
-    && fail "status must report an unprepared directory as absent"
-  out=$(guard prepare "$hooks" "$primary" 2>&1) \
-    || fail "prepare should succeed on an ordinary repository: $out"
+  # Unprepared and prepared are told apart by behavior: an unprepared directory
+  # is one `env` will not point git at, and a prepared one is one whose exported
+  # configuration actually makes a shared stash refusal fire.
+  guard env "$hooks" >/dev/null 2>&1 \
+    && fail "env must refuse a directory holding no guard"
+  out=$(guard prepare "$hooks" 2>&1) \
+    || fail "prepare should succeed: $out"
   assert_contains "$out" "prepared" "prepare reports what it did"
-  guard status "$hooks" >/dev/null \
-    || fail "status must report a prepared directory"
-  out=$(guard prepare "$hooks" "$primary" 2>&1) \
+  guard env "$hooks" >/dev/null \
+    || fail "env must accept a prepared directory"
+  printf 'ONE\n' > "$a/f.txt"
+  guarded "$hooks" git -C "$a" stash push -q -m one >/dev/null 2>&1 \
+    && fail "a prepared guard must refuse a shared stash"
+
+  out=$(guard prepare "$hooks" 2>&1) \
     || fail "a second prepare should succeed: $out"
-  guard status "$hooks" >/dev/null \
-    || fail "a repeated prepare must leave the guard in place"
+  guarded "$hooks" git -C "$a" stash push -q -m two >/dev/null 2>&1 \
+    && fail "a repeated prepare must leave the refusal in force"
   pass "prepare reports its outcome and is idempotent"
 }
 
@@ -125,7 +145,7 @@ test_prepare_writes_nothing_into_the_repository() {
   add_copy "$primary" wa >/dev/null
   # The whole point of the environment placement: no project state changes.
   before=$(find "$primary/.git" | sort)
-  guard prepare "$root/hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$root/hooks" >/dev/null || fail "prepare failed"
   after=$(find "$primary/.git" | sort)
   [ "$before" = "$after" ] \
     || fail "prepare must not add, remove, or move anything inside the repository"
@@ -140,7 +160,7 @@ test_guarded_stash_push_is_refused_without_touching_the_tree() {
   primary=$(make_primary "$root")
   a=$(add_copy "$primary" wa)
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
 
   printf 'MY-WORK\n' > "$a/f.txt"
   out=$(guarded "$hooks" git -C "$a" stash push -m mine 2>&1) && code=0 || code=$?
@@ -172,7 +192,7 @@ test_guarded_pop_cannot_destroy_another_copys_stash() {
   a=$(add_copy "$primary" wa)
   b=$(add_copy "$primary" wb)
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
 
   out=$(guarded "$hooks" git -C "$b" stash pop 2>&1) && code=0 || code=$?
   [ "$code" -ne 0 ] || fail "a cross-copy stash pop must not succeed silently"
@@ -220,7 +240,7 @@ test_multi_entry_pop_documents_the_known_limit() {
 
   a=$(add_copy "$primary" wa)
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
 
   # The gap: a guarded pop of a multi-entry stack is not refused and removes one
   # entry, silently and with no reference-transaction hook firing.
@@ -250,7 +270,7 @@ test_guard_stands_aside_for_a_single_working_copy() {
   root=$TMP_ROOT/solo
   primary=$(make_primary "$root")
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
 
   # One working copy means no sharing and no danger, so ordinary stash use must
   # keep working. A guard that punished the safe case would just be turned off.
@@ -265,13 +285,49 @@ test_guard_stands_aside_for_a_single_working_copy() {
   pass "the guard stands aside when the repository has a single working copy"
 }
 
+test_guard_stands_aside_for_a_bare_backed_single_copy() {
+  local root primary bare wt hooks
+  root=$TMP_ROOT/bare-backed
+  primary=$(make_primary "$root")
+  bare=$root/bare.git
+  wt=$root/wt
+  git_env clone -q --bare "$primary" "$bare" >/dev/null \
+    || fail "could not build the bare repository"
+  git_env -C "$bare" worktree add -q "$wt" -b wt >/dev/null \
+    || fail "could not add the only working copy"
+  hooks=$root/hooks
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
+
+  # A bare repository holds no working tree, so this layout has exactly ONE
+  # working copy and shares nothing. It is a layout a guarded worker really
+  # enters, because the exported configuration follows it everywhere, and
+  # refusing here would punish the safe case the guard promises to leave alone.
+  printf 'SOLO\n' > "$wt/f.txt"
+  guarded "$hooks" git -C "$wt" stash push -q -m solo \
+    || fail "stash push must work while a bare-backed repository has one working copy"
+  assert_contains "$(git_env -C "$wt" stash list)" "solo" \
+    "the solo stash entry must exist"
+  guarded "$hooks" git -C "$wt" stash pop >/dev/null 2>&1 \
+    || fail "stash pop must work while a bare-backed repository has one working copy"
+  assert_contains "$(cat "$wt/f.txt")" "SOLO" "the solo pop must restore the content"
+
+  # And the refusal comes back the moment a second copy of that same bare
+  # repository exists, because then the stack really is shared.
+  git_env -C "$bare" worktree add -q "$root/wt2" -b wt2 >/dev/null \
+    || fail "could not add the second working copy"
+  printf 'SHARED\n' > "$wt/f.txt"
+  guarded "$hooks" git -C "$wt" stash push -q -m shared >/dev/null 2>&1 \
+    && fail "a second working copy of a bare-backed repository must bring the refusal back"
+  pass "the guard stands aside for a bare-backed repository with one working copy"
+}
+
 test_guard_does_not_disturb_ordinary_git_work() {
   local root primary a hooks
   root=$TMP_ROOT/ordinary
   primary=$(make_primary "$root")
   a=$(add_copy "$primary" wa)
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
 
   # Everything that is not the stash must be untouched: the guard is worthless
   # if it makes workers rip it out to get their day's work done.
@@ -305,7 +361,7 @@ EOF
   chmod +x "$own/pre-commit"
   git_env -C "$primary" config core.hooksPath "$own"
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
 
   printf 'change\n' > "$a/f.txt"
   guarded "$hooks" git -C "$a" add f.txt || fail "git add failed"
@@ -332,7 +388,7 @@ EOF
   chmod +x "$own/reference-transaction"
   git_env -C "$primary" config core.hooksPath "$own"
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
 
   printf 'change\n' > "$a/f.txt"
   guarded "$hooks" git -C "$a" add f.txt || fail "git add failed"
@@ -348,6 +404,42 @@ EOF
   pass "a chained reference-transaction hook keeps running, stdin and all"
 }
 
+# The exported configuration is not scoped to the task's worktree: it follows the
+# worker into every repository its git touches, and a worker in this fleet really
+# does commit in repositories other than the one it was dispatched onto. Chaining
+# therefore has to be decided by the repository the hook is running in. Otherwise
+# that other repository's own hooks - privacy and figure gates among them - stop
+# running with no message, which is the silent failure this whole change exists
+# to remove.
+test_another_repositorys_hooks_run_and_the_task_repositorys_do_not() {
+  local root a b hooks
+  root=$TMP_ROOT/foreign
+  a=$(make_primary "$root/a")
+  add_copy "$a" wa >/dev/null
+  b=$(make_primary "$root/b")
+  # Distinct markers, so a hook that ran can always be told from the other.
+  make_hook "$a" pre-commit "$root/a-hook-ran"
+  make_hook "$b" pre-commit "$root/b-hook-ran"
+  hooks=$root/hooks
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
+
+  printf 'change\n' > "$b/f.txt"
+  guarded "$hooks" git -C "$b" add f.txt || fail "git add failed in the other repository"
+  guarded "$hooks" git -C "$b" commit -qm foreign \
+    || fail "git commit failed in the other repository"
+  assert_present "$root/b-hook-ran" \
+    "the other repository's own pre-commit hook must run under the guard"
+  [ ! -e "$root/a-hook-ran" ] \
+    || fail "the guarded repository's pre-commit hook must not follow the worker elsewhere"
+
+  # The stash refusal is not repository-local, though: every repository with more
+  # than one working copy shares one stack, so it still fires back home.
+  printf 'MY-WORK\n' > "$a/f.txt"
+  guarded "$hooks" git -C "$a" stash push -q -m mine >/dev/null 2>&1 \
+    && fail "run-time chaining must not weaken the stash refusal"
+  pass "a repository the worker wanders into keeps its own hooks"
+}
+
 # --- the exported environment ----------------------------------------------
 
 test_env_points_git_at_the_guard() {
@@ -356,7 +448,7 @@ test_env_points_git_at_the_guard() {
   primary=$(make_primary "$root")
   a=$(add_copy "$primary" wa)
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
   line=$(guard env "$hooks") || fail "env should print the export line"
 
   # Exactly what a worker's shell does with that line: evaluate it, then run git.
@@ -374,7 +466,7 @@ test_env_appends_to_existing_injected_config() {
   primary=$(make_primary "$root")
   add_copy "$primary" wa >/dev/null
   hooks=$root/hooks
-  guard prepare "$hooks" "$primary" >/dev/null || fail "prepare failed"
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
   line=$(guard env "$hooks") || fail "env failed"
 
   # A worker that already carries injected git configuration must keep it: the
@@ -396,12 +488,12 @@ test_env_refuses_an_unprepared_directory() {
 }
 
 test_usage_is_refused() {
-  local out code
-  out=$(guard prepare "$TMP_ROOT/hooks-x" "$TMP_ROOT/not-a-repo" 2>&1) && code=0 || code=$?
-  [ "$code" -ne 0 ] || fail "prepare must refuse a path that is not a repository"
-  out=$(guard 2>&1) && code=0 || code=$?
+  local code
+  guard prepare >/dev/null 2>&1 && code=0 || code=$?
+  [ "$code" -ne 0 ] || fail "prepare must refuse a missing hooks directory"
+  guard >/dev/null 2>&1 && code=0 || code=$?
   [ "$code" -ne 0 ] || fail "a bare invocation must refuse"
-  pass "the guard refuses a missing repository and a missing verb"
+  pass "the guard refuses a missing hooks directory and a missing verb"
 }
 
 test_unguarded_stash_is_shared_between_working_copies
@@ -411,9 +503,11 @@ test_guarded_stash_push_is_refused_without_touching_the_tree
 test_guarded_pop_cannot_destroy_another_copys_stash
 test_multi_entry_pop_documents_the_known_limit
 test_guard_stands_aside_for_a_single_working_copy
+test_guard_stands_aside_for_a_bare_backed_single_copy
 test_guard_does_not_disturb_ordinary_git_work
 test_the_repositorys_own_hooks_still_run
 test_a_chained_reference_transaction_hook_still_runs
+test_another_repositorys_hooks_run_and_the_task_repositorys_do_not
 test_env_points_git_at_the_guard
 test_env_appends_to_existing_injected_config
 test_env_refuses_an_unprepared_directory

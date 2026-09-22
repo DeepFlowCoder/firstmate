@@ -2710,10 +2710,11 @@ mkdir -p "$TASK_TMP/gotmp"
 # stashed, with no error on either side. The guard makes git itself refuse stash
 # creation and the removals that pass through a reference transaction; a pop or
 # drop of a pre-existing multi-entry stack still slips past it, as
-# bin/fm-stash-guard.sh documents. Prepared per task because the hooks it chains
-# are resolved from the
-# repository this task works in; the whole directory dies with TASK_TMP at
-# teardown. Nothing is written into the repository - see the export below.
+# bin/fm-stash-guard.sh documents. What the directory holds depends on no
+# repository - each hook in it resolves at run time the hook the repository it
+# is running in would have used - so it is prepared per task only because it
+# lives in TASK_TMP and dies with it at teardown. Nothing is written into the
+# repository - see the export below.
 #
 # A target that is not a git repository at all has no stash to share, so there
 # is nothing to guard and the spawn proceeds without one. That is the ordinary
@@ -2721,7 +2722,7 @@ mkdir -p "$TASK_TMP/gotmp"
 STASH_GUARD_DIR="$TASK_TMP/git-hooks"
 STASH_GUARD_EXPORT=
 if git -C "$WT" rev-parse --git-common-dir >/dev/null 2>&1; then
-  if ! STASH_GUARD_PREPARE=$("$SCRIPT_DIR/fm-stash-guard.sh" prepare "$STASH_GUARD_DIR" "$WT" 2>&1); then
+  if ! STASH_GUARD_PREPARE=$("$SCRIPT_DIR/fm-stash-guard.sh" prepare "$STASH_GUARD_DIR" 2>&1); then
     echo "error: could not prepare the shared-stash guard for '$WT': $STASH_GUARD_PREPARE" >&2
     exit 1
   fi
