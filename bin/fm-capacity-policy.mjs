@@ -93,8 +93,16 @@
 // validation is what makes the projection describe the fleet rather than the
 // minute. Until that much history exists the runway is `balance-unmeasured`,
 // which discloses and never alarms - the same rule every unmeasured lane obeys.
-// That window ends at the last reading where the balance MOVED, so the idle
-// hours after it neither dilute the rate nor retire the warning it produced.
+// That window ends at the last reading where the balance MOVED, in either
+// direction, so the idle hours after it neither dilute the rate nor retire the
+// warning it produced.
+//
+// WHAT IS CONSUMED IS THE SUM OF THE DOWNWARD MOVES over that window, and the
+// balance going up is not an event: an increase contributes nothing to
+// consumption and resets nothing. A recharge therefore needs no handling of its
+// own - the drain measured before it stays valid, because how fast this fleet
+// burns does not change when the captain pays, and the higher balance lengthens
+// the runway by itself.
 //
 // A WARNING ALREADY RAISED IS CLEARED BY ONE THING: THE CONDITION THAT RAISED
 // IT CEASING TO BE TRUE. The drain that raised it arrives in
@@ -105,9 +113,10 @@
 //
 // Keeping the DRAIN rather than the finished runway is what makes that possible
 // without inventing a second number: a remembered rate can be re-applied to any
-// later balance, so a top-up answers the question immediately instead of waiting
-// a whole margin for a fresh window. A drain that cannot be re-measured is not a
-// recovery, so the remembered one governs until a fresh one replaces it.
+// later balance, so a recharge answers the question immediately instead of
+// waiting a whole margin for a fresh window. A drain that cannot be re-measured
+// is not a recovery, so the remembered one governs until a fresh one replaces
+// it.
 //
 // Every earlier rule here retired the warning on something that was NOT the
 // condition, and the same silence came back four times wearing four faces: an
@@ -532,10 +541,20 @@ function classifyBalance(readings, marginSecs, standingPerUnit = null) {
   if (clean.length === 0) return null;
 
   const newest = clean[clean.length - 1];
+  // A standing warning is carried through every verdict that is not a measured
+  // recovery, so the drain that raised it is still there to judge the next
+  // reading against. A spent account has not recovered, and neither has one
+  // topped up by less than a validation's worth. This is computed FIRST because
+  // every branch below needs it: a branch that returns without it silently
+  // deletes the caller's record, and the spent-by-flag branch did exactly that.
+  const carried = Number.isFinite(standingPerUnit) && standingPerUnit > 0 ? standingPerUnit : null;
+
   // The vendor's own availability flag is its statement that this account can
   // no longer serve work, so it is spent whatever the amount says: a balance
   // can stop serving before it reaches exactly zero.
-  if (newest.available === false) return { cause: "balance-spent", marginSecs };
+  if (newest.available === false) {
+    return { cause: "balance-spent", marginSecs, standingPerUnit: carried };
+  }
 
   // A ZERO AMOUNT IS ONLY EVIDENCE ONCE THE ACCOUNT HAS BEEN SEEN HOLDING
   // SOMETHING. This is the same trap the lane arm documents above: grok and
@@ -547,11 +566,6 @@ function classifyBalance(readings, marginSecs, standingPerUnit = null) {
   // that has to be believed the one day it is right. Having WATCHED it fall is
   // what makes the zero mean something, and the retained history is what
   // remembers that after the balance has sat at zero all night.
-  // A standing warning is carried through every verdict below that is not a
-  // measured recovery, so the drain that raised it is still there to judge the
-  // next reading against. A spent account has not recovered, and neither has one
-  // topped up by less than a validation's worth.
-  const carried = Number.isFinite(standingPerUnit) && standingPerUnit > 0 ? standingPerUnit : null;
   const everPositive = clean.some((entry) => entry.balance > 0);
   if (newest.balance <= 0) {
     if (everPositive) return { cause: "balance-spent", marginSecs, standingPerUnit: carried };
@@ -564,26 +578,28 @@ function classifyBalance(readings, marginSecs, standingPerUnit = null) {
     return { cause: "balance-unestablished", marginSecs, standingPerUnit: carried };
   }
 
-  // A top-up invalidates every rate measured across it: the drain before a
-  // recharge says nothing about the runway after one. Start the window at the
-  // last increase rather than smoothing over it. After that increase the
-  // readings are non-increasing by construction, because a later rise would
-  // have moved `start` to itself.
-  let start = 0;
+  // THE BALANCE GOING UP IS NOT AN EVENT. Consumption is the sum of the
+  // DOWNWARD moves across the window, so an upward move contributes nothing and
+  // triggers nothing - no reset, no re-anchoring, nothing to get wrong.
+  //
+  // Reading an increase as a recharge produced this guard's whole catalogue of
+  // silences, because the provider's own rounding reads upward too. It cleared
+  // standing warnings, and on the measuring side it discarded every reading
+  // before the tick, so a genuinely draining balance whose amount ticked up a
+  // cent more often than once per margin could never accumulate a window long
+  // enough to project from and was never warned about at all.
+  //
+  // A recharge needs no special handling once consumption is counted this way:
+  // the drain measured before it stays valid, because how fast this fleet burns
+  // does not change when the captain pays, and the higher balance lengthens the
+  // runway by itself.
+  //
+  // THE WINDOW ENDS AT THE LAST TIME THE BALANCE MOVED, in either direction, not
+  // at the newest reading. An idle stretch is the absence of a measurement,
+  // never a measurement that the drain stopped, so the flat readings it adds
+  // must not dilute the rate towards zero and read as an all-clear.
+  let lastMove = 0;
   for (let i = 1; i < clean.length; i += 1) {
-    if (clean[i].balance > clean[i - 1].balance) start = i;
-  }
-  // THE RATE WINDOW ENDS AT THE LAST TIME THE BALANCE MOVED, not at the newest
-  // reading. An idle stretch is the absence of a measurement, never a
-  // measurement that the drain stopped, so the readings it adds must neither
-  // dilute the rate nor retire it. Anchoring on the newest reading instead is
-  // what let an already-warned balance go quiet overnight - the fleet stops
-  // spending, the window fills with flat readings, `drop` falls to zero and the
-  // guard reads "runway not measured" at exactly the session that has to decide
-  // whether to recharge before dispatching. Only an increase clears the
-  // warning, and it clears it by moving `start` above.
-  let lastMove = start;
-  for (let i = start + 1; i < clean.length; i += 1) {
     if (clean[i].balance !== clean[i - 1].balance) lastMove = i;
   }
   const moved = clean[lastMove];
@@ -594,25 +610,29 @@ function classifyBalance(readings, marginSecs, standingPerUnit = null) {
   // above rests on. Bounding the rate window here rather than by what was
   // retained is what lets the second outlive the first.
   const rateWindowStart = moved.at - 2 * marginSecs;
-  const window = clean.slice(start, lastMove + 1).filter((entry) => entry.at >= rateWindowStart);
+  const window = clean.slice(0, lastMove + 1).filter((entry) => entry.at >= rateWindowStart);
   const oldest = window.length > 0 ? window[0] : moved;
   const span = moved.at - oldest.at;
-  const drop = oldest.balance - moved.balance;
+  let consumed = 0;
+  for (let i = 1; i < window.length; i += 1) {
+    const fall = window[i - 1].balance - window[i].balance;
+    if (fall > 0) consumed += fall;
+  }
   // The drain, as seconds of runway per unit of balance. Measuring it this way
   // rather than as a finished runway is what lets the same drain be re-applied
   // to whatever the account holds later.
   let measuredPerUnit = null;
   let detail = null;
   if (window.length < 2 || span <= 0) {
-    detail = "one reading since the last top-up";
+    detail = "only one reading in the measuring window";
   } else if (span < marginSecs) {
     // See this file's header: a rate averaged over less than one typical
     // validation describes the minute, not the fleet.
-    detail = `only ${humanSpan(span)} of readings since the last top-up`;
-  } else if (drop <= 0) {
+    detail = `only ${humanSpan(span)} of readings to measure a drain from`;
+  } else if (consumed <= 0) {
     detail = "no drain measured";
   } else {
-    measuredPerUnit = span / drop;
+    measuredPerUnit = span / consumed;
   }
 
   // A STANDING WARNING IS CLEARED WHEN THE CONDITION THAT RAISED IT STOPS BEING

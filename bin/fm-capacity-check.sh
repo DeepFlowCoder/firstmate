@@ -129,9 +129,9 @@ MARGIN_DEFAULT=8294
 BALANCE_PROBE_SECS=5
 BALANCE_ENDPOINT='https://api.deepseek.com/user/balance'
 HISTORY="$STATE/.balance-history"
-# The standing balance warning: the projected seconds left at the moment the
-# runway warning last fired. Its presence IS the warning, and exactly one event
-# takes it away - an observed increase in the balance. See standing_read.
+# The standing balance warning: the measured DRAIN that raised it, as seconds of
+# runway per unit of balance. Its presence IS the warning, and the one thing that
+# retires it is the condition that raised it ceasing to hold. See standing_read.
 STANDING="$STATE/.balance-warning"
 RECORD="$STATE/.capacity"
 CHECK_ID=capacity

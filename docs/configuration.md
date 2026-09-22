@@ -255,7 +255,8 @@ If the fleet's validations have got longer or shorter, re-run the query in the v
 Because the margin is how long a validation takes, the warning starts exactly when less than **one validation's worth of spend** is left at the rate the fleet has actually been spending; a balance holding more than that cannot make the guard speak, and averaging over a longer window only ever moves the trigger lower.
 
 The drain rate is averaged over at least one whole margin of readings and at most two, because a prepaid balance is spent in bursts and a rate taken across the last few minutes would read as empty-by-lunchtime every time a validation started.
-Until that much history exists, or when a top-up has just reset it, the guard says the runway is not measured rather than projecting from too little, and an unmeasured runway never fires on its own.
+Until that much history exists the guard says the runway is not measured rather than projecting from too little, and an unmeasured runway never fires on its own.
+What it counts as consumption is the sum of the downward moves across that window: the balance going up contributes nothing and resets nothing, so neither the provider's own rounding nor a recharge can erase a measurement or delay one.
 That rate is measured up to the last reading where the balance actually moved, and once a warning has been raised the drain that raised it is remembered, so the guard keeps asking the same question of whatever the account holds now rather than waiting for a fresh window.
 **A warning stands exactly while the condition that raised it is true, and clears exactly when it stops being true** - which is to say when a reading puts the runway back beyond one validation's worth of spend.
 Nothing else moves it either way: not an idle night, not a further drain, not a poll the watcher missed, not the reading history ageing out, and not a cent of the provider's own rounding.

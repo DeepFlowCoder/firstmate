@@ -1002,6 +1002,17 @@ assert_contains "$out" "balance runs out in" "a cent of rounding must not retire
 assert_present "$home/state/.balance-warning" "noise must not be read as a recharge"
 pass "rounding jitter upward leaves a standing warning exactly where it stands"
 
+# The vendor's own "cannot serve work" flag is a worse reading, not a recovery,
+# so it must not take the drain with it. It used to: that verdict returned
+# without the measured drain, the caller deleted the record, and the small
+# top-up below - an eighth of one validation - then had nothing left to be
+# judged against and went silent on the very next poll.
+balance_body "$home/bal-unavailable.json" 0.41 false
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-unavailable.json" 1008400 report)
+assert_contains "$out" "balance spent" "the provider's own flag must be reported as spent"
+assert_present "$home/state/.balance-warning" "a spent account has not recovered, so the drain must survive it"
+pass "a spent-by-flag reading keeps the drain that judges what comes after it"
+
 # Nor is a top-up too small to buy back a validation - and this is the sharp
 # edge of the rule, the case that separates it from "any increase clears". 5.00
 # is more than twelve times the balance that raised the warning and still buys
@@ -1021,6 +1032,40 @@ out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json"
 [ -z "$out" ] || fail "a recharge past one validation's worth must clear the standing warning, got: $out"
 assert_absent "$home/state/.balance-warning" "a recharge must retire the standing warning, not just silence it"
 pass "the condition ceasing to hold is what clears a standing warning"
+
+# THE BALANCE GOING UP MUST NOT BE ABLE TO KEEP THE GUARD FROM EVER SPEAKING.
+#
+# The case above protects a warning already raised. This one protects the first
+# one, which nothing can carry forward because it does not exist yet. The quiet
+# cases pin `40.01, 40.00, 40.01, 40.00` as a shape a working fleet produces, so
+# the provider's own amount reads upward without anybody paying; a rule that
+# discarded every reading before such a tick could never accumulate the margin's
+# worth of history it refuses to project without, and an account draining hard
+# with a cent of rounding in it was never warned about at all.
+home=$(fresh_home balance-jitter-while-draining)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+at=1000000
+for amount in 40.00 20.00 20.01 10.00 5.00 5.01 1.00; do
+  balance_body "$home/bal-step.json" "$amount" true
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" report)
+  at=$((at + 600))
+done
+assert_contains "$out" "balance runs out in" "upward rounding must not stop the guard raising its first warning"
+pass "a draining balance that reads upward now and then is still warned about"
+
+# And the same shape on a HEALTHY balance stays silent, so the case above cannot
+# be satisfied by a guard that simply warns about everything: a cent of jitter
+# is a cent of consumption, not an erased history and not an alarm.
+home=$(fresh_home balance-jitter-while-healthy)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+at=1000000
+for amount in 40.01 40.00 40.01 40.00 39.99 40.00; do
+  balance_body "$home/bal-step.json" "$amount" true
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" report)
+  at=$((at + 3600))
+done
+[ -z "$out" ] || fail "a healthy balance that jitters must stay silent, got: $out"
+pass "rounding jitter on a healthy balance is a cent of consumption, not an alarm"
 
 # The clearing event must be recognised whatever SHAPE the previous reading
 # took, and an overdrawn account reads below zero. A comparison that refused a
@@ -1044,8 +1089,10 @@ assert_not_contains "$out" "recharge before dispatching" "a balance just recharg
 assert_absent "$home/state/.balance-warning" "the clearing event must be seen whatever sign the previous reading carried"
 pass "an overdrawn reading does not block the recharge that clears a standing warning"
 
-# A top-up invalidates every rate measured across it: what the balance was doing
-# before a recharge says nothing about the runway after one.
+# A recharge quiets the guard by LENGTHENING THE RUNWAY, not by erasing what was
+# measured. How fast this fleet burns does not change when the captain pays, so
+# the drain measured before the top-up is still the drain; the balance is simply
+# higher now, and the same arithmetic puts zero further away.
 home=$(fresh_home balance-topped-up)
 snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
 balance_body "$home/bal-full.json" 40.00 true
@@ -1054,8 +1101,18 @@ balance_body "$home/bal-recharged.json" 90.00 true
 run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
 run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check >/dev/null
 out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json" 1003900 check)
-[ -z "$out" ] || fail "a recharge must reset the measurement, got: $out"
-pass "a top-up resets the drain measurement instead of averaging across it"
+[ -z "$out" ] || fail "a recharge past one validation's worth must quiet the guard, got: $out"
+pass "a recharge quiets the guard by lengthening the runway, not by erasing the drain"
+
+# AND NOTHING IS RESET BY IT, which is the half a reset-based rule could never
+# show. The balance falls again barely ten minutes after the recharge - far less
+# than the margin the guard refuses to project inside. A rule that discarded the
+# history at the top-up would have nothing to measure and would go silent; the
+# drain measured across the whole window is still there, so the guard speaks.
+balance_body "$home/bal-after-recharge.json" 1.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-after-recharge.json" 1004500 report)
+assert_contains "$out" "balance runs out in" "a recharge must not discard the drain measured before it"
+pass "a drain resumed right after a recharge is measured, not waited out"
 
 # === the margin is measured, and configurable ===============================
 #
