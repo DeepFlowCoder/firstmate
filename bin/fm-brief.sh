@@ -282,6 +282,24 @@ If the task genuinely cannot proceed without a real credential, append `blocked:
 EOF
 CREDENTIALS_SECTION=${CREDENTIALS_SECTION%$'\n'}
 
+# The isolation a task worktree does NOT give you, carried by the ship and the
+# scout scaffold alike because both kinds of worker share a repository with
+# other live workers. What the guard refuses, and what it lets through, is owned
+# by bin/fm-stash-guard.sh; this section is the worker-facing half of it and
+# says what to do instead, so a refusal never leaves a worker without an option.
+# It is built once rather than written into each scaffold: the limit is
+# load-bearing, and a second copy is a copy that can be corrected alone and go
+# on promising more than the guard delivers.
+IFS= read -r -d '' STASH_SECTION <<'EOF' || true
+**Your worktree is isolated; `git stash` is NOT.**
+refs/stash lives in the repository's common git directory, so every working copy of this repository shares ONE stash stack, and other workers may be live in those copies right now: a `git stash pop` anywhere takes whatever you stashed and drops it, with no error on either side.
+Park changes inside your own copy instead - `git add -A && git commit -m wip`, undone later with `git reset --soft HEAD~1` - or write them out to a file with `git diff HEAD > ../parked.patch`.
+Your git refuses stash creation, and some removals, while this repository has more than one working copy.
+That protection is not complete: when more than one entry already exists, a pop or a drop can still destroy another copy's entry silently, with no error.
+Do not use `git stash` here at all, and never work around a refusal when one does fire.
+EOF
+STASH_SECTION=${STASH_SECTION%$'\n'}
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -423,12 +441,7 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
-**Your worktree is isolated; \`git stash\` is NOT.**
-refs/stash lives in the repository's common git directory, so every working copy of this repository shares ONE stash stack, and other workers may be live in those copies right now: a \`git stash pop\` anywhere takes whatever you stashed and drops it, with no error on either side.
-Park changes inside your own copy instead - \`git add -A && git commit -m wip\`, undone later with \`git reset --soft HEAD~1\` - or write them out to a file with \`git diff HEAD > ../parked.patch\`.
-Your git refuses stash creation, and some removals, while this repository has more than one working copy.
-That protection is not complete: when more than one entry already exists, a pop or a drop can still destroy another copy's entry silently, with no error.
-Do not use \`git stash\` here at all, and never work around a refusal when one does fire.
+$STASH_SECTION
 
 # Rules
 1. Never push to any remote and never open a PR.
@@ -557,12 +570,7 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
-**Your worktree is isolated; \`git stash\` is NOT.**
-refs/stash lives in the repository's common git directory, so every working copy of this repository shares ONE stash stack, and other workers may be live in those copies right now: a \`git stash pop\` anywhere takes whatever you stashed and drops it, with no error on either side.
-Park changes inside your own copy instead - \`git add -A && git commit -m wip\`, undone later with \`git reset --soft HEAD~1\` - or write them out to a file with \`git diff HEAD > ../parked.patch\`.
-Your git refuses stash creation, and some removals, while this repository has more than one working copy.
-That protection is not complete: when more than one entry already exists, a pop or a drop can still destroy another copy's entry silently, with no error.
-Do not use \`git stash\` here at all, and never work around a refusal when one does fire.
+$STASH_SECTION
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 

@@ -535,6 +535,10 @@ test_spawn_exports_the_guard_for_a_home_outside_git() {
   printf 'charter for %s\n' "$id" > "$sm/data/charter.md"
   git_env -C "$sm" rev-parse --git-common-dir >/dev/null 2>&1 \
     && fail "the fixture secondmate home must not be a git repository"
+  # The real spawn builds its own /tmp/fm-<id>, which lives outside TMP_ROOT.
+  # Registering it before the spawn means the suite reclaims it on the way out
+  # whether this case passes, fails, or is interrupted.
+  printf '%s\n' "/tmp/fm-$id" >> "$FM_TEST_CLEANUP_REGISTRY"
 
   : > "$launchlog"
   FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_LAUNCH_LOG_TEXT_LINES=1 \
