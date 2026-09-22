@@ -59,6 +59,18 @@
 # for the same kind of reason: git invokes it by the explicit path in
 # `core.fsmonitor`, never by name through `core.hooksPath`.
 #
+# WHAT RESOLVING AT RUN TIME COSTS
+# A known and accepted tradeoff, written down because someone will one day
+# notice the cost without knowing where it comes from. Every hook invocation
+# forks `sh` plus `git config`, and `git rev-parse` when no hooks path is
+# configured, in every repository the worker's git touches, including
+# repositories that have no hooks at all. The guard's own `forward` pays it on
+# each reference-transaction phase, so one ref update costs roughly three extra
+# `git config` forks. A forwarder also sits at `post-index-change`, which fires
+# on ordinary index writes. Baking the delegate in at prepare time would avoid
+# all of it, and that is exactly what used to make the task repository's hooks
+# follow the worker into every other repository.
+#
 # WHAT THE REFUSAL COSTS
 # Measured, not assumed (tests/fm-stash-guard.test.sh):
 #   - a refused `git stash push` leaves the working tree exactly as it was, so
@@ -130,12 +142,14 @@ EOF
 # the way. GIT_CONFIG_COUNT=0 hides the entries the `env` verb exports, so a
 # legitimately file-configured core.hooksPath is still honored while the guard's
 # own injection cannot make a hook chain to itself or to another task's guard.
-# Relative values are left as they are: git runs a hook from the directory those
-# values resolve against.
+# `--type=path` is what git itself applies to that value when it runs a hook, so
+# a `~`-spelled directory resolves to the same place for the guard as it does
+# for git. A relative value stays relative: git runs a hook from the directory
+# those values resolve against.
 emit_delegate_resolver() {
   cat <<'RESOLVER'
 fm_delegate_hook() {  # <hook-name>
-  fm_dir=$(GIT_CONFIG_COUNT=0 git config --get core.hooksPath 2>/dev/null) || fm_dir=
+  fm_dir=$(GIT_CONFIG_COUNT=0 git config --get --type=path core.hooksPath 2>/dev/null) || fm_dir=
   if [ -z "$fm_dir" ]; then
     fm_dir=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
     fm_dir=$fm_dir/hooks

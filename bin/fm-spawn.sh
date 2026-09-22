@@ -2716,20 +2716,19 @@ mkdir -p "$TASK_TMP/gotmp"
 # lives in TASK_TMP and dies with it at teardown. Nothing is written into the
 # repository - see the export below.
 #
-# A target that is not a git repository at all has no stash to share, so there
-# is nothing to guard and the spawn proceeds without one. That is the ordinary
-# shape of a secondmate home seeded outside git, not a degraded guard.
+# Every spawn gets it, including one whose home is not a git repository at all.
+# Such a home has no stash of its own to share, but its worker still works
+# inside repositories that do, and the guard reaches wherever that worker's git
+# goes. Preparing it only for a home that is a repository would give the guard a
+# smaller reach than it promises, without saying so.
 STASH_GUARD_DIR="$TASK_TMP/git-hooks"
-STASH_GUARD_EXPORT=
-if git -C "$WT" rev-parse --git-common-dir >/dev/null 2>&1; then
-  if ! STASH_GUARD_PREPARE=$("$SCRIPT_DIR/fm-stash-guard.sh" prepare "$STASH_GUARD_DIR" 2>&1); then
-    echo "error: could not prepare the shared-stash guard for '$WT': $STASH_GUARD_PREPARE" >&2
-    exit 1
-  fi
-  if ! STASH_GUARD_EXPORT=$("$SCRIPT_DIR/fm-stash-guard.sh" env "$STASH_GUARD_DIR" 2>&1); then
-    echo "error: could not resolve the shared-stash guard environment for task $ID: $STASH_GUARD_EXPORT" >&2
-    exit 1
-  fi
+if ! STASH_GUARD_PREPARE=$("$SCRIPT_DIR/fm-stash-guard.sh" prepare "$STASH_GUARD_DIR" 2>&1); then
+  echo "error: could not prepare the shared-stash guard for task $ID: $STASH_GUARD_PREPARE" >&2
+  exit 1
+fi
+if ! STASH_GUARD_EXPORT=$("$SCRIPT_DIR/fm-stash-guard.sh" env "$STASH_GUARD_DIR" 2>&1); then
+  echo "error: could not resolve the shared-stash guard environment for task $ID: $STASH_GUARD_EXPORT" >&2
+  exit 1
 fi
 
 # Per-harness turn-end hook where enabled: a file that touches
@@ -3324,9 +3323,7 @@ fi
 # The exported line appends to any injected git configuration already present
 # rather than overwriting entry zero (bin/fm-stash-guard.sh owns its form).
 STASH_GUARD_SEND_STATUS=0
-if [ -n "$STASH_GUARD_EXPORT" ]; then
-  spawn_send_text_line "$T" "$STASH_GUARD_EXPORT" || STASH_GUARD_SEND_STATUS=$?
-fi
+spawn_send_text_line "$T" "$STASH_GUARD_EXPORT" || STASH_GUARD_SEND_STATUS=$?
 if [ "$STASH_GUARD_SEND_STATUS" -ne 0 ]; then
   STASH_GUARD_SEND_CAUSE=
   case "$BACKEND:$STASH_GUARD_SEND_STATUS" in

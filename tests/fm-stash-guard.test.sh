@@ -12,8 +12,8 @@
 # the guard's own source.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 FM_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 GUARD="$FM_ROOT/bin/fm-stash-guard.sh"
@@ -440,6 +440,36 @@ test_another_repositorys_hooks_run_and_the_task_repositorys_do_not() {
   pass "a repository the worker wanders into keeps its own hooks"
 }
 
+# Git expands a leading `~` in core.hooksPath when it runs a hook, and a
+# `~`-spelled path is an ordinary way to write one. A resolver that did not
+# expand it the same way would find the hook non-executable and skip it in
+# silence, which is the harm this whole change exists to remove.
+test_a_tilde_spelled_hooks_path_still_chains() {
+  local root primary a hooks fakehome
+  root=$TMP_ROOT/tilde
+  primary=$(make_primary "$root")
+  a=$(add_copy "$primary" wa)
+  fakehome=$root/home
+  mkdir -p "$fakehome/own-hooks"
+  cat > "$fakehome/own-hooks/pre-commit" <<EOF
+#!/bin/sh
+touch "$root/tilde-hook-ran"
+exit 0
+EOF
+  chmod +x "$fakehome/own-hooks/pre-commit"
+  # shellcheck disable=SC2088 # The literal tilde is the configured value under test.
+  git_env -C "$primary" config core.hooksPath '~/own-hooks'
+  hooks=$root/hooks
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
+
+  printf 'change\n' > "$a/f.txt"
+  guarded "$hooks" env HOME="$fakehome" git -C "$a" add f.txt || fail "git add failed"
+  guarded "$hooks" env HOME="$fakehome" git -C "$a" commit -qm tilde || fail "git commit failed"
+  assert_present "$root/tilde-hook-ran" \
+    "a hook behind a tilde-spelled core.hooksPath must still run under the guard"
+  pass "a tilde-spelled core.hooksPath still chains to the repository's own hook"
+}
+
 # --- the exported environment ----------------------------------------------
 
 test_env_points_git_at_the_guard() {
@@ -479,6 +509,57 @@ test_env_appends_to_existing_injected_config() {
   pass "the exported line appends to injected configuration instead of replacing it"
 }
 
+# --- the spawn that hands the guard to a worker -----------------------------
+
+# A secondmate home is seeded outside git, so it has no stash of its own to
+# share. Its worker still works inside repositories that do, and the exported
+# line is the only thing that reaches them. A spawn that skipped the export for
+# such a home would leave that worker unprotected everywhere it went, and say
+# nothing about it.
+test_spawn_exports_the_guard_for_a_home_outside_git() {
+  local root home proj wt sm fakebin launchlog id line primary a out code
+  root=$TMP_ROOT/spawn-outside-git
+  home=$root/home
+  proj=$root/project
+  wt=$root/wt
+  sm=$root/secondmate-home
+  launchlog=$root/launch.log
+  id=stash-guard-sm-z1
+  fakebin=$(fm_test_make_spawn_fakebin "$root/fake")
+  fm_test_spawn_home "$home" claude
+  fm_test_spawn_brief "$home" "$id"
+  fm_git_worktree "$proj" "$wt" wt-stash-guard
+  mkdir -p "$sm/bin" "$sm/data"
+  printf '# Firstmate\n' > "$sm/AGENTS.md"
+  printf '%s\n' "$id" > "$sm/.fm-secondmate-home"
+  printf 'charter for %s\n' "$id" > "$sm/data/charter.md"
+  git_env -C "$sm" rev-parse --git-common-dir >/dev/null 2>&1 \
+    && fail "the fixture secondmate home must not be a git repository"
+
+  : > "$launchlog"
+  FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_LAUNCH_LOG_TEXT_LINES=1 \
+    fm_test_run_spawn "$home" "$wt" "$fakebin" "$id" "$sm" --secondmate >/dev/null 2>&1 \
+    || fail "a spawn onto a home outside git should still succeed"
+
+  # The payload the worker's shell actually receives, taken from what the spawn
+  # typed into the pane rather than from what the spawn's source says.
+  line=$(grep core.hooksPath "$launchlog" | head -1)
+  [ -n "$line" ] \
+    || fail "the spawn must export the stash guard even when the home is outside git"
+
+  # And it has to be a working guard, not just a line: evaluate it and drive a
+  # real shared stash through it, the way that worker would later on.
+  primary=$(make_primary "$root/elsewhere")
+  a=$(add_copy "$primary" wa)
+  printf 'MY-WORK\n' > "$a/f.txt"
+  out=$(hermetic bash -c "$line; git -C '$a' stash push -m mine" 2>&1) && code=0 || code=$?
+  [ "$code" -ne 0 ] \
+    || fail "the exported line must refuse a shared stash in a repository the worker enters later"
+  assert_contains "$out" "SHARED" "the refusal must reach a repository outside the worker's home"
+  assert_contains "$(cat "$a/f.txt")" "MY-WORK" "the refused push must leave the tree alone"
+  pass "the spawn exports a working guard for a home that is not a git repository"
+}
+
 test_env_refuses_an_unprepared_directory() {
   local out code
   out=$(guard env "$TMP_ROOT/never-prepared" 2>&1) && code=0 || code=$?
@@ -508,7 +589,9 @@ test_guard_does_not_disturb_ordinary_git_work
 test_the_repositorys_own_hooks_still_run
 test_a_chained_reference_transaction_hook_still_runs
 test_another_repositorys_hooks_run_and_the_task_repositorys_do_not
+test_a_tilde_spelled_hooks_path_still_chains
 test_env_points_git_at_the_guard
 test_env_appends_to_existing_injected_config
+test_spawn_exports_the_guard_for_a_home_outside_git
 test_env_refuses_an_unprepared_directory
 test_usage_is_refused
