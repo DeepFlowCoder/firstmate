@@ -5,19 +5,34 @@
 #
 # Why this exists (docs/herdr-backend.md "Away-mode daemon terminal launch"):
 # bin/fm-afk-start.sh execs the supervise daemon in the FOREGROUND of whatever
-# terminal it is already in. Harnesses with a native in-pane tracked-background
-# tool (claude, grok) run it there directly and it is fine. A harness with NO
-# native background mechanism (pi) has to manufacture a terminal, and doing that
-# by SPLITTING the captain's active pane visibly shrinks it - the regression this
-# script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
-# workspace with --no-focus, or a detached tmux session) that never touches the
-# captain's active tab, and NEVER uses shell `&` (which herdr/codex can reap).
+# terminal it is already in, and that terminal decides how long the daemon
+# lives. `start` is the default for EVERY harness because the daemon has to
+# outlive the harness session - away mode is exactly the stretch in which that
+# session may restart or close. A harness-native background job cannot: measured
+# on 2026-09-22 it runs as a direct child of the harness process, while a
+# process in a terminal created here is a child of the long-lived herdr or tmux
+# server (docs/verification/supervision.md "Away-mode daemon liveness").
+# `start-native` remains for a home where no supported backend exists at all.
+# Manufacturing a terminal by SPLITTING the captain's active pane visibly
+# shrinks it - the regression this script also fixes. Instead this creates a
+# non-visible tracked terminal (a herdr tab/workspace with --no-focus, or a
+# detached tmux session) that never touches the captain's active tab, and NEVER
+# uses shell `&` (which herdr/codex can reap).
 #
 # Correct supervisor targeting: the daemon finds the captain pane to inject into
 # from its OWN inherited env (discover_supervisor_target). Running it in a
 # separate terminal would make it discover its OWN pane, so this captures the
 # captain pane FIRST (from the pane this script runs in) and passes it in as
 # FM_SUPERVISOR_TARGET/FM_SUPERVISOR_BACKEND explicitly.
+#
+# Entry-time dead-lock clearing: on a FRESH entry (a live daemon is the only
+# early return), a previous session's away-daemon lock is removed when it is
+# PROVEN not alive - a readable lock recording a pid that is dead, or a live
+# pid whose identity differs from the record (pid reuse). A lock that cannot be
+# vouched for (unreadable, no pid, or an unresolvable identity) is reported and
+# left untouched, because it may belong to a live daemon. This keeps a new
+# session from inheriting a stale lock that would read as orphaned before its
+# own daemon takes over.
 #
 # Usage:
 #   fm-afk-launch.sh start     Capture the captain pane, then (unless the daemon
@@ -146,7 +161,7 @@ fm_afk_launch_lock_release() {
 }
 
 fm_afk_launch_usage() {
-  sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # The command run inside the created terminal. Real launch runs the shared
@@ -165,6 +180,64 @@ fm_afk_launch_record_write() {  # <backend> <target> <extra>
 
 fm_afk_launch_flag_write() {
   fm_afk_flag_write "$FM_AFK_LAUNCH_STATE"
+}
+
+# Clear a PROVEN-dead away-mode daemon lock on a fresh entry. A dead daemon
+# leaves its lock behind and nothing else on the entry path clears it, so the
+# next session would otherwise inherit a stale lock and read as orphaned before
+# its own daemon takes over. The lock is removed ONLY when it is proven not
+# alive: a readable lock recording a pid that is not alive, or a live pid whose
+# identity demonstrably differs from the record (pid reuse). An unreadable
+# lock, a missing or empty pid, or a pid whose liveness or identity cannot be
+# resolved is reported and left untouched, because it may belong to a live
+# daemon and deleting it would switch off healthy supervision.
+fm_afk_launch_clear_dead_daemon_lock() {
+  local lock="$FM_AFK_LAUNCH_STATE/.supervise-daemon.lock" owner pid identity current command
+  [ -e "$lock" ] || [ -L "$lock" ] || return 0
+  owner=$(fm_afk_daemon_lock_owner "$FM_AFK_LAUNCH_STATE" 2>/dev/null) || {
+    fm_afk_launch_log "away-mode daemon lock is unreadable; leaving it untouched ($lock)"
+    return 0
+  }
+  pid=$(cat "$owner/pid" 2>/dev/null) || true
+  if [ -z "$pid" ]; then
+    fm_afk_launch_log "away-mode daemon lock records no pid; leaving it untouched ($lock)"
+    return 0
+  fi
+  if ! fm_pid_alive "$pid"; then
+    fm_lock_remove_path "$lock" || {
+      fm_afk_launch_log "failed to clear dead away-mode daemon lock ($lock)"
+      return 1
+    }
+    return 0
+  fi
+  identity=$(cat "$owner/pid-identity" 2>/dev/null) || true
+  if [ -n "$identity" ]; then
+    current=$(fm_pid_identity "$pid" 2>/dev/null) || {
+      fm_afk_launch_log "away-mode daemon lock pid $pid identity cannot be resolved; leaving it untouched ($lock)"
+      return 0
+    }
+    if [ "$current" = "$identity" ]; then
+      return 0
+    fi
+    fm_lock_remove_path "$lock" || {
+      fm_afk_launch_log "failed to clear dead away-mode daemon lock ($lock)"
+      return 1
+    }
+    return 0
+  fi
+  command=$(ps -p "$pid" -o command= 2>/dev/null) || true
+  if [ -z "$command" ]; then
+    fm_afk_launch_log "away-mode daemon lock pid $pid identity cannot be resolved; leaving it untouched ($lock)"
+    return 0
+  fi
+  case "$command" in
+    *"$(fm_afk_daemon_path)"*|*"fm-supervise-daemon.sh"*) return 0 ;;
+  esac
+  fm_lock_remove_path "$lock" || {
+    fm_afk_launch_log "failed to clear dead away-mode daemon lock ($lock)"
+    return 1
+  }
+  return 0
 }
 
 # Read the recorded terminal into FM_AFK_REC_BACKEND/FM_AFK_REC_TARGET. The third
@@ -494,13 +567,13 @@ fm_afk_launch_start() {
   done
   if ! fm_afk_launch_reconcile; then
     result=1
+  elif ! fm_afk_launch_clear_dead_daemon_lock; then
+    result=1
+  elif fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
+    result=0
   else
-    if fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
-      result=0
-    else
-      fm_afk_launch_log "failed to clear stale away-mode artifacts"
-      result=1
-    fi
+    fm_afk_launch_log "failed to clear stale away-mode artifacts"
+    result=1
   fi
   if [ "$result" -eq 0 ]; then
     if ! fm_afk_launch_flag_write; then
@@ -552,7 +625,9 @@ fm_afk_launch_start_native() {
   done
   fm_afk_launch_reconcile || result=1
   if [ "$result" -eq 0 ]; then
-    if ! fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
+    if ! fm_afk_launch_clear_dead_daemon_lock; then
+      result=1
+    elif ! fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"; then
       fm_afk_launch_log "failed to clear stale away-mode artifacts"
       result=1
     elif ! fm_afk_launch_flag_write; then

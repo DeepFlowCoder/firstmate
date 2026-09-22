@@ -23,6 +23,10 @@ Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--af
 
 Print the current primary harness's supervision operating instructions.
 With --repair-line, print one concise repair instruction for guard and hook messages.
+--afk 1 means the away daemon OWNS supervision, which is the verdict from
+bin/fm-afk-health.sh and not the presence of state/.afk: a flag that outlived
+its daemon owns nothing, and answering it here with "leave it to the daemon"
+is how a home stays unsupervised.
 EOF
 }
 

@@ -125,6 +125,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-afk-start.sh`        | Run the common sourceable away-mode daemon entry in the foreground                      |
 | `fm-afk-launch.sh`       | Own away-mode entry, exit, rollback, and any backend terminal lifecycle                 |
 | `fm-afk-return.sh`       | Own deterministic return shutdown, catch-up evidence, and the firstmate-actionable blocker gate |
+| `fm-afk-health.sh`       | Single owner of the away-mode liveness verdict: is a live supervision daemon actually there    |
+| `fm-afk-daemon-lock-lib.sh` | Shared identity-backed away-daemon lock liveness predicates, parameterized by state directory |
 | `fm-supervisor-target-lib.sh` | Resolve the shared supervisor target and backend for the daemon and launcher       |
 | `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery |
 | `fm-wedge-alarm-lib.sh`  | Single owner of `config/wedge-alarm`: the pane-independent out-of-band alert channels shared by the away-mode daemon and the in-session disk watch ([wedge-alarm.md](wedge-alarm.md)) |

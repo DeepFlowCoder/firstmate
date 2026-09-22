@@ -18,15 +18,17 @@
 # restore them explicitly.
 #
 # This is the COMMON daemon entry for every backend. HOW it becomes a tracked
-# background process differs by harness/backend and is owned elsewhere:
-#   - Harnesses with a native in-pane tracked-background tool (e.g. claude, grok)
-#     run this directly via that tool, so the daemon inherits the captain pane's
-#     env and auto-discovers it.
-#   - Harnesses with NO native background mechanism (e.g. pi) run this THROUGH
-#     bin/fm-afk-launch.sh, which creates a non-visible tracked terminal per
-#     backend (herdr tab/workspace, tmux detached session) and passes the
-#     captain pane in as FM_SUPERVISOR_TARGET so injection targets it, not the
-#     daemon's own new pane.
+# background process is owned by bin/fm-afk-launch.sh:
+#   - `start` is the default for EVERY harness. It creates a non-visible tracked
+#     terminal per backend (herdr tab/workspace, tmux detached session) and
+#     passes the captain pane in as FM_SUPERVISOR_TARGET so injection targets
+#     it, not the daemon's own new pane. The daemon then belongs to the herdr or
+#     tmux server rather than to the harness session it supervises.
+#   - `start-native` runs this directly through a harness's own background tool,
+#     so the daemon inherits the captain pane's env and auto-discovers it - but
+#     also inherits that session's lifetime. Reserved for a home where no
+#     supported backend exists (docs/verification/supervision.md "Away-mode
+#     daemon liveness").
 # Do not wrap this in `nohup ... &`: Codex/herdr can reap fire-and-forget shell
 # children after the tool call returns, while a tracked background terminal stays
 # attached and has a real lifecycle.
@@ -41,6 +43,8 @@ FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-afk-daemon-lock-lib.sh
+. "$FM_AFK_START_DIR/fm-afk-daemon-lock-lib.sh"
 
 fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -66,49 +70,15 @@ fm_afk_clear_stale_artifacts() {  # <state-dir>
         "$state/.subsuper-inject-wedged" 2>/dev/null
 }
 
-daemon_lock_owner() {
-  local owner
-  if [ -L "$FM_AFK_LOCK" ]; then
-    owner=$(readlink "$FM_AFK_LOCK" 2>/dev/null) || return 1
-    [ -n "$owner" ] || return 1
-    case "$owner" in
-      /*) printf '%s\n' "$owner" ;;
-      *) printf '%s/%s\n' "$(dirname "$FM_AFK_LOCK")" "$owner" ;;
-    esac
-    return 0
-  fi
-  [ -d "$FM_AFK_LOCK" ] || return 1
-  printf '%s\n' "$FM_AFK_LOCK"
-}
-
-daemon_pid_matches() {
-  local pid=$1 owner=$2 identity current command
-  identity=$(cat "$owner/pid-identity" 2>/dev/null || true)
-  if [ -n "$identity" ]; then
-    current=$(fm_pid_identity "$pid") || return 1
-    [ "$current" = "$identity" ]
-    return
-  fi
-  command=$(ps -p "$pid" -o command= 2>/dev/null || true)
-  case "$command" in
-    *"$FM_AFK_DAEMON"*|*"fm-supervise-daemon.sh"*) return 0 ;;
-  esac
-  return 1
-}
-
-daemon_lock_pid() {
-  local owner
-  owner=$(daemon_lock_owner) || return 1
-  cat "$owner/pid" 2>/dev/null || true
-}
-
-daemon_lock_held_by_live_daemon() {
-  local owner pid
-  owner=$(daemon_lock_owner) || return 1
-  pid=$(cat "$owner/pid" 2>/dev/null || true)
-  fm_pid_alive "$pid" || return 1
-  daemon_pid_matches "$pid" "$owner"
-}
+# Daemon-lock liveness lives in bin/fm-afk-daemon-lock-lib.sh so that callers
+# which must answer "is the daemon alive?" WITHOUT entering away mode - the
+# away-mode health check and its consumers - share one implementation. These
+# wrappers keep the historical zero-argument names bound to this script's own
+# state directory.
+daemon_lock_owner() { fm_afk_daemon_lock_owner "$FM_AFK_STATE"; }
+daemon_pid_matches() { fm_afk_daemon_pid_matches "$@"; }
+daemon_lock_pid() { fm_afk_daemon_lock_pid "$FM_AFK_STATE"; }
+daemon_lock_held_by_live_daemon() { fm_afk_daemon_lock_live "$FM_AFK_STATE"; }
 
 fm_afk_flag_write() {  # <state-dir>
   local state=$1 lock="$1/.cursor-park-owner.lock" pending attempt=0 status=1

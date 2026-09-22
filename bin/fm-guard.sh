@@ -68,6 +68,8 @@ STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
+# shellcheck source=bin/fm-afk-health.sh
+. "$SCRIPT_DIR/fm-afk-health.sh"
 
 # Who may act on this home right now.
 # True when a DIFFERENT live session holds this home's session lock, which is the
@@ -255,8 +257,12 @@ if [ "$watcher_healthy" = false ]; then
       print_full_banner=1
     fi
     if [ "$print_full_banner" -eq 1 ]; then
+      # "Away mode owns the watcher" is the claim this flag makes to the
+      # renderer, so it must be the health verdict rather than the flag's mere
+      # presence: telling a session to leave supervision to a daemon that is
+      # gone is the opposite of repair.
       afk=0
-      [ -e "$STATE/.afk" ] && afk=1
+      fm_afk_owns_supervision "$STATE" && afk=1
       queue_arg=0
       "$queue_pending" && queue_arg=1
       x_mode=0

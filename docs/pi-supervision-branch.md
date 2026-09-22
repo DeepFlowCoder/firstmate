@@ -86,7 +86,7 @@ No caching machinery beyond this exists, deliberately: any later dynamic content
 
 ## Away mode
 
-Away mode carries over unchanged: while `state/.afk` exists the away daemon owns supervision, and the branch declines every wake offer for the duration.
+Away mode carries over unchanged: the branch declines every wake offer while `state/.afk` exists, leaving triage to the away daemon, and whether that daemon is actually alive is `bin/fm-afk-health.sh`'s verdict rather than the flag's presence ([verification/supervision.md](verification/supervision.md) "Away-mode daemon liveness").
 What is new is only the attended path: outside away mode, the branch absorbs the routine majority that previously interrupted the captain's conversation, applying the same escalation etiquette the daemon applies while away.
 
 ## Verification

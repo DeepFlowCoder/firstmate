@@ -23,36 +23,47 @@ batched digest rather than per-wake injections.
    terminal record, and rollback.
    The flag survives a firstmate restart, so recovery re-enters afk when it is present.
 
-2. **Ensure the sub-supervisor daemon is running as a tracked background process.**
-   Its hosting differs by harness.
-   Pick the right path:
-   - **Harness WITH a native in-pane tracked-background tool** (e.g. claude's
-     background bash, grok's background tool): first run
-     `bin/fm-afk-launch.sh start-native`, then run
-     `FM_AFK_STATE_PREPARED=1 bin/fm-afk-start.sh` through that native tool.
-     This is a deliberate no-separate-terminal exception because the harness-hosted job creates no terminal or layout mutation, and a shell launcher cannot invoke a harness-native background tool.
-     The launcher still owns lifecycle state and records the no-terminal mode, while the daemon inherits and auto-discovers the captain pane.
-     If the native launch fails, run `bin/fm-afk-launch.sh stop` to roll back the prepared lifecycle.
-     Do not wrap it in `nohup ... &` (Codex/herdr can reap fire-and-forget shell children after a tool call returns).
-   - **Harness WITHOUT one** (e.g. pi): run `bin/fm-afk-launch.sh start`. It is
-     the single owner of the daemon terminal: it creates a NON-VISIBLE tracked
-     terminal for the current backend (a herdr dedicated `--no-focus` workspace,
-     a detached tmux session), records its exact id, and passes the captain pane
-     in as `FM_SUPERVISOR_TARGET` so the daemon injects into the captain, not its
-     own new pane. **Never manufacture a terminal by splitting the captain's
-     active pane** (`herdr pane split`): a split co-tenants the tab and visibly
-     shrinks the captain's pane (docs/herdr-backend.md "Away-mode supervisor
-     support").
+2. **Start the daemon in a terminal the harness does not own: `bin/fm-afk-launch.sh start`.**
+   This is the default for EVERY harness, including ones with a native in-pane background tool.
+   It is the single owner of the daemon terminal: it creates a NON-VISIBLE tracked terminal for the current backend (a herdr dedicated `--no-focus` workspace, a detached tmux session), records its exact id, and passes the captain pane in as `FM_SUPERVISOR_TARGET` so the daemon injects into the captain, not its own new pane.
+   It also blocks until the daemon holds its lock and rolls the entry back otherwise, so a failed start never leaves the flag behind.
+   **Never manufacture a terminal by splitting the captain's active pane** (`herdr pane split`): a split co-tenants the tab and visibly shrinks the captain's pane (docs/herdr-backend.md "Away-mode supervisor support").
+
+   **Why this is the default, and not the harness's own background tool.**
+   The daemon has to outlive the harness session, because away mode is exactly the stretch during which that session may restart, compact, or be closed.
+   A harness-hosted background job cannot: measured on 2026-09-22, a Claude native background job runs as a direct child of the `claude` process itself, while a daemon started by `start` runs as a child of the long-lived herdr server (`docs/verification/supervision.md` "Away-mode daemon liveness").
+   In the field on 2026-09-05 a `start-native` daemon was reaped within minutes and left `state/.afk` behind with nothing supervising four deliveries.
+   The exact trigger of that reap is NOT established, and a continuously-active session did not reproduce it, so treat this as a measured ownership difference plus one field failure rather than as a known timeout.
+
+3. **`start-native` only when `start` cannot run at all.**
+   `start` supports herdr and tmux and refuses any other backend loudly, so a home with neither has no alternative.
+   There, run `bin/fm-afk-launch.sh start-native`, then run `FM_AFK_STATE_PREPARED=1 bin/fm-afk-start.sh` through the harness's native background tool, because a shell launcher cannot invoke one for you.
+   The launcher still owns lifecycle state and records the no-terminal mode, while the daemon inherits and auto-discovers the captain pane.
+   If the native launch fails, run `bin/fm-afk-launch.sh stop` to roll back the prepared lifecycle.
+   Do not wrap it in `nohup ... &` (Codex/herdr can reap fire-and-forget shell children after a tool call returns).
+   This path leaves the daemon inside the session it is supposed to survive, so step 4's verification is what stands between it and a silent lapse.
+
    Both paths share `bin/fm-afk-start.sh` as the daemon entry.
    The native path tells it that the launcher already prepared lifecycle state; the terminal-backed path lets the entry perform its existing state setup inside the new terminal.
    It exits immediately if the identity-backed daemon lock already names a live process, otherwise it execs `bin/fm-supervise-daemon.sh` in the foreground.
-   The daemon is **presence-gated**: it injects escalations only while
-   `state/.afk` exists, and stays quiet otherwise.
+   The daemon is **presence-gated**: it injects escalations only while `state/.afk` exists, and stays quiet otherwise.
 
-3. **Do not separately arm `fm-watch.sh`.** The daemon manages the watcher as
+4. **Verify the daemon is ALIVE, on either path; starting it is not running it.**
+   Run `bin/fm-afk-health.sh`.
+   It must read `healthy` before you tell the captain away mode is active, and again before you end the turn that entered it, because that second read is the one that catches a daemon reaped right after it came up.
+   - `starting` means the daemon has not taken over yet.
+     Never acknowledge away mode on `starting`: read it again, and if it will not reach `healthy`, stop away mode and report the failure.
+   - `orphaned` means the flag is there and the daemon is not, which is zero supervision.
+     Restart it or leave away mode; do not proceed.
+
+   After that the state is checked for you rather than remembered.
+   The session digest's AFK section, both turn-end guards, and Claude's Stop-owned re-arm all read this same verdict, so an orphaned away mode is named immediately when its daemon started and then died; only a daemon that never took over at all waits out `FM_AFK_START_GRACE` (default 300s) before it is named instead of being discovered by accident.
+   That check reads the flag and the daemon's own lock from disk, so a dead daemon cannot suppress its own diagnosis.
+
+5. **Do not separately arm `fm-watch.sh`.** The daemon manages the watcher as
    its child; the singleton lock no-ops a stray arm harmlessly.
 
-4. **Acknowledge** in `AGENTS.md` section 9 language: "Captain, away mode is active; I will batch routine updates and surface only decisions, failures, credentials, or review-ready work until you return."
+6. **Acknowledge** in `AGENTS.md` section 9 language: "Captain, away mode is active; I will batch routine updates and surface only decisions, failures, credentials, or review-ready work until you return."
 
 ## How to exit afk
 
@@ -229,6 +240,8 @@ These properties must hold:
 
 - Nothing is lost after queue publication.
   The daemon leaves every presented wake durable until routing completes and post-handling acknowledgement succeeds, so interruption replays the same work to the daemon or its successor.
+- An away-mode flag never silently outlives its daemon.
+  Every path that stands down for away mode asks `bin/fm-afk-health.sh` whether a daemon is actually there, so the flag alone can no longer switch supervision off; `tests/fm-afk-health.test.sh` pins that state and the two consumers.
 - Wedge detection is bounded-latency, not lossy.
 - Declared external waits are rechecked on a separate, bounded cadence rather than being mislabeled as wedges.
 - The catch-all scan backs up the keyword classifier.
