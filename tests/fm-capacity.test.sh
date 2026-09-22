@@ -956,28 +956,71 @@ pass "a resumed drain leaves a standing warning exactly where it stands"
 # the retention horizon, so every row that raised the alarm is gone from disk.
 # An alarm that forgets why it rang and therefore stops ringing cannot heal
 # itself, which is the worst failure mode an alarm has.
-at=1060000
-cent=38
-while [ "$cent" -gt 24 ]; do
-  balance_body "$home/bal-drip.json" "0.$cent" true
+# The drain has to stay fast enough that the condition keeps holding - a balance
+# that starts draining slowly enough to last the night SHOULD clear, and does,
+# which is the case below. Each reading here is a margin later and under half
+# what came before, so every fresh measurement still projects zero inside one
+# validation, and the run spans the whole four-margin retention horizon.
+at=1060230
+for amount in 0.18 0.08 0.03 0.01; do
+  balance_body "$home/bal-drip.json" "$amount" true
   run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-drip.json" "$at" check >/dev/null
-  at=$((at + 7200))
-  cent=$((cent - 1))
+  at=$((at + MARGIN))
 done
+at=$((at - MARGIN))
 history_amount_present "$home/state/.balance-history" 40.00 \
   && fail "the readings that raised the alarm must be long pruned by now"
 out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-drip.json" "$at" report)
 assert_contains "$out" "balance runs out in" "a standing warning must survive the loss of the readings that raised it"
 pass "a warning outlives the readings that raised it"
 
-# The other direction, so none of the above can be satisfied by a guard that
-# simply never stops warning: an observed increase IS the one event that clears
-# it, and it clears it completely.
+# WHAT ENDS A STANDING WARNING IS THE CONDITION ENDING, AND NOTHING ELSE.
+#
+# The three cases below walk that rule across the line from both sides, on one
+# balance whose numbers are readable by hand: draining 40.00 to 0.40 in an hour
+# measures a drain under which one validation costs 39.6, so anything the
+# account holds below that is still less than one validation's worth of spend -
+# which is the entire claim the warning makes.
+home=$(fresh_home balance-condition-clears)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the drain must raise the warning these cases are about ending"
+
+# A cent of the provider's own rounding is not a recharge. The quiet cases above
+# pin `40.01, 40.00, 40.01, 40.00` as one of "the shapes a working fleet
+# produces", so this file's own evidence says this balance reads upward without
+# anybody topping it up. A rule that retired the warning on any reading higher
+# than the one before handed that noise the power to silence the guard on an
+# account with seconds left - the same silence as the idle night above, arriving
+# through a different door.
+balance_body "$home/bal-jitter.json" 0.41 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-jitter.json" 1007200 report)
+assert_contains "$out" "balance runs out in" "a cent of rounding must not retire a standing warning"
+assert_present "$home/state/.balance-warning" "noise must not be read as a recharge"
+pass "rounding jitter upward leaves a standing warning exactly where it stands"
+
+# Nor is a top-up too small to buy back a validation - and this is the sharp
+# edge of the rule, the case that separates it from "any increase clears". 5.00
+# is more than twelve times the balance that raised the warning and still buys
+# less than one validation at the drain measured here, so the condition is still
+# true and the warning still stands.
+balance_body "$home/bal-small-topup.json" 5.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-small-topup.json" 1010800 report)
+assert_contains "$out" "balance runs out in" "a top-up that does not buy back a validation must not clear the warning"
+assert_present "$home/state/.balance-warning" "the warning ends with the condition, not with an increase"
+pass "a top-up too small to restore one validation leaves the warning standing"
+
+# And the other direction, so none of this can be satisfied by a guard that
+# simply never stops warning: a top-up that genuinely puts the runway back
+# beyond one validation's worth ends the condition, and that ends the warning.
 balance_body "$home/bal-recharged.json" 90.00 true
-out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json" "$((at + 3600))" report)
-[ -z "$out" ] || fail "a recharge must clear the standing warning, got: $out"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json" 1014400 report)
+[ -z "$out" ] || fail "a recharge past one validation's worth must clear the standing warning, got: $out"
 assert_absent "$home/state/.balance-warning" "a recharge must retire the standing warning, not just silence it"
-pass "an observed increase is the one event that clears a standing warning"
+pass "the condition ceasing to hold is what clears a standing warning"
 
 # The clearing event must be recognised whatever SHAPE the previous reading
 # took, and an overdrawn account reads below zero. A comparison that refused a

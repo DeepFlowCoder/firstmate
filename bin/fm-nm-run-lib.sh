@@ -401,10 +401,25 @@ fm_nm_verdict_detail() {  # <run-word>
 # distinction away silently, which is the failure mode this exists to prevent.
 # Both are anchored so a bare `402` in a path, a SHA, or a line number cannot
 # answer for a payment status.
+#
+# EVERY CLAUSE POINTS AT THE OBSERVATION THAT JUSTIFIES IT, and a clause that
+# cannot is a speculation sitting inside a detector, which is a false positive
+# waiting its turn:
+#   insufficient balance            the vendor's message, observed verbatim in
+#                                   the incident payload recorded in
+#                                   tests/fm-crew-state.test.sh and in
+#                                   docs/verification/dispatch-auth.md
+#   (error|status|code)...402       the shape that payload carries the status in,
+#                                   `pi reported error: 402: {...}`, same record
+#   402 payment required            the reason phrase RFC 9110 standardizes for
+#                                   that status, which is what survives the
+#                                   vendor rewording its own prose
+# Underscore and hyphen spellings of the message were carried here for a while
+# and matched nothing anybody ever saw; they are gone.
 fm_nm_failure_cause_detail() {  # <run-error-text>
   local text=${1:-}
   [ -n "$text" ] || return 0
-  if printf '%s' "$text" | grep -Eqi 'insufficient[ _-]balance|(error|status|code)[^0-9]{0,3}402\b|402 payment required'; then
+  if printf '%s' "$text" | grep -Eqi 'insufficient balance|(error|status|code)[^0-9]{0,3}402\b|402 payment required'; then
     printf 'the provider balance ran out, so no validation can run until it is recharged'
   fi
 }

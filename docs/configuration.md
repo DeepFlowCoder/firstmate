@@ -240,7 +240,7 @@ The guard reads that balance directly, on the same cadence and through the same 
 The reading is one bounded request to the provider's read-only balance endpoint: it runs no model, spends no tokens, and launches no work, so measuring the balance is never what finishes it.
 The credential comes from the `DEEPSEEK_API_KEY` environment variable or from Pi's own credential file, and from nowhere else; this guard opens no interactive credential prompt, and a home with no such credential simply takes no reading and says nothing.
 The amount read is kept in the private `state/.balance-history` and reaches no other surface: the warning states how long is left and what to do, never how much money remains.
-A warning the guard has already raised lives in `state/.balance-warning`, which holds a duration in seconds and never an amount; its presence is the warning itself, and only an observed increase in the balance or `fm-capacity-check.sh disarm` removes it.
+A warning the guard has already raised lives in the private `state/.balance-warning`, which holds the measured drain that raised it so the same question can be asked again of whatever the account holds later; like the history beside it, it is never captain-facing.
 
 The guard warns once the measured drain projects the balance reaching zero sooner than a validation needs to finish, and it names both spans.
 That reaction margin defaults to **8294 seconds**, the **90th percentile of 31 completed validation runs** this fleet actually made on that provider between 2026-09-13 and 2026-09-22, so nine of ten validations that start at the moment of the warning still finish before the balance is gone; [`docs/verification/dispatch-auth.md`](verification/dispatch-auth.md) owns that measurement, its exact query, and its exact output, and is what re-measures it.
@@ -256,9 +256,10 @@ Because the margin is how long a validation takes, the warning starts exactly wh
 
 The drain rate is averaged over at least one whole margin of readings and at most two, because a prepaid balance is spent in bursts and a rate taken across the last few minutes would read as empty-by-lunchtime every time a validation started.
 Until that much history exists, or when a top-up has just reset it, the guard says the runway is not measured rather than projecting from too little, and an unmeasured runway never fires on its own.
-That rate is measured up to the last reading where the balance actually moved, and a warning that has already fired is remembered rather than re-derived, so the projection can never read longer than what the captain was last told.
-Exactly one event clears it: an observed increase, which is to say a recharge.
-Nothing else does - not an idle night, not a further drain, not a poll the watcher missed, and not the reading history ageing out from under it - because the overnight quiet and the first spend of the morning are precisely when the warning has to still be there.
+That rate is measured up to the last reading where the balance actually moved, and once a warning has been raised the drain that raised it is remembered, so the guard keeps asking the same question of whatever the account holds now rather than waiting for a fresh window.
+**A warning stands exactly while the condition that raised it is true, and clears exactly when it stops being true** - which is to say when a reading puts the runway back beyond one validation's worth of spend.
+Nothing else moves it either way: not an idle night, not a further drain, not a poll the watcher missed, not the reading history ageing out, and not a cent of the provider's own rounding.
+A top-up too small to buy back a validation does not clear it either, because after such a top-up the warning is still true.
 
 An amount of zero is read as a spent balance only once the account has been seen holding something, because a field that has only ever reported zero is not a purse that ran out.
 Some providers report a permanent zero credits figure on a perfectly healthy account, and treating that as a spent balance would arm a warning that fired on every poll forever.

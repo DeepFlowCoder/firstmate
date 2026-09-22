@@ -528,25 +528,11 @@ acquire_balance() {
 # alarm that forgets why it rang and therefore stops ringing cannot heal itself.
 # Retention decides only what a NEW measurement can be taken from.
 history_append() {  # <balance> <available>
-  local now retain kept tmp previous
+  local now retain kept tmp
   now=${FM_CAPACITY_BALANCE_NOW:-$(date +%s)}
   case "$now" in ''|*[!0-9]*) now=$(date +%s) ;; esac
   mkdir -p "$STATE" 2>/dev/null || return 0
   [ ! -L "$HISTORY" ] || return 0
-  # The ONE event that clears a standing warning, and the only place it is
-  # recognised: this reading is larger than the one before it, so the captain
-  # recharged. Everything else - a flat reading, a further drain, a poll the
-  # watcher missed, a prune - leaves the warning exactly where it stands.
-  # ONE definition of what a stored amount looks like, the same one history_json
-  # reads rows back with. A second, narrower one here refused every reading
-  # carrying a sign, so the comparison was skipped and the clearing event went
-  # unseen: the captain recharged and the guard went on telling them to recharge.
-  previous=$(tail -n 1 "$HISTORY" 2>/dev/null | cut -f2)
-  awk -v a="$previous" -v b="$1" '
-    BEGIN {
-      shape = "^-?[0-9]+(\\.[0-9]+)?$"
-      exit !(a ~ shape && b ~ shape && b + 0 > a + 0)
-    }' 2>/dev/null && rm -f -- "$STANDING" 2>/dev/null
   # Created private, not merely renamed private: until the first prune the
   # ambient umask would otherwise leave the captain's amounts world-readable.
   (umask 077; printf '%s\t%s\t%s\n' "$now" "$1" "$2" >>"$HISTORY") 2>/dev/null || return 0
@@ -601,21 +587,29 @@ take_balance_reading() {  # <action>
   history_append "$balance" "$available"
 }
 
-# The standing balance warning, in seconds, or nothing.
+# The standing balance warning: the measured drain that raised it, as seconds of
+# runway per unit of balance, or nothing.
 #
-# A runway warning is not a verdict this guard re-derives from scratch on every
-# poll; it is a state the balance entered and has not left. Deriving it afresh
-# each time made it withdrawable by accident: the rate window would re-anchor on
-# a later reading, the drain that raised the alarm would fall outside it, and the
-# guard went silent at the exact poll where the fleet resumed spending a balance
-# it had already warned about. A duration is not a financial figure - every line
-# this guard prints is already one - so unlike the history it states nothing
-# private.
+# IT IS THE RATE THAT IS REMEMBERED, NOT THE VERDICT, and that is what makes the
+# warning clear itself honestly. The condition this guard warns on is
+# `balance / drain < margin`; remembering the drain lets that same condition be
+# re-asked against the balance the account holds NOW, at every poll, without
+# waiting for a fresh window. So the warning stands exactly while the condition
+# holds and clears exactly when it stops holding, and neither silence nor noise
+# can move it either way.
+#
+# A frozen verdict could not do that. It had to be retired by something other
+# than the condition - the previous rule retired it on any reading higher than
+# the one before, which a single cent of provider rounding satisfies, so noise
+# silenced the guard on an account with seconds left.
 standing_read() {
   local value
   [ -f "$STANDING" ] && [ ! -L "$STANDING" ] || return 0
   value=$(head -n 1 "$STANDING" 2>/dev/null) || return 0
-  case "$value" in ''|*[!0-9]*) return 0 ;; esac
+  case "$value" in
+    *[!0-9.]*|*.*.*|''|.) return 0 ;;
+  esac
+  awk -v v="$value" 'BEGIN { exit !(v + 0 > 0) }' 2>/dev/null || return 0
   printf '%s\n' "$value"
 }
 
@@ -640,23 +634,21 @@ VERDICT_DIGEST=
 VERDICT_STANDING=
 
 classify() {
-  local record rest rc=0 readings lanes_flag standing_value standing_flag=''
+  local record rest rc=0 readings lanes_flag
   VERDICT_LINE=
   VERDICT_DIGEST=
   VERDICT_STANDING=
   command -v node >/dev/null 2>&1 || { SNAPSHOT_PROBLEM="node is not available to classify the snapshot"; return 1; }
   readings=$(history_json)
   lanes_flag=${LANES_UNREADABLE:+--lanes-unreadable}
-  standing_value=$(standing_read)
-  [ -z "$standing_value" ] || standing_flag=--balance-standing
-  # The amounts travel in the environment, never in argv, for the same reason the
-  # credential does: `ps` shows every process's full command line to every local
-  # user, and a poll's worth of readings on a command line is the captain's whole
-  # spending history published to the machine.
+  # The amounts and the drain measured from them travel in the environment, never
+  # in argv, for the same reason the credential does: `ps` shows every process's
+  # full command line to every local user, and a poll's worth of readings on a
+  # command line is the captain's whole spending history published to the machine.
   record=$(FM_CAPACITY_BALANCE_READINGS="$readings" \
+    FM_CAPACITY_BALANCE_STANDING="$(standing_read)" \
     node "$POLICY" --min-lanes "$MIN_LANES" ${lanes_flag:+"$lanes_flag"} \
     --balance-margin-secs "$MARGIN" \
-    ${standing_flag:+"$standing_flag"} ${standing_value:+"$standing_value"} \
     --emit record <"$SNAPSHOT" 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then
     SNAPSHOT_PROBLEM="quota-axi's report could not be read (policy exit $rc)"
@@ -667,7 +659,18 @@ classify() {
   rest=${record#*	}
   VERDICT_STANDING=${rest%%	*}
   VERDICT_LINE=${rest#*	}
-  [ -z "$VERDICT_STANDING" ] || standing_write "$VERDICT_STANDING"
+  # The policy owns the condition, so it owns both halves of the answer: a rate
+  # to carry means the condition still holds, and an empty field means a fresh
+  # measurement put the runway back beyond the margin and the warning is over.
+  # Only a live balance arm may retire it - a retired arm takes no reading and
+  # must not decide anything about one.
+  if [ "$MARGIN" -gt 0 ]; then
+    if [ -n "$VERDICT_STANDING" ]; then
+      standing_write "$VERDICT_STANDING"
+    else
+      rm -f -- "$STANDING" 2>/dev/null
+    fi
+  fi
 }
 
 # A snapshot the policy REFUSED is the same blind spot as one that never
