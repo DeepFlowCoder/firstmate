@@ -6,11 +6,12 @@
 # runs. It bounds the instant GitHub DECIDES to cancel, counted from the job's
 # started_at; the job then ends whenever its termination finishes, and that tail
 # belongs to GitHub, not to the workflow. Measured on DeepFlowCoder/firstmate:
-# thirteen cap hits across 1, 15, 20 and 45 minute caps all ended AFTER their own
-# cap - by 15 to 30 seconds while the runner could still answer, and by exactly
-# 10m00s in the one job whose step had eaten the runner (job 103670890754, a 45
-# minute cap that ended at 55m00s). docs/verification/ci-job-timeout-wall.md owns
-# that measurement and the probes behind it.
+# fourteen cap hits across 1, 15, 20 and 45 minute caps all ended AFTER their own
+# cap - thirteen of them by 15 to 30 seconds while the runner could still answer,
+# and by exactly 10m00s in the one job whose step had eaten the runner (job
+# 103670890754, a 45 minute cap that ended at 55m00s).
+# docs/verification/ci-job-timeout-wall.md owns that measurement and the probes
+# behind it.
 #
 # So this is a DETECTOR, not a bound. Nothing in a workflow can bound the tail,
 # and this script does not try to: it reads finished runs off the forge and
