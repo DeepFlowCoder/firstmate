@@ -1003,6 +1003,53 @@ test_crewmate_briefs_route_captain_questions_through_the_status_log() {
   pass "fm-brief.sh: crewmate briefs route captain questions through the status log, never the harness dialog"
 }
 
+# A worktree isolates a worker's files, not the repository's stash stack, and
+# the 2026-09-17 incident was one worker's `git stash pop` carrying off another
+# worker's work with nothing failing on either side. Both kinds of worker that
+# share a repository - ship and scout - have to be told, and told the same
+# thing: the guard's protection is real but incomplete, so the honest
+# instruction is to avoid `git stash` here rather than to rely on the refusal.
+# A scaffold that carried only half of that would leave one class of worker
+# believing it is covered.
+test_ship_and_scout_briefs_carry_the_same_stash_warning() {
+  local home brief kind
+  home="$TMP_ROOT/stash-warning-home"
+  write_registry "$home"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-stash-ship ship-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold exited non-zero"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" brief-stash-scout ship-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+
+  for kind in brief-stash-ship brief-stash-scout; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'Your worktree is isolated; `git stash` is NOT' "$brief" \
+      "$kind: brief did not name the stash as shared state the worktree does not isolate"
+    assert_grep 'every working copy of this repository shares ONE stash stack' "$brief" \
+      "$kind: brief did not say why the stash reaches other workers"
+    # The refusal is not complete, and a worker who thinks it is stops watching.
+    assert_grep "That protection is not complete: when more than one entry already exists, a pop or a drop can still destroy another copy's entry silently" "$brief" \
+      "$kind: brief overstated the guard by omitting the multi-entry gap"
+    # A prohibition with no alternative sends the worker back to the stash.
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'git add -A && git commit -m wip' "$brief" \
+      "$kind: brief forbade the stash without naming what to do instead"
+    # shellcheck disable=SC2016 # Literal backticked command names must remain unexpanded.
+    assert_grep 'git diff HEAD > ../parked.patch' "$brief" \
+      "$kind: brief did not offer the patch-file alternative"
+  done
+
+  # One source, so the two can never drift into disagreeing about the limit.
+  diff <(awk '/^\*\*Your worktree is isolated/, /never work around a refusal/' \
+      "$home/data/brief-stash-ship/brief.md") \
+    <(awk '/^\*\*Your worktree is isolated/, /never work around a refusal/' \
+      "$home/data/brief-stash-scout/brief.md") >/dev/null \
+    || fail "the ship and scout scaffolds emit different stash warnings"
+  pass "fm-brief.sh: ship and scout briefs carry one identical stash warning"
+}
+
 # A worker that reads the captain's real keychain can block on a system password
 # dialog for hours while supervision still reads it as working, and killing the
 # process does not dismiss the dialog. The prohibition therefore has to travel in
@@ -1200,5 +1247,6 @@ test_scout_and_secondmate_load_decision_hold_policy
 test_briefs_teach_a_key_position_the_classifier_reads
 test_brief_self_close_template_closes_a_blocker_the_same_brief_opens
 test_crewmate_briefs_route_captain_questions_through_the_status_log
+test_ship_and_scout_briefs_carry_the_same_stash_warning
 test_crewmate_briefs_forbid_reading_the_real_credential_store
 test_scout_and_secondmate_scaffold

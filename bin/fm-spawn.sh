@@ -972,6 +972,25 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
+# The per-task temp root is fixed by the id alone, and the stash guard below
+# turns it into a directory every git the worker runs executes hooks out of. The
+# path is predictable and /tmp is writable by everyone, so a path already sitting
+# there is reused only when it is genuinely ours: a symlink, or a directory owned
+# by somebody else, is somebody else choosing what this worker's git will run.
+# Refusing is the only safe answer, including when ownership cannot be read at
+# all, because "I could not tell" is not "it is ours".
+#
+# This is the cheap half, placed here so an obviously bad state is refused
+# before any pane or worktree is allocated and a refusal strands neither. It is
+# NOT the half that carries the guarantee: minutes pass before the directory is
+# used, and /tmp is world-writable, so the answer can change underneath. The
+# authoritative check runs at the moment of use, where the directory is created.
+TASK_TMP="/tmp/fm-$ID"
+if [ -L "$TASK_TMP" ] \
+  || { [ -e "$TASK_TMP" ] && { [ ! -d "$TASK_TMP" ] || [ ! -O "$TASK_TMP" ]; }; }; then
+  echo "error: refusing to spawn task $ID: '$TASK_TMP' already exists and is not a directory owned by this user; this worker's git would execute hooks out of it" >&2
+  exit 1
+fi
 # Disk-space guard (bin/fm-disk-space-lib.sh). Its whole scope is the case below:
 # a fresh crewmate or scout, dispatched onto the filesystem this process is
 # measuring. That is the work whose failure mode is total rather than slow - a
@@ -2699,8 +2718,53 @@ fi
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
 # later, and teardown cleans one deterministic path. GOTMPDIR (not TMPDIR) is the
 # targeted knob: TMPDIR is too broad (affects every program's temp, not just Go's).
-TASK_TMP="/tmp/fm-$ID"
+#
+# This is where the temp root is decided, not where the id is validated. The
+# early check there is a fail-fast; between it and here the spawn waits on a
+# pooled worktree and a backend window, and /tmp is world-writable, so anyone
+# could have put something at this path in the meantime. Creating the directory
+# with a plain `mkdir` closes that window: it either makes the directory, at
+# 0700, or fails because something is already there, and it never follows a
+# symlink the way `mkdir -p` would. Only then is an existing path examined, and
+# it is reused only when it is genuinely a directory of ours, refusing equally
+# when ownership cannot be read, because "I could not tell" is not "it is ours".
+if ! mkdir -m 0700 "$TASK_TMP" 2>/dev/null; then
+  if [ -L "$TASK_TMP" ] || [ ! -d "$TASK_TMP" ] || [ ! -O "$TASK_TMP" ]; then
+    echo "error: refusing to spawn task $ID: '$TASK_TMP' is not a directory owned by this user; this worker's git would execute hooks out of it" >&2
+    exit 1
+  fi
+  chmod 0700 "$TASK_TMP"
+fi
 mkdir -p "$TASK_TMP/gotmp"
+
+# Stash guard (bin/fm-stash-guard.sh): refs/stash lives in the repository's
+# COMMON git directory, so every working copy of one repository - the primary
+# checkout and every pooled task worktree - shares one stash stack. This home
+# dispatches several workers onto one repository as its normal mode, so one
+# worker's `git stash pop` can carry off, and destroy, whatever another worker
+# stashed, with no error on either side. The guard makes git itself refuse stash
+# creation and the removals that pass through a reference transaction; a pop or
+# drop of a pre-existing multi-entry stack still slips past it, as
+# bin/fm-stash-guard.sh documents. What the directory holds depends on no
+# repository - each hook in it resolves at run time the hook the repository it
+# is running in would have used - so it is prepared per task only because it
+# lives in TASK_TMP and dies with it at teardown. Nothing is written into the
+# repository - see the export below.
+#
+# Every spawn gets it, including one whose home is not a git repository at all.
+# Such a home has no stash of its own to share, but its worker still works
+# inside repositories that do, and the guard reaches wherever that worker's git
+# goes. Preparing it only for a home that is a repository would give the guard a
+# smaller reach than it promises, without saying so.
+STASH_GUARD_DIR="$TASK_TMP/git-hooks"
+if ! STASH_GUARD_PREPARE=$("$SCRIPT_DIR/fm-stash-guard.sh" prepare "$STASH_GUARD_DIR" 2>&1); then
+  echo "error: could not prepare the shared-stash guard for task $ID: $STASH_GUARD_PREPARE" >&2
+  exit 1
+fi
+if ! STASH_GUARD_EXPORT=$("$SCRIPT_DIR/fm-stash-guard.sh" env "$STASH_GUARD_DIR" 2>&1); then
+  echo "error: could not resolve the shared-stash guard environment for task $ID: $STASH_GUARD_EXPORT" >&2
+  exit 1
+fi
 
 # Per-harness turn-end hook where enabled: a file that touches
 # state/<id>.turn-ended when the agent finishes a turn. Worktree-resident hooks
@@ -3275,6 +3339,34 @@ if [ "$GUARD_SEND_STATUS" -ne 0 ]; then
       ;;
   esac
   echo "error: git editor guard could not be delivered to $W (backend=$BACKEND status=$GUARD_SEND_STATUS)$GUARD_SEND_CAUSE; refusing to append the launch command" >&2
+  exit 1
+fi
+# Point this worker's git at the stash guard prepared above, on the same channel
+# and with the same posture as the git editor guard: delivered before launch so
+# it is in force for the worker's first command, and a failed delivery stops the
+# spawn rather than handing over the unguarded environment the guard exists to
+# prevent.
+#
+# GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n is the one lever that reaches a worker's
+# git wherever it is invoked from. It outranks every configuration file,
+# including a core.hooksPath set globally - on a home-manager machine that
+# points at a generated directory, and a hook written into .git/hooks there is
+# silently never run. It is inherited by child processes, so it holds even when
+# a worker calls git by absolute path, which a PATH shim would not survive. And
+# it writes nothing into the repository, so no project state changes and the
+# captain's own checkouts keep exactly the hooks and configuration they had.
+# The exported line appends to any injected git configuration already present
+# rather than overwriting entry zero (bin/fm-stash-guard.sh owns its form).
+STASH_GUARD_SEND_STATUS=0
+spawn_send_text_line "$T" "$STASH_GUARD_EXPORT" || STASH_GUARD_SEND_STATUS=$?
+if [ "$STASH_GUARD_SEND_STATUS" -ne 0 ]; then
+  STASH_GUARD_SEND_CAUSE=
+  case "$BACKEND:$STASH_GUARD_SEND_STATUS" in
+    zellij:2|cmux:2)
+      STASH_GUARD_SEND_CAUSE="; the export may still be sitting on the pane's input line, unsubmitted and uncleared"
+      ;;
+  esac
+  echo "error: shared-stash guard could not be delivered to $W (backend=$BACKEND status=$STASH_GUARD_SEND_STATUS)$STASH_GUARD_SEND_CAUSE; refusing to append the launch command" >&2
   exit 1
 fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
