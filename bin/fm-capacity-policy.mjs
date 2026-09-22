@@ -104,26 +104,31 @@
 // burns does not change when the captain pays, and the higher balance lengthens
 // the runway by itself.
 //
-// A WARNING ALREADY RAISED IS CLEARED BY ONE THING: THE CONDITION THAT RAISED
-// IT CEASING TO BE TRUE. The drain that raised it arrives in
-// FM_CAPACITY_BALANCE_STANDING, as seconds of runway per unit of balance, and
-// the same condition - less than one validation's worth of spend left - is
-// asked again here against the balance the account holds now. It stands while
-// that is true and stops when it stops, and nothing else moves it either way.
+// A WARNING ALREADY RAISED IS ANCHORED, NOT RECOMPUTED. The drain measured at
+// the moment it fired arrives in FM_CAPACITY_BALANCE_STANDING, as seconds of
+// runway per unit of balance, and it is the ONLY drain its exit condition may
+// use: the warning is retired when the balance the account holds now, measured
+// against that stored drain, buys back more than one validation. Nothing else
+// retires it, and no window arithmetic touches that decision. Fresh evidence may
+// make a standing warning more urgent; it may never soften one and it may never
+// end one.
 //
 // Keeping the DRAIN rather than the finished runway is what makes that possible
 // without inventing a second number: a remembered rate can be re-applied to any
-// later balance, so a recharge answers the question immediately instead of
-// waiting a whole margin for a fresh window. A drain that cannot be re-measured
-// is not a recovery, so the remembered one governs until a fresh one replaces
-// it.
+// later balance, so a recharge answers the question on the very next reading
+// instead of waiting a whole margin for a fresh window.
 //
-// Every earlier rule here retired the warning on something that was NOT the
-// condition, and the same silence came back four times wearing four faces: an
-// idle night flattened the rate, a quota snapshot that never arrived emptied the
-// lane list, a further drain re-anchored the window onto a span too short to
-// measure, and a single cent of provider rounding read as a recharge. Each one
-// read as an all-clear on a balance with under a minute left.
+// This is an anchor rather than one more patch because every earlier rule let
+// the warning's survival be recomputed from a freshly measured rate, and a rate
+// has a window, and every window has some input that reshapes it. Six silences
+// came out of that one property: an idle night flattened the rate, a quota
+// snapshot that never arrived emptied the lane list, a further drain re-anchored
+// the window onto a span too short to measure, a cent of provider rounding read
+// as a recharge, the same cent stopped a first warning being raised at all, and
+// a cent at the end of an idle stretch re-included the idle span and halved the
+// apparent drain. Each one read as an all-clear on an account that was nearly
+// empty. Patching the inputs one at a time has no end; this stops the
+// recomputation instead.
 //
 // A provider that establishes none of those is `unmeasured`, never folded into
 // one of them. AGENTS.md section 4 is explicit that unmeasurable headroom,
@@ -635,28 +640,52 @@ function classifyBalance(readings, marginSecs, standingPerUnit = null) {
     measuredPerUnit = span / consumed;
   }
 
-  // A STANDING WARNING IS CLEARED WHEN THE CONDITION THAT RAISED IT STOPS BEING
-  // TRUE, AND BY NOTHING ELSE. The condition is this guard's whole subject -
-  // less than one validation's worth of spend left - so it is asked again here,
-  // every poll, against the balance the account holds NOW and the freshest drain
-  // anybody has measured. No tolerance, no minimum step, no second threshold:
-  // the only number involved is the margin, which is measured.
+  // A WARNING THAT HAS FIRED IS STATE, NOT A CONCLUSION RE-DERIVED EVERY POLL.
+  // It is ANCHORED to the drain measured at the moment it fired, and that stored
+  // drain is the only one its exit condition may use: the warning is retired
+  // when the balance the account holds NOW, measured against it, buys back more
+  // than one validation, and by nothing else. No window arithmetic reaches this
+  // decision.
   //
-  // That is the difference between a rule and a list of cases. The same silence
-  // arrived four times wearing four faces - an idle night, a quota snapshot that
-  // never came, a reading that was worse, and finally a single cent of provider
-  // rounding - because each time the warning was retired by something that was
-  // not the condition. A drain that cannot be re-measured is NOT a recovery, so
-  // the remembered drain governs until a fresh one replaces it; and a top-up too
-  // small to buy back a validation is not a recovery either, because the
-  // condition is still true after it.
-  const perUnit = measuredPerUnit !== null ? measuredPerUnit : carried;
-  if (perUnit === null) {
+  // That is the whole point, and it is why this is an anchor rather than a sixth
+  // patch. Re-deriving a standing warning from a freshly measured rate means its
+  // survival depends on a window, and every window heuristic has some input that
+  // reshapes it. Six silences came out of that one property, the last of them a
+  // single cent of provider movement at the end of an idle stretch: it made the
+  // window end later, re-included the whole idle span with nothing consumed in
+  // it, halved the apparent drain, and retired a warning on an account holding
+  // less than one validation's worth. Patching inputs one at a time has no end;
+  // anchoring the warning ends the recomputation instead.
+  //
+  // It cannot become an alarm nobody can switch off: a real recharge raises the
+  // balance past the exit condition on the very next reading. And if the fleet
+  // goes quiet forever the warning stands, which is correct, because the balance
+  // is still low.
+  if (carried !== null) {
+    const anchored = Math.floor(newest.balance * carried);
+    if (anchored > marginSecs) {
+      return { cause: "balance-live", marginSecs, secondsLeft: anchored, standingPerUnit: null };
+    }
+    // Fresh evidence may make a standing warning MORE urgent. It may never
+    // soften one, and it may never be what ends one.
+    const fresh = measuredPerUnit !== null ? Math.floor(newest.balance * measuredPerUnit) : null;
+    return {
+      cause: "balance-runway",
+      marginSecs,
+      secondsLeft: fresh !== null && fresh < anchored ? fresh : anchored,
+      standingPerUnit: carried,
+    };
+  }
+
+  // No warning stands, so this is the ordinary question of whether to raise one:
+  // is there less than one validation's worth of spend left at the rate the
+  // fleet has actually been spending?
+  if (measuredPerUnit === null) {
     return { cause: "balance-unmeasured", marginSecs, detail, standingPerUnit: null };
   }
-  const secondsLeft = Math.floor(newest.balance * perUnit);
+  const secondsLeft = Math.floor(newest.balance * measuredPerUnit);
   if (secondsLeft < marginSecs) {
-    return { cause: "balance-runway", marginSecs, secondsLeft, standingPerUnit: perUnit };
+    return { cause: "balance-runway", marginSecs, secondsLeft, standingPerUnit: measuredPerUnit };
   }
   return { cause: "balance-live", marginSecs, secondsLeft, standingPerUnit: null };
 }

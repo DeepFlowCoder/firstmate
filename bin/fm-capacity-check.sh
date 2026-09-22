@@ -131,7 +131,8 @@ BALANCE_ENDPOINT='https://api.deepseek.com/user/balance'
 HISTORY="$STATE/.balance-history"
 # The standing balance warning: the measured DRAIN that raised it, as seconds of
 # runway per unit of balance. Its presence IS the warning, and the one thing that
-# retires it is the condition that raised it ceasing to hold. See standing_read.
+# retires it is the balance rising far enough that, measured against THAT stored
+# drain, it buys back more than one validation. See standing_read.
 STANDING="$STATE/.balance-warning"
 RECORD="$STATE/.capacity"
 CHECK_ID=capacity
@@ -590,18 +591,23 @@ take_balance_reading() {  # <action>
 # The standing balance warning: the measured drain that raised it, as seconds of
 # runway per unit of balance, or nothing.
 #
-# IT IS THE RATE THAT IS REMEMBERED, NOT THE VERDICT, and that is what makes the
-# warning clear itself honestly. The condition this guard warns on is
-# `balance / drain < margin`; remembering the drain lets that same condition be
-# re-asked against the balance the account holds NOW, at every poll, without
-# waiting for a fresh window. So the warning stands exactly while the condition
-# holds and clears exactly when it stops holding, and neither silence nor noise
-# can move it either way.
+# IT IS THE RATE THAT IS REMEMBERED, NOT THE VERDICT, and once a warning stands
+# that rate is FROZEN. The condition this guard warns on is
+# `balance / drain < margin`; remembering the drain lets the guard ask, at every
+# poll, whether the balance the account holds NOW has risen far enough to buy
+# back a validation at the rate that raised the alarm. That is the warning's one
+# exit, and a later measurement cannot reach it.
 #
-# A frozen verdict could not do that. It had to be retired by something other
-# than the condition - the previous rule retired it on any reading higher than
-# the one before, which a single cent of provider rounding satisfies, so noise
-# silenced the guard on an account with seconds left.
+# Freezing it is the point. While the clearing decision was re-derived from a
+# freshly measured rate, anything that reshaped the measuring window could retire
+# a warning by accident - and six different inputs did, ending with a single cent
+# of provider movement at the end of an idle stretch, which spread the drain
+# across the idle hours and read as a recovery on an account with minutes left.
+#
+# A frozen VERDICT would be wrong in the other direction, which is why this holds
+# a rate and not a runway: a rate re-applied to the current balance answers a
+# genuine recharge immediately, so this can never become an alarm nobody can
+# switch off.
 standing_read() {
   local value
   [ -f "$STANDING" ] && [ ! -L "$STANDING" ] || return 0

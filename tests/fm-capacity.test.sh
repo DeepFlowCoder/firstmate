@@ -1033,6 +1033,34 @@ out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json"
 assert_absent "$home/state/.balance-warning" "a recharge must retire the standing warning, not just silence it"
 pass "the condition ceasing to hold is what clears a standing warning"
 
+# A CENT AT THE END OF AN IDLE STRETCH IS STILL NOT A RECOVERY, and this is the
+# case the magnitudes above are too kind to catch. Here the account holds 19 and
+# one validation costs 21 at the drain that fired, so the margin is barely
+# cleared - which is what the guard is for and where it has to be right.
+#
+# The whole idle stretch sits between the drain and the cent. While a standing
+# warning was re-derived from a freshly measured rate, that one cent moved the
+# window's end past the idle hours, spread the same consumption across twice the
+# time, halved the apparent drain and read as an all-clear. The warning is
+# anchored to the drain that raised it now, so no later window arithmetic can
+# reach it: only the balance rising far enough to buy back a validation does.
+home=$(fresh_home balance-idle-then-one-cent)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-near.json" 19.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-near.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "21 units an hour with 19 left is less than one validation"
+# An hour of an idle fleet, then the provider's amount ticks by a cent. Both
+# directions, because either one used to be enough to end the warning.
+for cent in 19.01 18.99; do
+  balance_body "$home/bal-cent.json" "$cent" true
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-cent.json" 1007200 report)
+  assert_contains "$out" "balance runs out in" "a cent after an idle hour must not retire a standing warning"
+  assert_present "$home/state/.balance-warning" "no window arithmetic may reach an anchored warning"
+done
+pass "a cent at the end of an idle stretch leaves the warning anchored where it stands"
+
 # THE BALANCE GOING UP MUST NOT BE ABLE TO KEEP THE GUARD FROM EVER SPEAKING.
 #
 # The case above protects a warning already raised. This one protects the first
