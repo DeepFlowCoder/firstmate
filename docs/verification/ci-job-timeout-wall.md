@@ -117,15 +117,22 @@ bin/fm-ci-timeout-overrun.sh --repo DeepFlowCoder/firstmate --runs 300
 
 It reports every job whose wall ran more than the allowance past the cap GitHub itself says it exceeded, taking the cap from the job's annotation rather than from the workflow file, so it needs no YAML parsing and cannot compare against a cap that was not the one in force.
 The default 60 second allowance is twice the largest healthy teardown in the table above.
-Run against the 300 runs read for this page on 2026-09-22:
+Run against the 300 runs read for this page on 2026-09-22, after every probe on this page had finished:
 
 ```
 $ bin/fm-ci-timeout-overrun.sh --repo DeepFlowCoder/firstmate --runs 300
+overrun 301s  cap 1m0s  wall 361s  job 106863311398 "probe frozen runner"  started 2026-09-22T17:41:47Z  run 35762368771
+overrun 301s  cap 1m0s  wall 361s  job 106863311750 "probe offline runner"  started 2026-09-22T17:41:46Z  run 35762368771
 overrun 600s  cap 45m0s  wall 3300s  job 103670890754 "Lint"  started 2026-09-13T04:11:47Z  run 34737315487
-checked 300 runs, 13 job(s) cancelled by a cap, 1 past the 60s allowance, 0 unparsed
+checked 300 runs, 15 job(s) cancelled by a cap, 3 past the 60s allowance, 0 unparsed, 0 failed read(s)
 $ echo $?
 1
 ```
 
-It finds the incident and nothing else.
-The thirteen are the eleven in the table above plus the two jobs of hang probe 35762006576, which that window now contains; the two jobs of probe 35762368771 had not finished when this read began.
+Three rows, one incident.
+The first two are this page's own runner-removal probes from the table above, cancelled at a `timeout-minutes: 1` set on purpose and ending 5m01s later because the runner had been taken away from GitHub deliberately; the detector naming them is it working, not a second incident.
+The third is the 2026-09-13 Lint job, which is the only row that is not a probe.
+
+The fifteen capped jobs are the eleven in-window cap hits of the table above plus the four probe jobs of runs 35762006576 and 35762368771; the older shard hit 99216074515 falls outside this 300-run window.
+A first attempt at this same read, minutes earlier, ended `... 3 past the 60s allowance, 0 unparsed, 1 failed read(s)` and named `failed read  run 33550939239`; that run's jobs read answered normally when retried on its own, so the failure was transient.
+That is what the failed-read count is for: a sweep that could not read everything says so and exits non-zero instead of passing as clean.

@@ -213,6 +213,45 @@ $DETECTOR_OUT" ;;
   pass "a cap duration the detector cannot read is raised instead of skipped"
 }
 
+test_a_timestamp_it_cannot_read_is_raised_not_skipped() {
+  local d
+  d=$(new_fixture unparsed-timestamp)
+  printf '%s\n' 3 > "$d/runs"
+  # Two capped jobs the detector cannot place on a clock: one whose end instant
+  # no `date` spelling parses, one whose end instant the forge left empty. Both
+  # were counted as capped, so neither may be dropped without being compared.
+  {
+    printf '%s\t%s\t%s\t%s\n' 601 'Lint' 2026-09-13T04:00:00Z 'not-a-time'
+    printf '%s\t%s\t%s\t%s\n' 602 'Lint' 2026-09-13T04:00:00Z ''
+  } > "$d/jobs-3"
+  printf '%s\n' 'The job has exceeded the maximum execution time of 45m0s' \
+    > "$d/ann-601"
+  printf '%s\n' 'The job has exceeded the maximum execution time of 45m0s' \
+    > "$d/ann-602"
+
+  run_detector "$d"
+
+  [ "$DETECTOR_RC" -ne 0 ] \
+    || fail "a capped job that could not be compared must not exit 0:
+$DETECTOR_OUT"
+  case $DETECTOR_OUT in
+    *'unparsed end "not-a-time"'*"job 601"*) : ;;
+    *) fail "an unreadable timestamp must be named, not silently dropped, got:
+$DETECTOR_OUT" ;;
+  esac
+  case $DETECTOR_OUT in
+    *'unparsed end ""'*"job 602"*) : ;;
+    *) fail "a missing timestamp must be named, not silently dropped, got:
+$DETECTOR_OUT" ;;
+  esac
+  case $DETECTOR_OUT in
+    *"2 job(s) cancelled by a cap"*"2 unparsed"*) : ;;
+    *) fail "both uncompared jobs must be counted in the summary, got:
+$DETECTOR_OUT" ;;
+  esac
+  pass "a capped job whose instants cannot be read is raised instead of skipped"
+}
+
 test_a_failed_jobs_read_is_named_not_skipped() {
   local d
   d=$(new_fixture jobs-read-fails)
@@ -280,6 +319,7 @@ test_ordinary_teardown_stays_quiet
 test_the_allowance_is_the_boundary_and_it_moves
 test_a_cancel_that_was_not_a_cap_is_not_counted
 test_a_cap_it_cannot_read_is_raised_not_skipped
+test_a_timestamp_it_cannot_read_is_raised_not_skipped
 test_a_failed_jobs_read_is_named_not_skipped
 test_a_failed_annotation_read_is_named_not_skipped
 test_the_repository_must_be_named_in_owner_repo_spelling

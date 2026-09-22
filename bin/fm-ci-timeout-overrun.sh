@@ -20,7 +20,7 @@
 #
 # usage:
 #   bin/fm-ci-timeout-overrun.sh --repo <owner>/<repo> [--runs <n>]
-#                                [--allowance-seconds <s>] [--quiet]
+#                                [--allowance-seconds <s>]
 #
 #   --repo  REQUIRED, in owner/repo spelling. Never inferred: an unnamed gh query
 #           answers for whichever remote gh picks, which is not necessarily this
@@ -36,11 +36,10 @@
 #           (default 60). Every measured healthy teardown was 15 to 30 seconds,
 #           so 60 is twice the largest one seen and still an order of magnitude
 #           short of the 600s tail that is worth waking someone for.
-#   --quiet print offenders only, with no trailing summary line.
 #
 # Exit 0 no capped job overran by more than the allowance and every read
-# succeeded; 1 at least one job overran, a read failed, or a cap was unparsed
-# (each named on stdout); 2 usage error or missing dependency.
+# succeeded; 1 at least one job overran, a read failed, or a cap or timestamp
+# was unparsed (each named on stdout); 2 usage error or missing dependency.
 #
 # Reads only, over the network. Requires an authenticated gh.
 set -u
@@ -55,7 +54,6 @@ die() {
 REPO=
 RUNS=100
 ALLOWANCE=60
-QUIET=0
 
 need_value() {
   [ "$2" -ge 2 ] || die "$1 needs a value"
@@ -78,12 +76,8 @@ while [ "$#" -gt 0 ]; do
       ALLOWANCE=$2
       shift 2
       ;;
-    --quiet)
-      QUIET=1
-      shift
-      ;;
     -h|--help)
-      sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+      awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
       exit 0
       ;;
     *)
@@ -204,7 +198,6 @@ while IFS= read -r run; do
   fi
   while IFS=$'\t' read -r job name started completed; do
     [ -n "${job:-}" ] || continue
-    [ -n "${started:-}" ] && [ -n "${completed:-}" ] || continue
     dur=$(enforced_cap "$job")
     rc=$?
     case $rc in
@@ -222,8 +215,16 @@ while IFS= read -r run; do
       printf 'unparsed cap "%s"  job %s "%s"  run %s\n' "$dur" "$job" "$name" "$run"
       continue
     }
-    s_epoch=$(iso_epoch "$started") || continue
-    c_epoch=$(iso_epoch "$completed") || continue
+    s_epoch=$(iso_epoch "${started:-}") || {
+      unparsed=$((unparsed + 1))
+      printf 'unparsed start "%s"  job %s "%s"  run %s\n' "${started:-}" "$job" "$name" "$run"
+      continue
+    }
+    c_epoch=$(iso_epoch "${completed:-}") || {
+      unparsed=$((unparsed + 1))
+      printf 'unparsed end "%s"  job %s "%s"  run %s\n' "${completed:-}" "$job" "$name" "$run"
+      continue
+    }
     wall=$((c_epoch - s_epoch))
     overrun=$((wall - cap))
     if [ "$overrun" -gt "$ALLOWANCE" ]; then
@@ -234,9 +235,7 @@ while IFS= read -r run; do
   done <<< "$jobs"
 done <<< "$runs"
 
-if [ "$QUIET" -eq 0 ]; then
-  printf 'checked %s runs, %s job(s) cancelled by a cap, %s past the %ss allowance, %s unparsed, %s failed read(s)\n' \
-    "$run_count" "$capped" "$over" "$ALLOWANCE" "$unparsed" "$read_failed"
-fi
+printf 'checked %s runs, %s job(s) cancelled by a cap, %s past the %ss allowance, %s unparsed, %s failed read(s)\n' \
+  "$run_count" "$capped" "$over" "$ALLOWANCE" "$unparsed" "$read_failed"
 
 [ "$over" -eq 0 ] && [ "$unparsed" -eq 0 ] && [ "$read_failed" -eq 0 ]
