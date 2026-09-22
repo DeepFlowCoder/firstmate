@@ -88,6 +88,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-secondmate-parent-lib.sh` | Parse the durable parent binding written into a seeded secondmate home               |
 | `fm-secondmate-nudge-lib.sh` | Shared durable secondmate reread-nudge marker helpers                                |
 | `fm-spawn.sh`            | Spawn crewmates, scouts, `id=repo` batches, and secondmates on the resolved harness and runtime backend |
+| [`fm-stash-guard.sh`](../bin/fm-stash-guard.sh) | Build the hooks directory that makes a worker's git refuse `git stash` while the repository has more than one working copy, and print the environment that points git at it |
 | `fm-backend.sh`          | Runtime-backend selection, meta helpers, selector resolution, and operation dispatch |
 | `fm-backend-hometag-lib.sh` | Shared per-installation home-tag derivation for zellij tab and cmux workspace titles |
 | `fm-composer-lib.sh`     | Single fleet-wide owner of composer shapes, capability-aware screen classification, and verdicts |

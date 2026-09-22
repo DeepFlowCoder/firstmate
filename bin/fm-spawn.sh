@@ -2702,6 +2702,32 @@ fi
 TASK_TMP="/tmp/fm-$ID"
 mkdir -p "$TASK_TMP/gotmp"
 
+# Stash guard (bin/fm-stash-guard.sh): refs/stash lives in the repository's
+# COMMON git directory, so every working copy of one repository - the primary
+# checkout and every pooled task worktree - shares one stash stack. This home
+# dispatches several workers onto one repository as its normal mode, so one
+# worker's `git stash pop` can carry off, and destroy, whatever another worker
+# stashed, with no error on either side. The guard makes git itself refuse that
+# instead. Prepared per task because the hooks it chains are resolved from the
+# repository this task works in; the whole directory dies with TASK_TMP at
+# teardown. Nothing is written into the repository - see the export below.
+#
+# A target that is not a git repository at all has no stash to share, so there
+# is nothing to guard and the spawn proceeds without one. That is the ordinary
+# shape of a secondmate home seeded outside git, not a degraded guard.
+STASH_GUARD_DIR="$TASK_TMP/git-hooks"
+STASH_GUARD_EXPORT=
+if git -C "$WT" rev-parse --git-common-dir >/dev/null 2>&1; then
+  if ! STASH_GUARD_PREPARE=$("$SCRIPT_DIR/fm-stash-guard.sh" prepare "$STASH_GUARD_DIR" "$WT" 2>&1); then
+    echo "error: could not prepare the shared-stash guard for '$WT': $STASH_GUARD_PREPARE" >&2
+    exit 1
+  fi
+  if ! STASH_GUARD_EXPORT=$("$SCRIPT_DIR/fm-stash-guard.sh" env "$STASH_GUARD_DIR" 2>&1); then
+    echo "error: could not resolve the shared-stash guard environment for task $ID: $STASH_GUARD_EXPORT" >&2
+    exit 1
+  fi
+fi
+
 # Per-harness turn-end hook where enabled: a file that touches
 # state/<id>.turn-ended when the agent finishes a turn. Worktree-resident hooks
 # and token pointers stay out of git's view so they never block teardown's dirty
@@ -3275,6 +3301,36 @@ if [ "$GUARD_SEND_STATUS" -ne 0 ]; then
       ;;
   esac
   echo "error: git editor guard could not be delivered to $W (backend=$BACKEND status=$GUARD_SEND_STATUS)$GUARD_SEND_CAUSE; refusing to append the launch command" >&2
+  exit 1
+fi
+# Point this worker's git at the stash guard prepared above, on the same channel
+# and with the same posture as the git editor guard: delivered before launch so
+# it is in force for the worker's first command, and a failed delivery stops the
+# spawn rather than handing over the unguarded environment the guard exists to
+# prevent.
+#
+# GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n is the one lever that reaches a worker's
+# git wherever it is invoked from. It outranks every configuration file,
+# including a core.hooksPath set globally - on a home-manager machine that
+# points at a generated directory, and a hook written into .git/hooks there is
+# silently never run. It is inherited by child processes, so it holds even when
+# a worker calls git by absolute path, which a PATH shim would not survive. And
+# it writes nothing into the repository, so no project state changes and the
+# captain's own checkouts keep exactly the hooks and configuration they had.
+# The exported line appends to any injected git configuration already present
+# rather than overwriting entry zero (bin/fm-stash-guard.sh owns its form).
+STASH_GUARD_SEND_STATUS=0
+if [ -n "$STASH_GUARD_EXPORT" ]; then
+  spawn_send_text_line "$T" "$STASH_GUARD_EXPORT" || STASH_GUARD_SEND_STATUS=$?
+fi
+if [ "$STASH_GUARD_SEND_STATUS" -ne 0 ]; then
+  STASH_GUARD_SEND_CAUSE=
+  case "$BACKEND:$STASH_GUARD_SEND_STATUS" in
+    zellij:2|cmux:2)
+      STASH_GUARD_SEND_CAUSE="; the export may still be sitting on the pane's input line, unsubmitted and uncleared"
+      ;;
+  esac
+  echo "error: shared-stash guard could not be delivered to $W (backend=$BACKEND status=$STASH_GUARD_SEND_STATUS)$STASH_GUARD_SEND_CAUSE; refusing to append the launch command" >&2
   exit 1
 fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
