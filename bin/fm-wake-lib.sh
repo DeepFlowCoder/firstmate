@@ -150,7 +150,7 @@ FM_WATCHER_FIRST_BEAT_GRACE="${FM_WATCHER_FIRST_BEAT_GRACE:-30}"
 
 FM_WATCHER_BEATLESS_CLAIM_PID=
 FM_WATCHER_BEATLESS_CLAIM_AGE=
-# fm_watcher_claim_without_beat <state> [grace]
+# fm_watcher_claim_without_beat <state>
 # True when this home's watcher lock holds a claim that never produced a beacon
 # of its own: a watcher that took the singleton and then went down before its
 # first beat, leaving the fleet unsupervised behind a lock that still looks taken.
@@ -162,15 +162,15 @@ FM_WATCHER_BEATLESS_CLAIM_AGE=
 # The claim's own timestamp is what separates the two, and $lockdir/pid carries
 # it: fm_lock_claim writes that file once, at claim time, and no later step
 # rewrites it, so its mtime dates the claim rather than the claimant's liveness.
-# A claim NEWER than the last beat and still beatless <grace> seconds on has had
-# a full arm confirmation budget to produce one.
+# A claim NEWER than the last beat and still beatless FM_WATCHER_FIRST_BEAT_GRACE
+# seconds on has had a full arm confirmation budget to produce one.
 #
 # Liveness is deliberately not part of the test. The claimant is usually already
 # dead, but a start wedged past its own confirmation budget leaves the fleet
 # equally unwatched, and reporting only the corpses would miss the window in
 # which the condition is still repairable.
 fm_watcher_claim_without_beat() {
-  local state=$1 grace=${2:-$FM_WATCHER_FIRST_BEAT_GRACE} lockdir pid claim_at beat_at age
+  local state=$1 lockdir pid claim_at beat_at age
   FM_WATCHER_BEATLESS_CLAIM_PID=
   FM_WATCHER_BEATLESS_CLAIM_AGE=
   lockdir="$state/.watch.lock"
@@ -180,7 +180,7 @@ fm_watcher_claim_without_beat() {
   case "$claim_at" in ''|*[!0-9]*) return 1 ;; esac
   age=$(fm_path_age "$lockdir/pid")
   case "$age" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$age" -ge "$grace" ] || return 1
+  [ "$age" -ge "$FM_WATCHER_FIRST_BEAT_GRACE" ] || return 1
   # An absent or unreadable beacon alongside an aged claim is the same verdict:
   # this claim has produced no beat. A beat at or after the claim means the
   # watcher did start supervising, and whatever happened next is a different

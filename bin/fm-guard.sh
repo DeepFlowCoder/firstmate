@@ -254,6 +254,16 @@ if [ "$watcher_healthy" = false ]; then
   else
     episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
     episode_key=${episode_key%$'\n'}
+    # Name the claim, not the beacon: the beacon here belongs to the watcher
+    # BEFORE this one and is the reason nothing else reported it. Built once,
+    # ahead of the banner/reminder split, because the reminder is the line an
+    # operator actually sees repeatedly - a reminder that restated the beacon age
+    # would hand back the exact reassurance this condition exists to withdraw.
+    beatless_cause=
+    if [ "$watcher_down_reason" = no-first-beat ]; then
+      beatless_cause=$(printf 'a watcher (pid %s) took this home lock %ss ago and never emitted a first beat' \
+        "$FM_WATCHER_BEATLESS_CLAIM_PID" "$FM_WATCHER_BEATLESS_CLAIM_AGE")
+    fi
     print_full_banner=0
     if [ "$READ_ONLY" -eq 1 ]; then
       fm_guard_stale_banner_seen "$STATE" "$episode_key" || print_full_banner=1
@@ -281,11 +291,9 @@ if [ "$watcher_healthy" = false ]; then
       {
         printf '●%s\n' "$rule"
         printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
-        if [ "$watcher_down_reason" = no-first-beat ]; then
-          # Name the claim, not the beacon: the beacon here belongs to the
-          # watcher BEFORE this one and is the reason nothing else reported it.
-          watcher_cause=$(printf 'a watcher (pid %s) took this home lock %ss ago and never emitted a first beat, so the last beat (%s) is an earlier watcher'\''s' \
-            "$FM_WATCHER_BEATLESS_CLAIM_PID" "$FM_WATCHER_BEATLESS_CLAIM_AGE" "$beacon_desc")
+        if [ -n "$beatless_cause" ]; then
+          watcher_cause=$(printf '%s, so the last beat (%s) is an earlier watcher'\''s' \
+            "$beatless_cause" "$beacon_desc")
         elif [ "$watcher_down_reason" = no-watcher ]; then
           watcher_cause=$(printf 'no live watcher process holds this home lock (last beat: %s)' "$beacon_desc")
         else
@@ -307,6 +315,9 @@ if [ "$watcher_healthy" = false ]; then
         printf '●  %s\n' "$fix"
         printf '●%s\n' "$rule"
       } >&2
+    elif [ -n "$beatless_cause" ]; then
+      printf 'WARNING: watcher still down (same stale episode; %s) - full banner already printed this episode.\n' \
+        "$beatless_cause" >&2
     else
       printf 'WARNING: watcher still down (same stale episode; last beat: %s, grace %ss) - full banner already printed this episode.\n' \
         "$beacon_desc" "$GRACE" >&2

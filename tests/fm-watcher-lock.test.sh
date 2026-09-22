@@ -252,6 +252,19 @@ test_claimed_lock_without_a_first_beat_is_detected() {
   grep -F "$dead" "$err" >/dev/null \
     || fail "banner did not name the claiming process: $(cat "$err")"
 
+  # The full banner is printed once; the one-line reminder is what the operator
+  # actually sees for the rest of the episode. Here the beacon is deliberately
+  # fresh and belongs to the PREVIOUS watcher, so a reminder that restated its
+  # age against the grace would reassure the reader with exactly the reading
+  # this condition exists to withdraw.
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_WATCHER_FIRST_BEAT_GRACE=1
+  grep -F 'full banner already printed this episode' "$err" >/dev/null \
+    || fail "the second guarded command in the episode did not take the reminder path: $(cat "$err")"
+  grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "the same-episode reminder did not name the claim-without-a-beat condition: $(cat "$err")"
+  ! grep -F 'grace 300s' "$err" >/dev/null \
+    || fail "the same-episode reminder reported the previous watcher's beacon as being inside grace: $(cat "$err")"
+
   # The same condition with a LIVE claimant, against a REAL watcher rather than
   # a fixture. This is the state that actually existed before the arm's
   # confirmation wait terminated it, and it is the one that is still repairable,
@@ -301,6 +314,24 @@ test_claimed_lock_without_a_first_beat_is_detected() {
   pass "a watcher lock claimed with no beat of its own is reported as its own condition"
 }
 
+# True when fm_timing_now_ms carries real sub-second resolution here. Without
+# EPOCHREALTIME it degrades to whole seconds (bin/fm-timing-lib.sh), and every
+# sample then lands on a second boundary - which would silently turn the
+# startup-window measurement below into a comparison of two rounded stamps that
+# reports 0ms and passes every bound without having measured anything.
+clock_resolves_ms() {
+  local i sample
+  i=0
+  while [ "$i" -lt 8 ]; do
+    sample=$(fm_timing_now_ms)
+    case "$sample" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(( sample % 1000 ))" -ne 0 ] && return 0
+    sleep 0.05
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Criterion the detection must not break: there IS a legitimate window between
 # claiming the lock and the first beat. This pins both ends of it - the window is
 # tolerated while it lasts, and the real width of it is measured against the
@@ -329,8 +360,18 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
   # what rises if that path takes on new work, so it carries the strict margin.
   # The worst run carries only the loose bound: it must still fit inside the
   # threshold at all.
+  #
+  # The measurement is only worth reporting if the clock it runs on can resolve
+  # the sub-second window it measures, so that is checked FIRST and the gate is
+  # skipped loudly when it cannot. A skip names what is missing; a pass over an
+  # unmeasurable window would certify the margin without having looked at it.
   # shellcheck source=bin/fm-timing-lib.sh
   . "$ROOT/bin/fm-timing-lib.sh"
+  if ! clock_resolves_ms; then
+    pass "a claim still inside the startup window before the first beat is not flagged"
+    pass "SKIP (this interpreter's clock has no sub-second resolution): measuring the real claim-to-first-beat window"
+    return
+  fi
   dir=$(make_case guard-startup-measure)
   default=$(FM_STATE_OVERRIDE="$dir/state" bash -c '. "$1"; printf "%s\n" "$FM_WATCHER_FIRST_BEAT_GRACE"' _ "$LIB")
   worst=0
@@ -369,13 +410,20 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
     if [ -n "$claim_at" ] && [ -n "$beat_at" ]; then
       delta=$(( beat_at - claim_at ))
       [ "$delta" -ge 0 ] || fail "a real watcher beat BEFORE its own claim (${delta}ms)"
-      [ "$delta" -gt "$worst" ] && worst=$delta
-      { [ "$best" -lt 0 ] || [ "$delta" -lt "$best" ]; } && best=$delta
-      runs=$((runs + 1))
+      # A zero-width reading is not a fast start, it is a start whose claim and
+      # beat were both already on disk when the poll loop first looked: it
+      # measured no window at all, so it is discarded rather than allowed to
+      # drag the strict bound down to a number nothing was measured against.
+      if [ "$delta" -gt 0 ]; then
+        [ "$delta" -gt "$worst" ] && worst=$delta
+        { [ "$best" -lt 0 ] || [ "$delta" -lt "$best" ]; } && best=$delta
+        runs=$((runs + 1))
+      fi
     fi
     n=$((n + 1))
   done
-  [ "$runs" -gt 0 ] || fail "no real watcher start produced both a claim and a beat"
+  [ "$runs" -gt 0 ] || fail "no real watcher start produced a measurable claim-to-first-beat window (every reading was 0ms, so the bounds below would pass without measuring)"
+  [ "$best" -gt 0 ] || fail "the best claim-to-first-beat reading was ${best}ms: the margin below is unverified"
   [ "$((best * 10))" -lt "$((default * 1000))" ] \
     || fail "the startup path itself now costs ${best}ms, under 10x margin beneath the ${default}s threshold"
   [ "$worst" -lt "$((default * 1000))" ] \
