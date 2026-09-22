@@ -67,6 +67,11 @@ add_copy() {  # <primary> <name>
   printf '%s\n' "$path"
 }
 
+# Echoes the permission bits of <path> in octal, on BSD stat and GNU stat alike.
+dir_mode() {  # <path>
+  stat -f '%OLp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+}
+
 # Gives <repo> a hook of its own that touches <marker> when it runs.
 make_hook() {  # <repo> <name> <marker>
   local repo=$1 name=$2 marker=$3 dir
@@ -564,6 +569,88 @@ test_spawn_exports_the_guard_for_a_home_outside_git() {
   pass "the spawn exports a working guard for a home that is not a git repository"
 }
 
+# Builds the fixture a spawn case needs and echoes home|wt|secondmate|fakebin.
+make_spawn_fixture() {  # <root> <id>
+  local root=$1 id=$2 home proj wt sm fakebin
+  home=$root/home
+  proj=$root/project
+  wt=$root/wt
+  sm=$root/secondmate-home
+  fakebin=$(fm_test_make_spawn_fakebin "$root/fake")
+  fm_test_spawn_home "$home" claude
+  fm_test_spawn_brief "$home" "$id"
+  fm_git_worktree "$proj" "$wt" "wt-$id"
+  mkdir -p "$sm/bin" "$sm/data"
+  printf '# Firstmate\n' > "$sm/AGENTS.md"
+  printf '%s\n' "$id" > "$sm/.fm-secondmate-home"
+  printf 'charter for %s\n' "$id" > "$sm/data/charter.md"
+  printf '%s|%s|%s|%s\n' "$home" "$wt" "$sm" "$fakebin"
+}
+
+# The guard directory sits at the entirely predictable /tmp/fm-<id>/git-hooks,
+# and once the export is in force every git the worker runs executes hooks out
+# of it - in its own worktree, in the captain's checkouts, and anywhere else it
+# goes. On a shared host, writing that path is therefore running code inside the
+# worker's git, so the whole temp root has to stay private to this user.
+test_spawn_keeps_its_task_temp_root_private() {
+  local root id home wt sm fakebin launchlog
+  root=$TMP_ROOT/spawn-private-tmp
+  id=stash-guard-private-z1
+  IFS='|' read -r home wt sm fakebin <<EOF
+$(make_spawn_fixture "$root" "$id")
+EOF
+  launchlog=$root/launch.log
+  printf '%s\n' "/tmp/fm-$id" >> "$FM_TEST_CLEANUP_REGISTRY"
+  # A root left wide open by an earlier run is ours, so the spawn may reuse it,
+  # but it must not leave it reachable by anyone else.
+  mkdir -p "/tmp/fm-$id"
+  chmod 0777 "/tmp/fm-$id"
+
+  : > "$launchlog"
+  FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_LAUNCH_LOG_TEXT_LINES=1 \
+    fm_test_run_spawn "$home" "$wt" "$fakebin" "$id" "$sm" --secondmate >/dev/null 2>&1 \
+    || fail "the spawn should succeed on a temp root this user owns"
+
+  [ "$(dir_mode "/tmp/fm-$id")" = 700 ] \
+    || fail "the task temp root must be private to this user, got mode $(dir_mode "/tmp/fm-$id")"
+  [ "$(dir_mode "/tmp/fm-$id/git-hooks")" = 700 ] \
+    || fail "the guard hooks directory must be private to this user, got mode $(dir_mode "/tmp/fm-$id/git-hooks")"
+  pass "the spawn leaves its temp root and the guard hooks directory private"
+}
+
+# The refusal half. A directory genuinely owned by another user cannot be made
+# here without privileges, so this plants the shape that needs none: a symlink
+# sitting at the temp root, pointing somewhere the spawn was never meant to
+# write. Reusing it would hand whoever planted it the contents of a directory
+# the worker's git executes, so the spawn has to stop instead.
+test_spawn_refuses_a_task_temp_root_it_does_not_own() {
+  local root id home wt sm fakebin launchlog target out code
+  root=$TMP_ROOT/spawn-hostile-tmp
+  id=stash-guard-hostile-z1
+  IFS='|' read -r home wt sm fakebin <<EOF
+$(make_spawn_fixture "$root" "$id")
+EOF
+  launchlog=$root/launch.log
+  target=$root/planted-target
+  mkdir -p "$target"
+  printf '%s\n' "/tmp/fm-$id" >> "$FM_TEST_CLEANUP_REGISTRY"
+  ln -s "$target" "/tmp/fm-$id"
+
+  : > "$launchlog"
+  out=$(FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_LAUNCH_LOG_TEXT_LINES=1 \
+    fm_test_run_spawn "$home" "$wt" "$fakebin" "$id" "$sm" --secondmate 2>&1) && code=0 || code=$?
+
+  [ "$code" -ne 0 ] || fail "the spawn must refuse a temp root it does not own"
+  assert_contains "$out" "/tmp/fm-$id" "the refusal must name the directory it rejected"
+  # Refusing has to mean refusing: nothing written through the planted path, and
+  # no worker launched into a pane that would have carried the guard.
+  [ -z "$(ls -A "$target")" ] \
+    || fail "the spawn wrote through the planted symlink instead of refusing"
+  [ ! -s "$launchlog" ] \
+    || fail "the spawn typed into the pane despite refusing the temp root"
+  pass "the spawn refuses a task temp root that is not its own directory"
+}
+
 test_env_refuses_an_unprepared_directory() {
   local out code
   out=$(guard env "$TMP_ROOT/never-prepared" 2>&1) && code=0 || code=$?
@@ -597,5 +684,7 @@ test_a_tilde_spelled_hooks_path_still_chains
 test_env_points_git_at_the_guard
 test_env_appends_to_existing_injected_config
 test_spawn_exports_the_guard_for_a_home_outside_git
+test_spawn_keeps_its_task_temp_root_private
+test_spawn_refuses_a_task_temp_root_it_does_not_own
 test_env_refuses_an_unprepared_directory
 test_usage_is_refused

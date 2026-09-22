@@ -106,6 +106,10 @@
 #
 # prepare builds or refreshes <hooks-dir>. It is idempotent, and what it writes
 # depends on no repository: the chaining is decided when a hook runs, not here.
+# It restricts <hooks-dir> to its owner, because everything in it is executable
+# and git runs it without asking, so anyone who can write there chooses what the
+# worker's git runs. The caller owns the parent: a directory whose parent someone
+# else can write is still theirs to replace, whatever mode this sets.
 #
 # env prints one shell line to export into a worker's shell. The line appends to
 # any git configuration already injected through the environment rather than
@@ -296,6 +300,7 @@ case $VERB in
     HOOKS_DIR=${2:-}
     [ -n "$HOOKS_DIR" ] || { usage >&2; exit 2; }
     mkdir -p "$HOOKS_DIR" || die "could not create $HOOKS_DIR"
+    chmod 0700 "$HOOKS_DIR" || die "could not restrict $HOOKS_DIR to this user"
     # Rebuild from empty so a re-prepare after this script's hook set changed
     # cannot leave a file behind that no longer belongs here.
     find "$HOOKS_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true

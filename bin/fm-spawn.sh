@@ -2699,8 +2699,21 @@ fi
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
 # later, and teardown cleans one deterministic path. GOTMPDIR (not TMPDIR) is the
 # targeted knob: TMPDIR is too broad (affects every program's temp, not just Go's).
+#
+# The path is predictable and /tmp is writable by everyone, and the stash guard
+# below turns this root into a directory every git the worker runs executes
+# hooks out of. So it is private to this user, and a path already sitting there
+# is reused only when it is genuinely ours: a symlink, or a directory owned by
+# somebody else, is somebody else choosing what this worker's git will run.
+# Refusing is the only safe answer, including when ownership cannot be read at
+# all, because "I could not tell" is not "it is ours".
 TASK_TMP="/tmp/fm-$ID"
+if [ -L "$TASK_TMP" ] || { [ -e "$TASK_TMP" ] && [ ! -O "$TASK_TMP" ]; }; then
+  echo "error: refusing to spawn task $ID: '$TASK_TMP' already exists and is not a directory owned by this user; this worker's git would execute hooks out of it" >&2
+  exit 1
+fi
 mkdir -p "$TASK_TMP/gotmp"
+chmod 0700 "$TASK_TMP"
 
 # Stash guard (bin/fm-stash-guard.sh): refs/stash lives in the repository's
 # COMMON git directory, so every working copy of one repository - the primary
