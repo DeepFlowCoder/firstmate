@@ -13,10 +13,10 @@
 # the position it stands in rather than as four grouped lists. The same four
 # stages, in the same order and the same colours, lead the page as one
 # fleet-wide rail. Two payload facts carry that fold. `repo`, which v1 already
-# required, is the lane key. New in v2 is the backlog's own recorded date where
-# the board can read it honestly - `since` on queued work and `landed_on` on
-# landed work - so a lane can say how long an order has waited and how recently
-# it last launched.
+# required, is what the lane key is resolved FROM. New in v2 is the backlog's
+# own recorded date where the board can read it honestly - `since` on queued
+# work and `landed_on` on landed work - so a lane can say how long an order has
+# waited and how recently it last launched.
 #
 # The route is a set of POSITIONS, never a measured flow. Those dates are
 # current-state facts that happen to carry a date, NOT a history: the fleet
@@ -70,6 +70,37 @@
 # only as the deliberate genuinely-no-repo marker. In that exceptional case
 # the template may display the routing id. Anything else refuses before the
 # existing board is touched.
+#
+# LANE KEY. `repo` is a recorded string, and one project is recorded more than
+# one way: 24 of this fleet's own rows wrote `bitagoralabs/bitagora` - its
+# GitHub address - where 2 wrote `bitagora`, the name data/projects.md registers
+# it under, which opened two lanes for one project and broke the board's one
+# lane per project reading. So after validation and before injection this script
+# resolves every `repo` to a PROJECT IDENTITY, and that identity, not the
+# recorded string, is what the template folds on. This script is the single
+# owner of that resolution: the template never asks which project a row belongs
+# to, and no record anywhere is relabelled to make the board group correctly.
+#
+# The resolution is deliberately narrow, because merging two projects is as
+# wrong as splitting one, and only the registry knows which is which:
+#   - An empty or null `repo` stays the no-project marker, untouched. It means
+#     "no project recorded" on purpose and keeps its own lane.
+#   - Otherwise the recorded string loses a trailing `.git`, and if its last
+#     path segment names a project registered in this home's data/projects.md,
+#     the identity is that registered name. `bitagoralabs/bitagora` and
+#     `bitagora` both resolve to the registered `bitagora`.
+#   - Otherwise the identity is the recorded string itself. An unregistered
+#     repository has no declared identity to match against, so `acme/docs` and
+#     `globex/docs` stay two lanes rather than being merged on a shared last
+#     segment - and a registry gap shows up as the extra lane it is.
+# A row whose recorded string differs from its resolved identity carries that
+# string on as `repo_address`, which the template shows beside the lane name, so
+# the fold costs the captain no GitHub address. It is written here and never by
+# the composer.
+#
+# `lanes_more` is resolved the same way, and entries that land on one identity
+# are merged by summing their counts, so the withheld-work chips a lane prints
+# still account for exactly what the feeds behind that lane cut.
 #
 # Three v2 invariants exist so the board cannot silently fall back to reading
 # like a flat checklist:
@@ -142,6 +173,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
+DATA_DIR="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 TEMPLATE="${FM_BEARINGS_BOARD_TEMPLATE:-$SCRIPT_DIR/../.agents/skills/bearings/assets/board-template.html}"
 PLACEHOLDER='__FM_BEARINGS_BOARD_DATA__'
@@ -271,6 +303,57 @@ validate_payload() {  # <data.json>
   ' "$1" >/dev/null
 }
 
+# The registered project names this home knows, one per line. A registry that is
+# absent or cannot be read yields none, which leaves every recorded string as its
+# own identity - the answer the board gave before any of this existed, so a
+# board still gets built rather than the captain being left without one.
+registry_names() {
+  local reg="$DATA_DIR/projects.md"
+  [ -r "$reg" ] || return 0
+  awk '$1 == "-" && $2 != "" { print $2 }' "$reg" 2>/dev/null || true
+}
+
+# Resolve every `repo` to its project identity and print the compact payload the
+# board is built from. The header above owns the rule; this is where it runs,
+# once, for the whole payload.
+resolve_lane_keys() {  # <data.json>
+  jq -c --arg registry "$(registry_names)" '
+    def registered: ($registry | split("\n") | map(select(length > 0)));
+    # The recorded string with its surroundings and any trailing ".git" removed,
+    # or null when the row deliberately records no project at all.
+    def recorded:
+        if type == "string"
+        then (gsub("^\\s+|\\s+$"; "") | sub("\\.git$"; ""))
+             | if . == "" then null else . end
+        else null end;
+    def identity:
+        recorded as $r
+        | if $r == null then null
+          else ($r | split("/") | last) as $leaf
+            | if (registered | index($leaf)) then $leaf else $r end
+          end;
+    # The address is what the fold would otherwise cost the captain, so it is
+    # carried only when the recorded string actually says more than the identity.
+    def relane:
+        (.repo | recorded) as $r
+        | (.repo | identity) as $id
+        | .repo = $id
+        | if $r != null and $r != $id then .repo_address = $r else del(.repo_address) end;
+    .captains_call |= map(relane)
+    | .underway |= map(relane)
+    | .landed |= map(relane)
+    | .charted |= map(relane)
+    | if has("lanes_more")
+      then .lanes_more |= (map(relane | del(.repo_address))
+        | group_by(.repo)
+        | map({repo: .[0].repo,
+               queued: (map(.queued) | add),
+               underway: (map(.underway) | add),
+               call: (map(.call) | add)}))
+      else . end
+  ' "$1"
+}
+
 command_build() {
   local data=${1-} board json tmp sid extracted
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
@@ -282,7 +365,7 @@ command_build() {
   [ "$(grep -cxF "$PLACEHOLDER" "$TEMPLATE")" -eq 1 ] \
     || fail "board template does not carry exactly one data slot: $TEMPLATE"
 
-  json=$(jq -c . "$data") || fail "cannot compact the board data"
+  json=$(resolve_lane_keys "$data") || fail "cannot resolve the board's project lanes"
   # `<` never appears in JSON syntax outside strings, so escaping every
   # occurrence keeps the payload valid JSON while making </script> inert.
   json=${json//</\\u003c}

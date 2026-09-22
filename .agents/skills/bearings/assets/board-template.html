@@ -342,6 +342,7 @@ a { color: inherit; text-decoration: none; }
   font-size: var(--fs-base); font-weight: 800; color: var(--text-strong); line-height: 1.2;
   min-width: 0; overflow-wrap: anywhere;
 }
+.bb-lane__address { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); overflow-wrap: anywhere; }
 .bb-lane__reading { flex: 1 1 220px; min-width: 0; font-size: var(--fs-sm); color: var(--text-muted); overflow-wrap: anywhere; }
 .bb-lane__launch { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
 
@@ -846,7 +847,17 @@ __FM_BEARINGS_BOARD_DATA__
   /* ---- fold every row into its project lane ------------------------------
      The captain has projects, not errands. `repo` is the lane key; a row that
      deliberately records no repo lands in one explicit unassigned lane rather
-     than being dropped or silently merged into a real project. */
+     than being dropped or silently merged into a real project.
+
+     `repo` arrives ALREADY RESOLVED to a project identity: the build step reads
+     the project registry this page cannot see and answers "which project is
+     this row about" once, for the whole payload, before injecting it. So this
+     page folds on the string it is handed and never normalises, matches or
+     second-guesses it - two answers to that one question is exactly how one
+     project ends up with two lanes. `repo_address` is the recorded address the
+     identity replaced, carried only when it says more than the identity does,
+     and it is lane DECORATION: the fold has already happened without it.
+     bin/fm-bearings-board.sh's header owns the resolution rule. */
   var UNASSIGNED = " unassigned";
   /* What each lane was NOT handed. Every feed behind a lane is bounded on its
      own, and each bound cuts a flat prefix off a fleet-wide list, so a project
@@ -873,6 +884,7 @@ __FM_BEARINGS_BOARD_DATA__
     var found = laneByKey[key];
     if (!found) {
       found = { key: key, name: repo || "no project recorded", named: repo !== "",
+                address: "",
                 call: [], ways: [], dock: [], order: [], launched: [],
                 more: laneMore[key] || NO_MORE };
       laneByKey[key] = found;
@@ -882,7 +894,14 @@ __FM_BEARINGS_BOARD_DATA__
   }
   function lane(row) {
     var repo = row && typeof row.repo === "string" ? row.repo.trim() : "";
-    return laneFor(repo || UNASSIGNED, repo);
+    var found = laneFor(repo || UNASSIGNED, repo);
+    /* First one wins, so a lane's address is stable however its rows arrive.
+       A lane cannot carry two, and the rows behind one identity are the same
+       project by construction, so there is no second address to prefer. */
+    if (!found.address && row && typeof row.repo_address === "string") {
+      found.address = row.repo_address.trim();
+    }
+    return found;
   }
   data.captains_call.forEach(function (item) { lane(item).call.push(item); });
   data.underway.forEach(function (t) { lane(t).ways.push(t); });
@@ -1390,6 +1409,9 @@ __FM_BEARINGS_BOARD_DATA__
 
     var head = el("div", "bb-lane__head");
     head.appendChild(el("span", "bb-lane__name", l.name));
+    /* Where the lane's rows recorded an address the project identity replaced,
+       the lane still says it, so reading by project costs no repository. */
+    if (l.address) head.appendChild(el("span", "bb-lane__address", l.address));
     head.appendChild(el("span", "bb-lane__reading", laneReading(l)));
     if (l.call.length) head.appendChild(badge("solid", plural(l.call.length, "needs you", "need you")));
     var laneLaunch = agoDay(l.lastLaunch);
