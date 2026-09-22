@@ -1739,6 +1739,130 @@ test_an_oversized_backlog_never_reads_as_a_finished_project() {
   pass "an oversized backlog never reads as a finished project"
 }
 
+# ---------------------------------------------------------------------------
+# One lane per project, when the records spell one project two ways.
+#
+# Measured on this fleet's own backlog on 2026-08-30: 24 rows recorded the
+# project as `bitagoralabs/bitagora`, its GitHub address, and 2 recorded it as
+# `bitagora`, the name the project registry uses. The board opened a lane per
+# distinct string, so one project stood in two lanes and the captain asked what
+# the difference between them was. There is none.
+#
+# Every fixture below carries that measured pair, so each of these fails on a
+# board that folds on the recorded string, and each also pins one thing the fix
+# must not break on its way past: genuinely separate projects, the deliberate
+# no-project marker, and the withheld-work counts.
+# ---------------------------------------------------------------------------
+
+# The registry the build resolves project identity against.
+register() {  # <home> <name...>
+  local home=$1
+  shift
+  local name
+  : > "$home/data/projects.md"
+  for name in "$@"; do
+    printf -- '- %s [no-mistakes] - a project (added 2026-01-01)\n' "$name" >> "$home/data/projects.md"
+  done
+}
+
+test_one_project_recorded_two_ways_gets_one_lane() {
+  local home out lane
+  home=$(make_home one-project-two-spellings)
+  register "$home" bitagora
+  out=$(render "$home" '{
+    "underway": [
+      {"id":"fm-ledger","repo":"bitagoralabs/bitagora","kind":"ship","state":"working",
+       "doing":"rebuilding the ledger"}
+    ],
+    "charted": [
+      {"id":"fm-cutover","repo":"bitagora","title":"Plan the cutover","reason":"",
+       "dispatchable":true,"since":"2026-08-12"}
+    ]}')
+  printf '%s' "$out" | jq -e '[.lanes[].name] == ["bitagora"]' >/dev/null \
+    || fail "one project recorded two ways did not land in one lane: $out"
+  lane=$(printf '%s' "$out" | jq -c '.lanes[0]')
+  printf '%s' "$lane" | jq -e '
+    ([.berths[] | select(.label == "On the ways") | .rows | length] | add) == 1
+    and ([.berths[] | select(.label == "Clear to start") | .rows | length] | add) == 1
+  ' >/dev/null || fail "the folded lane did not keep both rows: $lane"
+  # The fold reads by project; it does not cost the captain the repository.
+  printf '%s' "$lane" | jq -e '.address == "bitagoralabs/bitagora"' >/dev/null \
+    || fail "the lane dropped the recorded address it folded: $lane"
+  pass "one project recorded two ways gets one lane"
+}
+
+test_projects_that_only_look_alike_keep_their_own_lanes() {
+  local home out
+  home=$(make_home distinct-projects)
+  register "$home" bitagora firstmate
+  # Two registered projects under one owner, and two unregistered repositories
+  # that share a last path segment and are not the same project at all.
+  out=$(render "$home" '{
+    "underway": [
+      {"id":"a","repo":"bitagoralabs/bitagora","kind":"ship","state":"working","doing":"one"},
+      {"id":"b","repo":"bitagora","kind":"ship","state":"working","doing":"two"},
+      {"id":"c","repo":"bitagoralabs/firstmate","kind":"ship","state":"working","doing":"three"},
+      {"id":"d","repo":"acme/docs","kind":"ship","state":"working","doing":"four"},
+      {"id":"e","repo":"globex/docs","kind":"ship","state":"working","doing":"five"}
+    ]}')
+  printf '%s' "$out" | jq -e '
+    ([.lanes[].name] | sort)
+      == ["acme/docs","bitagora","firstmate","globex/docs"]
+  ' >/dev/null || fail "the fold merged projects that are not the same project: $out"
+  pass "projects that only look alike keep their own lanes"
+}
+
+test_the_no_project_marker_keeps_its_own_lane_through_the_fold() {
+  local home out
+  home=$(make_home no-project-marker)
+  register "$home" bitagora
+  out=$(render "$home" '{
+    "underway": [
+      {"id":"a","repo":"bitagoralabs/bitagora","kind":"ship","state":"working","doing":"one"},
+      {"id":"b","repo":"bitagora","kind":"ship","state":"working","doing":"two"},
+      {"id":"orphan","repo":null,"kind":"scout","state":"working","doing":"investigating"},
+      {"id":"blank","repo":"","kind":"scout","state":"working","doing":"also investigating"}
+    ]}')
+  printf '%s' "$out" | jq -e '
+    ([.lanes[].name] | sort) == ["bitagora","no project recorded"]
+  ' >/dev/null || fail "the no-project marker was folded into a project: $out"
+  printf '%s' "$out" | jq -e '
+    .lanes[] | select(.name == "no project recorded")
+    | ([.berths[] | select(.label == "On the ways") | .rows | length] | add) == 2
+    and .address == ""
+  ' >/dev/null || fail "the no-project lane lost a row or gained an address: $out"
+  pass "the no-project marker keeps its own lane through the fold"
+}
+
+test_withheld_counts_follow_the_rows_into_one_lane() {
+  local home out
+  home=$(make_home withheld-counts)
+  register "$home" bitagora
+  # The feeds behind one project were cut under both spellings. The lane the
+  # rows fold into has to report the whole cut, or the board's account of what
+  # it was not handed starts naming a project that no longer has a lane.
+  out=$(render "$home" '{
+    "underway": [
+      {"id":"a","repo":"bitagoralabs/bitagora","kind":"ship","state":"working","doing":"one"}
+    ],
+    "charted": [
+      {"id":"b","repo":"bitagora","title":"Plan the cutover","reason":"",
+       "dispatchable":true,"since":"2026-08-12"}
+    ],
+    "charted_more": 5,
+    "lanes_more": [
+      {"repo":"bitagoralabs/bitagora","queued":3,"underway":1,"call":0},
+      {"repo":"bitagora","queued":2,"underway":0,"call":1}
+    ]}')
+  printf '%s' "$out" | jq -e '[.lanes[].name] == ["bitagora"]' >/dev/null \
+    || fail "the withheld counts opened a second lane for one project: $out"
+  printf '%s' "$out" | jq -e '
+    .lanes[0].more
+      == ["+5 more queued · +1 more on the ways · +1 more needing you - not charted on this board"]
+  ' >/dev/null || fail "the folded lane did not report the whole cut: $out"
+  pass "withheld counts follow the rows into one lane"
+}
+
 test_two_projects_with_the_same_queue_read_differently
 test_every_lane_draws_the_same_route_in_the_same_order
 test_the_board_never_states_a_rate_or_a_change
@@ -1781,3 +1905,7 @@ test_the_clear_yard_headline_names_a_withheld_call
 test_a_lane_with_withheld_work_tones_like_its_withheld_counterpart
 test_a_lane_handed_in_full_never_claims_a_withheld_row
 test_an_oversized_backlog_never_reads_as_a_finished_project
+test_one_project_recorded_two_ways_gets_one_lane
+test_projects_that_only_look_alike_keep_their_own_lanes
+test_the_no_project_marker_keeps_its_own_lane_through_the_fold
+test_withheld_counts_follow_the_rows_into_one_lane

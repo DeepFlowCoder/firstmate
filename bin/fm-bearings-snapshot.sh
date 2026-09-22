@@ -173,7 +173,9 @@ omitted_by_repo is omitted[]'s count bounds resolved per project: one row per re
   entry: a launch its bounded baseline left out makes a project read as LESS
   finished, never as more.
 repo is the backlog row's own recorded repo, null when the row records none. It is what
-  groups work by project rather than by errand; the bearings board uses it as its lane key.
+  groups work by project rather than by errand; the bearings board resolves its lane key
+  from it, folding the spellings of one project together against the project registry
+  (bin/fm-bearings-board.sh owns that rule, and this projection stays faithful to the record).
   Two rows are null for a different reason: a registered secondmate's own in_flight row
   aggregates several children and has no single repo, and that home's summary records no
   repo on its decisions_open rows at all, so those project null even when the mate's
@@ -644,7 +646,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   # each cut a flat prefix off a combined list, so a whole project can fall past
   # the index while its landed rows survive, and a fleet-wide "showing N of M"
   # cannot say which project went quiet. A reader that groups by repo - the
-  # bearings board is one, and repo is its lane key - would otherwise have to
+  # bearings board is one, and resolves its lane key from repo - would otherwise have to
   # read the silence of that project as having nothing queued, nothing in
   # flight and nothing waiting on the captain, which is the one thing the
   # prefix cannot support. The counts come off the same slices the sections

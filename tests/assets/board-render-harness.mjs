@@ -12,7 +12,7 @@
 //   never left the tab.
 // Prints one JSON document describing the rendered yard:
 //   { headline, headlineSub, flowNote, stats:[{n,label}],
-//     lanes:[{name, reading, badges, launch, tone, flow, berths, more, empty}],
+//     lanes:[{name, address, reading, badges, launch, tone, flow, berths, more, empty}],
 //     berths:[{label, count, none, rows, shown, more:{n,hint,rows}}],
 //     notices:[{title,sub,badges}], noticeMore, yardEmpty, more, answers,
 //     channel, cards, dispatch, sendNote,
@@ -262,6 +262,8 @@ const lanes = kids(yard, "bb-lane").map((lane) => {
   const head = lane.children.find((c) => has(c, "bb-lane__head")) || new Node("div");
   return {
     name: firstText(head, "bb-lane__name"),
+    // the recorded address the project identity replaced, when the lane shows one
+    address: firstText(head, "bb-lane__address"),
     reading: firstText(head, "bb-lane__reading"),
     launch: firstText(head, "bb-lane__launch"),
     badges: badgesOf(head),
