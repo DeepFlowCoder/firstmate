@@ -19,6 +19,7 @@
 # Hermetic: no real daemon, no real harness, no real agent session. The "live
 # daemon" is an ordinary sleeper holding a real identity-backed lock, which is
 # exactly what the liveness predicate reads.
+# shellcheck disable=SC2016 # single quotes are deliberate: $FM_HOME expands inside the fake harness child
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -26,6 +27,14 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-afk-health)
 fm_git_identity fmtest fmtest@example.invalid
+
+# bin/fm-claude-stop-autoarm.sh resolves its harness ancestry before acting, so
+# the hook must run under an executable the ancestry check recognises as Claude.
+# The same fake-claude harness is used by tests/fm-claude-stop-autoarm.test.sh.
+FAKEBIN=$(fm_fakebin "$TMP_ROOT/fakebin")
+ln -s /bin/bash "$FAKEBIN/claude"
+FAKE_CLAUDE="$FAKEBIN/claude"
+export FAKE_CLAUDE
 
 SLEEPERS=""
 cleanup_sleepers() {
@@ -410,7 +419,7 @@ SH
 run_autoarm() {  # <dir>
   local dir=$1 rc=0 out
   out=$(printf '%s\n' '{"session_id":"sess-afk-health","stop_hook_active":false}' \
-    | FM_HOME="$dir" bash -c '
+    | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/.lock"
         "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
       ' 2>&1) || rc=$?
