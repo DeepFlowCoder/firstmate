@@ -15,9 +15,12 @@
 #     the hook delegates guarded recovery to bin/fm-lock.sh and then re-verifies
 #     ownership. A live owner, missing lock, malformed lock, or unresolved
 #     ancestry remains inert, so a competing session never arms or rewakes.
-#   - AFK: while state/.afk exists the away daemon owns the watcher and triage;
-#     this hook exits 0 and NEVER rewakes the primary (checked again at
-#     translation time so a mid-cycle AFK transition is honored).
+#   - AFK: while the away daemon actually owns the watcher and triage, this
+#     hook exits 0 and NEVER rewakes the primary (checked again at translation
+#     time so a mid-cycle AFK transition is honored). Ownership is the verdict
+#     from bin/fm-afk-health.sh, not the bare presence of state/.afk: a flag
+#     that outlived its daemon owns nothing, so this hook keeps arming and its
+#     rewake banner names the orphaned away mode.
 #   - Need: arms only while work is in flight (state/*.meta) or X mode has a
 #     relay poll to run (state/x-watch.check.sh); an idle home exits 0.
 #   - Single-flight: Claude does not dedupe async hooks, so exactly one
@@ -93,6 +96,8 @@ esac
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 # shellcheck source=bin/fm-hook-host-lib.sh
 . "$SCRIPT_DIR/fm-hook-host-lib.sh"
+# shellcheck source=bin/fm-afk-health.sh
+. "$SCRIPT_DIR/fm-afk-health.sh"
 
 # Consume the Stop payload once. The decisions below are state-based; the
 # payload is read so a slow writer can never wedge on a full pipe, and its host
@@ -127,7 +132,16 @@ if ! fm_session_lock_owned_by_self "$STATE"; then
 fi
 
 # --- AFK: the away daemon owns the watcher and triage; never rewake ----------
-[ -e "$STATE/.afk" ] && exit 0
+# Standing down is correct only while a daemon is actually there to stand down
+# FOR. An away-mode flag that outlived its daemon used to silence this hook
+# permanently, which is how a home reached zero supervision with work in flight
+# and nothing said so. bin/fm-afk-health.sh answers from the flag and the
+# daemon's own lock, so a dead daemon cannot suppress its own diagnosis, and an
+# orphaned away mode falls through to the ordinary arm below - supervision
+# resumes by itself and the rewake banner says what happened.
+fm_afk_owns_supervision "$STATE" && exit 0
+AFK_ORPHANED=0
+[ "$FM_AFK_HEALTH_VERDICT" = orphaned ] && AFK_ORPHANED=1
 
 # --- need: in-flight work or an X-mode relay poll ----------------------------
 need_supervision() {
@@ -223,8 +237,9 @@ while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
   fi
 
   # AFK may have appeared mid-cycle: the daemon owns triage now, so suppress
-  # every subsequent classification and handoff.
-  if [ -e "$STATE/.afk" ]; then
+  # every subsequent classification and handoff. An away mode whose daemon is
+  # already gone owns nothing, so it does not get to suppress the handoff.
+  if fm_afk_owns_supervision "$STATE"; then
     autoarm_record afk
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 0
@@ -293,6 +308,8 @@ if [ "$ACTIONABLE" -eq 1 ]; then
   fi
   {
     printf 'firstmate watcher wake - one supervision event needs a handling turn now.\n'
+    [ "$AFK_ORPHANED" -eq 1 ] && printf 'AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON: %s %s\n' \
+      "$FM_AFK_HEALTH_DETAIL" "$FM_AFK_ORPHAN_REPAIR"
     [ -n "$OUT" ] && grep -E '^(signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
     printf 'Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.\n'
   } >&2

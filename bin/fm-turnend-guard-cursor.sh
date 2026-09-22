@@ -89,6 +89,8 @@ case "$LOCK_ATTEMPTS" in ''|*[!0-9]*|0) LOCK_ATTEMPTS=50 ;; esac
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 # shellcheck source=bin/fm-operational-input.sh
 . "$SCRIPT_DIR/fm-operational-input.sh"
+# shellcheck source=bin/fm-afk-health.sh
+. "$SCRIPT_DIR/fm-afk-health.sh"
 
 PAYLOAD=$(cat 2>/dev/null || true)
 [ -n "$PAYLOAD" ] || exit 0
@@ -275,7 +277,13 @@ if [ "$LOOP_COUNT" -ge "$LOOP_CEILING" ]; then
 fi
 
 # Away mode owns the watcher and its own triage; never park and never wake.
-[ -e "$STATE/.afk" ] && exit 0
+# Ownership is the away-mode health verdict, not the flag's bare presence: a
+# flag that outlived its daemon owns nothing, and standing down for it is how a
+# home reaches zero supervision without anything saying so. The later
+# mid-park checks below keep testing the flag directly, because a flag that
+# appears while this hook is already parked is inside its own start window and
+# is re-judged here on the next turn anyway.
+fm_afk_owns_supervision "$STATE" && exit 0
 
 if ! fm_supervision_needed "$STATE" "$GRACE"; then
   budget_reset_if_ours

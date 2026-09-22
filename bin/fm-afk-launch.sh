@@ -5,13 +5,19 @@
 #
 # Why this exists (docs/herdr-backend.md "Away-mode daemon terminal launch"):
 # bin/fm-afk-start.sh execs the supervise daemon in the FOREGROUND of whatever
-# terminal it is already in. Harnesses with a native in-pane tracked-background
-# tool (claude, grok) run it there directly and it is fine. A harness with NO
-# native background mechanism (pi) has to manufacture a terminal, and doing that
-# by SPLITTING the captain's active pane visibly shrinks it - the regression this
-# script fixes. Instead this creates a non-visible tracked terminal (a herdr tab/
-# workspace with --no-focus, or a detached tmux session) that never touches the
-# captain's active tab, and NEVER uses shell `&` (which herdr/codex can reap).
+# terminal it is already in, and that terminal decides how long the daemon
+# lives. `start` is the default for EVERY harness because the daemon has to
+# outlive the harness session - away mode is exactly the stretch in which that
+# session may restart or close. A harness-native background job cannot: measured
+# on 2026-09-22 it runs as a direct child of the harness process, while a
+# process in a terminal created here is a child of the long-lived herdr or tmux
+# server (docs/verification/supervision.md "Away-mode daemon liveness").
+# `start-native` remains for a home where no supported backend exists at all.
+# Manufacturing a terminal by SPLITTING the captain's active pane visibly
+# shrinks it - the regression this script also fixes. Instead this creates a
+# non-visible tracked terminal (a herdr tab/workspace with --no-focus, or a
+# detached tmux session) that never touches the captain's active tab, and NEVER
+# uses shell `&` (which herdr/codex can reap).
 #
 # Correct supervisor targeting: the daemon finds the captain pane to inject into
 # from its OWN inherited env (discover_supervisor_target). Running it in a

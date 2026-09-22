@@ -519,6 +519,48 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+## Away-mode daemon liveness
+
+Measured on 2026-09-22 on macOS 26.5.2 arm64 with Herdr 0.7.3, inside a live Claude Code session, in throwaway homes and a `bin/fm-herdr-lab.sh` lab session.
+These facts support the away-mode start-path default in the `afk` skill and the `FM_AFK_START_GRACE` default in `bin/fm-afk-health.sh`.
+
+**Process ownership of the daemon.**
+A job started with Claude's native background tool runs as a direct child of the `claude` process, while a process in a Herdr pane runs as a child of the long-lived Herdr server.
+
+```text
+# native background tool
+84788 33889 bash      # daemon-shaped job
+33889 27010 claude    # its parent is the harness session itself
+
+# Herdr pane, provisioned through bin/fm-herdr-lab.sh
+PANE_PROC  pid=54827  ppid=54697
+54697     1 herdr     # its parent is the server, itself a child of launchd
+```
+
+`bin/fm-afk-launch.sh start` uses the second shape, so the daemon's lifetime is independent of the harness session it supervises.
+`start-native` uses the first, so it is not.
+
+**Survival in a continuously active session.**
+A heartbeat process started with the native background tool beat 1498 times over 50m15s across many turns, caught no signal, and was still running when the measurement was ended deliberately.
+Neither the turn boundary nor a short tool timeout reaps such a job.
+The 2026-09-05 field reap "within minutes" was therefore NOT reproduced here and its trigger is not established; the ownership difference above is the measured fact, and the reap is a single field observation.
+A control process outside the harness's background-shell tracking ran the same heartbeat over the same window and also survived, so nothing machine-wide was reaping long-lived processes during the measurement.
+
+**Legitimate window between entering away mode and the daemon taking over.**
+`bin/fm-afk-launch.sh start` blocks until the daemon holds its lock and rolls the entry back otherwise, so its window is bounded at about 5s by construction.
+`start-native` returns as soon as the flag is written and the daemon is started by a later harness tool call, so its window is one agent round trip.
+Seven consecutive round trips measured in that session were 5s, 8s, 10s, 15s, 18s, 40s and 46s.
+A real `start-native` against a throwaway home wrote `state/.afk` and returned with no daemon lock, and that home read `orphaned` once past the grace.
+
+The `FM_AFK_START_GRACE` default of 300s leaves roughly six times the slowest measured round trip, so a slow turn is never reported as a failure.
+
+Deterministic entry points:
+
+```sh
+tests/fm-afk-health.test.sh
+tests/fm-afk-launch.test.sh
+```
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.

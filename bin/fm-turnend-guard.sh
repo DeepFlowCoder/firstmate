@@ -146,6 +146,8 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 # --- the actual predicate ----------------------------------------------------
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-afk-health.sh
+. "$SCRIPT_DIR/fm-afk-health.sh"
 
 BUDGET_FILE="$STATE/.turnend-claude-blocks"
 BUDGET_LOCK="$STATE/.turnend-claude-blocks.lock"
@@ -165,7 +167,23 @@ if [ "$FM_SUP_NEEDED" = false ]; then
   [ -e "$FAILURE_NOTICE" ] || budget_reset
   exit 0
 fi
-if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
+
+# An away-mode flag that outlived its daemon is checked BEFORE the watcher
+# verdict, because a healthy-looking watcher does not clear it. When the daemon
+# is killed outright its watcher child is orphaned rather than reaped, so it
+# keeps beating; and while the flag is present that watcher is one-shot by
+# contract - it queues its next wake, exits, and nothing restarts it. The
+# beacon therefore reads fresh over exactly the window in which supervision has
+# already ended, which is how this turn used to end blind.
+fm_afk_health "$STATE"
+AFK_ORPHANED=0
+AFK_OWNS=0
+case "$FM_AFK_HEALTH_VERDICT" in
+  orphaned) AFK_ORPHANED=1 ;;
+  healthy|starting) AFK_OWNS=1 ;;
+esac
+
+if [ "$AFK_ORPHANED" -eq 0 ] && fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0
   fm_failure_episode_reset "$STATE" && exit 0
   exit 2
@@ -173,8 +191,10 @@ fi
 
 block_stop() {
   local afk x_mode reason rule
-  afk=0
-  [ -e "$STATE/.afk" ] && afk=1
+  # --afk means "the away daemon owns supervision", which is exactly what an
+  # orphaned away mode is not: passing it there would answer a blind turn with
+  # an instruction to leave the watcher to a daemon that is gone.
+  afk=$AFK_OWNS
   x_mode=0
   [ -f "$CONFIG/x-mode.env" ] && x_mode=1
   reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
@@ -183,7 +203,11 @@ block_stop() {
   {
     printf '●%s\n' "$rule"
     printf '●  TURN WOULD END BLIND - SUPERVISION IS OFF\n'
-    if [ "$FM_SUP_IN_FLIGHT" -gt 0 ]; then
+    if [ "$AFK_ORPHANED" -eq 1 ]; then
+      printf '●  AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON: %s\n' "$FM_AFK_HEALTH_DETAIL"
+      printf '●  Every other supervision path stands down for that flag, so nothing is watching this home.\n'
+      printf '●  %s\n' "$FM_AFK_ORPHAN_REPAIR"
+    elif [ "$FM_SUP_IN_FLIGHT" -gt 0 ]; then
       printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
     elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
       printf '●  %s process-event source(s) registered, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_SOURCES" "$FM_SUP_BEACON_DESC"

@@ -340,6 +340,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-afk-health.sh
+. "$SCRIPT_DIR/fm-afk-health.sh"
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -747,8 +749,13 @@ fi
 
 # --- 4. supervision operating instructions ----------------------------------
 stage supervision-instructions
+# The emitted operating block uses this to tell the session whether to keep its
+# own supervision paused, so it must mean "the away daemon owns supervision",
+# not "a flag file exists". An orphaned away mode owns nothing: the block must
+# put this session back on normal supervision rather than hand the watcher to a
+# daemon that is gone.
 AFK_PRESENT=0
-[ -e "$STATE/.afk" ] && AFK_PRESENT=1
+fm_afk_owns_supervision "$STATE" && AFK_PRESENT=1
 X_MODE_PRESENT=0
 [ -f "$CONFIG/x-mode.env" ] && X_MODE_PRESENT=1
 
@@ -855,11 +862,29 @@ done
 [ "$ORPHAN_STATUS_FOUND" -eq 1 ] || printf '(none)\n'
 
 subsection "AFK"
-if [ -e "$STATE/.afk" ]; then
-  printf 'present - away-mode supervision is active; the daemon owns the watcher.\n'
-else
-  printf 'absent\n'
-fi
+# "Present" was never the same claim as "supervised": the flag makes every other
+# supervision path stand down, so a flag that outlived its daemon left the home
+# with nothing watching it while this section still reported away mode as
+# active. bin/fm-afk-health.sh reads the flag and the daemon's own lock, so the
+# answer here holds even when the daemon it describes is gone.
+fm_afk_health "$STATE"
+case "$FM_AFK_HEALTH_VERDICT" in
+  off) printf 'absent\n' ;;
+  healthy) printf 'present - away-mode supervision is active; the daemon (pid %s) owns the watcher.\n' "${FM_AFK_HEALTH_PID:-unknown}" ;;
+  starting) printf 'present - %s\n' "$FM_AFK_HEALTH_DETAIL" ;;
+  *)
+    printf 'AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON - SUPERVISION IS OFF.\n'
+    printf '%s\n' "$FM_AFK_HEALTH_DETAIL"
+    printf 'Every other supervision path stands down for that flag, so nothing is watching this home until it is resolved.\n'
+    # Repairing a home this session does not hold is the one thing not to do,
+    # so a lock-refused session reports the lapse and carries no repair command.
+    if [ "$READ_ONLY" -eq 1 ]; then
+      printf 'This read-only session should report the lapse, not repair it.\n'
+    else
+      printf '%s\n' "$FM_AFK_ORPHAN_REPAIR"
+    fi
+    ;;
+esac
 
 # Public commitments made through the myfirstmate relay. A promise to reply in a
 # public thread must survive compaction and restart, so it is surfaced from disk
