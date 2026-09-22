@@ -32,9 +32,14 @@
 # say - reads as no PR found rather than letting gh pick a remote and answer about
 # a stranger's pull request. The content check still runs in that case.
 # Uncommitted changes are never landed.
-# local-only projects additionally accept work merged into the local default
-# branch (firstmate performs that merge after configured approval) as a fallback
-# for the common case where there is no remote at all.
+# local-only projects additionally accept work merged into the LOCAL branch the
+# forge calls default (firstmate performs that merge after configured approval),
+# as a fallback for the common case where the work reaches no remote at all.
+# That NAME is a forge reading on the same terms and for a sharper reason: this
+# is the gate that DISCARDS rather than refuses, so named from a working-copy
+# origin it would be whichever branch that copy's owner has checked out, and work
+# sitting only there would read as merged and be thrown away. With no forge to
+# name it this gate refuses too, which is what --force exists for.
 # Scout tasks (kind=scout in meta) carve out of that check: their worktree is
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product. Teardown proceeds only once the report exists and the shared
@@ -909,15 +914,14 @@ elif [ "$FORCE" != "--force" ] && fm_pf_relay_active "$FM_HOME"; then
   PUBLIC_FOLLOWUP_RELAY_ACTIVE=1
 fi
 
-# The default branch NAME as ORIGIN names it. Used when origin IS the forge, where
-# it is the forge's own answer, and by the local-only path below, which compares
-# against a local branch and claims nothing of any forge. The landed-work proof
-# does NOT use it for any other clone: refs/remotes/origin/HEAD mirrors its SOURCE
-# repository's HEAD, so a working-copy origin names whatever branch its owner has
-# checked out, and bin/fm-spawn.sh's `git remote set-head origin --auto` writes
-# exactly that into the clone on every spawn - which would let content_in_default
-# accept work that landed only on the captain's current branch. It asks the forge
-# for its own name instead; see fm_forge_remote_default_branch in
+# The default branch NAME as ORIGIN names it. Read ONLY through
+# forge_default_branch_name() below, and only on the branch where origin IS the
+# forge and this is therefore the forge's own answer. Nothing else may read it:
+# refs/remotes/origin/HEAD mirrors its SOURCE repository's HEAD, so a working-copy
+# origin names whatever branch its owner has checked out, and bin/fm-spawn.sh's
+# `git remote set-head origin --auto` writes exactly that into the clone on every
+# spawn - which would let a discard gate accept work that landed only on the
+# captain's current branch. See fm_forge_remote_default_branch in
 # bin/fm-forge-remote-lib.sh.
 default_branch() {
   local ref branch
@@ -1060,6 +1064,44 @@ resolve_forge_remote() {  # <repo-dir>
       ;;
   esac
   FORGE_REMOTE=$answer
+}
+
+# The name THE FORGE gives its own default branch, for the clone at <repo-dir>.
+# Sets FORGE_DEFAULT_BRANCH and FORGE_REMOTE and returns 0; returns non-zero when
+# no forge can be resolved or the forge will not name a default branch, leaving
+# LANDED_FORGE_UNCONFIRMED carrying what could not be consulted. Like
+# resolve_forge_remote it answers through shell variables rather than stdout,
+# because every caller needs both the name and the reason and a `$(...)` call
+# would lose whichever it did not capture.
+#
+# This is the single owner of "which branch name governs a discard decision", and
+# every such decision asks it, because the two gates that release a worktree fail
+# in the same direction when they name the wrong branch: measured against a branch
+# that is not the default, work that never landed reads as landed and is thrown
+# away. The name comes from the forge for the same reason the content does - an
+# origin that is somebody's working copy names whatever branch its owner has
+# checked out. When origin IS the forge, which is the ordinary case, the answer is
+# origin's own and this changes nothing.
+FORGE_DEFAULT_BRANCH=
+forge_default_branch_name() {  # <repo-dir>
+  local dir=$1 answer
+  FORGE_DEFAULT_BRANCH=
+  resolve_forge_remote "$dir" || return 1
+  if [ "$FORGE_REMOTE" = origin ]; then
+    if ! FORGE_DEFAULT_BRANCH=$(default_branch); then
+      LANDED_FORGE_UNCONFIRMED="origin is the forge for $dir but names no default branch: $PROJ has no refs/remotes/origin/HEAD and no local main or master"
+      return 1
+    fi
+    return 0
+  fi
+  answer=$(fm_forge_remote_default_branch "$dir" "$FORGE_REMOTE")
+  case "$answer" in
+    unresolved$'\t'*)
+      LANDED_FORGE_UNCONFIRMED=${answer#unresolved$'\t'}
+      return 1
+      ;;
+  esac
+  FORGE_DEFAULT_BRANCH=$answer
 }
 
 # Which GitHub repository this task's worktree ships to, as the owner/repo slug
@@ -1210,21 +1252,10 @@ pr_is_merged() {
 # so the caller refuses rather than guesses, and LANDED_FORGE_UNCONFIRMED carries
 # what could not be consulted.
 content_in_default() {
-  local name ref default_tree merged_tree forge answer
-  resolve_forge_remote "$WT" || return 1
+  local name ref default_tree merged_tree forge
+  forge_default_branch_name "$WT" || return 1
   forge=$FORGE_REMOTE
-  if [ "$forge" = origin ]; then
-    name=$(default_branch) || return 1
-  else
-    answer=$(fm_forge_remote_default_branch "$WT" "$forge")
-    case "$answer" in
-      unresolved$'\t'*)
-        LANDED_FORGE_UNCONFIRMED=${answer#unresolved$'\t'}
-        return 1
-        ;;
-    esac
-    name=$answer
-  fi
+  name=$FORGE_DEFAULT_BRANCH
   if ! git -C "$WT" fetch --quiet "$forge" "+refs/heads/$name:refs/remotes/$forge/$name" >/dev/null 2>&1; then
     LANDED_FORGE_UNCONFIRMED="the forge remote $forge did not answer for $name"
     return 1
@@ -1519,7 +1550,16 @@ validate_worktree_teardown_safety() {
   unpushed=$(printf '%s\n' "$unpushed_raw" | head -5)
 
   if [ -n "$unpushed" ] && [ "$MODE" = local-only ]; then
-    DEFAULT=$(default_branch) || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
+    # The branch this compares against decides whether a local-only worktree may
+    # be discarded, so its NAME comes from the forge, never from origin by habit.
+    # An unconsultable forge is not a smaller answer than a wrong one: a gate that
+    # cannot measure never passes.
+    if ! forge_default_branch_name "$WT"; then
+      echo "REFUSED: cannot determine the default branch from the forge for $PROJ, so nothing here proves this work landed: $LANDED_FORGE_UNCONFIRMED" >&2
+      echo "Point the clone at the forge it ships to, or get the captain's explicit OK to discard, then --force." >&2
+      return 1
+    fi
+    DEFAULT=$FORGE_DEFAULT_BRANCH
     if ! unmerged_raw=$(git -C "$WT" log --oneline HEAD --not "$DEFAULT" -- 2>/dev/null); then
       if worktree_safety_blocked_by_lock "commits not on $DEFAULT"; then
         return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"

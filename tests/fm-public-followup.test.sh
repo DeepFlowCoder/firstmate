@@ -220,6 +220,18 @@ expect_failure() {
   fi
 }
 
+# make_work_repo <dir>: the project checkout a local-only task works in - one
+# commit, plus a bare repository as origin. The forge is not decoration: teardown
+# names the branch a local-only worktree must have landed on from the forge, and
+# with no forge to ask it refuses rather than guess (bin/fm-teardown.sh's
+# forge_default_branch_name). These cases are about the public-followup relay, so
+# their fixture has to clear that gate rather than trip it.
+make_work_repo() {  # <dir>
+  local dir=$1
+  fm_git_init_commit "$dir"
+  fm_git_add_origin "$dir" "$dir.origin.git"
+}
+
 # --- 0. bounded, single-line, character-safe outcome text -----------------------
 
 # The outcome sentence becomes a public reply, so bounding it must not mangle
@@ -823,7 +835,7 @@ test_secondmate_teardown_durable_record_with_unknown_field_succeeds() {
   parent_alias="$TMP_ROOT/teardown-durable-clean-parent-alias"
   ln -s "$parent" "$parent_alias"
   fm_write_meta "$parent/state/mate.meta" "kind=secondmate" "home=$child"
-  fm_git_init_commit "$child/projects/worktree"
+  make_work_repo "$child/projects/worktree"
   printf 'manual\n' > "$child/config/backlog-backend"
   fm_write_meta "$child/state/work-clean.meta" \
     "window=firstmate:fm-work-clean" "endpoint_task_id=work-clean" \
@@ -980,7 +992,7 @@ test_secondmate_teardown_rejects_nul_bearing_durable_parent_record() {
 test_relay_disabled_unmarked_teardown_skips_public_path() {
   local home tasks_log out rc
   home=$(make_home teardown-disabled-unmarked relay-off)
-  fm_git_init_commit "$home/projects/worktree"
+  make_work_repo "$home/projects/worktree"
   tasks_log="$home/tasks-axi.log"; : > "$tasks_log"
   printf 'manual\n' > "$home/config/backlog-backend"
   cat > "$home/fakebin/tasks-axi" <<'SH'
@@ -1012,7 +1024,7 @@ test_relay_disabled_parent_allows_marked_child_teardown() {
   local parent child tasks_log out rc
   parent=$(make_home teardown-disabled-parent relay-off)
   child=$(make_home teardown-disabled-child relay-off)
-  fm_git_init_commit "$child/projects/worktree"
+  make_work_repo "$child/projects/worktree"
   printf '%s\n' disabled-mate > "$child/.fm-secondmate-home"
   printf -- '- disabled-mate - synthetic (home: %s; scope: synthetic; projects: ; added 2026-07-30)\n' \
     "$child" > "$parent/data/secondmates.md"

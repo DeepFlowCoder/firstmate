@@ -39,6 +39,9 @@
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
 #   (z) unlanded + merged PR from a repo teardown cannot NAME  -> REFUSE (wrong-repo)
+#   (aa) local-only + origin/HEAD on the captain's own branch  -> REFUSE (forge names it)
+#   (bb) local-only + no forge to name the default branch      -> REFUSE (cannot measure)
+#   (cc) local-only + forge endpoint that demands a credential -> REFUSE at once (never wait)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -301,6 +304,35 @@ strip_every_forge_remote() {
   local case_dir=$1
   repoint_origin_to_a_working_copy "$case_dir"
   git -C "$case_dir/project" remote remove gh
+}
+
+# Leave the forge reachable only through an endpoint that cannot be connected to
+# without a credential: origin stays the captain's working copy, and "gh" - the
+# one remote that could be the forge - gets a URL on a scheme this case owns, so
+# git dispatches it to `git-remote-fmforgeprompt` in the case's fakebin and
+# nothing here touches a host, a network, or any credential store.
+#
+# The stub answers the way git itself does. Git reaches for a credential through
+# an askpass program when one is configured (GIT_ASKPASS, core.askPass,
+# SSH_ASKPASS) and through the terminal otherwise, and an askpass program on this
+# desktop is a GUI dialog - the one measured holding the captain's screen for
+# 6h49m. So the stub blocks unless BOTH doors are shut: terminal prompts off AND
+# askpass neutralized. With them shut it fails immediately, naming the disabled
+# prompt exactly as git does. Args: case_dir
+point_the_forge_at_an_endpoint_that_demands_a_credential() {
+  local case_dir=$1
+  repoint_origin_to_a_working_copy "$case_dir"
+  git -C "$case_dir/project" remote set-url gh 'fmforgeprompt://127.0.0.1:1/forge.git'
+  cat > "$case_dir/fakebin/git-remote-fmforgeprompt" <<'SH'
+#!/usr/bin/env bash
+if [ "${GIT_TERMINAL_PROMPT:-}" = 0 ] && [ "${GIT_ASKPASS-unset}" = "" ]; then
+  echo "fatal: could not read Username for '${2:-}': terminal prompts disabled" >&2
+  exit 128
+fi
+sleep 30
+exit 128
+SH
+  chmod +x "$case_dir/fakebin/git-remote-fmforgeprompt"
 }
 
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
@@ -1055,6 +1087,108 @@ test_landed_check_refuses_when_no_forge_can_be_asked() {
   grep -q "forge could not be consulted" "$case_dir/stderr" \
     || fail "no-forge: the refusal did not say the forge could not be consulted"
   pass "an unconsultable forge is reported as unproven, never assumed landed"
+}
+
+# The local-only gate is the one that can DESTROY work rather than only refuse
+# badly: when it reads the branch as merged it lets treehouse hard-reset the
+# worktree. Naming that branch from origin is what makes it destructive, because
+# an origin that is the captain's working copy names whichever branch its owner
+# has checked out.
+test_local_only_discard_gate_names_the_default_branch_from_the_forge() {
+  local case_dir rc wt_head set_head_err
+  case_dir=$(make_case local-only-head-drift)
+  write_meta "$case_dir" local-only ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  repoint_origin_to_a_working_copy "$case_dir"
+  # The captain checks out a branch of their own in the working copy this clone
+  # calls origin, and the next spawn's `git remote set-head origin --auto` writes
+  # that branch into the clone as origin/HEAD. The forge's default is still main.
+  git -C "$case_dir/laptop" checkout -q -b captains-branch
+  git -C "$case_dir/project" fetch -q origin
+  set_head_err=$(git -C "$case_dir/project" remote set-head origin --auto 2>&1) \
+    || fail "fixture: could not repoint origin/HEAD: $set_head_err"
+  [ "$(git -C "$case_dir/project" symbolic-ref --short refs/remotes/origin/HEAD)" = origin/captains-branch ] \
+    || fail "fixture: origin/HEAD was not repointed at the captain's branch"
+  # A local branch by that name carries the work; the forge's real default branch
+  # does not. Measured against the captain's branch the work reads as merged.
+  git -C "$case_dir/project" update-ref refs/heads/captains-branch "$wt_head"
+  ! git -C "$case_dir/project" merge-base --is-ancestor "$wt_head" refs/heads/main 2>/dev/null \
+    || fail "fixture: the work is already on main, so this case measures nothing"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "local-only head-drift: teardown must refuse work that is only on the captain's branch"
+  grep -q "not yet merged into main" "$case_dir/stderr" \
+    || fail "local-only head-drift: the refusal did not measure against the forge's default branch main"
+  ! grep -q captains-branch "$case_dir/stderr" \
+    || fail "local-only head-drift: the discard gate measured against the captain's branch"
+  [ -d "$case_dir/wt" ] || fail "local-only head-drift: the worktree carrying unlanded work was discarded"
+  pass "the local-only discard gate takes the default branch NAME from the forge, not from origin"
+}
+
+test_local_only_discard_gate_refuses_when_no_forge_can_be_asked() {
+  local case_dir rc wt_head
+  case_dir=$(make_case local-only-no-forge)
+  write_meta "$case_dir" local-only ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  # The work IS on this clone's local main, which is the branch the gate would
+  # compare against. But with every forge remote gone, nothing here can say what
+  # the forge calls its default branch, and a gate that cannot measure never
+  # passes - otherwise the fix becomes a quieter version of the same failure.
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  strip_every_forge_remote "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "local-only no-forge: teardown must refuse when no forge can name the default branch"
+  grep -q REFUSED "$case_dir/stderr" || fail "local-only no-forge: teardown did not refuse"
+  grep -q "cannot determine the default branch from the forge" "$case_dir/stderr" \
+    || fail "local-only no-forge: the refusal did not say the forge is what it could not consult"
+  grep -q "points at a local working copy" "$case_dir/stderr" \
+    || fail "local-only no-forge: the refusal did not name why the forge was unresolvable"
+  [ -d "$case_dir/wt" ] || fail "local-only no-forge: the worktree was discarded on an unmeasurable gate"
+  pass "the local-only discard gate refuses when no forge can name the default branch"
+}
+
+# Asking the forge for its default branch is the one step of this gate that can
+# leave the machine, and a gate that STOPS there is worse than one that refuses:
+# it neither discards nor releases, it just holds. The teardown runs here with
+# prompting live in its environment, so only the lookup's own suppression can
+# keep it from waiting on the credential the endpoint demands.
+test_local_only_discard_gate_refuses_instead_of_waiting_on_a_credential() {
+  local case_dir rc started elapsed
+  case_dir=$(make_case local-only-credential-wall)
+  write_meta "$case_dir" local-only ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  point_the_forge_at_an_endpoint_that_demands_a_credential "$case_dir"
+
+  set +e
+  started=$SECONDS
+  (
+    unset GIT_ASKPASS
+    export GIT_TERMINAL_PROMPT=1
+    run_teardown "$case_dir"
+  ) > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  elapsed=$((SECONDS - started))
+  set -e
+
+  expect_code 1 "$rc" "credential-wall: teardown must refuse when the forge's default branch cannot be read"
+  [ "$elapsed" -lt 10 ] \
+    || fail "credential-wall: the discard gate waited ${elapsed}s on the forge instead of refusing at once"
+  grep -q REFUSED "$case_dir/stderr" || fail "credential-wall: teardown did not refuse"
+  grep -q "the default branch of gh could not be read" "$case_dir/stderr" \
+    || fail "credential-wall: the refusal did not name the remote whose default branch it could not read"
+  [ -d "$case_dir/wt" ] || fail "credential-wall: the worktree was discarded on a gate that could not measure"
+  pass "the local-only discard gate refuses at once instead of waiting on a credential for the forge"
 }
 
 test_content_fallback_refreshes_stale_origin_ref() {
@@ -3375,6 +3509,9 @@ test_content_in_default_fallback_allows
 test_landed_check_reads_the_forge_not_origin
 test_landed_check_names_the_default_branch_from_the_forge
 test_landed_check_refuses_when_no_forge_can_be_asked
+test_local_only_discard_gate_names_the_default_branch_from_the_forge
+test_local_only_discard_gate_refuses_when_no_forge_can_be_asked
+test_local_only_discard_gate_refuses_instead_of_waiting_on_a_credential
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses
