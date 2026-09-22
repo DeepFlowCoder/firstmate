@@ -105,8 +105,8 @@
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
 #          1.46.0 (structured pipeline attestation floor; see CONTRIBUTING.md).
-#          The AXI-family floor policy is owned beside GH_AXI_MIN and
-#          LAVISH_AXI_MIN below; the per-tool owners point there. An installed
+#          The AXI-family floor policy is owned beside the *_AXI_MIN constants
+#          below; the per-tool owners point there. An installed
 #          build below its floor reports MISSING like no-mistakes, so the operator
 #          is asked to upgrade rather than silently running an older tool.
 #          tasks-axi feature probes remain a separate defense-in-depth check.
@@ -954,6 +954,7 @@ NO_MISTAKES_MIN=1.46.0
 # of its floor.
 GH_AXI_MIN=0.1.29
 LAVISH_AXI_MIN=0.1.46
+CHROME_DEVTOOLS_AXI_MIN=0.1.35
 
 treehouse_supports_lease() {
   treehouse get --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--lease([^[:alnum:]_-]|$)'
@@ -1326,6 +1327,10 @@ detect_local_tools() {
   fi
   if command -v lavish-axi >/dev/null 2>&1 && ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
     echo "MISSING: lavish-axi (install: $(install_cmd lavish-axi))"
+  fi
+  if command -v chrome-devtools-axi >/dev/null 2>&1 \
+    && ! tool_version_at_least chrome-devtools-axi "$CHROME_DEVTOOLS_AXI_MIN"; then
+    echo "MISSING: chrome-devtools-axi (install: $(install_cmd chrome-devtools-axi))"
   fi
   if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
     echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"

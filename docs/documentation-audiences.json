@@ -433,6 +433,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/browser-tool-floor.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/gnhf-run-contract.md",
       "audience": "maintainer-verification"
     },
