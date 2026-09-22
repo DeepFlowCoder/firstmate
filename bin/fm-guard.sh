@@ -18,8 +18,12 @@
 # while that live Pi session provably owns continuity; any held but unhealthy
 # lock is down; under every
 # persistent-watcher harness a live identity-matched watcher with a fresh beacon
-# is required. The banner names the true failing condition (a missing live
-# watcher process vs a genuinely stale beacon). The full banner is emitted once
+# is required. Ahead of all three, and independent of the model, a watcher that
+# took the lock and never emitted a beat of its own is its own down-state: the
+# beacon left behind is the PREVIOUS watcher's, so freshness hides that failure
+# rather than clearing it. The banner names the true failing condition (a lock
+# claimed with no beat of its own vs a missing live watcher process vs a
+# genuinely stale beacon). The full banner is emitted once
 # per distinct down-episode in this FM_HOME (keyed to the failing condition, not
 # the beacon mtime, which a healthy between-turns watcher advances every poll);
 # later guarded commands in the same episode print a one-line reminder instead.
@@ -250,6 +254,16 @@ if [ "$watcher_healthy" = false ]; then
   else
     episode_key=$(fm_guard_stale_episode_key "$watcher_down_reason")
     episode_key=${episode_key%$'\n'}
+    # Name the claim, not the beacon: the beacon here belongs to the watcher
+    # BEFORE this one and is the reason nothing else reported it. Built once,
+    # ahead of the banner/reminder split, because the reminder is the line an
+    # operator actually sees repeatedly - a reminder that restated the beacon age
+    # would hand back the exact reassurance this condition exists to withdraw.
+    beatless_cause=
+    if [ "$watcher_down_reason" = no-first-beat ]; then
+      beatless_cause=$(printf 'a watcher (pid %s) took this home lock %ss ago and never emitted a first beat' \
+        "$FM_WATCHER_BEATLESS_CLAIM_PID" "$FM_WATCHER_BEATLESS_CLAIM_AGE")
+    fi
     print_full_banner=0
     if [ "$READ_ONLY" -eq 1 ]; then
       fm_guard_stale_banner_seen "$STATE" "$episode_key" || print_full_banner=1
@@ -277,7 +291,14 @@ if [ "$watcher_healthy" = false ]; then
       {
         printf '●%s\n' "$rule"
         printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
-        if [ "$watcher_down_reason" = no-watcher ]; then
+        if [ -n "$beatless_cause" ]; then
+          # The beacon is reported, never attributed. A home whose FIRST watcher
+          # dies beatless has no beacon at all ("never"), so any clause crediting
+          # an earlier watcher would invent a predecessor in the very case this
+          # condition exists to describe; and one sentence that states the beat
+          # without owning it covers that home and a successor's alike.
+          watcher_cause=$(printf '%s (last beat: %s)' "$beatless_cause" "$beacon_desc")
+        elif [ "$watcher_down_reason" = no-watcher ]; then
           watcher_cause=$(printf 'no live watcher process holds this home lock (last beat: %s)' "$beacon_desc")
         else
           watcher_cause=$(printf 'no watcher has a fresh beacon (last beat: %s, grace %ss)' "$beacon_desc" "$GRACE")
@@ -298,6 +319,9 @@ if [ "$watcher_healthy" = false ]; then
         printf '●  %s\n' "$fix"
         printf '●%s\n' "$rule"
       } >&2
+    elif [ -n "$beatless_cause" ]; then
+      printf 'WARNING: watcher still down (same stale episode; %s) - full banner already printed this episode.\n' \
+        "$beatless_cause" >&2
     else
       printf 'WARNING: watcher still down (same stale episode; last beat: %s, grace %ss) - full banner already printed this episode.\n' \
         "$beacon_desc" "$GRACE" >&2
