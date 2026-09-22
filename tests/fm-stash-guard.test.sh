@@ -67,9 +67,21 @@ add_copy() {  # <primary> <name>
   printf '%s\n' "$path"
 }
 
-# Echoes the permission bits of <path> in octal, on BSD stat and GNU stat alike.
-dir_mode() {  # <path>
-  stat -f '%OLp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+# Permission bits, platform-detected and never the `stat -f || stat -c` fallback:
+# on GNU coreutils `-f` is filesystem stat, so it eats the format string as a
+# path, prints a dump on stdout, and still exits 0, which a caller reads as a
+# mode (issue #2625, tests/fm-busy-state.test.sh). Asserting here rather than
+# echoing the value keeps an unreadable mode loud: `fail` inside a command
+# substitution would only leave the subshell, and the case would carry on.
+assert_dir_mode() {  # <path> <expected-mode> <message>
+  local mode
+  if [ "$(uname)" = Darwin ]; then
+    mode=$(stat -f %Lp "$1" 2>/dev/null)
+  else
+    mode=$(stat -c %a "$1" 2>/dev/null)
+  fi
+  [ -n "$mode" ] || fail "$3: could not read the permission bits of $1"
+  [ "$mode" = "$2" ] || fail "$3: expected mode $2, got $mode"
 }
 
 # Gives <repo> a hook of its own that touches <marker> when it runs.
@@ -611,10 +623,9 @@ EOF
     fm_test_run_spawn "$home" "$wt" "$fakebin" "$id" "$sm" --secondmate >/dev/null 2>&1 \
     || fail "the spawn should succeed on a temp root this user owns"
 
-  [ "$(dir_mode "/tmp/fm-$id")" = 700 ] \
-    || fail "the task temp root must be private to this user, got mode $(dir_mode "/tmp/fm-$id")"
-  [ "$(dir_mode "/tmp/fm-$id/git-hooks")" = 700 ] \
-    || fail "the guard hooks directory must be private to this user, got mode $(dir_mode "/tmp/fm-$id/git-hooks")"
+  assert_dir_mode "/tmp/fm-$id" 700 "the task temp root must be private to this user"
+  assert_dir_mode "/tmp/fm-$id/git-hooks" 700 \
+    "the guard hooks directory must be private to this user"
   pass "the spawn leaves its temp root and the guard hooks directory private"
 }
 

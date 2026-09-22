@@ -886,25 +886,6 @@ test_crewmate_briefs_route_captain_questions_through_the_status_log() {
   pass "fm-brief.sh: crewmate briefs route captain questions through the status log, never the harness dialog"
 }
 
-# A worker that reads the captain's real keychain can block on a system password
-# dialog for hours while supervision still reads it as working, and killing the
-# process does not dismiss the dialog. The prohibition therefore has to travel in
-# the brief itself: firstmate's private data/ is never read by a worker. This bit
-# twice, so every generated crewmate brief must carry the rule, name both
-# binaries in more than one reading form, offer the PATH stub as the alternative,
-# and state that an unmeasurable case is a refusal rather than a silent pass.
-# The scope is drawn by intention, not by region: what the task RUNS against the
-# real store is refused, while three things the brief itself sanctions are named
-# as never fenced - authoring credential code this task does not execute (the
-# repo's own bin/fm-notify-moshi.sh reads the Keychain by design), the PATH stub
-# this section prescribes, and the commands the brief orders. A rule that froze
-# any of them would have a literal reader block itself instead of delivering. The
-# sanctioned exemption names no command and anchors on the reader's own
-# instructions, so it cannot contradict a scaffold that forbids pushing and still
-# resolves after the section is carried into --intent. The exemptions keep their
-# limits: a sanctioned step hanging on a credential is still a block to report,
-# so that path does not become a silent workaround, and the whole section travels
-# into --intent, since enumerating parts is how the exemptions got stripped there.
 # A worktree isolates a worker's files, not the repository's stash stack, and
 # the 2026-09-17 incident was one worker's `git stash pop` carrying off another
 # worker's work with nothing failing on either side. Both kinds of worker that
@@ -952,6 +933,25 @@ test_ship_and_scout_briefs_carry_the_same_stash_warning() {
   pass "fm-brief.sh: ship and scout briefs carry one identical stash warning"
 }
 
+# A worker that reads the captain's real keychain can block on a system password
+# dialog for hours while supervision still reads it as working, and killing the
+# process does not dismiss the dialog. The prohibition therefore has to travel in
+# the brief itself: firstmate's private data/ is never read by a worker. This bit
+# twice, so every generated crewmate brief must carry the rule, name both
+# binaries in more than one reading form, offer the PATH stub as the alternative,
+# and state that an unmeasurable case is a refusal rather than a silent pass.
+# The scope is drawn by intention, not by region: what the task RUNS against the
+# real store is refused, while three things the brief itself sanctions are named
+# as never fenced - authoring credential code this task does not execute (the
+# repo's own bin/fm-notify-moshi.sh reads the Keychain by design), the PATH stub
+# this section prescribes, and the commands the brief orders. A rule that froze
+# any of them would have a literal reader block itself instead of delivering. The
+# sanctioned exemption names no command and anchors on the reader's own
+# instructions, so it cannot contradict a scaffold that forbids pushing and still
+# resolves after the section is carried into --intent. The exemptions keep their
+# limits: a sanctioned step hanging on a credential is still a block to report,
+# so that path does not become a silent workaround, and the whole section travels
+# into --intent, since enumerating parts is how the exemptions got stripped there.
 test_crewmate_briefs_forbid_reading_the_real_credential_store() {
   local home brief kind section command_name
   home="$TMP_ROOT/credential-store-home"
