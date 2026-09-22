@@ -52,8 +52,8 @@
 #            FM_CHECK_INTERVAL cadence and turns its one line into a `check:`
 #            wake. Idempotent; bin/fm-bootstrap.sh calls it at every locked
 #            session start.
-#   disarm   Remove the shim, its trust binding, the report record, and the
-#            balance reading history.
+#   disarm   Remove the shim, its trust binding, the report record, the balance
+#            reading history, and any standing balance warning.
 #
 # An unmeasurable snapshot is silent under `check` on purpose. quota-axi talks to
 # vendors, so a transient timeout is ordinary, and turning each one into a wake
@@ -124,6 +124,10 @@ MARGIN_DEFAULT=8294
 BALANCE_PROBE_SECS=5
 BALANCE_ENDPOINT='https://api.deepseek.com/user/balance'
 HISTORY="$STATE/.balance-history"
+# The standing balance warning: the projected seconds left at the moment the
+# runway warning last fired. Its presence IS the warning, and exactly one event
+# takes it away - an observed increase in the balance. See standing_read.
+STANDING="$STATE/.balance-warning"
 RECORD="$STATE/.capacity"
 CHECK_ID=capacity
 CHECK_SHIM="$STATE/$CHECK_ID.check.sh"
@@ -505,13 +509,30 @@ acquire_balance() {
 # than mean a field that never carries anything. Prune that one row and a balance
 # that died overnight reads as unmeasured by morning, which is the one session
 # that most needs telling.
+#
+# None of that is what holds a warning ALIVE, and it deliberately is not. A
+# warning already raised lives in $STANDING, which no prune can reach, because an
+# alarm that forgets why it rang and therefore stops ringing cannot heal itself.
+# Retention decides only what a NEW measurement can be taken from.
 history_append() {  # <balance> <available>
-  local now retain kept tmp
+  local now retain kept tmp previous
   now=${FM_CAPACITY_BALANCE_NOW:-$(date +%s)}
   case "$now" in ''|*[!0-9]*) now=$(date +%s) ;; esac
   mkdir -p "$STATE" 2>/dev/null || return 0
   [ ! -L "$HISTORY" ] || return 0
-  printf '%s\t%s\t%s\n' "$now" "$1" "$2" >>"$HISTORY" 2>/dev/null || return 0
+  # The ONE event that clears a standing warning, and the only place it is
+  # recognised: this reading is larger than the one before it, so the captain
+  # recharged. Everything else - a flat reading, a further drain, a poll the
+  # watcher missed, a prune - leaves the warning exactly where it stands.
+  previous=$(tail -n 1 "$HISTORY" 2>/dev/null | cut -f2)
+  case "$previous" in
+    ''|*[!0-9.]*) ;;
+    *) awk -v a="$previous" -v b="$1" 'BEGIN { exit !(b > a) }' 2>/dev/null \
+      && rm -f -- "$STANDING" 2>/dev/null ;;
+  esac
+  # Created private, not merely renamed private: until the first prune the
+  # ambient umask would otherwise leave the captain's amounts world-readable.
+  (umask 077; printf '%s\t%s\t%s\n' "$now" "$1" "$2" >>"$HISTORY") 2>/dev/null || return 0
   retain=$((4 * MARGIN))
   kept=$(awk -F'\t' -v span="$retain" '
     { rows[NR] = $0; stamp[NR] = $1 + 0; amount[NR] = $2 + 0 }
@@ -563,21 +584,62 @@ take_balance_reading() {  # <action>
   history_append "$balance" "$available"
 }
 
-# Publishes VERDICT_LINE and VERDICT_DIGEST, both empty when the fleet is fine.
-# Returns non-zero only when the snapshot could not be classified at all, which
-# is a different thing from a healthy fleet and must never be reported as one.
+# The standing balance warning, in seconds, or nothing.
+#
+# A runway warning is not a verdict this guard re-derives from scratch on every
+# poll; it is a state the balance entered and has not left. Deriving it afresh
+# each time made it withdrawable by accident: the rate window would re-anchor on
+# a later reading, the drain that raised the alarm would fall outside it, and the
+# guard went silent at the exact poll where the fleet resumed spending a balance
+# it had already warned about. A duration is not a financial figure - every line
+# this guard prints is already one - so unlike the history it states nothing
+# private.
+standing_read() {
+  local value
+  [ -f "$STANDING" ] && [ ! -L "$STANDING" ] || return 0
+  value=$(head -n 1 "$STANDING" 2>/dev/null) || return 0
+  case "$value" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' "$value"
+}
+
+standing_write() {
+  local tmp
+  mkdir -p "$STATE" 2>/dev/null || return 0
+  tmp=$(umask 077; mktemp "$STATE/.fm-balance-warning.XXXXXX" 2>/dev/null) || return 0
+  if printf '%s\n' "$1" >"$tmp" 2>/dev/null; then
+    mv -f -- "$tmp" "$STANDING" 2>/dev/null || rm -f -- "$tmp"
+  else
+    rm -f -- "$tmp"
+  fi
+  return 0
+}
+
+# Publishes VERDICT_LINE and VERDICT_DIGEST, both empty when the fleet is fine,
+# and VERDICT_STANDING with the runway to carry forward. Returns non-zero only
+# when the snapshot could not be classified at all, which is a different thing
+# from a healthy fleet and must never be reported as one.
 VERDICT_LINE=
 VERDICT_DIGEST=
+VERDICT_STANDING=
 
 classify() {
-  local record rc=0 readings lanes_flag
+  local record rest rc=0 readings lanes_flag standing_value standing_flag=''
   VERDICT_LINE=
   VERDICT_DIGEST=
+  VERDICT_STANDING=
   command -v node >/dev/null 2>&1 || { SNAPSHOT_PROBLEM="node is not available to classify the snapshot"; return 1; }
   readings=$(history_json)
   lanes_flag=${LANES_UNREADABLE:+--lanes-unreadable}
-  record=$(node "$POLICY" --min-lanes "$MIN_LANES" ${lanes_flag:+"$lanes_flag"} \
-    --balance-margin-secs "$MARGIN" --balance-readings "$readings" \
+  standing_value=$(standing_read)
+  [ -z "$standing_value" ] || standing_flag=--balance-standing
+  # The amounts travel in the environment, never in argv, for the same reason the
+  # credential does: `ps` shows every process's full command line to every local
+  # user, and a poll's worth of readings on a command line is the captain's whole
+  # spending history published to the machine.
+  record=$(FM_CAPACITY_BALANCE_READINGS="$readings" \
+    node "$POLICY" --min-lanes "$MIN_LANES" ${lanes_flag:+"$lanes_flag"} \
+    --balance-margin-secs "$MARGIN" \
+    ${standing_flag:+"$standing_flag"} ${standing_value:+"$standing_value"} \
     --emit record <"$SNAPSHOT" 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then
     SNAPSHOT_PROBLEM="quota-axi's report could not be read (policy exit $rc)"
@@ -585,7 +647,10 @@ classify() {
   fi
   [ -n "$record" ] || return 0
   VERDICT_DIGEST=${record%%	*}
-  VERDICT_LINE=${record#*	}
+  rest=${record#*	}
+  VERDICT_STANDING=${rest%%	*}
+  VERDICT_LINE=${rest#*	}
+  [ -z "$VERDICT_STANDING" ] || standing_write "$VERDICT_STANDING"
 }
 
 # A snapshot the policy REFUSED is the same blind spot as one that never
@@ -629,7 +694,11 @@ action_report() {
     # guard rather than two that both shout.
     record_write "$VERDICT_DIGEST"
   else
-    record_clear
+    # Only a poll that actually READ the lanes may retract a lane shape. The
+    # stand-in establishes nothing about them, so letting it clear the record
+    # would turn an ordinary quota-axi timeout into a repeat of an unchanged
+    # degraded fleet on the next successful poll.
+    [ -n "$LANES_UNREADABLE" ] || record_clear
   fi
   # Reachable with a snapshot problem set: the balance stand-in above classified
   # while the provider snapshot itself stayed unread, and a guard that has gone
@@ -653,8 +722,9 @@ action_check() {
   if [ -z "$VERDICT_LINE" ]; then
     # Recovery is not captain-facing progress (AGENTS.md section 8), so it is
     # reported by clearing the record rather than by a line: the next genuine
-    # degradation then reads as new and wakes somebody again.
-    record_clear
+    # degradation then reads as new and wakes somebody again. A poll that never
+    # read the lanes has recovered nothing and clears nothing; see action_report.
+    [ -n "$LANES_UNREADABLE" ] || record_clear
     return 0
   fi
   [ "$VERDICT_DIGEST" = "$(record_read)" ] && return 0
@@ -789,7 +859,7 @@ action_arm() {
 }
 
 action_disarm() {
-  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD" "$HISTORY"
+  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD" "$HISTORY" "$STANDING"
   printf 'disarmed: state/%s.check.sh\n' "$CHECK_ID"
   return 0
 }

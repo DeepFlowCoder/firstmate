@@ -10,10 +10,11 @@
 //
 // WHAT IT DECIDES, and nothing else: given one quota-axi snapshot and a minimum
 // lane count, whether the fleet's remaining capacity is worth reporting, and in
-// what words. It performs no I/O beyond stdin/stdout, runs no command, reads no
-// configuration, keeps no state, and never refuses a dispatch. Acquiring the
-// snapshot, reading the threshold, suppressing a repeat, and carrying the line
-// to the watcher or the session start all belong to bin/fm-capacity-check.sh.
+// what words. It performs no I/O beyond stdin/stdout and its own environment,
+// runs no command, reads no configuration, keeps no state, and never refuses a
+// dispatch. Acquiring the snapshot, reading the threshold, remembering a
+// standing warning, suppressing a repeat, and carrying the line to the watcher
+// or the session start all belong to bin/fm-capacity-check.sh.
 // That split is the same one bin/fm-arm-pretool-check.sh has with
 // bin/fm-arm-command-policy.mjs, and it is what makes the classification
 // testable from a fixture instead of from whatever the host's providers happen
@@ -93,8 +94,18 @@
 // minute. Until that much history exists the runway is `balance-unmeasured`,
 // which discloses and never alarms - the same rule every unmeasured lane obeys.
 // That window ends at the last reading where the balance MOVED, so the idle
-// hours after it neither dilute the rate nor retire the warning it produced:
-// only a top-up clears a runway, silence never does.
+// hours after it neither dilute the rate nor retire the warning it produced.
+//
+// AND A WARNING ALREADY RAISED IS NOT RE-DERIVED FROM IT AT ALL. It arrives as
+// `--balance-standing`, a runway the caller remembers, and the projection is
+// never allowed to read longer than that. Deriving the warning afresh on every
+// poll made it withdrawable by accident, three separate ways: an idle night
+// flattened the rate, a single further drain re-anchored the window onto a span
+// too short to measure, and retention carried the evidence off disk. All three
+// arrive as "no drain measured" and all three read as an all-clear on a balance
+// with under a minute left. Exactly one event clears it - an observed increase,
+// which bin/fm-capacity-check.sh recognises and which erases the standing value
+// before this file ever sees it.
 //
 // A provider that establishes none of those is `unmeasured`, never folded into
 // one of them. AGENTS.md section 4 is explicit that unmeasurable headroom,
@@ -126,9 +137,12 @@
 //      lane is not using.
 //
 // Input:  quota-axi's default `--json` (schemaVersion 5) on stdin, plus the
-//         optional balance reading history as a `--balance-readings` argument.
-//         Both arrive as values, so this file still performs no I/O beyond
-//         stdin/stdout and stays falsifiable from a fixture.
+//         optional balance reading history in the FM_CAPACITY_BALANCE_READINGS
+//         environment variable. Both arrive as values, so this file opens no
+//         file of its own and stays falsifiable from a fixture. The readings
+//         carry the captain's amounts, and the environment is where a value
+//         like that can be handed over without `ps` publishing it to every
+//         local user the way it publishes a command line.
 // Output: exactly one line on stdout when the guard should fire, and nothing at
 //         all when it should not. Silence is the contract, not an omission: a
 //         routine "capacity fine" line on every poll is what trains a captain to
@@ -182,7 +196,8 @@ function usage() {
     "",
     "Usage:",
     "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record]",
-    "                         [--balance-readings <json>] [--balance-margin-secs <n>]",
+    "                         [--lanes-unreadable] [--balance-margin-secs <n>]",
+    "                         [--balance-standing <secs>]",
     "                         < <quota-axi --json output>",
     "",
     "Prints one line when the fleet is worth reporting and nothing when it is not.",
@@ -190,46 +205,58 @@ function usage() {
     "--lanes-unreadable says the quota snapshot could not be read at all, so the",
     "lane arm has no reading to judge. It is NOT the same as a snapshot reporting",
     "zero providers, which is a fleet with no lanes and still fires.",
-    "--emit record prefixes the repeat-suppression digest and a TAB, for callers",
-    "that suppress an unchanged repeat; --emit line (the default) omits it.",
+    "--emit record prefixes the repeat-suppression digest, a TAB, the runway to",
+    "carry forward (empty when none) and another TAB, for callers that suppress an",
+    "unchanged repeat; --emit line (the default) prints the line alone.",
     "",
-    "--balance-readings takes the prepaid-balance history the validation provider",
-    "is drained from, oldest first, as a JSON array of",
+    "The FM_CAPACITY_BALANCE_READINGS environment variable carries the",
+    "prepaid-balance history the validation provider is drained from, oldest first,",
+    "as a JSON array of",
     "{\"at\":<epoch seconds>,\"balance\":<number>,\"available\":<bool>} objects.",
-    "Omitted or empty, the balance arm is silent and the lane arm is unchanged.",
+    "It is read from the environment rather than an argument because it carries the",
+    "captain's own amounts and a command line is readable by every local user.",
+    "Unset or empty, the balance arm is silent and the lane arm is unchanged.",
     "--balance-margin-secs is the measured reaction margin the projection is",
     "judged against; 0 retires the balance arm. No balance amount is ever printed:",
     "the verdict speaks in time left, never in money.",
+    "--balance-standing is a runway this guard has already warned about, so the",
+    "projection can never read longer than what the captain was last told.",
     "",
     "Exit: 0 verdict reached (fired or silent), 2 usage error, 3 unusable snapshot.",
   ].join("\n");
 }
 
-function parseArguments(argv) {
+function parseReadings(raw) {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (text === "") return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`FM_CAPACITY_BALANCE_READINGS must be JSON: ${error.message}`);
+  }
+  if (!Array.isArray(parsed)) throw new Error("FM_CAPACITY_BALANCE_READINGS must be a JSON array");
+  return parsed;
+}
+
+function parseArguments(argv, env) {
   let minLanes = null;
   let emit = "line";
-  let balanceReadings = [];
   let balanceMarginSecs = 0;
+  let balanceStandingSecs = null;
   let lanesUnreadable = false;
+  const balanceReadings = parseReadings(env.FM_CAPACITY_BALANCE_READINGS);
   for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i];
     if (name === "--lanes-unreadable") {
       lanesUnreadable = true;
       continue;
     }
-    if (name === "--balance-readings") {
-      if (i + 1 >= argv.length) throw new Error("--balance-readings requires a value");
-      const raw = argv[i + 1].trim();
-      if (raw !== "") {
-        let parsed;
-        try {
-          parsed = JSON.parse(raw);
-        } catch (error) {
-          throw new Error(`--balance-readings must be JSON: ${error.message}`);
-        }
-        if (!Array.isArray(parsed)) throw new Error("--balance-readings must be a JSON array");
-        balanceReadings = parsed;
-      }
+    if (name === "--balance-standing") {
+      if (i + 1 >= argv.length) throw new Error("--balance-standing requires a value");
+      const raw = argv[i + 1];
+      if (!/^\d+$/.test(raw)) throw new Error(`--balance-standing must be a whole number, got '${raw}'`);
+      balanceStandingSecs = Number(raw);
       i += 1;
       continue;
     }
@@ -260,7 +287,14 @@ function parseArguments(argv) {
     throw new Error(`unknown option: ${name}`);
   }
   if (minLanes === null) throw new Error("--min-lanes is required");
-  return { minLanes, emit, balanceReadings, balanceMarginSecs, lanesUnreadable };
+  return {
+    minLanes,
+    emit,
+    balanceReadings,
+    balanceMarginSecs,
+    balanceStandingSecs,
+    lanesUnreadable,
+  };
 }
 
 /**
@@ -470,7 +504,7 @@ function humanSpan(seconds) {
  *
  * Returns null when the arm is retired or has nothing to read.
  */
-function classifyBalance(readings, marginSecs) {
+function classifyBalance(readings, marginSecs, standingSecs = null) {
   if (marginSecs <= 0) return null;
   const clean = readings
     .filter(
@@ -544,23 +578,39 @@ function classifyBalance(readings, marginSecs) {
   const window = clean.slice(start, lastMove + 1).filter((entry) => entry.at >= rateWindowStart);
   const oldest = window.length > 0 ? window[0] : moved;
   const span = moved.at - oldest.at;
-  if (window.length < 2 || span <= 0) {
-    return { cause: "balance-unmeasured", marginSecs, detail: "one reading since the last top-up" };
-  }
-  // See this file's header: a rate averaged over less than one typical
-  // validation describes the minute, not the fleet.
-  if (span < marginSecs) {
-    return {
-      cause: "balance-unmeasured",
-      marginSecs,
-      detail: `only ${humanSpan(span)} of readings since the last top-up`,
-    };
-  }
   const drop = oldest.balance - moved.balance;
-  if (drop <= 0) {
-    return { cause: "balance-unmeasured", marginSecs, detail: "no drain measured" };
+  let measured = null;
+  let detail = null;
+  if (window.length < 2 || span <= 0) {
+    detail = "one reading since the last top-up";
+  } else if (span < marginSecs) {
+    // See this file's header: a rate averaged over less than one typical
+    // validation describes the minute, not the fleet.
+    detail = `only ${humanSpan(span)} of readings since the last top-up`;
+  } else if (drop <= 0) {
+    detail = "no drain measured";
+  } else {
+    measured = Math.floor((newest.balance * span) / drop);
   }
-  const secondsLeft = Math.floor((newest.balance * span) / drop);
+
+  // THE RUNWAY MAY NEVER READ LONGER THAN WHAT THE CAPTAIN WAS LAST TOLD. A
+  // warning already raised is a state this account is IN, not a verdict to be
+  // re-derived from whatever readings happen to survive, and exactly one event
+  // takes it away: an observed increase, which the caller recognises and which
+  // erases `standingSecs` before this ever runs.
+  //
+  // Everything else leaves it standing, and each of those was a way the guard
+  // fell silent at the worst possible moment. A further drain is worse news, not
+  // better, yet re-anchoring the window on it left a 30-second span that
+  // measured nothing. An idle night, a missed poll, a prune that carried the
+  // evidence off disk - all of them arrive as "no drain measured" and would
+  // otherwise read as an all-clear on a balance with under a minute left.
+  const standing = Number.isFinite(standingSecs) ? standingSecs : null;
+  const secondsLeft =
+    standing === null ? measured : measured === null ? standing : Math.min(measured, standing);
+  if (secondsLeft === null) {
+    return { cause: "balance-unmeasured", marginSecs, detail };
+  }
   if (secondsLeft < marginSecs) {
     return { cause: "balance-runway", marginSecs, secondsLeft };
   }
@@ -618,6 +668,7 @@ export function verdict(
   balanceReadings = [],
   balanceMarginSecs = 0,
   lanesUnreadable = false,
+  balanceStandingSecs = null,
 ) {
   if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.providers)) {
     throw new Error("snapshot has no providers array");
@@ -636,7 +687,7 @@ export function verdict(
   // guard inside every test that neutralizes it by this one variable.
   if (minLanes === 0) return { fire: false, lanes, dispatchable };
 
-  const balance = classifyBalance(balanceReadings, balanceMarginSecs);
+  const balance = classifyBalance(balanceReadings, balanceMarginSecs, balanceStandingSecs);
   // `balance-unmeasured` is deliberately absent: too little history yet is the
   // ordinary state of a home whose guard was armed this morning, and it
   // resolves itself by waiting. The three below do not.
@@ -670,7 +721,14 @@ export function verdict(
   // blind spot the captain would otherwise read as an all-clear.
   const balanceClause =
     balance !== null && balance.cause !== "balance-live" ? describeBalance(balance) : "";
+  // The digest is built from the clauses that were actually SAID, never from
+  // facts the line left out. Keying it on the lane inventory while that
+  // inventory is withheld re-wakes the captain with a byte-identical balance
+  // sentence every time one provider's error text changes or a flaky quota-axi
+  // alternates between a full reading and none - the cry-wolf failure this guard
+  // exists to avoid, wearing the suppression's own clothes.
   const clauses = [];
+  const digestParts = [];
   if (laneFires) {
     const reasons = [];
     if (below) reasons.push(`below ${minLanes}`);
@@ -700,12 +758,16 @@ export function verdict(
         `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`
       ).slice(0, Math.max(0, room)),
     );
+    digestParts.push(laneDigest(lanes, dispatchable));
   }
-  if (balanceClause !== "") clauses.push(balanceClause);
+  if (balanceClause !== "") {
+    clauses.push(balanceClause);
+    digestParts.push(balance.cause);
+  }
   return {
     fire: true,
     line: clauses.join("; "),
-    digest: digestOf(lanes, dispatchable, balance, lanesUnreadable),
+    digest: digestParts.join(" "),
     lanes,
     dispatchable,
     balance,
@@ -713,8 +775,8 @@ export function verdict(
 }
 
 /**
- * The repeat-suppression key: what has to CHANGE before the same degraded fleet
- * is worth waking somebody about again.
+ * The lane half of the repeat-suppression key: what has to CHANGE before the
+ * same degraded fleet is worth waking somebody about again.
  *
  * It carries only fields that hold still while the situation does. A projected
  * exhaustion timestamp and a remaining percentage both move on every poll, so
@@ -724,32 +786,26 @@ export function verdict(
  * whether a live lane's runway has turned finite - which is itself the
  * transition worth a second warning.
  *
- * The balance contributes its CAUSE and nothing else, for the same reason: the
+ * It is asked for only when the lane inventory was actually reported. The
+ * balance's own half is its CAUSE and nothing else, for the same reason: the
  * projected seconds move on every poll, while "the runway went from long enough
  * to shorter than a validation" is exactly the transition worth waking somebody
  * about a second time.
  */
-function digestOf(lanes, dispatchable, balance = null, lanesUnreadable = false) {
+function laneDigest(lanes, dispatchable) {
   const parts = lanes.map((lane) => {
     if (lane.cause === "dispatchable") return `${lane.id}:live:${lane.finite ? "finite" : "ok"}`;
     if (lane.cause === "window") return `${lane.id}:window:${lane.resetsAt}`;
     if (lane.cause === "unmeasured") return `${lane.id}:unmeasured:${lane.subcause}`;
     return `${lane.id}:${lane.cause}`;
   });
-  // A lane arm with no reading is its own shape, distinct from any lane count,
-  // so a balance-only report and a later full one are never read as the same
-  // observation and suppressed against each other.
-  const laneNote = lanesUnreadable
-    ? "lanes=unread"
-    : `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}`;
-  const balanceNote = balance === null ? "" : ` ${balance.cause}`;
-  return `${laneNote}${balanceNote}`;
+  return `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}`;
 }
 
-function main(argv) {
+function main(argv, env) {
   let options;
   try {
-    options = parseArguments(argv);
+    options = parseArguments(argv, env);
   } catch (error) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n${usage()}\n`);
     return 2;
@@ -780,16 +836,26 @@ function main(argv) {
       options.balanceReadings,
       options.balanceMarginSecs,
       options.lanesUnreadable,
+      options.balanceStandingSecs,
     );
   } catch (error) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n`);
     return 3;
   }
   if (!result.fire) return 0;
-  // `record` prefixes the repeat-suppression digest and a TAB, so the caller gets
-  // both halves from one parse of the snapshot. `line` stays the default so the
-  // CLI is readable when a person runs it directly.
-  process.stdout.write(options.emit === "record" ? `${result.digest}\t${result.line}\n` : `${result.line}\n`);
+  // `record` prefixes the repeat-suppression digest and the runway to carry
+  // forward, each followed by a TAB, so the caller gets every half from one
+  // parse of the snapshot. The runway is what makes a warning outlive the
+  // readings that raised it; it is a duration, so it states nothing the line
+  // does not already say out loud. `line` stays the default so the CLI is
+  // readable when a person runs it directly.
+  if (options.emit !== "record") {
+    process.stdout.write(`${result.line}\n`);
+    return 0;
+  }
+  const standing =
+    result.balance?.cause === "balance-runway" ? String(result.balance.secondsLeft) : "";
+  process.stdout.write(`${result.digest}\t${standing}\t${result.line}\n`);
   return 0;
 }
 
@@ -805,4 +871,4 @@ const invokedDirectly = (() => {
   }
 })();
 
-if (invokedDirectly) process.exit(main(process.argv.slice(2)));
+if (invokedDirectly) process.exit(main(process.argv.slice(2), process.env));
