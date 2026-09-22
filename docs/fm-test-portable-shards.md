@@ -149,3 +149,9 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 
 Timeouts are hang tripwires rather than expected healthy durations.
 `.github/workflows/ci.yml` owns the exact numbers.
+
+A declared bound is not a wall.
+`timeout-minutes` bounds the instant GitHub decides to cancel, counted from the job's `started_at`; the job ends when its termination finishes, and that tail is GitHub's rather than this repository's to set.
+Measured tails were 15 to 30 seconds wherever the runner could still answer, and 10m00s once, so every lane above costs its number plus that tail.
+[verification/ci-job-timeout-wall.md](verification/ci-job-timeout-wall.md) owns the measurement, and `bin/fm-ci-timeout-overrun.sh` reports a recurrence.
+The numbers in this table are annotated by that finding, not changed by it.

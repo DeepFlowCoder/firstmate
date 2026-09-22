@@ -73,6 +73,20 @@ jobs:
     # that boundary. The cap stays 45: far above today's wall, and still far
     # short of the 6-hour GitHub default that let run 33353469575 sit 61 minutes
     # before reporting.
+    #
+    # WHAT THE 45 BOUNDS, because it is not what the number reads like: it bounds
+    # the instant GitHub DECIDES to cancel, counted from the job's started_at. It
+    # does not bound how long the job runs. The job ends when its termination
+    # finishes, and that tail belongs to GitHub, not to this file. Measured tails:
+    # 15-30s across thirteen cap hits whose runner could still answer; 5m01s,
+    # twice, on probe runners taken away from GitHub deliberately; and 10m00s on
+    # 2026-09-13, when job 103670890754 took the cancel at 45m0s and ended at
+    # 55m00s with a ShellCheck holding the whole machine. So this lane's worst
+    # measured COST is 55 minutes, not 45, the tail is not a constant, and no
+    # number here can shorten it - only the decision. Budget this lane as cap
+    # plus tail, and do not read a declared cap in this file as a wall.
+    # docs/verification/ci-job-timeout-wall.md owns that measurement;
+    # bin/fm-ci-timeout-overrun.sh finds a recurrence.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6

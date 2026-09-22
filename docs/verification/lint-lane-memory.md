@@ -15,8 +15,9 @@ Zero ShellCheck diagnostics were produced on any of them, so nothing was attribu
 In those same runs the sibling jobs passed.
 
 The death times did not cluster: 5m06s (job 103668879237), 14m37s (103664487073), 16m08s (103666951595), 17m08s (103615380656), 16m34s (103670942307).
-Green runs of the same lane took longer than every death - 19m45s, 19m56s, 20m00s, 21m10s - and one lane survived past 45 minutes.
-Any account of this lane has to explain a spread from five minutes to beyond forty-five, which rules out a threshold reached by elapsed time.
+Green runs of the same lane took longer than every death - 19m45s, 19m56s, 20m00s, 21m10s - and one lane was still linting when its own 45 minute cap cancelled it (job 103670890754).
+That job's wall reads 55m00s, which is the cap plus ten minutes of GitHub terminating it, not 55 minutes of linting; [ci-job-timeout-wall.md](ci-job-timeout-wall.md) owns that measurement.
+Any account of this lane has to explain a spread from five minutes to a full forty-five, which rules out a threshold reached by elapsed time.
 
 ## The lane exhausts the whole machine
 
@@ -46,7 +47,7 @@ One ShellCheck process, with the one worker CI already ran, reached 7223 MiB on 
 That is whole-machine exhaustion, and the shutdown is its symptom.
 
 The dispersion of death times follows from this without any appeal to the clock.
-The same peak lands against a slightly different amount of free memory each run, and there are three outcomes: it fits and the lane is fast and green; it partly swaps and the lane crawls but survives, which is what a 45-minute survival looks like; or swap runs out and the runner kills the job.
+The same peak lands against a slightly different amount of free memory each run, and there are three outcomes: it fits and the lane is fast and green; it partly swaps and the lane crawls but survives, which is what a lane still crawling when its 45 minute cap fires looks like; or swap runs out and the runner kills the job.
 Elapsed time is an effect of how much of the peak had to be paged, never a cause.
 
 ## Splitting the roots across runners does not bound it

@@ -429,6 +429,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/ci-job-timeout-wall.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/gnhf-run-contract.md",
       "audience": "maintainer-verification"
     },
