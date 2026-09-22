@@ -176,8 +176,8 @@ test_verdict_orphaned_when_recorded_pid_is_dead() {
 
 # A daemon that took the lock and then died is orphaned the moment its lock
 # outlives it, even inside the start grace: 'starting' is only for a daemon
-# that has not taken over yet. The lock is newer than the flag's recorded
-# epoch, so it is evidence about THIS session, not prior-session residue.
+# that has not taken over yet. The verdict keys on the lock's existence and
+# liveness, never on its timestamp relationship to the flag.
 test_verdict_orphaned_when_daemon_started_then_died_within_grace() {
   local dir dead lock
   dir=$(make_home "$TMP_ROOT/v-died-in-grace")
@@ -192,13 +192,15 @@ test_verdict_orphaned_when_daemon_started_then_died_within_grace() {
   pass "fm-afk-health: a daemon that started and died inside the grace reads 'orphaned', not 'starting'"
 }
 
-# A lock older than the flag is prior-session residue, not proof this session's
-# daemon came and went: an abrupt death leaves its lock behind and nothing on
-# the entry path clears it, so a normal start must not read orphaned because of
-# it. The stale lock is ignored and the age-based 'starting' verdict stands.
-test_verdict_starting_ignores_stale_lock_older_than_flag() {
+# REPLACED the prior "stale lock older than the flag reads 'starting'" case:
+# that premise (a previous session's dead lock surviving into a new entry) is
+# exactly what entry-time clearing now removes, so it is no longer reachable.
+# Under the lock-state rule a present-but-dead lock always reads 'orphaned',
+# whatever its timestamp. The entry-clearing behavior is pinned in
+# tests/fm-afk-launch.test.sh instead.
+test_verdict_orphaned_refresh_restamp_dead_lock() {
   local dir dead lock
-  dir=$(make_home "$TMP_ROOT/v-stale-lock")
+  dir=$(make_home "$TMP_ROOT/v-refresh-restamp")
   enter_away_mode "$dir" 1
   dead=999999
   while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
@@ -207,8 +209,24 @@ test_verdict_starting_ignores_stale_lock_older_than_flag() {
   printf '%s\n' "$dead" > "$lock/pid"
   printf '%s\n' "fake-identity" > "$lock/pid-identity"
   touch -t 202001010000 "$lock"
-  expect_verdict "$dir" starting "stale lock older than the flag is prior-session residue"
-  pass "fm-afk-health: a dead-pid lock older than the flag does not orphan a normal start"
+  expect_verdict "$dir" orphaned "dead lock older than a refreshed flag"
+  pass "fm-afk-health: a dead lock that predates a re-stamped flag still reads 'orphaned'"
+}
+
+test_verdict_orphaned_same_second_dead_lock() {
+  local dir dead lock epoch
+  dir=$(make_home "$TMP_ROOT/v-same-second")
+  epoch=$(( $(date '+%s') - 1 ))
+  printf '%s' "$epoch" > "$dir/state/.afk"
+  dead=999999
+  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
+  lock="$dir/state/.supervise-daemon.lock"
+  mkdir -p "$lock"
+  printf '%s\n' "$dead" > "$lock/pid"
+  printf '%s\n' "fake-identity" > "$lock/pid-identity"
+  touch -t "$(date -r "$epoch" '+%Y%m%d%H%M.%S')" "$lock"
+  expect_verdict "$dir" orphaned "dead lock stamped in the same second as the flag"
+  pass "fm-afk-health: a dead lock whose mtime equals the flag epoch reads 'orphaned'"
 }
 
 test_verdict_orphaned_on_pid_reuse() {
@@ -448,7 +466,8 @@ test_verdict_start_grace_boundary
 test_verdict_start_grace_is_configurable
 test_verdict_orphaned_when_recorded_pid_is_dead
 test_verdict_orphaned_when_daemon_started_then_died_within_grace
-test_verdict_starting_ignores_stale_lock_older_than_flag
+test_verdict_orphaned_refresh_restamp_dead_lock
+test_verdict_orphaned_same_second_dead_lock
 test_verdict_orphaned_on_pid_reuse
 test_verdict_orphaned_when_flag_cannot_be_dated
 test_verdict_does_not_depend_on_the_daemon

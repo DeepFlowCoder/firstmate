@@ -16,14 +16,15 @@
 # Verdicts:
 #   off       state/.afk absent. Away mode is not active.
 #   healthy   flag present, a live identity-matched daemon holds the lock.
-#   starting  flag present, no daemon has taken the lock yet, and the flag is
-#             younger than the start grace. This is the legitimate window
-#             between entering away mode and the daemon taking over.
-#   orphaned  flag present with no live daemon: either a daemon took the lock
-#             after the flag and then died (named immediately, whatever the
-#             flag's age), or no daemon ever took it and the flag is older
-#             than the start grace. THE BROKEN STATE: supervision is off and
-#             every other path is still standing down for a daemon that is
+#   starting  flag present and no daemon lock: the daemon has not taken over
+#             yet, and the flag is younger than the start grace. This is the
+#             legitimate window between entering away mode and the daemon
+#             taking over.
+#   orphaned  flag present with no live daemon: either a daemon lock is
+#             present but not held by a live identity-matched daemon (the
+#             daemon started and then died), or no lock exists and the flag is
+#             older than the start grace. THE BROKEN STATE: supervision is off
+#             and every other path is still standing down for a daemon that is
 #             gone.
 #
 # Start grace: FM_AFK_START_GRACE, default 300 seconds. It bounds the two real
@@ -70,8 +71,7 @@ fm_afk_start_grace() {
 # authoritative epoch because it survives a copy that resets mtime - the
 # launcher's own rollback backup does exactly that. A flag with no usable
 # epoch, or one stamped in the future, falls back to mtime. This is the single
-# implementation of the content-then-mtime rule; fm_afk_flag_age and the
-# daemon-lock freshness comparison below both consume it.
+# implementation of the content-then-mtime rule; fm_afk_flag_age consumes it.
 fm_afk_flag_epoch() {  # <state-dir>
   local flag="$1/.afk" stamp now
   [ -f "$flag" ] || return 1
@@ -111,24 +111,6 @@ fm_afk_health_mtime() {  # <path>
   return 1
 }
 
-# fm_afk_daemon_lock_postdates_flag <state-dir>
-# True when the daemon lock is evidence about THIS away session: it exists and
-# its timestamp is strictly newer than the flag's recorded entry epoch. A
-# daemon that dies abruptly leaves its lock behind, and nothing on the entry
-# path clears it, so a lock at or before the flag epoch is prior-session
-# residue rather than proof that this session's daemon came and went. Equal
-# timestamps count as residue: second granularity makes a same-second lock
-# ambiguous, and the safe bias is toward no false positive during a normal
-# start.
-fm_afk_daemon_lock_postdates_flag() {  # <state-dir>
-  local lock="$1/.supervise-daemon.lock" flag_epoch lock_mtime
-  [ -e "$lock" ] || [ -L "$lock" ] || return 1
-  flag_epoch=$(fm_afk_flag_epoch "$1" 2>/dev/null) || return 1
-  lock_mtime=$(fm_afk_health_mtime "$lock" 2>/dev/null) || return 1
-  [ -n "$lock_mtime" ] || return 1
-  [ "$lock_mtime" -gt "$flag_epoch" ]
-}
-
 # fm_afk_health <state-dir>
 # Sets FM_AFK_HEALTH_VERDICT, FM_AFK_HEALTH_AGE (empty when undatable),
 # FM_AFK_HEALTH_PID (empty unless healthy) and FM_AFK_HEALTH_DETAIL.
@@ -155,7 +137,7 @@ fm_afk_health() {  # <state-dir>
   grace=$(fm_afk_start_grace)
   age=$(fm_afk_flag_age "$state" 2>/dev/null) || age=
   FM_AFK_HEALTH_AGE=$age
-  if fm_afk_daemon_lock_postdates_flag "$state"; then
+  if [ -e "$state/.supervise-daemon.lock" ] || [ -L "$state/.supervise-daemon.lock" ]; then
     FM_AFK_HEALTH_VERDICT=orphaned
     if [ -n "$age" ]; then
       FM_AFK_HEALTH_DETAIL="away mode was entered ${age}s ago and its supervision daemon started and then died, so nothing is supervising this home."
@@ -197,7 +179,7 @@ fm_afk_owns_supervision() {  # <state-dir>
 FM_AFK_ORPHAN_REPAIR='Restart away-mode supervision with the /afk skill, or leave away mode with bin/fm-afk-launch.sh stop, and confirm the result with bin/fm-afk-health.sh.'
 
 fm_afk_health_usage() {
-  sed -n '2,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 fm_afk_health_main() {

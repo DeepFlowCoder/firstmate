@@ -524,6 +524,61 @@ unit_native_entry_preserves_prepared_state() {
   rm -rf "$st"
 }
 
+unit_entry_clears_dead_daemon_lock() {
+  local st dead lock
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-deadlock-clear.XXXXXX")
+  mkdir -p "$st/state"
+  dead=999999
+  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
+  lock="$st/state/.supervise-daemon.lock"
+  mkdir -p "$lock"
+  printf '%s\n' "$dead" > "$lock/pid"
+  printf '%s\n' 'fake-identity' > "$lock/pid-identity"
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
+    && [ ! -e "$lock" ] && [ -e "$st/state/.afk" ]; then
+    pass "entry dead-lock: a proven-dead prior-session lock is cleared before the flag"
+  else
+    fail "entry dead-lock: dead prior-session lock survived or entry failed"
+  fi
+  rm -rf "$st"
+}
+
+unit_entry_does_not_clear_unprovable_lock() {
+  local st out
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-unprovable.XXXXXX")
+  mkdir -p "$st/state/.supervise-daemon.lock"
+  : > "$st/state/.supervise-daemon.lock/pid"
+  out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native 2>&1)
+  if [ -d "$st/state/.supervise-daemon.lock" ] \
+    && printf '%s' "$out" | grep -q 'records no pid' \
+    && [ -e "$st/state/.afk" ]; then
+    pass "entry unprovable: a lock with no pid is reported and left untouched"
+  else
+    fail "entry unprovable: no-pid lock was cleared or not reported ($out)"
+  fi
+  rm -rf "$st"
+}
+
+unit_entry_does_not_clear_live_daemon_lock() {
+  local st sleeper lock
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-live-refresh.XXXXXX")
+  mkdir -p "$st/state"
+  sleep 600 >/dev/null 2>&1 & sleeper=$!
+  lock="$st/state/.supervise-daemon.lock"
+  mkdir -p "$lock"
+  printf '%s\n' "$sleeper" > "$lock/pid"
+  ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$sleeper" > "$lock/pid-identity" 2>/dev/null ) || true
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
+    && [ -e "$lock/pid" ] && [ "$(cat "$lock/pid")" = "$sleeper" ]; then
+    pass "entry refresh: a live daemon's lock is never cleared"
+  else
+    fail "entry refresh: live daemon lock was cleared or entry failed"
+  fi
+  kill "$sleeper" 2>/dev/null || true
+  wait "$sleeper" 2>/dev/null || true
+  rm -rf "$st"
+}
+
 unit_close_failure_preserves_record() {
   local st
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-close-fail.XXXXXX")
@@ -941,6 +996,9 @@ unit_readiness_failure_preserves_unconfirmed_record
 unit_tmux_absence_distinguishes_probe_failure
 unit_native_lifecycle
 unit_native_entry_preserves_prepared_state
+unit_entry_clears_dead_daemon_lock
+unit_entry_does_not_clear_unprovable_lock
+unit_entry_does_not_clear_live_daemon_lock
 unit_close_failure_preserves_record
 unit_record_publication_atomic
 unit_malformed_record_fails_closed
