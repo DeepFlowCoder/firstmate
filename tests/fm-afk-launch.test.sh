@@ -568,6 +568,7 @@ unit_entry_does_not_clear_live_daemon_lock() {
   mkdir -p "$lock"
   printf '%s\n' "$sleeper" > "$lock/pid"
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$sleeper" > "$lock/pid-identity" 2>/dev/null ) || true
+  # shellcheck disable=SC2031 # The subshell writes a file under the lock path; it does not reassign the variable.
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" start-native >/dev/null 2>&1 \
     && [ -e "$lock/pid" ] && [ "$(cat "$lock/pid")" = "$sleeper" ]; then
     pass "entry refresh: a live daemon's lock is never cleared"

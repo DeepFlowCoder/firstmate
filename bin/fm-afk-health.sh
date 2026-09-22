@@ -112,14 +112,13 @@ fm_afk_health_mtime() {  # <path>
 }
 
 # fm_afk_health <state-dir>
-# Sets FM_AFK_HEALTH_VERDICT, FM_AFK_HEALTH_AGE (empty when undatable),
-# FM_AFK_HEALTH_PID (empty unless healthy) and FM_AFK_HEALTH_DETAIL.
+# Sets FM_AFK_HEALTH_VERDICT, FM_AFK_HEALTH_PID (empty unless healthy) and
+# FM_AFK_HEALTH_DETAIL.
 # Always returns 0: the verdict is the answer, and an unreadable home must not
 # be mistaken for a healthy one by a caller that only checks the status.
 fm_afk_health() {  # <state-dir>
   local state=$1 grace age pid
   FM_AFK_HEALTH_VERDICT=off
-  FM_AFK_HEALTH_AGE=
   FM_AFK_HEALTH_PID=
   FM_AFK_HEALTH_DETAIL='away mode is not active.'
 
@@ -128,15 +127,14 @@ fm_afk_health() {  # <state-dir>
   if fm_afk_daemon_lock_live "$state"; then
     pid=$(fm_afk_daemon_lock_pid "$state" 2>/dev/null) || pid=
     FM_AFK_HEALTH_VERDICT=healthy
+    # shellcheck disable=SC2034 # Output global consumed by sourcing caller bin/fm-session-start.sh (AFK digest).
     FM_AFK_HEALTH_PID=$pid
-    FM_AFK_HEALTH_AGE=$(fm_afk_flag_age "$state" 2>/dev/null) || FM_AFK_HEALTH_AGE=
     FM_AFK_HEALTH_DETAIL="away mode is active and its supervision daemon (pid ${pid:-unknown}) is alive."
     return 0
   fi
 
   grace=$(fm_afk_start_grace)
   age=$(fm_afk_flag_age "$state" 2>/dev/null) || age=
-  FM_AFK_HEALTH_AGE=$age
   if [ -e "$state/.supervise-daemon.lock" ] || [ -L "$state/.supervise-daemon.lock" ]; then
     FM_AFK_HEALTH_VERDICT=orphaned
     if [ -n "$age" ]; then
