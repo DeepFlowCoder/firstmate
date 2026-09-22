@@ -137,6 +137,65 @@ fm_watcher_healthy() {
   return 0
 }
 
+# Seconds a claim may stay beatless before it counts as a watcher that never
+# started supervising. Not a number picked for comfort: a watcher the ARM could
+# not confirm within its own bounded confirmation budget is precisely the one the
+# arm TERMs, so the budget is the honest boundary and this takes the largest
+# production default of it (ARM_CONFIRM_DEFAULT in bin/fm-watch-arm.sh - 30s on
+# MSYS, 10s elsewhere). The real claim-to-first-beat window is far narrower:
+# measured at under a second on an idle home, and pinned against this default by
+# the startup-window regression in tests/fm-watcher-lock.test.sh, which fails if
+# growth in the startup path ever eats the margin.
+FM_WATCHER_FIRST_BEAT_GRACE="${FM_WATCHER_FIRST_BEAT_GRACE:-30}"
+
+FM_WATCHER_BEATLESS_CLAIM_PID=
+FM_WATCHER_BEATLESS_CLAIM_AGE=
+# fm_watcher_claim_without_beat <state> [grace]
+# True when this home's watcher lock holds a claim that never produced a beacon
+# of its own: a watcher that took the singleton and then went down before its
+# first beat, leaving the fleet unsupervised behind a lock that still looks taken.
+#
+# Every other supervision check reads the beacon, and after such a start the
+# beacon belongs to the PREVIOUS watcher - so it can sit well inside its own
+# freshness window while nothing is watching, which is exactly how the state
+# measured on 2026-09-20 stayed invisible until the arm had already failed twice.
+# The claim's own timestamp is what separates the two, and $lockdir/pid carries
+# it: fm_lock_claim writes that file once, at claim time, and no later step
+# rewrites it, so its mtime dates the claim rather than the claimant's liveness.
+# A claim NEWER than the last beat and still beatless <grace> seconds on has had
+# a full arm confirmation budget to produce one.
+#
+# Liveness is deliberately not part of the test. The claimant is usually already
+# dead, but a start wedged past its own confirmation budget leaves the fleet
+# equally unwatched, and reporting only the corpses would miss the window in
+# which the condition is still repairable.
+fm_watcher_claim_without_beat() {
+  local state=$1 grace=${2:-$FM_WATCHER_FIRST_BEAT_GRACE} lockdir pid claim_at beat_at age
+  FM_WATCHER_BEATLESS_CLAIM_PID=
+  FM_WATCHER_BEATLESS_CLAIM_AGE=
+  lockdir="$state/.watch.lock"
+  pid=$(cat "$lockdir/pid" 2>/dev/null) || return 1
+  [ -n "$pid" ] || return 1
+  claim_at=$(fm_path_mtime "$lockdir/pid") || return 1
+  case "$claim_at" in ''|*[!0-9]*) return 1 ;; esac
+  age=$(fm_path_age "$lockdir/pid")
+  case "$age" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$age" -ge "$grace" ] || return 1
+  # An absent or unreadable beacon alongside an aged claim is the same verdict:
+  # this claim has produced no beat. A beat at or after the claim means the
+  # watcher did start supervising, and whatever happened next is a different
+  # failure with a different repair.
+  beat_at=$(fm_path_mtime "$state/.last-watcher-beat") || beat_at=
+  case "$beat_at" in
+    ''|*[!0-9]*) ;;
+    *) [ "$claim_at" -gt "$beat_at" ] || return 1 ;;
+  esac
+  # shellcheck disable=SC2034 # Read by callers after the function returns.
+  FM_WATCHER_BEATLESS_CLAIM_PID=$pid
+  # shellcheck disable=SC2034 # Read by callers after the function returns.
+  FM_WATCHER_BEATLESS_CLAIM_AGE=$age
+}
+
 # fm_watcher_healthy above is the PID-STRICT primitive: true only when a live,
 # identity-matched watcher PROCESS holds this home's lock with a fresh beacon. The
 # arm layer (bin/fm-watch-arm.sh, bin/fm-claude-stop-autoarm.sh) needs exactly
@@ -245,6 +304,11 @@ fm_pi_extension_owns_supervision() {
 #                                             the lock (the beacon is still fresh)
 #                              stale-beacon - the beacon is stale beyond grace or
 #                                             absent (a genuine supervision lapse)
+#                              no-first-beat - a watcher took the lock and never
+#                                             emitted a beat of its own
+#                                             (fm_watcher_claim_without_beat)
+# The no-first-beat check runs first and applies to every model, because a fresh
+# beacon is what hides it rather than what clears it.
 # autoarm: a fresh beacon within grace is healthy even with no live watcher,
 # because the watcher only runs between turns; only a stale beacon is a lapse.
 # extension: a live identity-matched watcher is the ordinary healthy state, but a
@@ -274,6 +338,16 @@ fm_watcher_supervision_verdict() {
     *) [ "$age" -lt "$grace" ] && fresh=true ;;
   esac
   model=$(fm_supervision_model)
+  # Ahead of every model branch, and ahead of the freshness shortcut in
+  # particular: this condition is one a fresh beacon HIDES, because the beacon it
+  # reads is the previous watcher's. No supervision model has a healthy state in
+  # which a held claim outlives its own first beat by a whole arm confirmation
+  # budget, so the answer does not depend on which one is in force.
+  if fm_watcher_claim_without_beat "$state"; then
+    # shellcheck disable=SC2034 # Read by callers after the function returns.
+    FM_WATCHER_VERDICT_REASON=no-first-beat
+    return 0
+  fi
   if [ "$model" = autoarm ]; then
     [ "$fresh" = true ] && FM_WATCHER_VERDICT_OK=true
     return 0

@@ -96,6 +96,11 @@ The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYC
 The default 300-second grace is unchanged.
 Only the watcher process touches `state/.last-watcher-beat`; no helper process can make a wedged watcher appear healthy.
 
+A watcher that takes the singleton lock and goes down before its first beat is its own down-state, separate from a stale beacon.
+The beacon left behind belongs to the previous watcher, so freshness alone reads that home as supervised while nothing is watching it, and the condition surfaces only once the arm has already failed.
+`fm_watcher_claim_without_beat` in `bin/fm-wake-lib.sh` owns the test and dates the claim from `state/.watch.lock/pid`, which is written once at claim time and never rewritten.
+Its verdict is `no-first-beat`, it precedes every supervision-model branch because a fresh beacon hides rather than clears it, and its threshold defaults to the largest production arm confirmation budget, since a watcher the arm could not confirm inside that budget is the one the arm terminates.
+
 ## Regression coverage
 
 `tests/fm-pi-watch-extension.test.sh` checks Pi's first-cycle-or-explicit-repair tool metadata and ownership-based redundant-call no-ops, then simulates actionable and empty child closes against the actual Pi and OpenCode close handlers, blocks prompt delivery to prove the successor launches first, verifies single-flight behavior, changes the session lock before close to prove ownership is rechecked, and hangs each successor arm to prove bounded fallback delivery includes the typed restoration failure.
@@ -108,6 +113,7 @@ It also pins the two boundaries that verdict must not cross - a `set -eu` caller
 The same suite pins the leftover's own bound: repeated reclaims killed mid-flight break each stale `<lock>.steal` in place, so the marker never grows into a `<lock>.steal.steal` chain that eventually strands the lock for good.
 Breaking that marker in place removes the deeper mutex those reclaims used to serialize on, so the suite also pins the break's own arbitration: 40 concurrent racers against one stale `<lock>.steal` leave exactly one winner, and a break bound to the owner directory whose death it proved cannot carry off a live mutex another racer rebuilt on the path meanwhile.
 It also pins the owner-directory cleanup that arbitration depends on, so a contended break leaves no undeletable owner directory behind in the state root.
+The same suite pins the `no-first-beat` state from both sides: a lock claimed after the last beat and still beatless is reported with its own cause while the beacon is still well inside its freshness grace, a watcher that did beat before stopping keeps the stale-beacon diagnosis, a claim still inside the startup window is not reported at all, and a real watcher start measures its own claim-to-first-beat width against the shipped threshold so growth in the startup path cannot turn that threshold into a false positive.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 It also covers generation-claim single-flight, stuck-claim supersession, superseded-owner silence, notice-marker refusal and retry, ownership-atomic episode reset, and the legacy upgrade shim; [`turnend-guard.md`](turnend-guard.md) owns those behavior contracts.

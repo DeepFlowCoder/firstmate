@@ -188,6 +188,128 @@ test_guard_warnings() {
   pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
 }
 
+# guard_claim_fixture <dir> <pid> <order>
+# Build a watcher lock and beacon whose RELATIVE ages are the thing under test.
+# <order> claim-after-beat writes the beacon first, so the lock's claim is newer
+# than the last beat (a claim that has produced no beat of its own);
+# beat-after-claim writes it last, the ordinary shape of a watcher that ran.
+# The claim carries fm-home and watcher-path but NO pid-identity, exactly the
+# `identity:none` the cycle ledger recorded for the killed starts, because the
+# watcher is TERMed before it publishes that field.
+# The two writes are separated by a full mtime tick on purpose: mtimes are whole
+# seconds here, and the condition is about a claim STRICTLY newer than the last
+# beat, so a fixture that wrote both inside one second would prove nothing.
+guard_claim_fixture() {
+  local dir=$1 pid=$2 order=$3 state
+  state="$dir/state"
+  if [ "$order" = claim-after-beat ]; then
+    touch "$state/.last-watcher-beat"
+    sleep 1.1
+  fi
+  mkdir -p "$state/.watch.lock"
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  if [ "$order" = beat-after-claim ]; then
+    sleep 1.1
+    touch "$state/.last-watcher-beat"
+  fi
+  return 0
+}
+
+run_guard() {  # <dir> [env assignments...]
+  local dir=$1
+  shift
+  env CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' \
+    FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$dir/state" "$@" \
+    "$ROOT/bin/fm-guard.sh" 2> "$dir/guard.err" >/dev/null \
+    || fail "guard failed"
+}
+
+# The measured 2026-09-20 fleet outage: a watcher took the singleton lock at
+# 00:20:48, never emitted a beacon, and was TERMed by its own arm's bounded
+# confirmation wait (four `exit_code=143 signal=TERM reason=confirmation-timeout
+# ... identity:none` rows in state/.watch-cycle-exits.log). The beacon left
+# behind belonged to the PREVIOUS watcher and was only 180s old, so every
+# freshness check still read the home as supervised while nothing was watching
+# it. Nothing reported that state; it surfaced only when the arm gave up twice.
+# The claim's own timestamp against the beacon's is what tells them apart.
+test_claimed_lock_without_a_first_beat_is_detected() {
+  local dir dead err
+  dir=$(make_case guard-no-first-beat)
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$dir/state/task.meta"
+  dead=$(dead_pid)
+  guard_claim_fixture "$dir" "$dead" claim-after-beat
+  # Age the claim past the first-beat window while the beacon stays WELL inside
+  # its freshness grace - the masking condition that made this invisible.
+  sleep 1.2
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_WATCHER_FIRST_BEAT_GRACE=1
+  grep -F 'WATCHER DOWN - SUPERVISION IS OFF' "$err" >/dev/null \
+    || fail "a lock claimed with no beat of its own was not reported: $(cat "$err")"
+  grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "banner did not name the claim-without-a-beat condition: $(cat "$err")"
+  grep -F "$dead" "$err" >/dev/null \
+    || fail "banner did not name the claiming process: $(cat "$err")"
+
+  # The ordinary stale-beacon lapse must keep its own diagnosis: a watcher that
+  # DID beat and then stopped is a different failure with a different repair.
+  dir=$(make_case guard-stale-beacon)
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$dir/state/task.meta"
+  guard_claim_fixture "$dir" "$(dead_pid)" beat-after-claim
+  # Age the beacon past its own grace, or this is the healthy case, not the
+  # stale one it is here to keep distinguishable.
+  sleep 1.2
+  run_guard "$dir" FM_GUARD_GRACE=1 FM_WATCHER_FIRST_BEAT_GRACE=1
+  grep -F 'WATCHER DOWN - SUPERVISION IS OFF' "$err" >/dev/null \
+    || fail "stale beacon stopped being reported: $(cat "$err")"
+  ! grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "a watcher that beat before dying was misreported as never beating: $(cat "$err")"
+  pass "a watcher lock claimed with no beat of its own is reported as its own condition"
+}
+
+# Criterion the detection must not break: there IS a legitimate window between
+# claiming the lock and the first beat. This pins both ends of it - the window is
+# tolerated while it lasts, and the real width of it is measured against the
+# SHIPPED default rather than against a number this test picks.
+test_startup_window_before_the_first_beat_is_not_flagged() {
+  local dir state err wpid claim_at beat_at delta i default
+  # (1) A claim younger than the window is ordinary startup, never an alarm.
+  dir=$(make_case guard-startup-window)
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$dir/state/task.meta"
+  guard_claim_fixture "$dir" "$$" claim-after-beat
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_WATCHER_FIRST_BEAT_GRACE=60
+  ! grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "a claim still inside the startup window was flagged: $(cat "$err")"
+
+  # (2) A REAL watcher start, measured: the claim-to-first-beat width must stay
+  # far below the shipped default, so the default cannot rot into a false
+  # positive as startup work grows.
+  dir=$(make_case guard-startup-measure)
+  state="$dir/state"
+  PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2>&1 &
+  wpid=$!
+  i=0
+  while [ "$i" -lt 600 ] && [ ! -e "$state/.last-watcher-beat" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  claim_at=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_mtime "$2"' _ "$LIB" "$state/.watch.lock/pid")
+  beat_at=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_mtime "$2"' _ "$LIB" "$state/.last-watcher-beat")
+  kill -TERM "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  [ -n "$claim_at" ] && [ -n "$beat_at" ] || fail "a real watcher start produced no claim or no beat"
+  delta=$(( beat_at - claim_at ))
+  default=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; printf "%s\n" "$FM_WATCHER_FIRST_BEAT_GRACE"' _ "$LIB")
+  [ "$delta" -ge 0 ] || fail "a real watcher beat BEFORE its own claim (delta ${delta}s)"
+  [ "$((delta * 4))" -lt "$default" ] \
+    || fail "measured claim-to-first-beat ${delta}s leaves no margin under the ${default}s default"
+  pass "the startup window before the first beat is tolerated and stays far inside the default (measured ${delta}s of ${default}s)"
+}
+
 test_lock_single_winner_under_concurrency() {
   local dir state lockdir marker i pids pid wins
   dir=$(make_case lock-concurrency)
@@ -1863,6 +1985,8 @@ test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
+test_claimed_lock_without_a_first_beat_is_detected
+test_startup_window_before_the_first_beat_is_not_flagged
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_unwritable_lock_directory_fails_fast

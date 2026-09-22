@@ -18,8 +18,12 @@
 # while that live Pi session provably owns continuity; any held but unhealthy
 # lock is down; under every
 # persistent-watcher harness a live identity-matched watcher with a fresh beacon
-# is required. The banner names the true failing condition (a missing live
-# watcher process vs a genuinely stale beacon). The full banner is emitted once
+# is required. Ahead of all three, and independent of the model, a watcher that
+# took the lock and never emitted a beat of its own is its own down-state: the
+# beacon left behind is the PREVIOUS watcher's, so freshness hides that failure
+# rather than clearing it. The banner names the true failing condition (a lock
+# claimed with no beat of its own vs a missing live watcher process vs a
+# genuinely stale beacon). The full banner is emitted once
 # per distinct down-episode in this FM_HOME (keyed to the failing condition, not
 # the beacon mtime, which a healthy between-turns watcher advances every poll);
 # later guarded commands in the same episode print a one-line reminder instead.
@@ -277,7 +281,12 @@ if [ "$watcher_healthy" = false ]; then
       {
         printf '●%s\n' "$rule"
         printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
-        if [ "$watcher_down_reason" = no-watcher ]; then
+        if [ "$watcher_down_reason" = no-first-beat ]; then
+          # Name the claim, not the beacon: the beacon here belongs to the
+          # watcher BEFORE this one and is the reason nothing else reported it.
+          watcher_cause=$(printf 'a watcher (pid %s) took this home lock %ss ago and never emitted a first beat, so the last beat (%s) is an earlier watcher'\''s' \
+            "$FM_WATCHER_BEATLESS_CLAIM_PID" "$FM_WATCHER_BEATLESS_CLAIM_AGE" "$beacon_desc")
+        elif [ "$watcher_down_reason" = no-watcher ]; then
           watcher_cause=$(printf 'no live watcher process holds this home lock (last beat: %s)' "$beacon_desc")
         else
           watcher_cause=$(printf 'no watcher has a fresh beacon (last beat: %s, grace %ss)' "$beacon_desc" "$GRACE")
