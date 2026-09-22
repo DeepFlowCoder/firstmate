@@ -38,7 +38,12 @@
 #       on a plain fetch and which costs nothing; when that ref is absent it asks
 #       the remote directly with `git ls-remote --symref`, one bounded call over
 #       git's own remote protocol. Unlike fm_forge_remote_resolve this one MAY
-#       contact the network, and only on that second path.
+#       contact the network, and only on that second path. That one call runs
+#       NON-INTERACTIVELY: a caller of this function is a gate, and a gate that
+#       stops on a credential dialog neither refuses nor proceeds - it holds the
+#       captain's screen (measured once at 6h49m) while supervision still reads
+#       the worker as working. Unreadable is an answer this function already
+#       knows how to give; hanging is not.
 #
 # Resolution rule, in order:
 #   1. `origin`, whenever origin is not provably a working copy. This is the
@@ -154,12 +159,13 @@ fm_forge_remote_default_branch() {  # <repo-dir> <remote>
     printf '%s' "${ref#"$remote/"}"
     return 0
   fi
-  name=$(git -C "$dir" ls-remote --symref "$remote" HEAD 2>/dev/null \
+  name=$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='' \
+    git -C "$dir" -c core.askPass= ls-remote --symref "$remote" HEAD 2>/dev/null \
     | sed -n 's|^ref:[[:space:]]*refs/heads/\([^[:space:]]*\)[[:space:]].*|\1|p' \
     | head -1)
   if [ -n "$name" ]; then
     printf '%s' "$name"
     return 0
   fi
-  _fm_forge_remote_unresolved "$remote did not name a default branch: it has no refs/remotes/$remote/HEAD in $dir and answered no HEAD symref"
+  _fm_forge_remote_unresolved "the default branch of $remote could not be read: $dir has no refs/remotes/$remote/HEAD, and asking $remote directly - without prompting for a credential - returned no HEAD symref"
 }
