@@ -225,9 +225,18 @@ forward() {
 [ "$saw_stash" = 1 ] || forward "$@"
 
 # git's own inventory of working copies, so nothing has to be inferred about the
-# repository's shape: a bare main repository holds no working tree at all, and a
-# worktree whose directory is gone is no copy either. Counting either of them
-# would refuse on behalf of a copy that does not exist.
+# repository's shape. Only a bare main repository is discounted, because it holds
+# no working tree at all.
+#
+# A `prunable` worktree still counts, deliberately. Git reports that not only for
+# a copy that is gone but for one whose path it cannot resolve right now, an
+# unmounted volume among them, and discounting it made a live second copy
+# invisible and let the stash through in silence - the guard's only fail-open
+# direction, and the exact outcome it exists to prevent. The rule that reconciles
+# this with discounting `bare`: a false refusal on the NORMAL path is corrosive
+# and gets the guard turned off, while a false refusal in an ALREADY BROKEN
+# situation is a warning somebody needs anyway. What matters is the state of the
+# world the false positive appears in, not how many there are.
 listing=$(git worktree list --porcelain 2>/dev/null) || listing=
 if [ -z "$listing" ]; then
   # Refusing stash operations, and only stash operations, when the repository's
@@ -239,7 +248,6 @@ fi
 copies=$(printf '%s\n' "$listing" | awk '
   /^worktree /{ n++ }
   /^bare$/{ n-- }
-  /^prunable/{ n-- }
   END{ print n+0 }')
 
 # One working copy means nothing is shared and nothing is at risk.

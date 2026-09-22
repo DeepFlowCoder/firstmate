@@ -338,6 +338,42 @@ test_guard_stands_aside_for_a_bare_backed_single_copy() {
   pass "the guard stands aside for a bare-backed repository with one working copy"
 }
 
+# Git reports a worktree as prunable when its directory is gone AND when it
+# merely cannot resolve the path right now, an unmounted volume among them. The
+# two are indistinguishable from the listing, so a copy that is only temporarily
+# unreachable must keep counting: discounting it made a live second copy
+# invisible and let a stash through in silence, which is the one direction this
+# guard must never fail in.
+test_an_unreachable_working_copy_still_counts() {
+  local root primary a hooks out code
+  root=$TMP_ROOT/prunable
+  primary=$(make_primary "$root")
+  a=$(add_copy "$primary" wa)
+  hooks=$root/hooks
+  guard prepare "$hooks" >/dev/null || fail "prepare failed"
+
+  # The second copy stays registered; only its path stops resolving.
+  mv "$a" "$a-moved"
+  assert_contains "$(git_env -C "$primary" worktree list --porcelain)" "prunable" \
+    "the fixture must leave the second copy registered but unresolvable"
+
+  printf 'MY-WORK\n' > "$primary/f.txt"
+  out=$(guarded "$hooks" git -C "$primary" stash push -m mine 2>&1) && code=0 || code=$?
+  [ "$code" -ne 0 ] \
+    || fail "a stash must be refused while a second copy is registered but unreachable"
+  assert_contains "$out" "SHARED" "the refusal must still name the shared stash"
+  assert_contains "$(cat "$primary/f.txt")" "MY-WORK" \
+    "the refused push must leave the working tree exactly as it was"
+  [ -z "$(git_env -C "$primary" stash list)" ] \
+    || fail "the refused push must not create a stash entry"
+
+  # And the copy coming back changes nothing: it was always two copies.
+  mv "$a-moved" "$a"
+  guarded "$hooks" git -C "$primary" stash push -q -m mine >/dev/null 2>&1 \
+    && fail "the refusal must hold once the second copy is reachable again"
+  pass "a registered working copy whose path cannot be resolved still counts as shared"
+}
+
 test_guard_does_not_disturb_ordinary_git_work() {
   local root primary a hooks
   root=$TMP_ROOT/ordinary
@@ -687,6 +723,7 @@ test_guarded_pop_cannot_destroy_another_copys_stash
 test_multi_entry_pop_documents_the_known_limit
 test_guard_stands_aside_for_a_single_working_copy
 test_guard_stands_aside_for_a_bare_backed_single_copy
+test_an_unreachable_working_copy_still_counts
 test_guard_does_not_disturb_ordinary_git_work
 test_the_repositorys_own_hooks_still_run
 test_a_chained_reference_transaction_hook_still_runs

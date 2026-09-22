@@ -972,6 +972,21 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
 fi
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
+# The per-task temp root is fixed by the id alone, and the stash guard below
+# turns it into a directory every git the worker runs executes hooks out of. The
+# path is predictable and /tmp is writable by everyone, so a path already sitting
+# there is reused only when it is genuinely ours: a symlink, or a directory owned
+# by somebody else, is somebody else choosing what this worker's git will run.
+# Refusing is the only safe answer, including when ownership cannot be read at
+# all, because "I could not tell" is not "it is ours".
+#
+# It is decided here, before any pane or worktree is allocated, because nothing
+# about it depends on them and a refusal further down would strand both.
+TASK_TMP="/tmp/fm-$ID"
+if [ -L "$TASK_TMP" ] || { [ -e "$TASK_TMP" ] && [ ! -O "$TASK_TMP" ]; }; then
+  echo "error: refusing to spawn task $ID: '$TASK_TMP' already exists and is not a directory owned by this user; this worker's git would execute hooks out of it" >&2
+  exit 1
+fi
 # Disk-space guard (bin/fm-disk-space-lib.sh). Its whole scope is the case below:
 # a fresh crewmate or scout, dispatched onto the filesystem this process is
 # measuring. That is the work whose failure mode is total rather than slow - a
@@ -2699,19 +2714,8 @@ fi
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
 # later, and teardown cleans one deterministic path. GOTMPDIR (not TMPDIR) is the
 # targeted knob: TMPDIR is too broad (affects every program's temp, not just Go's).
-#
-# The path is predictable and /tmp is writable by everyone, and the stash guard
-# below turns this root into a directory every git the worker runs executes
-# hooks out of. So it is private to this user, and a path already sitting there
-# is reused only when it is genuinely ours: a symlink, or a directory owned by
-# somebody else, is somebody else choosing what this worker's git will run.
-# Refusing is the only safe answer, including when ownership cannot be read at
-# all, because "I could not tell" is not "it is ours".
-TASK_TMP="/tmp/fm-$ID"
-if [ -L "$TASK_TMP" ] || { [ -e "$TASK_TMP" ] && [ ! -O "$TASK_TMP" ]; }; then
-  echo "error: refusing to spawn task $ID: '$TASK_TMP' already exists and is not a directory owned by this user; this worker's git would execute hooks out of it" >&2
-  exit 1
-fi
+# TASK_TMP itself, and the refusal that decides it is safe to use, are settled
+# where the task id is validated.
 mkdir -p "$TASK_TMP/gotmp"
 chmod 0700 "$TASK_TMP"
 
