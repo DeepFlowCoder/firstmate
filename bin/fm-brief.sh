@@ -49,6 +49,9 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Every scaffold teaches exactly ONE position for a decision key - the one
+# bin/fm-classify-lib.sh actually reads - rendered from the shared
+# KEY_POSITION_RULE below, which owns why that position and no other.
 # Every scaffold also carries the steering-inbox receive-and-ack section:
 # process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
 # handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).

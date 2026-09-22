@@ -180,7 +180,12 @@
 # in this home's status log per status_open_decisions (bin/fm-classify-lib.sh), or
 # a still-open captain-held task resolved as above. A key in neither is refused
 # before sending, so a mistyped key cannot deliver an answer while silently
-# orphaning the decision. A failed or unconfirmed send never closes a key; a
+# orphaning the decision. A typo is not the only cause, so that refusal also
+# names the one other cause it can prove from the open set it already holds: an
+# open entry whose summary STATES this key where the fold never reads it
+# (decision_unread_key, bin/fm-classify-lib.sh), which is repaired by having
+# that worker re-append the line with the key before the colon rather than by
+# retyping the key here. A failed or unconfirmed send never closes a key; a
 # delivered answer whose closing append fails exits nonzero with the exact
 # manual close command, leaving the decision open to re-surface (the safe
 # direction). A send without the flag never closes anything: a routine steer,
