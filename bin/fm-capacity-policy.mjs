@@ -92,6 +92,9 @@
 // validation is what makes the projection describe the fleet rather than the
 // minute. Until that much history exists the runway is `balance-unmeasured`,
 // which discloses and never alarms - the same rule every unmeasured lane obeys.
+// That window ends at the last reading where the balance MOVED, so the idle
+// hours after it neither dilute the rate nor retire the warning it produced:
+// only a top-up clears a runway, silence never does.
 //
 // A provider that establishes none of those is `unmeasured`, never folded into
 // one of them. AGENTS.md section 4 is explicit that unmeasurable headroom,
@@ -184,6 +187,9 @@ function usage() {
     "",
     "Prints one line when the fleet is worth reporting and nothing when it is not.",
     "--min-lanes 0 retires the lane arm: no lane count ever fires.",
+    "--lanes-unreadable says the quota snapshot could not be read at all, so the",
+    "lane arm has no reading to judge. It is NOT the same as a snapshot reporting",
+    "zero providers, which is a fleet with no lanes and still fires.",
     "--emit record prefixes the repeat-suppression digest and a TAB, for callers",
     "that suppress an unchanged repeat; --emit line (the default) omits it.",
     "",
@@ -204,8 +210,13 @@ function parseArguments(argv) {
   let emit = "line";
   let balanceReadings = [];
   let balanceMarginSecs = 0;
+  let lanesUnreadable = false;
   for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i];
+    if (name === "--lanes-unreadable") {
+      lanesUnreadable = true;
+      continue;
+    }
     if (name === "--balance-readings") {
       if (i + 1 >= argv.length) throw new Error("--balance-readings requires a value");
       const raw = argv[i + 1].trim();
@@ -249,7 +260,7 @@ function parseArguments(argv) {
     throw new Error(`unknown option: ${name}`);
   }
   if (minLanes === null) throw new Error("--min-lanes is required");
-  return { minLanes, emit, balanceReadings, balanceMarginSecs };
+  return { minLanes, emit, balanceReadings, balanceMarginSecs, lanesUnreadable };
 }
 
 /**
@@ -502,21 +513,37 @@ function classifyBalance(readings, marginSecs) {
 
   // A top-up invalidates every rate measured across it: the drain before a
   // recharge says nothing about the runway after one. Start the window at the
-  // last increase rather than smoothing over it.
+  // last increase rather than smoothing over it. After that increase the
+  // readings are non-increasing by construction, because a later rise would
+  // have moved `start` to itself.
   let start = 0;
   for (let i = 1; i < clean.length; i += 1) {
     if (clean[i].balance > clean[i - 1].balance) start = i;
   }
+  // THE RATE WINDOW ENDS AT THE LAST TIME THE BALANCE MOVED, not at the newest
+  // reading. An idle stretch is the absence of a measurement, never a
+  // measurement that the drain stopped, so the readings it adds must neither
+  // dilute the rate nor retire it. Anchoring on the newest reading instead is
+  // what let an already-warned balance go quiet overnight - the fleet stops
+  // spending, the window fills with flat readings, `drop` falls to zero and the
+  // guard reads "runway not measured" at exactly the session that has to decide
+  // whether to recharge before dispatching. Only an increase clears the
+  // warning, and it clears it by moving `start` above.
+  let lastMove = start;
+  for (let i = start + 1; i < clean.length; i += 1) {
+    if (clean[i].balance !== clean[i - 1].balance) lastMove = i;
+  }
+  const moved = clean[lastMove];
   // The rate is averaged over at most two margins, and the history may reach
   // further back than that. The two are deliberately different spans: the rate
   // has to describe the CURRENT burn, while the history also has to remember
   // that this account once held a balance, which is what the zero-amount rule
   // above rests on. Bounding the rate window here rather than by what was
   // retained is what lets the second outlive the first.
-  const rateWindowStart = newest.at - 2 * marginSecs;
-  const window = clean.slice(start).filter((entry) => entry.at >= rateWindowStart);
-  const oldest = window.length > 0 ? window[0] : newest;
-  const span = newest.at - oldest.at;
+  const rateWindowStart = moved.at - 2 * marginSecs;
+  const window = clean.slice(start, lastMove + 1).filter((entry) => entry.at >= rateWindowStart);
+  const oldest = window.length > 0 ? window[0] : moved;
+  const span = moved.at - oldest.at;
   if (window.length < 2 || span <= 0) {
     return { cause: "balance-unmeasured", marginSecs, detail: "one reading since the last top-up" };
   }
@@ -529,7 +556,7 @@ function classifyBalance(readings, marginSecs) {
       detail: `only ${humanSpan(span)} of readings since the last top-up`,
     };
   }
-  const drop = oldest.balance - newest.balance;
+  const drop = oldest.balance - moved.balance;
   if (drop <= 0) {
     return { cause: "balance-unmeasured", marginSecs, detail: "no drain measured" };
   }
@@ -585,7 +612,13 @@ function describe(lane) {
   }
 }
 
-export function verdict(snapshot, minLanes, balanceReadings = [], balanceMarginSecs = 0) {
+export function verdict(
+  snapshot,
+  minLanes,
+  balanceReadings = [],
+  balanceMarginSecs = 0,
+  lanesUnreadable = false,
+) {
   if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.providers)) {
     throw new Error("snapshot has no providers array");
   }
@@ -619,15 +652,24 @@ export function verdict(snapshot, minLanes, balanceReadings = [], balanceMarginS
   // A fleet whose every remaining lane ends before its own reset is the measured
   // incident even when the count itself looks fine, so it fires on its own.
   const allFinite = dispatchable.length > 0 && dispatchable.every((lane) => lane.finite);
-  // A snapshot that reports no providers at all establishes nothing about
-  // lanes, so it must not read as "every lane is gone". "0 of 0 provider lanes
-  // dispatchable" is not a verdict; it is the absence of one, and the caller
-  // hands such a snapshot in deliberately when only the balance could be read.
-  const laneFires = lanes.length > 0 && (below || allFinite);
+  // A quota reading that never arrived establishes nothing about lanes, so it
+  // must not read as "every lane is gone". The caller says so explicitly,
+  // because a real quota-axi report carrying an empty `providers[]` is a
+  // different fact - a fleet with no lanes at all - and still has to fire.
+  const laneFires = !lanesUnreadable && (below || allFinite);
   if (!laneFires && !balanceFires) {
     return { fire: false, lanes, dispatchable, balance };
   }
 
+  // The lane inventory is deliberately NOT printed when only the balance fires:
+  // a fleet with every lane healthy still loses every validation to a spent
+  // balance, and listing ten fine lanes beside that warning buries it.
+  //
+  // An unmeasured balance runway is disclosed rather than fired on, but it is
+  // worth saying beside a fleet that is already degraded, because it names a
+  // blind spot the captain would otherwise read as an all-clear.
+  const balanceClause =
+    balance !== null && balance.cause !== "balance-live" ? describeBalance(balance) : "";
   const clauses = [];
   if (laneFires) {
     const reasons = [];
@@ -645,24 +687,25 @@ export function verdict(snapshot, minLanes, balanceReadings = [], balanceMarginS
     // The count of lanes nobody could measure rides in the headline, because
     // "1 of 10 dispatchable" on its own reads as nine broken providers.
     const unmeasuredNote = unmeasured.length > 0 ? `, ${unmeasured.length} not measured` : "";
+    // ONLY THE LANE INVENTORY IS EVER TRUNCATED. It is the clause that grows
+    // without bound - one entry per provider, each quoting a vendor error
+    // verbatim - while the balance clause is one fixed sentence. Cutting the
+    // joined line from the end instead dropped the balance warning first, and
+    // mid-sentence, whenever enough lanes carried long errors: the most urgent
+    // thing this guard says would have been the first thing lost.
+    const room = MAX_LINE - (balanceClause === "" ? 0 : balanceClause.length + 2);
     clauses.push(
-      `${dispatchable.length} of ${lanes.length} provider lanes dispatchable${unmeasuredNote} ` +
-        `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`,
+      (
+        `${dispatchable.length} of ${lanes.length} provider lanes dispatchable${unmeasuredNote} ` +
+        `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`
+      ).slice(0, Math.max(0, room)),
     );
   }
-  // The lane inventory is deliberately NOT printed when only the balance fires:
-  // a fleet with every lane healthy still loses every validation to a spent
-  // balance, and listing ten fine lanes beside that warning buries it.
-  //
-  // An unmeasured balance runway is disclosed rather than fired on, but it is
-  // worth saying beside a fleet that is already degraded, because it names a
-  // blind spot the captain would otherwise read as an all-clear.
-  if (balance !== null && balance.cause !== "balance-live") clauses.push(describeBalance(balance));
-  const line = clauses.join("; ");
+  if (balanceClause !== "") clauses.push(balanceClause);
   return {
     fire: true,
-    line: line.slice(0, MAX_LINE),
-    digest: digestOf(lanes, dispatchable, balance),
+    line: clauses.join("; "),
+    digest: digestOf(lanes, dispatchable, balance, lanesUnreadable),
     lanes,
     dispatchable,
     balance,
@@ -686,15 +729,21 @@ export function verdict(snapshot, minLanes, balanceReadings = [], balanceMarginS
  * to shorter than a validation" is exactly the transition worth waking somebody
  * about a second time.
  */
-function digestOf(lanes, dispatchable, balance = null) {
+function digestOf(lanes, dispatchable, balance = null, lanesUnreadable = false) {
   const parts = lanes.map((lane) => {
     if (lane.cause === "dispatchable") return `${lane.id}:live:${lane.finite ? "finite" : "ok"}`;
     if (lane.cause === "window") return `${lane.id}:window:${lane.resetsAt}`;
     if (lane.cause === "unmeasured") return `${lane.id}:unmeasured:${lane.subcause}`;
     return `${lane.id}:${lane.cause}`;
   });
+  // A lane arm with no reading is its own shape, distinct from any lane count,
+  // so a balance-only report and a later full one are never read as the same
+  // observation and suppressed against each other.
+  const laneNote = lanesUnreadable
+    ? "lanes=unread"
+    : `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}`;
   const balanceNote = balance === null ? "" : ` ${balance.cause}`;
-  return `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}${balanceNote}`;
+  return `${laneNote}${balanceNote}`;
 }
 
 function main(argv) {
@@ -725,7 +774,13 @@ function main(argv) {
   }
   let result;
   try {
-    result = verdict(snapshot, options.minLanes, options.balanceReadings, options.balanceMarginSecs);
+    result = verdict(
+      snapshot,
+      options.minLanes,
+      options.balanceReadings,
+      options.balanceMarginSecs,
+      options.lanesUnreadable,
+    );
   } catch (error) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n`);
     return 3;

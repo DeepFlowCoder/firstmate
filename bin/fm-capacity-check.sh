@@ -100,11 +100,6 @@
 #   FM_BALANCE_CREDENTIAL_FILE  Pi credential file the API key is read from
 #                           (default $HOME/.pi/agent/auth.json). The
 #                           DEEPSEEK_API_KEY environment variable wins over it.
-#   FM_BALANCE_PROBE_SECS   hard bound on the balance call (default 5, valid
-#                           1..60). It is small on purpose: under `check` this
-#                           call shares one FM_CHECK_TIMEOUT with the quota
-#                           probe, and a balance read that eats the budget would
-#                           take the lane arm down with it.
 set -u
 export LC_ALL=C
 
@@ -123,6 +118,10 @@ MARGIN_FILE="$CONFIG/balance-margin-secs"
 # docs/verification/dispatch-auth.md owns the measurement, its query, and its
 # output, and is the thing to re-run before changing this.
 MARGIN_DEFAULT=8294
+# Hard bound on the balance call. It is small on purpose: under `check` this
+# call shares one FM_CHECK_TIMEOUT with the quota probe, and a balance read that
+# ate the budget would take the lane arm down with it.
+BALANCE_PROBE_SECS=5
 BALANCE_ENDPOINT='https://api.deepseek.com/user/balance'
 HISTORY="$STATE/.balance-history"
 RECORD="$STATE/.capacity"
@@ -234,13 +233,6 @@ resolve_margin() {
   MARGIN_PROBLEM=$RESOLVED_PROBLEM
 }
 
-balance_probe_bound() {
-  local bound=${FM_BALANCE_PROBE_SECS:-5}
-  case "$bound" in ''|*[!0-9]*|0) bound=5 ;; esac
-  [ "$bound" -le 60 ] || bound=5
-  printf '%s\n' "$bound"
-}
-
 probe_bound() {
   local bound=${FM_CAPACITY_PROBE_SECS:-20} ceiling
   case "$bound" in ''|*[!0-9]*|0) bound=20 ;; esac
@@ -250,11 +242,13 @@ probe_bound() {
   # silence on every poll and the guard would be quietly dead. Leave room for
   # node to start and classify on top of the probe itself, and for the balance
   # read that now shares the same budget - the lane arm must not be starved by
-  # the arm that was added beside it.
+  # the arm that was added beside it. A retired balance arm makes no call, so it
+  # costs the lane arm nothing.
   if [ "$1" = check ]; then
     ceiling=${FM_CHECK_TIMEOUT:-30}
     case "$ceiling" in ''|*[!0-9]*) ceiling=30 ;; esac
-    ceiling=$((ceiling - 5 - $(balance_probe_bound)))
+    ceiling=$((ceiling - 5))
+    [ "$MARGIN" -eq 0 ] || ceiling=$((ceiling - BALANCE_PROBE_SECS))
     [ "$ceiling" -ge 1 ] || ceiling=1
     [ "$bound" -le "$ceiling" ] || bound=$ceiling
   fi
@@ -302,15 +296,21 @@ acquire_snapshot() {
   SNAPSHOT=$SNAPSHOT_TMP
 }
 
-# Publish a stand-in snapshot that reports no providers at all.
+# Publish a stand-in snapshot for a quota reading that never arrived.
 #
-# It establishes nothing about lanes and is classified as such - the lane arm
-# cannot fire on it. What it does do is keep the balance verdict reachable when
-# the OTHER vendor call failed: a spent balance stops every validation in the
-# fleet, and having that go unreported because quota-axi timed out, or answered
-# with something unreadable, would put back exactly the silence this guard
-# exists to end. The snapshot problem is reported either way, so a guard that
-# has gone half blind still says which half.
+# It keeps the balance verdict reachable when the OTHER vendor call failed: a
+# spent balance stops every validation in the fleet, and having that go
+# unreported because quota-axi timed out, or answered with something unreadable,
+# would put back exactly the silence this guard exists to end. The snapshot
+# problem is reported either way, so a guard that has gone half blind still says
+# which half.
+#
+# LANES_UNREADABLE, not the provider count, is what tells the policy the lane
+# arm has no reading. A real quota-axi report that carries an empty
+# `providers[]` is a fleet with no lanes and must still fire the lane warning,
+# so "this stand-in" can never be inferred from the document alone.
+LANES_UNREADABLE=
+
 balance_only_snapshot() {
   [ -n "$BALANCE_READING" ] || return 1
   if [ -z "$SNAPSHOT_TMP" ]; then
@@ -318,6 +318,7 @@ balance_only_snapshot() {
   fi
   printf '{"schemaVersion":5,"providers":[]}\n' >"$SNAPSHOT_TMP" 2>/dev/null || return 1
   SNAPSHOT=$SNAPSHOT_TMP
+  LANES_UNREADABLE=1
   return 0
 }
 
@@ -327,15 +328,21 @@ acquire_snapshot_or_balance_only() {
 }
 
 BALANCE_TMP=
+BALANCE_HEADER_TMP=
 
 cleanup_snapshot() {
   [ -z "$SNAPSHOT_TMP" ] || rm -f -- "$SNAPSHOT_TMP"
   SNAPSHOT_TMP=
   [ -z "$BALANCE_TMP" ] || rm -f -- "$BALANCE_TMP"
   BALANCE_TMP=
+  [ -z "$BALANCE_HEADER_TMP" ] || rm -f -- "$BALANCE_HEADER_TMP"
+  BALANCE_HEADER_TMP=
 }
 
 trap cleanup_snapshot EXIT
+# An uncaught signal skips the EXIT trap, and the header file below holds the
+# credential: exit through the trap instead so it is never left behind.
+trap 'exit 1' HUP INT TERM
 
 # The API key for the balance read, on stdout, or nothing.
 #
@@ -357,6 +364,25 @@ balance_credential() {
   key=$(jq -r 'if (.deepseek.key | type) == "string" then .deepseek.key else empty end' "$file" 2>/dev/null) || return 1
   [ -n "$key" ] || return 1
   printf '%s\n' "$key"
+}
+
+# Publish BALANCE_HEADER_TMP: a private file holding the Authorization header
+# curl reads with `-H @<file>`, so the credential never reaches an argument
+# list. A key carrying a line break cannot be expressed as one header and is
+# refused rather than split across two.
+header_file_write() {  # <key>
+  case "$1" in
+    *$'\n'*|*$'\r'*) return 1 ;;
+  esac
+  BALANCE_HEADER_TMP=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-balance-auth.XXXXXX" 2>/dev/null) || {
+    BALANCE_HEADER_TMP=
+    return 1
+  }
+  chmod 600 "$BALANCE_HEADER_TMP" 2>/dev/null \
+    && printf 'Authorization: Bearer %s\n' "$1" >"$BALANCE_HEADER_TMP" 2>/dev/null && return 0
+  rm -f -- "$BALANCE_HEADER_TMP"
+  BALANCE_HEADER_TMP=
+  return 1
 }
 
 # Publishes BALANCE_READING as "<balance> <0|1>", or fails with BALANCE_PROBLEM
@@ -387,14 +413,28 @@ acquire_balance() {
       BALANCE_PROBLEM="could not create a temporary file for the balance reading"
       return 1
     }
-    bound=$(balance_probe_bound)
     # A read of the balance, and only that: no model is called and no work is
     # launched, so this probe can never be what spends what it is measuring.
-    # The key travels in a header and is never echoed, logged, or stored.
-    code=$(curl -sS -m "$bound" -o "$BALANCE_TMP" -w '%{http_code}' \
-      -H "Authorization: Bearer $key" -H 'Accept: application/json' \
-      "$BALANCE_ENDPOINT" 2>/dev/null) || rc=$?
+    #
+    # The key reaches curl through a private header file, the same way
+    # bin/fm-x-lib.sh hands its own token over, and never through an argument:
+    # macOS `ps` shows every process's full command line to every local user, so
+    # a credential on a command line is a credential published to the machine.
+    # The file is created with umask 077, removed the moment curl returns, and
+    # removed again by the exit and signal traps. The key is never echoed,
+    # logged, or written anywhere else.
+    if ! header_file_write "$key"; then
+      key=
+      BALANCE_PROBLEM="could not create a private header file for the balance read"
+      return 1
+    fi
     key=
+    bound=$BALANCE_PROBE_SECS
+    code=$(curl -sS -m "$bound" -o "$BALANCE_TMP" -w '%{http_code}' \
+      -H "@$BALANCE_HEADER_TMP" -H 'Accept: application/json' \
+      "$BALANCE_ENDPOINT" 2>/dev/null) || rc=$?
+    rm -f -- "$BALANCE_HEADER_TMP"
+    BALANCE_HEADER_TMP=
     if [ "$rc" -ne 0 ]; then
       # `report` states an unreadable balance; `check` stays silent about it for
       # the same reason it stays silent about an unreadable quota snapshot - a
@@ -441,10 +481,22 @@ acquire_balance() {
 
 # The reading history, newest last, as the JSON array the policy consumes.
 #
-# Readings older than four margins are dropped. Four, because the policy averages
-# its drain rate over at most two and needs a window at least one margin long
-# before it will project at all: a second rate window of slack is what keeps that
-# available across a poll the watcher missed or a session that was closed.
+# RETENTION IS ANCHORED ON THE LAST TIME THE BALANCE MOVED, never on the clock.
+# Readings from more than four margins before that movement are dropped - four,
+# because the policy averages its drain rate over at most two and needs a window
+# at least one margin long before it will project at all, so a second rate
+# window of slack keeps that available across a poll the watcher missed.
+#
+# Anchoring on the clock instead is what made an already-warned balance go quiet
+# overnight: the fleet stops spending, the readings go flat, and by morning the
+# drain that produced the warning has aged out of the file, so the guard reads
+# "runway not measured" at exactly the session that has to decide whether to
+# recharge before dispatching. An idle stretch is the absence of a measurement,
+# never a measurement that the drain stopped, so it must not erase one.
+#
+# The flat tail that stretch produces keeps only its newest row, because every
+# row in it carries the same amount and the policy's rate window ends at the
+# movement anyway. That is what stops an idle fleet growing this file forever.
 #
 # THE MOST RECENT POSITIVE READING IS NEVER DROPPED, whatever its age. It is not
 # there for the rate - the policy bounds its own rate window by time, so an old
@@ -460,13 +512,17 @@ history_append() {  # <balance> <available>
   mkdir -p "$STATE" 2>/dev/null || return 0
   [ ! -L "$HISTORY" ] || return 0
   printf '%s\t%s\t%s\n' "$now" "$1" "$2" >>"$HISTORY" 2>/dev/null || return 0
-  retain=$((now - 4 * MARGIN))
-  kept=$(awk -F'\t' -v cutoff="$retain" '
+  retain=$((4 * MARGIN))
+  kept=$(awk -F'\t' -v span="$retain" '
     { rows[NR] = $0; stamp[NR] = $1 + 0; amount[NR] = $2 + 0 }
     amount[NR] > 0 { last_positive = NR }
+    NR > 1 && amount[NR] != amount[NR - 1] { last_move = NR }
     END {
+      if (last_move == 0) last_move = NR
+      cutoff = stamp[last_move] - span
       for (i = 1; i <= NR; i++)
-        if (stamp[i] >= cutoff || i == last_positive) print rows[i]
+        if (i == NR || i == last_positive || (i <= last_move && stamp[i] >= cutoff))
+          print rows[i]
     }' "$HISTORY" 2>/dev/null) || return 0
   [ -n "$kept" ] || return 0
   # The prune arrives by rename, because session start and the watcher can both
@@ -514,12 +570,13 @@ VERDICT_LINE=
 VERDICT_DIGEST=
 
 classify() {
-  local record rc=0 readings
+  local record rc=0 readings lanes_flag
   VERDICT_LINE=
   VERDICT_DIGEST=
   command -v node >/dev/null 2>&1 || { SNAPSHOT_PROBLEM="node is not available to classify the snapshot"; return 1; }
   readings=$(history_json)
-  record=$(node "$POLICY" --min-lanes "$MIN_LANES" \
+  lanes_flag=${LANES_UNREADABLE:+--lanes-unreadable}
+  record=$(node "$POLICY" --min-lanes "$MIN_LANES" ${lanes_flag:+"$lanes_flag"} \
     --balance-margin-secs "$MARGIN" --balance-readings "$readings" \
     --emit record <"$SNAPSHOT" 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then

@@ -799,6 +799,35 @@ out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1007
 assert_not_contains "$out" "40.0" "the balance amount must never be printed by session start either"
 pass "the warning speaks in time left, never in money"
 
+# The balance clause must never be the text a length cap drops, and must never
+# be cut mid-sentence. The lane inventory grows with the fleet and quotes each
+# vendor error verbatim, so it is the clause that overflows; the balance warning
+# is one fixed sentence and is the most urgent thing this guard ever says.
+long_error_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"error","stale":false,
+          "error":"request to https://api.example.com/v1/quota failed, reason: connect ETIMEDOUT 104.18.32.5:443"},
+ "windows":[],
+ "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
+EOF
+}
+home=$(fresh_home balance-clause-survives)
+noisy_lanes=("$(finite_provider claude 5)")
+for n in 1 2 3 4 5 6 7 8 9; do
+  noisy_lanes+=("$(long_error_provider "upstream$n")")
+done
+snapshot "$home/snap.json" "${noisy_lanes[@]}"
+out=$(node "$POLICY" --min-lanes 2 --balance-margin-secs "$MARGIN" \
+  --balance-readings '[{"at":1000000,"balance":40,"available":true},{"at":1003600,"balance":0,"available":false}]' \
+  <"$home/snap.json")
+assert_contains "$out" "1 of 10 provider lanes dispatchable" "the lane inventory must still be reported"
+assert_contains "$out" \
+  "validation provider balance spent - every validation stops until it is recharged" \
+  "the balance warning must reach the captain whole, however long the lane inventory grows"
+[ "${#out}" -le 1000 ] || fail "the reported line must stay within its length cap, got ${#out} characters"
+pass "an overlong lane inventory is what gets trimmed, never the balance warning"
+
 # === what it refuses to guess ===============================================
 
 # A rate taken over less than one validation describes the minute, not the
@@ -864,6 +893,39 @@ run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-zero.json" 1043200 ch
 out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-zero.json" 1046800 report)
 assert_contains "$out" "balance spent" "a balance seen draining to zero must still read as spent the next morning"
 pass "a balance watched falling to zero still reads as spent after a night of flat readings"
+
+# A WARNING THAT HAS FIRED STAYS FIRED UNTIL THE BALANCE ITSELF MOVES.
+#
+# The overnight idle period is the exact moment this whole arm exists for: it is
+# when the captain decides whether to recharge BEFORE dispatching. A guard that
+# warns while the fleet runs and goes quiet while it sleeps does not warn, it
+# accompanies. The drain that produced the warning is a measurement; the flat
+# readings an idle fleet adds afterwards are the absence of one, and they must
+# neither dilute it nor retire it.
+home=$(fresh_home balance-idle-overnight)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the drain to a short runway must fire before the fleet goes idle"
+# Fourteen hours of an idle fleet, every reading the same untouched amount, well
+# past the span the retained history used to cover.
+for at in 1007200 1010800 1025000 1039000 1053000; do
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" "$at" check >/dev/null
+done
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1056600 report)
+assert_contains "$out" "balance runs out in" "an idle night must not turn an already-warned balance back into an unmeasured one"
+assert_not_contains "$out" "runway not measured" "silence is not a measurement that the drain stopped"
+pass "a warned balance still warns at the next session start after an idle night"
+
+# The other direction, so the case above cannot be satisfied by a guard that
+# simply never stops warning: an observed increase IS the balance moving, and it
+# clears the warning by invalidating every rate measured before it.
+balance_body "$home/bal-recharged.json" 90.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json" 1060200 report)
+[ -z "$out" ] || fail "a recharge must clear the warning the idle night preserved, got: $out"
+pass "an observed increase clears a warning that silence could not"
 
 # A top-up invalidates every rate measured across it: what the balance was doing
 # before a recharge says nothing about the runway after one.
@@ -960,8 +1022,33 @@ run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 ch
 out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1003600 report)
 assert_contains "$out" "balance spent" "a spent balance must be reported even when the quota snapshot cannot be read"
 assert_contains "$out" "capacity unknown" "a guard that went half blind must say which half"
-assert_not_contains "$out" "0 of 0 provider lanes" "a snapshot with no lanes establishes nothing and must not read as a verdict"
+assert_not_contains "$out" "0 of 0 provider lanes" "a quota reading that never arrived must not read as a lane verdict"
 pass "the balance verdict survives a quota snapshot that could not be read"
+
+# A BROKEN METER AND A FLEET WITH NO LANES MUST NEVER READ THE SAME.
+#
+# The stand-in above is the guard's own word that the quota call failed, and it
+# has to be told apart from a quota-axi report that genuinely answered with an
+# empty provider list - a misconfigured or broken install. The first is a
+# measuring tool that stopped working and says so; the second is a fleet with
+# nothing left to dispatch on and fires the lane warning like any other.
+home=$(fresh_home empty-provider-list)
+snapshot "$home/snap.json"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "0 of 0 provider lanes dispatchable" "a quota report with no providers is a fleet with no lanes and must fire"
+assert_contains "$out" "below 2" "a fleet with no lanes must name the threshold it fell under"
+assert_not_contains "$out" "capacity unknown" "a snapshot that was read is not a guard that went blind"
+pass "a quota report that answers with no providers still fires the lane warning"
+
+# And the broken meter, with no balance to fall back on either: it is reported
+# in its own words and is never silent, because a guard that cannot see is not a
+# fleet that is fine.
+home=$(fresh_home meter-broken)
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "capacity unknown" "a quota report that could not be read must say so"
+assert_not_contains "$out" "provider lanes dispatchable" "a broken meter must never be reported as a lane count"
+pass "a broken quota reading and an empty provider list are told apart"
 
 # An unreadable balance is not a healthy one. Session start says so; the watcher
 # stays quiet about it for the same reason it stays quiet about an unreadable
@@ -1004,6 +1091,55 @@ out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-lower.json" 100
 out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1010800 check)
 assert_contains "$out" "balance spent" "running out after a warning must report again"
 pass "a shrinking runway reports once, and reaching zero reports again"
+
+# === the credential never reaches a command line ============================
+#
+# macOS `ps` shows every process's full argument list to every local user, so a
+# bearer token handed to curl as an argument is a token published to the machine
+# for the length of the call - and this call runs on the watcher cadence and at
+# every session start, so the window repeats forever. The stub below stands in
+# for curl and records exactly what it was handed. Nothing here reaches a
+# network, a credential store, or a real balance: the key is a literal this file
+# invented and the endpoint is never contacted.
+if command -v jq >/dev/null 2>&1; then
+  home=$(fresh_home balance-credential-argv)
+  snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+  mkdir -p "$home/stub" "$home/tmp"
+  cat >"$home/stub/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$FM_TEST_CURL_ARGV"
+out=
+prev=
+for arg in "$@"; do
+  [ "$prev" = -o ] && out=$arg
+  case "$arg" in
+    @*) [ ! -f "${arg#@}" ] || cat "${arg#@}" >>"$FM_TEST_CURL_HEADERS" ;;
+  esac
+  prev=$arg
+done
+[ -z "$out" ] \
+  || printf '{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"40.00"}]}\n' >"$out"
+printf '200'
+STUB
+  chmod 0700 "$home/stub/curl"
+  : >"$home/curl-argv"
+  : >"$home/curl-headers"
+  FM_HOME="$home" FM_CAPACITY_MIN_LANES=2 FM_CAPACITY_SNAPSHOT="$home/snap.json" \
+    FM_BALANCE_MARGIN_SECS="$MARGIN" FM_CAPACITY_BALANCE_NOW=1000000 \
+    DEEPSEEK_API_KEY=fm-tests-invented-this-key \
+    FM_TEST_CURL_ARGV="$home/curl-argv" FM_TEST_CURL_HEADERS="$home/curl-headers" \
+    TMPDIR="$home/tmp" PATH="$home/stub:$PATH" "$CHECK" report >/dev/null 2>&1
+  assert_contains "$(cat "$home/curl-headers")" "Authorization: Bearer fm-tests-invented-this-key" \
+    "the balance read must still authenticate, through a header file"
+  assert_not_contains "$(cat "$home/curl-argv")" "fm-tests-invented-this-key" \
+    "the credential must never reach the balance probe's argument list"
+  assert_present "$home/state/.balance-history" "the reading must still be recorded"
+  leftover=$(find "$home/tmp" -name 'fm-balance-auth.*' 2>/dev/null | head -n 1)
+  [ -z "$leftover" ] || fail "the header file holding the credential must not outlive the read, got: $leftover"
+  pass "the balance probe authenticates without putting the credential in any argv"
+else
+  printf 'ok - SKIP the credential-argv case needs jq\n'
+fi
 
 # === watcher registration ===================================================
 

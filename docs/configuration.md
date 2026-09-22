@@ -252,6 +252,7 @@ Because the margin is how long a validation takes, the warning starts exactly wh
 
 The drain rate is averaged over at least one whole margin of readings and at most two, because a prepaid balance is spent in bursts and a rate taken across the last few minutes would read as empty-by-lunchtime every time a validation started.
 Until that much history exists, or when a top-up has just reset it, the guard says the runway is not measured rather than projecting from too little, and an unmeasured runway never fires on its own.
+That rate is measured up to the last reading where the balance actually moved, so an idle fleet cannot quietly retire a warning that has already fired: only an observed increase - a recharge - clears it, and the overnight quiet before the captain dispatches again is exactly when the warning has to still be there.
 
 An amount of zero is read as a spent balance only once the account has been seen holding something, because a field that has only ever reported zero is not a purse that ran out.
 Some providers report a permanent zero credits figure on a perfectly healthy account, and treating that as a spent balance would arm a warning that fired on every poll forever.
