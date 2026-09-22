@@ -68,6 +68,14 @@
 # data/, and the no-mistakes definition of done exempts it by name from the
 # scaffold-boilerplate exclusion and carries it whole into --intent, which is
 # the placement that measured as obeyed.
+# Ship and scout briefs also carry the shared-stash limit: the task worktree is
+# isolated but `git stash` is not, because refs/stash lives in the common git
+# directory every working copy of one repository shares. The section names the
+# alternative - a wip commit, or a patch file - and says that the guard a
+# firstmate-launched worker's git runs under refuses stash creation and some
+# removals but cannot stop every destructive one, so `git stash` is not to be
+# used here at all. bin/fm-stash-guard.sh owns what that guard covers and what
+# it does not.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
