@@ -260,9 +260,58 @@ test_correctly_keyed_decisions_draw_no_warning() {
   pass "keys the fold reads, and lines stating none, draw no misplaced-key warning"
 }
 
+# A summary that MENTIONS a key which is itself open on the same task is prose
+# pointing at that decision, not a key this entry lost: --resolve-key with that
+# name resolves against the open entry, so the warning's own claim - listed
+# under "default", --resolve-key will refuse - would be false, and the
+# supervisor would be told to have a worker re-append a line that is not broken.
+test_prose_mention_of_an_open_key_draws_no_warning() {
+  local dir state out
+  dir=$(make_case unread-key-prose)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: pick a [key=red] or [key=blue] theme\n' > "$state/task-theme.status"
+  printf 'needs-decision [key=red]: which shade\n' >> "$state/task-theme.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a prose mention of an open key"
+
+  grep -F 'task-theme [key=red] needs-decision: which shade' "$out" >/dev/null \
+    || fail "precondition: [key=red] must be separately open here:"$'\n'"$(cat "$out")"
+  if grep -F 'stated key NOT read' "$out" >/dev/null; then
+    fail "a prose mention of a key open on the same task drew a misplaced-key warning:"$'\n'"$(cat "$out")"
+  fi
+  pass "a summary mentioning a key that is itself open draws no misplaced-key warning"
+}
+
+# The warning names a slug read from the note BEFORE the per-item cut, so a
+# slug-shaped token this long would carry the section past the bound the drain
+# contract states. It pays the same per-item budget every listed entry pays.
+test_unread_key_warning_is_capped_like_every_other_item() {
+  local dir state out slug line
+  dir=$(make_case unread-key-cap)
+  state="$dir/state"
+  out="$dir/drain.out"
+  slug=$(printf '%300s' '' | tr ' ' k)
+  printf 'needs-decision: choose %s now\n' "[key=$slug]" > "$state/task-wide.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a long slug-shaped token"
+
+  line=$(grep -F 'task-wide states [key=' "$out") \
+    || fail "the long stated key was not reported at all:"$'\n'"$(cat "$out")"
+  [ "${#line}" -le 219 ] \
+    || fail "a misplaced-key warning ran ${#line} characters past the per-item budget"
+  case "$line" in
+    *' [truncated]') : ;;
+    *) fail "an over-long misplaced-key warning was not cut with the shared marker: $line" ;;
+  esac
+  pass "a misplaced-key warning is cut to the same per-item budget as the entries above it"
+}
+
 test_buried_decision_still_surfaces
 test_unread_stated_key_is_warned_about
 test_correctly_keyed_decisions_draw_no_warning
+test_prose_mention_of_an_open_key_draws_no_warning
+test_unread_key_warning_is_capped_like_every_other_item
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it

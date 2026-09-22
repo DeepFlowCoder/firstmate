@@ -195,6 +195,13 @@ test_read_and_keyless_shapes_are_never_reported_as_unread() {
   done <<EOF
 $(status_open_decisions "$dir/t.status")
 EOF
+
+  # A note whose FIRST token carries a malformed slug is the separate
+  # malformed-key shape with its own remedy, so the scan stops there instead of
+  # reporting some later token as the key this record meant to state.
+  if line=$(decision_unread_key default 'weigh [key=bad slug] against [key=fine] later'); then
+    fail "a note whose first token is malformed reported a later token '$line' as its unread key"
+  fi
   pass "keys the parse reads, and lines stating none, are never reported as unread"
 }
 

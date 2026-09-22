@@ -350,9 +350,18 @@ _fm_decision_slug_ok() {  # <slug>
 #
 # Deliberately narrow, so a correctly keyed line is never flagged: a record
 # whose key was read is not a candidate at all, and there a later token is
-# ordinary prose (the parse already treats it that way). Prints the first
-# well-formed slug in the note and returns 0; returns 1 for every other shape,
-# including a note whose only token has an invalid slug.
+# ordinary prose (the parse already treats it that way). Prints the slug of the
+# note's FIRST "[key=" token and returns 0; returns 1 for every other shape,
+# including a note whose first token has an invalid slug, which is the separate
+# malformed-key shape with its own remedy.
+#
+# Reports the shape only. Whether a reported slug is a LOST key is the caller's
+# ledger question, and one answer is always no: a slug that is itself an open
+# key in the same ledger is this note's reference to that decision, because
+# --resolve-key with it resolves there. The caller holding the open set excludes
+# that case before claiming the key was lost (bin/fm-wake-drain.sh does so
+# explicitly; bin/fm-send.sh reaches its scan only for a key its own open set
+# does not hold, so it cannot make the claim).
 #
 # Takes the two fields of a folded "<key>\t<verb>\t<note>" record rather than a
 # raw status line, so the OPEN DECISIONS section and fm-send's --resolve-key
@@ -362,17 +371,16 @@ _fm_decision_slug_ok() {  # <slug>
 decision_unread_key() {  # <folded-key> <folded-note> -> unread slug
   local rest=$2 slug
   [ "$1" = default ] || return 1
-  while :; do
-    case "$rest" in
-      *\[key=*) rest=${rest#*\[key=} ;;
-      *) return 1 ;;
-    esac
-    case "$rest" in
-      *\]*) slug=${rest%%\]*} ;;
-      *) return 1 ;;
-    esac
-    _fm_decision_slug_ok "$slug" && { printf '%s' "$slug"; return 0; }
-  done
+  case "$rest" in
+    *\[key=*) rest=${rest#*\[key=} ;;
+    *) return 1 ;;
+  esac
+  case "$rest" in
+    *\]*) slug=${rest%%\]*} ;;
+    *) return 1 ;;
+  esac
+  _fm_decision_slug_ok "$slug" || return 1
+  printf '%s' "$slug"
 }
 status_line_note() {  # <status-line> -> text after the first colon, trimmed
   local n k

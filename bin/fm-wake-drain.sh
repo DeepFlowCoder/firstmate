@@ -253,8 +253,8 @@ EOF
 # Bounded and silent: prints nothing when no decision is open, which is the
 # common case.
 print_open_decisions_section() {
-  local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
-  local output='' used=0 shown=0 omitted=0 bytes unread='' slug
+  local snapshot=${1:-} open rows task key verb note line item_bytes=220 global_bytes=4000
+  local output='' used=0 shown=0 omitted=0 bytes unread='' unread_omitted=0 slug
 
   if [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
@@ -262,6 +262,9 @@ print_open_decisions_section() {
     open=$(scan_open_decisions_incremental "$STATE") || return 1
   fi
   [ -n "$open" ] || return 0
+  # Newline-anchored copy of the same rows, for the open-key membership test
+  # below: every row reads "<task>\t<key>\t<verb>\t<note>".
+  rows=$'\n'"$open"
 
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
@@ -285,10 +288,26 @@ print_open_decisions_section() {
     # A key this entry states but the fold never read (fm-classify-lib.sh's
     # decision_unread_key). Collected from the row already in hand, so the
     # check costs no extra read and is bounded by the rows printed above.
-    if slug=$(decision_unread_key "$key" "$note"); then
-      unread="$unread  $task states [key=$slug]
-"
+    slug=$(decision_unread_key "$key" "$note") || continue
+    # Unless this task already has that key open: then the token is this note's
+    # reference to that decision, --resolve-key with it resolves, and the
+    # warning below would state the opposite of what the listing shows.
+    case "$rows" in
+      *$'\n'"$task"$'\t'"$slug"$'\t'*) continue ;;
+    esac
+    # Warnings share the section's budget, so the whole section stays inside the
+    # bound AGENTS.md describes rather than growing with the flagged rows.
+    line="  $task states [key=$slug]"
+    fm_cap_line_var "$line" $((item_bytes - 1))
+    line=$FM_LINE_CAP_LINE
+    bytes=$(( ${#line} + 1 ))
+    if [ $((used + bytes)) -gt "$global_bytes" ]; then
+      unread_omitted=$((unread_omitted + 1))
+      continue
     fi
+    unread="$unread$line
+"
+    used=$((used + bytes))
   done <<EOF
 $open
 EOF
@@ -303,9 +322,12 @@ EOF
   # worker believes it opened a named decision and waits, the entry above is
   # listed under the shared "default" key, and the mismatch only surfaces when
   # the answer's --resolve-key refuses - the worst moment to discover it.
-  if [ -n "$unread" ]; then
+  if [ -n "$unread" ] || [ "$unread_omitted" -gt 0 ]; then
     printf 'OPEN DECISIONS: stated key NOT read - these entries name a key inside their summary, where it is prose, so they are listed above under the shared "default" key and --resolve-key with that name will refuse:\n' || return 1
     printf '%s' "$unread" || return 1
+    if [ "$unread_omitted" -gt 0 ]; then
+      printf 'OPEN DECISIONS: %d more stated-key warnings omitted (byte cap)\n' "$unread_omitted" || return 1
+    fi
     printf 'OPEN DECISIONS: a key is only read between the verb and the colon, as in "needs-decision [key=<slug>]: <summary>", so have that worker re-append the line in that form before answering it.\n' || return 1
   fi
   # Answerer-closes hint, printed at exactly the moment an answer gets written:
