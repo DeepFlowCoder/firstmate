@@ -20,7 +20,28 @@ LIB="$ROOT/bin/fm-wake-lib.sh"
 # an arm genuinely fails to exit; a passing case returns as soon as it does.
 ARM_FAIL_EXIT_POLLS=400
 
+# Wall-clock ceiling for the startup-window measurement's poll, per watcher
+# start. Fixed on purpose, and deliberately NOT derived from the threshold that
+# measurement is bounded against: that threshold follows the operator-tunable
+# FM_ARM_CONFIRM_TIMEOUT, so deriving from it would let an exported value on a
+# slow host decide how long this suite is willing to spin. A test's own time
+# budget must never be controlled by the quantity it is measuring.
+STARTUP_POLL_CAP_MS=30000
+
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
+
+# set_mtime <epoch> <path> - BSD date -r, GNU date -d, same idiom the
+# inactive-reconcile suite uses. Thresholds here are tens of seconds, so ages
+# are set rather than waited for.
+set_mtime() {
+  local epoch=$1 path=$2 stamp
+  if stamp=$(date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null); then
+    touch -t "$stamp" "$path"
+  else
+    stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S)
+    touch -t "$stamp" "$path"
+  fi
+}
 
 drain_and_ack() {  # <state>
   local state=$1 err sequence generation
@@ -352,6 +373,82 @@ clock_resolves_ms() {
   return 1
 }
 
+# beatless_claim_aged <dir> <pid> <claim-age-seconds>
+# A watcher lock whose claim is <claim-age> seconds old, over a beacon from an
+# earlier watcher that is older still - the masking shape, aged to order so the
+# tens-of-seconds thresholds can be exercised without waiting them out.
+beatless_claim_aged() {
+  local dir=$1 pid=$2 age=$3 state now
+  state="$dir/state"
+  now=$(date +%s)
+  mkdir -p "$state/.watch.lock"
+  touch "$state/.last-watcher-beat"
+  set_mtime $(( now - age - 10 )) "$state/.last-watcher-beat"
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  set_mtime $(( now - age )) "$state/.watch.lock/pid"
+}
+
+# The first-beat threshold DERIVES from the arm confirmation budget in force
+# rather than restating a constant, and that derivation is the repair for the
+# one real false positive found against criterion 4: the operator who raises
+# FM_ARM_CONFIRM_TIMEOUT because their host is slow was being alarmed for doing
+# exactly the right thing. Every case here asserts what the operator would SEE,
+# so a later edit that collapses the derivation back to a constant is caught by
+# the banner rather than only by a number nothing reads.
+test_first_beat_threshold_follows_the_arm_confirmation_budget() {
+  local dir err
+  # (a) A claim past the 30s floor but still INSIDE a raised budget belongs to a
+  # watcher the arm is legitimately still waiting to confirm. Reporting it down
+  # is the false positive.
+  dir=$(make_case guard-first-beat-raised-budget)
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$dir/state/task.meta"
+  beatless_claim_aged "$dir" "$(dead_pid)" 40
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_ARM_CONFIRM_TIMEOUT=60
+  ! grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "a claim still inside a raised arm confirmation budget was reported as beatless: $(cat "$err")"
+
+  # The counterfactual for (a), on a fixture of the same age: with no raised
+  # budget that identical claim IS past the threshold. Without this, (a) would
+  # pass just as well against a check that never fires at all.
+  dir=$(make_case guard-first-beat-default-budget)
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$dir/state/task.meta"
+  beatless_claim_aged "$dir" "$(dead_pid)" 40
+  run_guard "$dir" FM_GUARD_GRACE=300
+  grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "a 40s beatless claim went unreported at the default threshold: $(cat "$err")"
+
+  # (b) The floor holds when the configured budget is BELOW it. This suite
+  # already runs arms at FM_ARM_CONFIRM_TIMEOUT=1 and 3, so a threshold that
+  # merely tracked the budget would alarm on a seconds-old claim there.
+  dir=$(make_case guard-first-beat-floor)
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$dir/state/task.meta"
+  beatless_claim_aged "$dir" "$(dead_pid)" 5
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_ARM_CONFIRM_TIMEOUT=1
+  ! grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "the 30s floor did not hold under a 1s arm confirmation budget: $(cat "$err")"
+  beatless_claim_aged "$dir" "$(dead_pid)" 40
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_ARM_CONFIRM_TIMEOUT=1
+  grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "a claim past the floor went unreported under a 1s budget: $(cat "$err")"
+
+  # (c) An explicit FM_WATCHER_FIRST_BEAT_GRACE still wins over the derived
+  # value: it is the documented operator override, and every detection case in
+  # this suite configures the threshold through it.
+  dir=$(make_case guard-first-beat-override)
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$dir/state/task.meta"
+  beatless_claim_aged "$dir" "$(dead_pid)" 5
+  run_guard "$dir" FM_GUARD_GRACE=300 FM_ARM_CONFIRM_TIMEOUT=60 FM_WATCHER_FIRST_BEAT_GRACE=1
+  grep -F 'never emitted a first beat' "$err" >/dev/null \
+    || fail "an explicit first-beat grace lost to the derived arm budget: $(cat "$err")"
+  pass "the first-beat threshold follows the arm confirmation budget, keeps its floor, and yields to an explicit override"
+}
+
 # Criterion the detection must not break: there IS a legitimate window between
 # claiming the lock and the first beat. This pins both ends of it - the window is
 # tolerated while it lasts, and the real width of it is measured against the
@@ -400,10 +497,12 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
   runs=0
   # The poll below is bounded by WALL CLOCK, not by an iteration count: `sleep`
   # is an external binary, so each pass costs a fork (~20ms here) and a count
-  # says nothing about how long the loop actually waited. The budget IS the
-  # shipped threshold, because a window that has not closed inside it is exactly
-  # the window that would make the guard alarm on every normal start.
-  budget_ms=$(( default * 1000 ))
+  # says nothing about how long the loop actually waited. The ceiling is the
+  # suite's own fixed cap rather than the threshold, because the threshold
+  # follows an operator knob and would otherwise set this suite's runtime; a
+  # window still open after the cap is already orders of magnitude past the
+  # sub-second width this measures, whatever the threshold happens to be.
+  budget_ms=$STARTUP_POLL_CAP_MS
   n=0
   while [ "$n" -lt 3 ]; do
     dir=$(make_case "guard-startup-measure-$n")
@@ -450,7 +549,7 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
     [ -n "$claim_at" ] \
       || fail "a real watcher never claimed the lock within ${budget_ms}ms, so the startup window could not be verified at all: $(tail -n 3 "$dir/watch.out" 2>/dev/null)"
     [ -n "$beat_at" ] \
-      || fail "a real watcher claimed the lock and had still not emitted a first beat ${budget_ms}ms later, past the ${default}s threshold: normal startup would now raise a false alarm"
+      || fail "a real watcher claimed the lock and had still not emitted a first beat ${budget_ms}ms later, so the startup window is at least that wide against a ${default}s threshold: normal startup would now raise a false alarm"
     delta=$(( beat_at - claim_at ))
     [ "$delta" -ge 0 ] || fail "a real watcher beat BEFORE its own claim (${delta}ms)"
     if [ "$bracketed" -eq 1 ] && [ "$delta" -gt 0 ]; then
@@ -2163,6 +2262,7 @@ test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_claimed_lock_without_a_first_beat_is_detected
+test_first_beat_threshold_follows_the_arm_confirmation_budget
 test_startup_window_before_the_first_beat_is_not_flagged
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
