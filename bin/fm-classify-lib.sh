@@ -221,6 +221,10 @@ status_is_paused_or_captain_held() {  # <status-line>
 # the historical one-open-decision-per-task behavior (a bare "resolved:" closes
 # "default"). A stated key whose slug fails the charset below is rejected (the
 # folds skip the line), never rewritten to "default".
+# That prose rule is load-bearing and also the shape a worker guessing the key's
+# position falls into, so decision_unread_key below reports a folded "default"
+# record whose note still states a key - see its comment for why reporting, not
+# a widened parse, is the fix.
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
@@ -334,6 +338,41 @@ _fm_decision_slug_ok() {  # <slug>
     ''|*[!A-Za-z0-9._-]*) return 1 ;;
     *) return 0 ;;
   esac
+}
+# The slug of a "[key=<slug>]" token a folded decision record STATES but the key
+# parser never read. That is the one shape which silently loses a worker's
+# stated key: the token sits deeper in the note than either position above, so
+# the parse falls through to "default" and no --resolve-key answer can reach the
+# name the worker actually wrote, while both records read as perfectly ordinary.
+# This function only REPORTS that shape; the fold's semantics are unchanged,
+# because refusing the line instead would lose the escalation outright, which is
+# the worse half of the same failure.
+#
+# Deliberately narrow, so a correctly keyed line is never flagged: a record
+# whose key was read is not a candidate at all, and there a later token is
+# ordinary prose (the parse already treats it that way). Prints the first
+# well-formed slug in the note and returns 0; returns 1 for every other shape,
+# including a note whose only token has an invalid slug.
+#
+# Takes the two fields of a folded "<key>\t<verb>\t<note>" record rather than a
+# raw status line, so the OPEN DECISIONS section and fm-send's --resolve-key
+# refusal share this one rule over the open set each already holds instead of
+# each re-walking the status log. bin/fm-brief.sh rule 6 is the writer-side half:
+# it teaches the one position that avoids this.
+decision_unread_key() {  # <folded-key> <folded-note> -> unread slug
+  local rest=$2 slug
+  [ "$1" = default ] || return 1
+  while :; do
+    case "$rest" in
+      *\[key=*) rest=${rest#*\[key=} ;;
+      *) return 1 ;;
+    esac
+    case "$rest" in
+      *\]*) slug=${rest%%\]*} ;;
+      *) return 1 ;;
+    esac
+    _fm_decision_slug_ok "$slug" && { printf '%s' "$slug"; return 0; }
+  done
 }
 status_line_note() {  # <status-line> -> text after the first colon, trimmed
   local n k

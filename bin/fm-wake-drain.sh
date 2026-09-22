@@ -254,7 +254,7 @@ EOF
 # common case.
 print_open_decisions_section() {
   local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
-  local output='' used=0 shown=0 omitted=0 bytes
+  local output='' used=0 shown=0 omitted=0 bytes unread='' slug
 
   if [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
@@ -282,6 +282,13 @@ print_open_decisions_section() {
 "
     used=$((used + bytes))
     shown=$((shown + 1))
+    # A key this entry states but the fold never read (fm-classify-lib.sh's
+    # decision_unread_key). Collected from the row already in hand, so the
+    # check costs no extra read and is bounded by the rows printed above.
+    if slug=$(decision_unread_key "$key" "$note"); then
+      unread="$unread  $task states [key=$slug]
+"
+    fi
   done <<EOF
 $open
 EOF
@@ -291,6 +298,15 @@ EOF
   printf '%s' "$output" || return 1
   if [ "$omitted" -gt 0 ]; then
     printf 'OPEN DECISIONS: %d more omitted (byte cap)\n' "$omitted" || return 1
+  fi
+  # Misplaced-key warning. Without it this loss is silent on both sides: the
+  # worker believes it opened a named decision and waits, the entry above is
+  # listed under the shared "default" key, and the mismatch only surfaces when
+  # the answer's --resolve-key refuses - the worst moment to discover it.
+  if [ -n "$unread" ]; then
+    printf 'OPEN DECISIONS: stated key NOT read - these entries name a key inside their summary, where it is prose, so they are listed above under the shared "default" key and --resolve-key with that name will refuse:\n' || return 1
+    printf '%s' "$unread" || return 1
+    printf 'OPEN DECISIONS: a key is only read between the verb and the colon, as in "needs-decision [key=<slug>]: <summary>", so have that worker re-append the line in that form before answering it.\n' || return 1
   fi
   # Answerer-closes hint, printed at exactly the moment an answer gets written:
   # the send that answers a listed decision also closes it, so closure never

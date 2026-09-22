@@ -18,6 +18,13 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# The scaffold teaches workers where a decision key goes; the classifier is what
+# actually reads it. test_briefs_teach_a_key_position_the_classifier_reads runs
+# the example the scaffold prints through this real fold, so the two can never
+# drift into teaching a position that is not read.
+# shellcheck source=bin/fm-classify-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../bin/fm-classify-lib.sh"
+
 TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
@@ -859,6 +866,72 @@ test_scout_and_secondmate_load_decision_hold_policy() {
 # every crewmate scaffold must also say which way a captain question travels, and
 # why the pane is not a record. The secondmate charter is deliberately excluded:
 # a secondmate is a firstmate in its own home and does converse with the captain.
+# Measured 2026-09-12: the scaffold asked for a bare
+# `needs-decision: {summary of options}` with no key, and showed a key only in
+# the unrelated `working [key=<work-slug>]:` position, so a worker wanting an
+# answerable key had to guess where it goes. One guessed the end of the line,
+# where the fold reads it as prose; the decision opened under the shared
+# "default" key and the loss surfaced only when --resolve-key refused.
+#
+# This drives the real scaffold and the real fold end to end: whatever example
+# the brief prints is taken FROM the generated brief and folded, so a scaffold
+# that ever teaches an unread position fails here rather than in a worker.
+test_briefs_teach_a_key_position_the_classifier_reads() {
+  local home brief kind example f open expected
+  home="$TMP_ROOT/key-position-home"
+  write_registry "$home"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-keypos ship-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold exited non-zero"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" brief-keypos-scout ship-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+  f="$TMP_ROOT/key-position.status"
+
+  for kind in brief-keypos brief-keypos-scout; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+
+    # The keyless form the workers were guessing from must be gone.
+    assert_no_grep 'needs-decision: {summary of options}' "$brief" \
+      "$kind: brief still asks for a keyless needs-decision line"
+    # Exactly one position is taught: the colon-first position the fold also
+    # tolerates must not appear, or the brief is back to showing a choice.
+    assert_no_grep 'needs-decision: [key=' "$brief" \
+      "$kind: brief teaches a second key position"
+
+    # The brief's first keyed form is the fill-in shape; the example that must
+    # actually fold is the concrete one, so drop every candidate still carrying
+    # a placeholder.
+    # shellcheck disable=SC2016 # The backticks are literal brief markup to match on.
+    example=$(grep -o '`needs-decision \[key=[^`]*`' "$brief" | tr -d '`' \
+      | grep -v '[<{]' | head -1)
+    [ -n "$example" ] \
+      || fail "$kind: brief prints no concrete keyed needs-decision example, only placeholders"
+
+    # The falsador: the scaffold's own example, folded by the real classifier,
+    # must open under the key it states - not under "default".
+    printf '%s\n' "$example" > "$f"
+    open=$(status_open_decisions "$f")
+    expected=$(printf 'upstream-remote\tneeds-decision\tkeep the upstream remote or drop it\n')
+    [ "$open" = "$expected" ] \
+      || fail "$kind: the example the brief teaches does not open under its stated key: got '$open' want '$expected'"
+
+    # And the position the measured worker used must NOT pass for it: moving
+    # that same example's key to the end loses the name and is reported.
+    printf 'needs-decision: keep the upstream remote or drop it [key=upstream-remote]\n' > "$f"
+    open=$(status_open_decisions "$f")
+    case "$open" in
+      upstream-remote*) fail "$kind: a trailing key silently passed as a stated key" ;;
+    esac
+    decision_unread_key default "keep the upstream remote or drop it [key=upstream-remote]" >/dev/null \
+      || fail "$kind: the trailing-key form is neither read nor reported"
+  done
+
+  assert_grep 'Put the key BETWEEN the verb and the colon' "$home/data/brief-keypos/brief.md" \
+    "ship brief did not state where the key goes"
+  pass "fm-brief.sh: briefs teach one key position, and it is the one the classifier reads"
+}
+
 test_crewmate_briefs_route_captain_questions_through_the_status_log() {
   local home brief kind
   home="$TMP_ROOT/captain-question-home"
@@ -872,7 +945,7 @@ test_crewmate_briefs_route_captain_questions_through_the_status_log() {
     brief="$home/data/$kind/brief.md"
     assert_present "$brief" "$kind: brief was not scaffolded"
     # shellcheck disable=SC2016 # The literal backticked status verb must remain unexpanded.
-    assert_grep 'append `needs-decision:' "$brief" \
+    assert_grep 'append `needs-decision [key=<slug>]:' "$brief" \
       "$kind: brief did not name the status line that carries a captain question"
     assert_grep 'ONLY way a question reaches the captain' "$brief" \
       "$kind: brief did not make the status log the exclusive route to the captain"
@@ -1080,6 +1153,7 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_briefs_teach_a_key_position_the_classifier_reads
 test_crewmate_briefs_route_captain_questions_through_the_status_log
 test_crewmate_briefs_forbid_reading_the_real_credential_store
 test_scout_and_secondmate_scaffold

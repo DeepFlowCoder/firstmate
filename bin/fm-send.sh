@@ -660,7 +660,21 @@ if [ -n "$RESOLVE_KEYS" ]; then
       RESOLVE_HOLD_KEYS="${RESOLVE_HOLD_KEYS}${RESOLVE_HOLD_KEYS:+ }$resolved_hold_id"
       continue
     fi
-    echo "error: --resolve-key '$k': no open decision or blocker with that key in $RESOLVE_STATUS_FILE, and no captain-held task '$k' or '$RESOLVE_TASK_ID-decision-$k' still open (already closed or mistyped). Re-check the OPEN DECISIONS listing, then resend without that key or with the right one; nothing was sent." >&2
+    # The refusal is correct either way, but "mistyped" is the wrong diagnosis
+    # when the worker DID state this key and only put it where the parse does
+    # not read it. Name that case here, at the exact moment the answer is being
+    # routed, instead of leaving the discovery to guesswork.
+    resolve_misplaced=''
+    while IFS=$(printf '\t') read -r resolve_open_key resolve_open_verb resolve_open_note; do
+      [ -n "$resolve_open_key" ] || continue
+      resolve_unread=$(decision_unread_key "$resolve_open_key" "$resolve_open_note") || continue
+      [ "$resolve_unread" = "$k" ] || continue
+      resolve_misplaced=" An open \"$resolve_open_verb\" entry in that log DOES name [key=$k], but inside its summary where the key is not read, so it folded under \"default\"; have that worker re-append the line with the key between the verb and the colon ($resolve_open_verb [key=$k]: <summary>), then answer it."
+      break
+    done <<EOF
+$resolve_open_set
+EOF
+    echo "error: --resolve-key '$k': no open decision or blocker with that key in $RESOLVE_STATUS_FILE, and no captain-held task '$k' or '$RESOLVE_TASK_ID-decision-$k' still open (already closed or mistyped). Re-check the OPEN DECISIONS listing, then resend without that key or with the right one; nothing was sent.$resolve_misplaced" >&2
     exit 1
   done
 fi

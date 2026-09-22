@@ -215,7 +215,54 @@ test_over_long_decision_note_is_capped_with_a_marker() {
   pass "an over-long open decision is cut to its per-item budget with the shared truncation marker"
 }
 
+# The measured 2026-09-12 shape: a worker states its key at the END of the
+# needs-decision line, where fm-classify-lib.sh reads it as prose, so the entry
+# lists under the shared "default" key and no --resolve-key answer can reach
+# the name the worker wrote. Before this warning both records read as ordinary
+# and the mismatch surfaced only when the answer refused.
+test_unread_stated_key_is_warned_about() {
+  local dir state out
+  dir=$(make_case unread-key)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: gh-axi resuelve upstream mal [key=gh-repo-review-findings]\n' \
+    > "$state/task-unread.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a trailing-key decision"
+
+  grep -F 'OPEN DECISIONS: stated key NOT read' "$out" >/dev/null \
+    || fail "a key stated where it is not read produced no warning:"$'\n'"$(cat "$out")"
+  grep -F 'task-unread states [key=gh-repo-review-findings]' "$out" >/dev/null \
+    || fail "the warning did not name the task and the key it stated:"$'\n'"$(cat "$out")"
+  grep -F 'a key is only read between the verb and the colon' "$out" >/dev/null \
+    || fail "the warning did not state the position that IS read:"$'\n'"$(cat "$out")"
+  pass "a decision whose stated key is not read is warned about, not silently listed as unnamed"
+}
+
+# The warning must stay silent on every correct line, or it becomes noise on
+# the common case and stops being read at all.
+test_correctly_keyed_decisions_draw_no_warning() {
+  local dir state out
+  dir=$(make_case unread-key-quiet)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task-ok.status"
+  printf 'needs-decision: [key=seam-max] cap the seam at 4 or 8\n' > "$state/task-ok2.status"
+  printf 'needs-decision: a plain unkeyed question\n' > "$state/task-plain.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on correctly keyed decisions"
+
+  grep -F 'OPEN DECISIONS' "$out" >/dev/null \
+    || fail "precondition: the correctly keyed decisions should still list as open"
+  if grep -F 'stated key NOT read' "$out" >/dev/null; then
+    fail "a correctly keyed or unkeyed decision drew a misplaced-key warning:"$'\n'"$(cat "$out")"
+  fi
+  pass "keys the fold reads, and lines stating none, draw no misplaced-key warning"
+}
+
 test_buried_decision_still_surfaces
+test_unread_stated_key_is_warned_about
+test_correctly_keyed_decisions_draw_no_warning
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it
