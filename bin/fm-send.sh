@@ -259,6 +259,8 @@ fi
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=/dev/null
+. "$SCRIPT_DIR/fm-captain-hold-lib.sh"
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
@@ -692,7 +694,11 @@ fm_send_close_resolved_keys() {  # <answer-text>
 # already resolved to task ids above, so the intake needs no legacy origin.
 #
 # The intake refuses a caller that is not this home's firstmate, and it exits
-# FM_SEND_HOLD_REFUSE_EXIT to say so. That refusal is the one intake message
+# FM_CAPTAIN_ANSWER_REFUSE_EXIT to say so - the intake's own definition, read
+# from bin/fm-captain-hold-lib.sh rather than repeated here, because a second
+# copy would keep matching only until one side changed and would then miss in
+# silence, handing a refused caller the ordinary wording this relay exists to
+# replace. That refusal is the one intake message
 # whose whole point is to be read by the caller: it names the status line the
 # worker must write instead, so it is relayed verbatim. It is relayed IN
 # ADDITION to this exit's own news, never instead of it: the answer is already
@@ -702,7 +708,6 @@ fm_send_close_resolved_keys() {  # <answer-text>
 # call it may not close. Only the ordinary line's "close it yourself" sentence is
 # dropped, because that names the very command the guard just refused. Every
 # other intake failure keeps its existing wording, and a success stays silent.
-FM_SEND_HOLD_REFUSE_EXIT=4
 fm_send_feed_resolved_holds() {  # <answer-text>
   local note=$1 k lines='' intake_err rc=0
   [ -n "$RESOLVE_HOLD_KEYS" ] || return 0
@@ -713,7 +718,7 @@ fm_send_feed_resolved_holds() {  # <answer-text>
   intake_err=$(printf '%s' "$lines" | "$SCRIPT_DIR/fm-captain-hold.sh" answers \
     --source "a firstmate answer sent to $RESOLVE_TASK_ID" 2>&1 >/dev/null) || rc=$?
   [ "$rc" -ne 0 ] || return 0
-  if [ "$rc" -eq "$FM_SEND_HOLD_REFUSE_EXIT" ]; then
+  if [ "$rc" -eq "$FM_CAPTAIN_ANSWER_REFUSE_EXIT" ]; then
     echo "error: the answer was delivered to $T, but this captain-held task could not be closed: ${RESOLVE_HOLD_KEYS} - do not resend the answer. The intake refused this caller; its own instructions follow." >&2
     printf '%s\n' "$intake_err" >&2
     return 1
