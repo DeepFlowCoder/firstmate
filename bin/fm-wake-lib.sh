@@ -163,10 +163,11 @@ FM_ARM_CONFIRM_BUDGET=${FM_ARM_CONFIRM_TIMEOUT:-$FM_ARM_CONFIRM_DEFAULT}
 # lower, a claim still beatless 30s on has outlived every confirmation budget
 # this project ships, and the floor keeps the margin over the real window from
 # narrowing on the hosts that were never the problem.
-# That real claim-to-first-beat window is far narrower: measured at under a
-# second on an idle home, and pinned against this threshold by the startup-window
-# regression in tests/fm-watcher-lock.test.sh, which fails if growth in the
-# startup path ever eats the margin.
+# That real claim-to-first-beat window is far narrower: measured at 0.4s to 1.5s
+# on one host, varying with host load rather than with how much work the home
+# holds, and pinned against this threshold by the startup-window regression in
+# tests/fm-watcher-lock.test.sh, which fails if growth in the startup path ever
+# eats the margin.
 case "$FM_ARM_CONFIRM_BUDGET" in
   ''|*[!0-9]*) _fm_first_beat_default=30 ;;
   *) _fm_first_beat_default=$FM_ARM_CONFIRM_BUDGET ;;
