@@ -38,8 +38,9 @@
 #           short of the 600s tail that is worth waking someone for.
 #   --quiet print offenders only, with no trailing summary line.
 #
-# Exit 0 no capped job overran by more than the allowance; 1 at least one did and
-# each is printed on stdout; 2 usage error or missing dependency.
+# Exit 0 no capped job overran by more than the allowance and every read
+# succeeded; 1 at least one job overran, a read failed, or a cap was unparsed
+# (each named on stdout); 2 usage error or missing dependency.
 #
 # Reads only, over the network. Requires an authenticated gh.
 set -u
@@ -144,8 +145,13 @@ iso_epoch() {
 # enforced_cap <job-id>: the cap GitHub says the job exceeded, taken from the
 # job's own check-run annotation rather than from the workflow file, so the
 # comparison uses the number that actually fired and needs no YAML parsing.
+# Echoes the cap and returns 0; returns 1 when the job has no cap annotation;
+# returns 2 when the annotation read itself failed.
 enforced_cap() {
-  local job=$1 line dur
+  local job=$1 line dur annotations rc
+  annotations=$(gh api "/repos/$REPO/check-runs/$job/annotations" --jq '.[].message' 2>/dev/null)
+  rc=$?
+  [ "$rc" -eq 0 ] || return 2
   while IFS= read -r line; do
     case $line in
       *"exceeded the maximum execution time of "*)
@@ -159,7 +165,7 @@ enforced_cap() {
         return 0
         ;;
     esac
-  done < <(gh api "/repos/$REPO/check-runs/$job/annotations" --jq '.[].message' 2>/dev/null)
+  done <<< "$annotations"
   return 1
 }
 
@@ -185,17 +191,31 @@ run_count=0
 capped=0
 over=0
 unparsed=0
+read_failed=0
 
 while IFS= read -r run; do
   [ -n "$run" ] || continue
   run_count=$((run_count + 1))
-  jobs=$(gh api "/repos/$REPO/actions/runs/$run/jobs?filter=all&per_page=100" \
-    --jq '.jobs[] | select(.conclusion == "cancelled" or .conclusion == "timed_out") | [.id, .name, .started_at, .completed_at] | @tsv' 2>/dev/null) \
-    || continue
+  if ! jobs=$(gh api "/repos/$REPO/actions/runs/$run/jobs?filter=all&per_page=100" \
+    --jq '.jobs[] | select(.conclusion == "cancelled" or .conclusion == "timed_out") | [.id, .name, .started_at, .completed_at] | @tsv' 2>/dev/null); then
+    read_failed=$((read_failed + 1))
+    printf 'failed read  run %s\n' "$run"
+    continue
+  fi
   while IFS=$'\t' read -r job name started completed; do
     [ -n "${job:-}" ] || continue
     [ -n "${started:-}" ] && [ -n "${completed:-}" ] || continue
-    dur=$(enforced_cap "$job") || continue
+    dur=$(enforced_cap "$job")
+    rc=$?
+    case $rc in
+      0) : ;;
+      1) continue ;;
+      2)
+        read_failed=$((read_failed + 1))
+        printf 'failed read  job %s "%s"  run %s\n' "$job" "$name" "$run"
+        continue
+        ;;
+    esac
     capped=$((capped + 1))
     cap=$(cap_seconds "$dur") || {
       unparsed=$((unparsed + 1))
@@ -215,8 +235,8 @@ while IFS= read -r run; do
 done <<< "$runs"
 
 if [ "$QUIET" -eq 0 ]; then
-  printf 'checked %s runs, %s job(s) cancelled by a cap, %s past the %ss allowance, %s unparsed\n' \
-    "$run_count" "$capped" "$over" "$ALLOWANCE" "$unparsed"
+  printf 'checked %s runs, %s job(s) cancelled by a cap, %s past the %ss allowance, %s unparsed, %s failed read(s)\n' \
+    "$run_count" "$capped" "$over" "$ALLOWANCE" "$unparsed" "$read_failed"
 fi
 
-[ "$over" -eq 0 ] && [ "$unparsed" -eq 0 ]
+[ "$over" -eq 0 ] && [ "$unparsed" -eq 0 ] && [ "$read_failed" -eq 0 ]

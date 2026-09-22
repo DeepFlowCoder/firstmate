@@ -213,6 +213,48 @@ $DETECTOR_OUT" ;;
   pass "a cap duration the detector cannot read is raised instead of skipped"
 }
 
+test_a_failed_jobs_read_is_named_not_skipped() {
+  local d
+  d=$(new_fixture jobs-read-fails)
+  printf '%s\n' 7 > "$d/runs"
+  # No jobs-7 fixture: the stub gh fails the per-run jobs read, which must be
+  # named as a failed read and must not read as "no capped jobs in this run".
+
+  run_detector "$d"
+
+  [ "$DETECTOR_RC" -ne 0 ] \
+    || fail "a failed jobs read must not exit 0, got $DETECTOR_RC:
+$DETECTOR_OUT"
+  case $DETECTOR_OUT in
+    *"failed read"*"run 7"*) : ;;
+    *) fail "the failed read must name the run it could not read, got:
+$DETECTOR_OUT" ;;
+  esac
+  pass "a run whose jobs could not be read is named and fails the sweep"
+}
+
+test_a_failed_annotation_read_is_named_not_skipped() {
+  local d
+  d=$(new_fixture annotation-read-fails)
+  printf '%s\n' 8 > "$d/runs"
+  printf '%s\t%s\t%s\t%s\n' \
+    700 'Lint' 2026-09-13T04:00:00Z 2026-09-13T05:00:00Z > "$d/jobs-8"
+  # No ann-700 fixture: the stub gh fails the annotation read, which must be
+  # named as a failed read, not skipped like a job with no cap annotation.
+
+  run_detector "$d"
+
+  [ "$DETECTOR_RC" -ne 0 ] \
+    || fail "a failed annotation read must not exit 0, got $DETECTOR_RC:
+$DETECTOR_OUT"
+  case $DETECTOR_OUT in
+    *"failed read"*"job 700"*"run 8"*) : ;;
+    *) fail "the failed read must name the job and run it could not read, got:
+$DETECTOR_OUT" ;;
+  esac
+  pass "a job whose annotation could not be read is named and fails the sweep"
+}
+
 test_the_repository_must_be_named_in_owner_repo_spelling() {
   local out rc
   out=$("$DETECTOR" 2>&1)
@@ -238,4 +280,6 @@ test_ordinary_teardown_stays_quiet
 test_the_allowance_is_the_boundary_and_it_moves
 test_a_cancel_that_was_not_a_cap_is_not_counted
 test_a_cap_it_cannot_read_is_raised_not_skipped
+test_a_failed_jobs_read_is_named_not_skipped
+test_a_failed_annotation_read_is_named_not_skipped
 test_the_repository_must_be_named_in_owner_repo_spelling
