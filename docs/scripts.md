@@ -41,6 +41,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-backlog-handoff.sh`  | Move queued backlog items into a secondmate home and durably wake its recorded receiver |
 | `fm-backlog-receive.sh`  | Idempotently ingest one confined remote handoff outbox through tasks-axi             |
 | `fm-captain-hold.sh`     | Hold tasks for the captain, record the captain's answers, gate investigation completion, and report record divergence between the status log and the backlog |
+| `fm-captain-hold-lib.sh` | One owner of the captain-answer refusal exit code, shared by the intake and the relay that recognizes it |
 | `fm-decision-hold.sh`    | One-release compatibility shim mapping the retired decision commands onto fm-captain-hold.sh |
 | `fm-tablero.sh`          | Draft, check, and render the captain's decision board over this home's open captain holds, refusing the page until the recommendations, options, and interaction warnings are written by hand |
 | `fm-panel.sh`            | Convoke a panel of LLM judges on a decision, or collect their verdicts               |
