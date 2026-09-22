@@ -980,10 +980,14 @@ fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; 
 # Refusing is the only safe answer, including when ownership cannot be read at
 # all, because "I could not tell" is not "it is ours".
 #
-# It is decided here, before any pane or worktree is allocated, because nothing
-# about it depends on them and a refusal further down would strand both.
+# This is the cheap half, placed here so an obviously bad state is refused
+# before any pane or worktree is allocated and a refusal strands neither. It is
+# NOT the half that carries the guarantee: minutes pass before the directory is
+# used, and /tmp is world-writable, so the answer can change underneath. The
+# authoritative check runs at the moment of use, where the directory is created.
 TASK_TMP="/tmp/fm-$ID"
-if [ -L "$TASK_TMP" ] || { [ -e "$TASK_TMP" ] && [ ! -O "$TASK_TMP" ]; }; then
+if [ -L "$TASK_TMP" ] \
+  || { [ -e "$TASK_TMP" ] && { [ ! -d "$TASK_TMP" ] || [ ! -O "$TASK_TMP" ]; }; }; then
   echo "error: refusing to spawn task $ID: '$TASK_TMP' already exists and is not a directory owned by this user; this worker's git would execute hooks out of it" >&2
   exit 1
 fi
@@ -2714,10 +2718,24 @@ fi
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
 # later, and teardown cleans one deterministic path. GOTMPDIR (not TMPDIR) is the
 # targeted knob: TMPDIR is too broad (affects every program's temp, not just Go's).
-# TASK_TMP itself, and the refusal that decides it is safe to use, are settled
-# where the task id is validated.
+#
+# This is where the temp root is decided, not where the id is validated. The
+# early check there is a fail-fast; between it and here the spawn waits on a
+# pooled worktree and a backend window, and /tmp is world-writable, so anyone
+# could have put something at this path in the meantime. Creating the directory
+# with a plain `mkdir` closes that window: it either makes the directory, at
+# 0700, or fails because something is already there, and it never follows a
+# symlink the way `mkdir -p` would. Only then is an existing path examined, and
+# it is reused only when it is genuinely a directory of ours, refusing equally
+# when ownership cannot be read, because "I could not tell" is not "it is ours".
+if ! mkdir -m 0700 "$TASK_TMP" 2>/dev/null; then
+  if [ -L "$TASK_TMP" ] || [ ! -d "$TASK_TMP" ] || [ ! -O "$TASK_TMP" ]; then
+    echo "error: refusing to spawn task $ID: '$TASK_TMP' is not a directory owned by this user; this worker's git would execute hooks out of it" >&2
+    exit 1
+  fi
+  chmod 0700 "$TASK_TMP"
+fi
 mkdir -p "$TASK_TMP/gotmp"
-chmod 0700 "$TASK_TMP"
 
 # Stash guard (bin/fm-stash-guard.sh): refs/stash lives in the repository's
 # COMMON git directory, so every working copy of one repository - the primary

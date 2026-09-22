@@ -577,7 +577,7 @@ test_spawn_exports_the_guard_for_a_home_outside_git() {
   wt=$root/wt
   sm=$root/secondmate-home
   launchlog=$root/launch.log
-  id=stash-guard-sm-z1
+  id=stash-guard-sm-z1-$$
   fakebin=$(fm_test_make_spawn_fakebin "$root/fake")
   fm_test_spawn_home "$home" claude
   fm_test_spawn_brief "$home" "$id"
@@ -643,7 +643,7 @@ make_spawn_fixture() {  # <root> <id>
 test_spawn_keeps_its_task_temp_root_private() {
   local root id home wt sm fakebin launchlog
   root=$TMP_ROOT/spawn-private-tmp
-  id=stash-guard-private-z1
+  id=stash-guard-private-z1-$$
   IFS='|' read -r home wt sm fakebin <<EOF
 $(make_spawn_fixture "$root" "$id")
 EOF
@@ -673,7 +673,7 @@ EOF
 test_spawn_refuses_a_task_temp_root_it_does_not_own() {
   local root id home wt sm fakebin launchlog target out code
   root=$TMP_ROOT/spawn-hostile-tmp
-  id=stash-guard-hostile-z1
+  id=stash-guard-hostile-z1-$$
   IFS='|' read -r home wt sm fakebin <<EOF
 $(make_spawn_fixture "$root" "$id")
 EOF
@@ -696,6 +696,52 @@ EOF
   [ ! -s "$launchlog" ] \
     || fail "the spawn typed into the pane despite refusing the temp root"
   pass "the spawn refuses a task temp root that is not its own directory"
+}
+
+# The same refusal, but for the path that actually carries the guarantee. The
+# early check runs before any pane or worktree exists, and the spawn then waits
+# on a pooled worktree and a backend window, which takes seconds to minutes.
+# /tmp is world-writable, so a path that was clear at the early check can be
+# occupied by the time it is used. Here the planting happens during the backend
+# window creation, which is after the early check passed and before the temp
+# root is touched, so only a check at the moment of use can catch it.
+test_spawn_refuses_a_task_temp_root_planted_after_the_early_check() {
+  local root id home wt sm fakebin launchlog target out code
+  root=$TMP_ROOT/spawn-toctou-tmp
+  id=stash-guard-toctou-z1-$$
+  IFS='|' read -r home wt sm fakebin <<EOF
+$(make_spawn_fixture "$root" "$id")
+EOF
+  launchlog=$root/launch.log
+  target=$root/planted-target
+  mkdir -p "$target"
+  printf '%s\n' "/tmp/fm-$id" >> "$FM_TEST_CLEANUP_REGISTRY"
+  [ ! -e "/tmp/fm-$id" ] || fail "the temp root must be clear when the spawn starts"
+
+  # The pane the spawn creates is the hand that plants the path, so the timing
+  # is exact rather than a race the test hopes to win.
+  mv "$fakebin/tmux" "$fakebin/tmux-stub"
+  cat > "$fakebin/tmux" <<SH
+#!/bin/sh
+[ -e "/tmp/fm-$id" ] || ln -s "$target" "/tmp/fm-$id"
+exec "$fakebin/tmux-stub" "\$@"
+SH
+  chmod +x "$fakebin/tmux"
+
+  : > "$launchlog"
+  out=$(FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_LAUNCH_LOG_TEXT_LINES=1 \
+    fm_test_run_spawn "$home" "$wt" "$fakebin" "$id" "$sm" --secondmate 2>&1) && code=0 || code=$?
+
+  [ -L "/tmp/fm-$id" ] \
+    || fail "the fixture never planted the temp root, so this case proves nothing"
+  [ "$code" -ne 0 ] \
+    || fail "a temp root planted after the early check must still be refused"
+  assert_contains "$out" "/tmp/fm-$id" "the refusal must name the directory it rejected"
+  [ -z "$(ls -A "$target")" ] \
+    || fail "the spawn wrote through a symlink planted after the early check"
+  [ ! -s "$launchlog" ] \
+    || fail "the spawn typed into the pane despite refusing the temp root"
+  pass "a temp root planted after the early check is refused at the moment of use"
 }
 
 test_env_refuses_an_unprepared_directory() {
@@ -734,5 +780,6 @@ test_env_appends_to_existing_injected_config
 test_spawn_exports_the_guard_for_a_home_outside_git
 test_spawn_keeps_its_task_temp_root_private
 test_spawn_refuses_a_task_temp_root_it_does_not_own
+test_spawn_refuses_a_task_temp_root_planted_after_the_early_check
 test_env_refuses_an_unprepared_directory
 test_usage_is_refused
