@@ -223,6 +223,21 @@ balance_body() {
     "$3" "$2" "$2" >"$1"
 }
 
+# history_amount_present <history-file> <amount> - true when some reading in the
+# guard's own private history carries exactly this amount.
+#
+# state/.balance-history is persisted state this guard owns, and its row
+# contract is `<epoch>TAB<amount>TAB<available>`, so the amount is compared as a
+# FIELD. A substring search over the same file answers a different question -
+# and a fixed-string matcher carrying a regex escape, which is what stood here,
+# answers none at all: it looks for characters the file can never hold, so it
+# can never fail. Reading the file is legitimate; only the way it was read was
+# not.
+history_amount_present() {  # <history-file> <amount>
+  [ -f "$1" ] || return 1
+  awk -F'\t' -v want="$2" '$2 == want { found = 1 } END { exit !found }' "$1"
+}
+
 # run_balance <home> <snapshot> <margin> <balance-file> <at> <action>
 #
 # Every balance case drives the real guard against a FIXTURE reading stamped at
@@ -910,6 +925,11 @@ balance_body "$home/bal-low.json" 0.40 true
 run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
 out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
 assert_contains "$out" "balance runs out in" "the drain to a short runway must fire before the fleet goes idle"
+# The reading that raised the alarm is on disk NOW. Pinning that here is what
+# keeps the pruning assertion below from being one that cannot fail: the same
+# check is shown answering both ways against the same file.
+history_amount_present "$home/state/.balance-history" 40.00 \
+  || fail "the reading that raised the alarm must be on disk while it is still retained"
 # Fourteen hours of an idle fleet, every reading the same untouched amount, well
 # past the span the retained history used to cover.
 for at in 1007200 1010800 1025000 1039000 1053000; do
@@ -944,7 +964,8 @@ while [ "$cent" -gt 24 ]; do
   at=$((at + 7200))
   cent=$((cent - 1))
 done
-assert_no_grep '40\.00' "$home/state/.balance-history" "the readings that raised the alarm must be long pruned by now"
+history_amount_present "$home/state/.balance-history" 40.00 \
+  && fail "the readings that raised the alarm must be long pruned by now"
 out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-drip.json" "$at" report)
 assert_contains "$out" "balance runs out in" "a standing warning must survive the loss of the readings that raised it"
 pass "a warning outlives the readings that raised it"
@@ -957,6 +978,28 @@ out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json"
 [ -z "$out" ] || fail "a recharge must clear the standing warning, got: $out"
 assert_absent "$home/state/.balance-warning" "a recharge must retire the standing warning, not just silence it"
 pass "an observed increase is the one event that clears a standing warning"
+
+# The clearing event must be recognised whatever SHAPE the previous reading
+# took, and an overdrawn account reads below zero. A comparison that refused a
+# signed amount skipped the clear silently, so the captain recharged to 90.00
+# and the guard went on telling them to recharge before dispatching - the
+# cry-wolf verdict this whole arm exists to avoid, on a balance that was fine.
+home=$(fresh_home balance-negative-then-recharge)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+balance_body "$home/bal-overdrawn.json" -0.10 true
+balance_body "$home/bal-recharged.json" 90.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the drain must raise the warning this case is about clearing"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-overdrawn.json" 1007200 check)
+assert_contains "$out" "balance spent" "an account below zero has been seen holding something and is spent"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json" 1010800 report)
+assert_not_contains "$out" "recharge before dispatching" "a balance just recharged must never be reported as running out"
+[ -z "$out" ] || fail "a recharge after an overdrawn reading must clear the standing warning, got: $out"
+assert_absent "$home/state/.balance-warning" "the clearing event must be seen whatever sign the previous reading carried"
+pass "an overdrawn reading does not block the recharge that clears a standing warning"
 
 # A top-up invalidates every rate measured across it: what the balance was doing
 # before a recharge says nothing about the runway after one.

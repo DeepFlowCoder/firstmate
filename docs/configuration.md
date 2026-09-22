@@ -240,11 +240,15 @@ The guard reads that balance directly, on the same cadence and through the same 
 The reading is one bounded request to the provider's read-only balance endpoint: it runs no model, spends no tokens, and launches no work, so measuring the balance is never what finishes it.
 The credential comes from the `DEEPSEEK_API_KEY` environment variable or from Pi's own credential file, and from nowhere else; this guard opens no interactive credential prompt, and a home with no such credential simply takes no reading and says nothing.
 The amount read is kept in the private `state/.balance-history` and reaches no other surface: the warning states how long is left and what to do, never how much money remains.
+A warning the guard has already raised lives in `state/.balance-warning`, which holds a duration in seconds and never an amount; its presence is the warning itself, and only an observed increase in the balance or `fm-capacity-check.sh disarm` removes it.
 
 The guard warns once the measured drain projects the balance reaching zero sooner than a validation needs to finish, and it names both spans.
-That reaction margin defaults to **8294 seconds**, the 90th percentile of this fleet's own completed validation runs, so nine of ten validations that start at the moment of the warning still finish before the balance is gone; [`docs/verification/dispatch-auth.md`](verification/dispatch-auth.md) owns that measurement and the query that refreshes it.
+That reaction margin defaults to **8294 seconds**, the **90th percentile of 31 completed validation runs** this fleet actually made on that provider between 2026-09-13 and 2026-09-22, so nine of ten validations that start at the moment of the warning still finish before the balance is gone; [`docs/verification/dispatch-auth.md`](verification/dispatch-auth.md) owns that measurement, its exact query, and its exact output, and is what re-measures it.
 The local, gitignored `config/balance-margin-secs` file overrides it with one whole number of seconds, and the `FM_BALANCE_MARGIN_SECS` environment variable overrides that file for a single run.
 A malformed value is reported and falls back to the default, exactly as the lane threshold does.
+
+**Overriding the default replaces a measurement with a choice**, and that measurement is the only reason this warning is worth believing: a threshold nobody measured is a false positive waiting its turn, and a warning that cries wolf is ignored by the third time.
+If the fleet's validations have got longer or shorter, re-run the query in the verification record and write down what it returned; do not type a number that feels about right.
 
 `0` in `config/balance-margin-secs` retires the balance arm alone and leaves the lane arm working, while `0` in `config/capacity-min-lanes` still retires the whole guard, both arms and both vendor calls.
 

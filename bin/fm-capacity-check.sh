@@ -110,13 +110,18 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 MIN_LANES_FILE="$CONFIG/capacity-min-lanes"
 MIN_LANES_DEFAULT=2
 MARGIN_FILE="$CONFIG/balance-margin-secs"
-# The 90th percentile of the wall-clock span this fleet's completed validations
-# spend burning that provider, measured from the pipeline's own run telemetry.
+# 8294 seconds: the 90th percentile of the wall-clock span this fleet's own
+# completed validations spend burning that provider, over n=31 runs from
+# 2026-09-13 to 2026-09-22 (p50 2224, p75 3539, p90 8294, p95 10155, max 38673).
 # Nine of ten validations that start at the moment of the warning still finish
 # inside it. It is not a round number because a round number would be a guess,
 # and a guard that guesses its threshold is a false positive waiting its turn.
-# docs/verification/dispatch-auth.md owns the measurement, its query, and its
-# output, and is the thing to re-run before changing this.
+# docs/verification/dispatch-auth.md owns the measurement, its exact query, and
+# its exact output, and is the thing to re-run before changing this.
+#
+# ANY OVERRIDE REPLACES THAT MEASUREMENT WITH A CHOICE. config/balance-margin-secs
+# and FM_BALANCE_MARGIN_SECS both do, and the measurement is the only reason this
+# warning is worth believing - so re-run the query rather than typing a hunch.
 MARGIN_DEFAULT=8294
 # Hard bound on the balance call. It is small on purpose: under `check` this
 # call shares one FM_CHECK_TIMEOUT with the quota probe, and a balance read that
@@ -148,14 +153,22 @@ Usage:
   fm-capacity-check.sh [report]   print the current capacity verdict when it is actionable
   fm-capacity-check.sh check      print it only when it changed since the last report
   fm-capacity-check.sh arm        write and register state/capacity.check.sh
-  fm-capacity-check.sh disarm     remove the check shim, its trust binding, the record, and the balance history
+  fm-capacity-check.sh disarm     remove the check shim, its trust binding, the record, the balance history, and any standing warning
   fm-capacity-check.sh --help     print this help
 
 The minimum dispatchable lane count comes from config/capacity-min-lanes
 (default 2); 0 retires the whole guard, both arms. The validation provider's
-balance is judged against the reaction margin in config/balance-margin-secs
-(default 8294, the measured 90th-percentile validation span); 0 retires the
-balance arm alone. See docs/configuration.md.
+balance is judged against the reaction margin in config/balance-margin-secs;
+0 retires the balance arm alone. See docs/configuration.md.
+
+THE MARGIN'S DEFAULT IS MEASURED, NOT CHOSEN. 8294 seconds is the 90th
+percentile of this fleet's own completed validation runs on that provider,
+n=31, from 2026-09-13 to 2026-09-22; docs/verification/dispatch-auth.md holds
+the exact query and its exact output and is what re-measures it. Overriding it,
+by config/balance-margin-secs or FM_BALANCE_MARGIN_SECS, replaces that
+measurement with a choice - and an unmeasured threshold is a false positive
+waiting its turn. Re-run the query rather than typing a number.
+
 This guard only reports. It never refuses a dispatch and never signs in.
 EOF
 }
@@ -524,12 +537,16 @@ history_append() {  # <balance> <available>
   # recognised: this reading is larger than the one before it, so the captain
   # recharged. Everything else - a flat reading, a further drain, a poll the
   # watcher missed, a prune - leaves the warning exactly where it stands.
+  # ONE definition of what a stored amount looks like, the same one history_json
+  # reads rows back with. A second, narrower one here refused every reading
+  # carrying a sign, so the comparison was skipped and the clearing event went
+  # unseen: the captain recharged and the guard went on telling them to recharge.
   previous=$(tail -n 1 "$HISTORY" 2>/dev/null | cut -f2)
-  case "$previous" in
-    ''|*[!0-9.]*) ;;
-    *) awk -v a="$previous" -v b="$1" 'BEGIN { exit !(b > a) }' 2>/dev/null \
-      && rm -f -- "$STANDING" 2>/dev/null ;;
-  esac
+  awk -v a="$previous" -v b="$1" '
+    BEGIN {
+      shape = "^-?[0-9]+(\\.[0-9]+)?$"
+      exit !(a ~ shape && b ~ shape && b + 0 > a + 0)
+    }' 2>/dev/null && rm -f -- "$STANDING" 2>/dev/null
   # Created private, not merely renamed private: until the first prune the
   # ambient umask would otherwise leave the captain's amounts world-readable.
   (umask 077; printf '%s\t%s\t%s\n' "$now" "$1" "$2" >>"$HISTORY") 2>/dev/null || return 0
