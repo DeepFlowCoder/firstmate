@@ -49,6 +49,9 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Every scaffold teaches exactly ONE position for a decision key - the one
+# bin/fm-classify-lib.sh actually reads - rendered from the shared
+# KEY_POSITION_RULE below, which owns why that position and no other.
 # Every scaffold also carries the steering-inbox receive-and-ack section:
 # process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
 # handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
@@ -240,6 +243,27 @@ IFS= read -r -d '' WAIT_RULE <<EOF || true
 EOF
 WAIT_RULE=${WAIT_RULE%$'\n'}
 
+# Where a decision key goes, stated once and shared by all three scaffolds, so
+# every place this brief shows a key shows the SAME position. Quoted delimiter:
+# the backticks and brackets below are literal brief text.
+#
+# It exists because the scaffold used to ask for a bare
+# `needs-decision: {summary of options}` with no key at all, and showed a key
+# only in the unrelated `working [key=<work-slug>]:` position, so a worker who
+# wanted an answerable key had to guess where it goes. Measured 2026-09-12: one
+# guessed the end of the line, where bin/fm-classify-lib.sh reads it as prose,
+# so the decision folded under the shared "default" key - the worker waited on a
+# question nobody could route an answer to, and it surfaced only when
+# `fm-send --resolve-key` refused. That classifier now WARNS about the shape
+# (decision_unread_key); this is the half that stops it being written.
+IFS= read -r -d '' KEY_POSITION_RULE <<'EOF' || true
+Put the key BETWEEN the verb and the colon, exactly as in that example: that one position is what names the decision.
+A `[key=...]` written later in the line, after the summary text, is read as part of the summary instead, so the decision opens with no name and no answer can be routed to the name you wrote.
+EOF
+KEY_POSITION_RULE=${KEY_POSITION_RULE%$'\n'}
+# Same text, indented to sit inside the ship and scout scaffolds' numbered rule.
+KEY_POSITION_RULE_INDENTED=$(printf '%s\n' "$KEY_POSITION_RULE" | sed 's/^/   /')
+
 # The credential-store rule, stated once and shared by the ship and scout
 # scaffolds. Quoted delimiter: every backtick and brace below is literal brief
 # text. The refusal is by command NAME on purpose - a runtime detector that
@@ -354,7 +378,8 @@ When a routed-work phase has a supervisor-actionable material change worth repor
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.
 \`resolved\` separately closes an escalated decision or blocker, and only a \`resolved\` line carrying that decision's exact key closes it: a later \`done\` or \`working\` event never does, even when the answer is what started that work.
-The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved: {how it cleared}\` yourself (keyed with \`[key=<slug>]\` if you opened it with one) as your domain resumes.
+The main firstmate's answer normally writes that closing line at answer time; when a blocker or wait clears WITHOUT an answer from the main firstmate, append \`resolved: {how it cleared}\` yourself as your domain resumes, matching how you opened it: keyless when you opened it keyless, and with that same \`[key=<slug>]\` in that same position when you opened it with one.
+$KEY_POSITION_RULE
 Routine internal supervision, heartbeats, retries, and crewmate churn stay inside your own home and must not touch that status file.
 
 # Definition of done
@@ -445,12 +470,14 @@ The report is the only thing that survives, so anything worth keeping must be in
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+   append \`needs-decision [key=<slug>]: {summary of options}\` and stop, for example
+   \`needs-decision [key=upstream-remote]: keep the upstream remote or drop it\`. Firstmate will reply with the decision.
+$KEY_POSITION_RULE_INDENTED
    That status line is the ONLY way a question reaches the captain. Never put a captain question into the
    question dialog your own harness offers, and never record a captain decision yourself: an answer captured
    in your pane reaches no durable record, dies with the session, and can be a default that nobody chose.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
-   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
+   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself as you resume, matching how you opened it: keyless when you opened it keyless, and with that same \`[key=<slug>]\` in that same position when you opened it with one.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
@@ -585,12 +612,14 @@ $RULE1
    possible wedge. Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
-   append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+   append \`needs-decision [key=<slug>]: {summary of options}\` and stop, for example
+   \`needs-decision [key=upstream-remote]: keep the upstream remote or drop it\`. Firstmate will reply with the decision.
+$KEY_POSITION_RULE_INDENTED
    That status line is the ONLY way a question reaches the captain. Never put a captain question into the
    question dialog your own harness offers, and never record a captain decision yourself: an answer captured
    in your pane reaches no durable record, dies with the session, and can be a default that nobody chose.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
-   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
+   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself as you resume, matching how you opened it: keyless when you opened it keyless, and with that same \`[key=<slug>]\` in that same position when you opened it with one.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.

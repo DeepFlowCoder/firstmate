@@ -336,6 +336,38 @@ test_not_open_key_refuses_before_send() {
   pass "fm-send --resolve-key: a key that is not open refuses loudly before anything is sent"
 }
 
+# Measured 2026-09-12: a worker stated its key at the END of the line, where
+# the fold reads it as prose, so the entry opened under "default" and this
+# refusal fired - correctly, but reading as a mistype when the key had in fact
+# been written, just in an unread position. The refusal must name that cause at
+# the moment the answer is being routed, and must still refuse.
+test_refusal_names_a_key_stated_in_an_unread_position() {
+  local dir fb log home err rc
+  dir="$TMP_ROOT/unread-key"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_home unread-key)
+  fm_write_meta "$home/state/t10.meta" "window=sess:fm-t10" "kind=ship"
+  printf 'needs-decision: gh-axi resuelve upstream mal [key=gh-repo-review-findings]\n' \
+    > "$home/state/t10.status"
+
+  : > "$log"
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" t10 --resolve-key gh-repo-review-findings "drop it" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "an unread stated key should still refuse, not close the wrong record"
+  assert_contains "$(cat "$err")" "DOES name [key=gh-repo-review-findings]" \
+    "the refusal should say the key was stated, not merely unknown"
+  assert_contains "$(cat "$err")" "inside its summary where the key is not read" \
+    "the refusal should say where the stated key went wrong"
+  assert_contains "$(cat "$err")" "needs-decision [key=gh-repo-review-findings]: <summary>" \
+    "the refusal should show the position that IS read"
+  [ ! -s "$log" ] || fail "a refused answer still typed text: $(cat "$log")"
+  if grep -F 'resolved' "$home/state/t10.status" >/dev/null; then
+    fail "a refused answer still closed something: $(cat "$home/state/t10.status")"
+  fi
+  pass "fm-send --resolve-key: a key stated where it is not read is refused BY NAME, not as a mistype"
+}
+
 # The close is an enqueue-time fact: the durable record IS the delivery, so a
 # failed doorbell keystroke must not reopen the split-brain where the close
 # waited on an unconfirmable submit.
@@ -739,6 +771,7 @@ test_colon_first_key_position_is_answerable
 test_answer_starts_work_never_orphans
 test_routine_steer_never_closes
 test_not_open_key_refuses_before_send
+test_refusal_names_a_key_stated_in_an_unread_position
 test_failed_ring_still_closes_at_enqueue
 test_failed_enqueue_does_not_close
 test_multiple_keys_close_together

@@ -215,7 +215,103 @@ test_over_long_decision_note_is_capped_with_a_marker() {
   pass "an over-long open decision is cut to its per-item budget with the shared truncation marker"
 }
 
+# The measured 2026-09-12 shape: a worker states its key at the END of the
+# needs-decision line, where fm-classify-lib.sh reads it as prose, so the entry
+# lists under the shared "default" key and no --resolve-key answer can reach
+# the name the worker wrote. Before this warning both records read as ordinary
+# and the mismatch surfaced only when the answer refused.
+test_unread_stated_key_is_warned_about() {
+  local dir state out
+  dir=$(make_case unread-key)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: gh-axi resuelve upstream mal [key=gh-repo-review-findings]\n' \
+    > "$state/task-unread.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a trailing-key decision"
+
+  grep -F 'OPEN DECISIONS: stated key NOT read' "$out" >/dev/null \
+    || fail "a key stated where it is not read produced no warning:"$'\n'"$(cat "$out")"
+  grep -F 'task-unread states [key=gh-repo-review-findings]' "$out" >/dev/null \
+    || fail "the warning did not name the task and the key it stated:"$'\n'"$(cat "$out")"
+  grep -F 'a key is only read between the verb and the colon' "$out" >/dev/null \
+    || fail "the warning did not state the position that IS read:"$'\n'"$(cat "$out")"
+  pass "a decision whose stated key is not read is warned about, not silently listed as unnamed"
+}
+
+# The warning must stay silent on every correct line, or it becomes noise on
+# the common case and stops being read at all.
+test_correctly_keyed_decisions_draw_no_warning() {
+  local dir state out
+  dir=$(make_case unread-key-quiet)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision [key=api-shape]: pick REST or RPC\n' > "$state/task-ok.status"
+  printf 'needs-decision: [key=seam-max] cap the seam at 4 or 8\n' > "$state/task-ok2.status"
+  printf 'needs-decision: a plain unkeyed question\n' > "$state/task-plain.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on correctly keyed decisions"
+
+  grep -F 'OPEN DECISIONS' "$out" >/dev/null \
+    || fail "precondition: the correctly keyed decisions should still list as open"
+  if grep -F 'stated key NOT read' "$out" >/dev/null; then
+    fail "a correctly keyed or unkeyed decision drew a misplaced-key warning:"$'\n'"$(cat "$out")"
+  fi
+  pass "keys the fold reads, and lines stating none, draw no misplaced-key warning"
+}
+
+# A summary that MENTIONS a key which is itself open on the same task is prose
+# pointing at that decision, not a key this entry lost: --resolve-key with that
+# name resolves against the open entry, so the warning's own claim - listed
+# under "default", --resolve-key will refuse - would be false, and the
+# supervisor would be told to have a worker re-append a line that is not broken.
+test_prose_mention_of_an_open_key_draws_no_warning() {
+  local dir state out
+  dir=$(make_case unread-key-prose)
+  state="$dir/state"
+  out="$dir/drain.out"
+  printf 'needs-decision: pick a [key=red] or [key=blue] theme\n' > "$state/task-theme.status"
+  printf 'needs-decision [key=red]: which shade\n' >> "$state/task-theme.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a prose mention of an open key"
+
+  grep -F 'task-theme [key=red] needs-decision: which shade' "$out" >/dev/null \
+    || fail "precondition: [key=red] must be separately open here:"$'\n'"$(cat "$out")"
+  if grep -F 'stated key NOT read' "$out" >/dev/null; then
+    fail "a prose mention of a key open on the same task drew a misplaced-key warning:"$'\n'"$(cat "$out")"
+  fi
+  pass "a summary mentioning a key that is itself open draws no misplaced-key warning"
+}
+
+# The warning names a slug read from the note BEFORE the per-item cut, so a
+# slug-shaped token this long would carry the section past the bound the drain
+# contract states. It pays the same per-item budget every listed entry pays.
+test_unread_key_warning_is_capped_like_every_other_item() {
+  local dir state out slug line
+  dir=$(make_case unread-key-cap)
+  state="$dir/state"
+  out="$dir/drain.out"
+  slug=$(printf '%300s' '' | tr ' ' k)
+  printf 'needs-decision: choose %s now\n' "[key=$slug]" > "$state/task-wide.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed on a long slug-shaped token"
+
+  line=$(grep -F 'task-wide states [key=' "$out") \
+    || fail "the long stated key was not reported at all:"$'\n'"$(cat "$out")"
+  [ "${#line}" -le 219 ] \
+    || fail "a misplaced-key warning ran ${#line} characters past the per-item budget"
+  case "$line" in
+    *' [truncated]') : ;;
+    *) fail "an over-long misplaced-key warning was not cut with the shared marker: $line" ;;
+  esac
+  pass "a misplaced-key warning is cut to the same per-item budget as the entries above it"
+}
+
 test_buried_decision_still_surfaces
+test_unread_stated_key_is_warned_about
+test_correctly_keyed_decisions_draw_no_warning
+test_prose_mention_of_an_open_key_draws_no_warning
+test_unread_key_warning_is_capped_like_every_other_item
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it

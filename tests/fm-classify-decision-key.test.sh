@@ -143,6 +143,95 @@ test_mid_note_prose_mention_is_not_a_stated_key() {
   pass "a [key=x] mentioned mid-note is prose, never an opened or closed key"
 }
 
+# The measured 2026-09-12 loss, and the reason decision_unread_key exists. A
+# worker wrote its key at the END of the line, where the parse reads it as
+# prose (the case above), so the decision folded under the shared "default"
+# key: the worker waited on a named question, the listing showed an unnamed
+# one, and the mismatch surfaced only when the answer's --resolve-key refused.
+# The fold's own semantics deliberately do NOT change - refusing the line would
+# lose the escalation outright - so the requirement is that the shape is
+# REPORTED rather than passing for a correctly keyed line.
+test_trailing_key_is_reported_as_an_unread_stated_key() {
+  local dir note slug
+  dir=$(case_dir unread-key)
+  note='gh-axi resuelve upstream mal [key=gh-repo-review-findings]'
+  printf 'needs-decision: %s\n' "$note" > "$dir/t.status"
+
+  # Unchanged: the line still opens, still under "default", token intact.
+  assert_fold "$dir/t.status" \
+    "$(printf 'default\tneeds-decision\t%s\n' "$note")" \
+    "trailing-key line"
+
+  slug=$(decision_unread_key default "$note") \
+    || fail "a key stated at the end of the line was not reported as unread"
+  [ "$slug" = gh-repo-review-findings ] \
+    || fail "wrong unread slug reported: got '$slug'"
+  pass "a key stated where the parse does not read it is reported, not silently lost"
+}
+
+# The other half: every shape whose key the parse DOES read, and every shape
+# that states no key at all, must stay unreported, or the warning becomes noise
+# on correct lines.
+test_read_and_keyless_shapes_are_never_reported_as_unread() {
+  local dir key verb note line
+  dir=$(case_dir unread-key-negative)
+  # Both read positions, including one whose summary also mentions a key: there
+  # the later token is ordinary prose on a line that is already named.
+  {
+    printf 'needs-decision [key=api-shape]: pick REST or RPC\n'
+    printf 'needs-decision: [key=seam-max] cap the seam at 4 or 8\n'
+    printf 'blocked [key=creds]: compare against [key=api-shape] once unblocked\n'
+    # No key at all, and a malformed one, which is a different (already-rejected)
+    # shape with a different remedy.
+    printf 'needs-decision: plain unkeyed question\n'
+    printf 'blocked: [key=bad slug] malformed, stays note text\n'
+  } > "$dir/t.status"
+
+  while IFS=$(printf '\t') read -r key verb note; do
+    [ -n "$key" ] || continue
+    if line=$(decision_unread_key "$key" "$note"); then
+      fail "correct or keyless entry '$key/$verb' was flagged as unread key '$line'"
+    fi
+  done <<EOF
+$(status_open_decisions "$dir/t.status")
+EOF
+
+  # A note whose FIRST token carries a malformed slug is the separate
+  # malformed-key shape with its own remedy, so the scan stops there instead of
+  # reporting some later token as the key this record meant to state.
+  if line=$(decision_unread_key default 'weigh [key=bad slug] against [key=fine] later'); then
+    fail "a note whose first token is malformed reported a later token '$line' as its unread key"
+  fi
+  pass "keys the parse reads, and lines stating none, are never reported as unread"
+}
+
+# Which `resolved` line actually closes a KEYLESS blocker, pinned as the table
+# bin/fm-brief.sh's self-close template has to match. A blocker opened the way
+# the scaffolds teach it - `blocked: {why}`, no key - folds under the shared
+# "default" key, so only a keyless `resolved:` drops it: an invented slug finds
+# no record to drop, and a literal `<slug>` placeholder is an invalid slug, so
+# the fold skips that line whole. Either keyed form leaves the blocker open
+# forever while the worker resumes believing it closed, which is the same silent
+# divergence on the closing side that the misplaced-key warning catches on the
+# opening side.
+test_only_a_keyless_resolution_closes_a_keyless_blocker() {
+  local dir open
+  dir=$(case_dir keyless-close)
+  open=$(printf 'default\tblocked\tthe no-mistakes daemon error\n')
+  printf 'blocked: the no-mistakes daemon error\n' > "$dir/t.status"
+  assert_fold "$dir/t.status" "$open" "a keyless blocker"
+
+  printf 'resolved [key=daemon]: it recovered\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "$open" "an invented slug closing a keyless blocker"
+
+  printf 'resolved [key=<slug>]: it recovered\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "$open" "a literal <slug> placeholder closing a keyless blocker"
+
+  printf 'resolved: it recovered\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "" "a keyless resolution closing a keyless blocker"
+  pass "only a keyless resolved line closes a blocker opened without a key"
+}
+
 test_malformed_stated_key_never_collapses_to_default() {
   local dir
   dir=$(case_dir malformed)
@@ -268,6 +357,9 @@ test_resolution_closes_across_positions
 test_blocked_is_position_tolerant_like_needs_decision
 test_two_colon_form_decisions_stay_distinct
 test_mid_note_prose_mention_is_not_a_stated_key
+test_trailing_key_is_reported_as_an_unread_stated_key
+test_read_and_keyless_shapes_are_never_reported_as_unread
+test_only_a_keyless_resolution_closes_a_keyless_blocker
 test_malformed_stated_key_never_collapses_to_default
 test_status_line_verb_strips_every_bracket_tag_before_colon
 test_corr_and_key_tags_open_and_close_under_the_stated_key
