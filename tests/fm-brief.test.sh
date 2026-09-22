@@ -932,6 +932,50 @@ test_briefs_teach_a_key_position_the_classifier_reads() {
   pass "fm-brief.sh: briefs teach one key position, and it is the one the classifier reads"
 }
 
+# The closing half of the same contract, driven end to end through the real
+# scaffold and the real fold: a worker opens a blocker the way its brief teaches
+# and self-closes it the way the SAME brief teaches, so the two templates are
+# taken from the generated text rather than restated here. A self-close template
+# that does not match the opening one closes nothing - an invented slug drops no
+# record and a literal `<slug>` placeholder is skipped as an invalid slug - and
+# the blocker stays open forever while the worker resumes believing it closed.
+test_brief_self_close_template_closes_a_blocker_the_same_brief_opens() {
+  local home brief kind opener closer f open
+  home="$TMP_ROOT/self-close-home"
+  write_registry "$home"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-close ship-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold exited non-zero"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" brief-close-scout ship-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-close-mate --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate scaffold exited non-zero"
+  f="$TMP_ROOT/self-close.status"
+
+  for kind in brief-close brief-close-scout brief-close-mate; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+
+    # shellcheck disable=SC2016 # The backticks are literal brief markup to match on.
+    opener=$(grep -o '`blocked: {why}`' "$brief" | tr -d '`' | head -1)
+    [ -n "$opener" ] || fail "$kind: brief prints no blocker-opening template"
+    # shellcheck disable=SC2016 # The backticks are literal brief markup to match on.
+    closer=$(grep -o '`resolved[^`]*{how it cleared}[^`]*`' "$brief" | tr -d '`' | head -1)
+    [ -n "$closer" ] || fail "$kind: brief prints no self-close template"
+
+    printf '%s\n' "${opener/'{why}'/the no-mistakes daemon error}" > "$f"
+    open=$(status_open_decisions "$f")
+    [ -n "$open" ] \
+      || fail "$kind: precondition - the brief's own blocker template opened nothing"
+
+    printf '%s\n' "${closer/'{how it cleared}'/the daemon recovered}" >> "$f"
+    open=$(status_open_decisions "$f")
+    [ -z "$open" ] \
+      || fail "$kind: the brief's self-close template does not close the blocker its own opening template raised: still open '$open'"
+  done
+  pass "fm-brief.sh: the self-close template each brief teaches closes the blocker that brief teaches opening"
+}
+
 test_crewmate_briefs_route_captain_questions_through_the_status_log() {
   local home brief kind
   home="$TMP_ROOT/captain-question-home"
@@ -1154,6 +1198,7 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_briefs_teach_a_key_position_the_classifier_reads
+test_brief_self_close_template_closes_a_blocker_the_same_brief_opens
 test_crewmate_briefs_route_captain_questions_through_the_status_log
 test_crewmate_briefs_forbid_reading_the_real_credential_store
 test_scout_and_secondmate_scaffold

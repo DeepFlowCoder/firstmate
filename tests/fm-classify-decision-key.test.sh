@@ -205,6 +205,33 @@ EOF
   pass "keys the parse reads, and lines stating none, are never reported as unread"
 }
 
+# Which `resolved` line actually closes a KEYLESS blocker, pinned as the table
+# bin/fm-brief.sh's self-close template has to match. A blocker opened the way
+# the scaffolds teach it - `blocked: {why}`, no key - folds under the shared
+# "default" key, so only a keyless `resolved:` drops it: an invented slug finds
+# no record to drop, and a literal `<slug>` placeholder is an invalid slug, so
+# the fold skips that line whole. Either keyed form leaves the blocker open
+# forever while the worker resumes believing it closed, which is the same silent
+# divergence on the closing side that the misplaced-key warning catches on the
+# opening side.
+test_only_a_keyless_resolution_closes_a_keyless_blocker() {
+  local dir open
+  dir=$(case_dir keyless-close)
+  open=$(printf 'default\tblocked\tthe no-mistakes daemon error\n')
+  printf 'blocked: the no-mistakes daemon error\n' > "$dir/t.status"
+  assert_fold "$dir/t.status" "$open" "a keyless blocker"
+
+  printf 'resolved [key=daemon]: it recovered\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "$open" "an invented slug closing a keyless blocker"
+
+  printf 'resolved [key=<slug>]: it recovered\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "$open" "a literal <slug> placeholder closing a keyless blocker"
+
+  printf 'resolved: it recovered\n' >> "$dir/t.status"
+  assert_fold "$dir/t.status" "" "a keyless resolution closing a keyless blocker"
+  pass "only a keyless resolved line closes a blocker opened without a key"
+}
+
 test_malformed_stated_key_never_collapses_to_default() {
   local dir
   dir=$(case_dir malformed)
@@ -332,6 +359,7 @@ test_two_colon_form_decisions_stay_distinct
 test_mid_note_prose_mention_is_not_a_stated_key
 test_trailing_key_is_reported_as_an_unread_stated_key
 test_read_and_keyless_shapes_are_never_reported_as_unread
+test_only_a_keyless_resolution_closes_a_keyless_blocker
 test_malformed_stated_key_never_collapses_to_default
 test_status_line_verb_strips_every_bracket_tag_before_colon
 test_corr_and_key_tags_open_and_close_under_the_stated_key
