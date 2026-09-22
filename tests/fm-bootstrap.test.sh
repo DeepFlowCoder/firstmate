@@ -416,9 +416,10 @@ ROWS
   pass "bootstrap enforces lavish-axi minimum version"
 }
 
-# chrome-devtools-mcp 1.8 made pageId required on every page-scoped tool, so a
-# chrome-devtools-axi below the floor fails every browser call against the
-# @latest server it spawns. Bootstrap must ask for the upgrade rather than let a
+# The chrome-devtools-mcp server chrome-devtools-axi spawns as @latest defaults
+# pageIdRouting to on, which prepends a required pageId to every page-scoped
+# tool; measured against server 1.9.0, a wrapper below 0.1.31 never sends it, so
+# every browser call fails. Bootstrap must ask for the upgrade rather than let a
 # home discover it one broken snapshot at a time.
 test_chrome_devtools_axi_min_version() {
   local label version mode case_dir fakebin out missing n
