@@ -382,3 +382,29 @@ fm_nm_verdict_detail() {  # <run-word>
     *)              printf 'unrecognized run status: %s' "$1" ;;
   esac
 }
+
+# The qualifier for a failure the PROVIDER BALANCE caused, from a run's own
+# `error:` text, or nothing. The caller appends it to the phrase above, the same
+# way the coarse runs-list arm appends its own qualifier.
+#
+# WHY THIS ONE CAUSE HAS A NAME. Three validations died together on a spent
+# balance and the record said only that they had failed, which is half the
+# damage: every other failure is a verdict about the work and this one is not.
+# It means the pipeline never got an answer from the provider at all, so there
+# is nothing to fix, nothing to re-review, and exactly one action that helps.
+# A supervisor who cannot tell the two apart re-runs into the same wall.
+#
+# TWO INDEPENDENT SIGNALS, and either carries the verdict. The vendor's own
+# message is the clearest, but it is un-owned vendor text that a release could
+# reword; HTTP 402 is the standardized "payment required" status underneath it
+# and survives that rewording. Requiring both would let one vendor edit take the
+# distinction away silently, which is the failure mode this exists to prevent.
+# Both are anchored so a bare `402` in a path, a SHA, or a line number cannot
+# answer for a payment status.
+fm_nm_failure_cause_detail() {  # <run-error-text>
+  local text=${1:-}
+  [ -n "$text" ] || return 0
+  if printf '%s' "$text" | grep -Eqi 'insufficient[ _-]balance|(error|status|code)[^0-9]{0,3}402\b|402 payment required'; then
+    printf 'the provider balance ran out, so no validation can run until it is recharged'
+  fi
+}

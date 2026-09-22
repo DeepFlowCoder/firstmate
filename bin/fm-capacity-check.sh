@@ -8,6 +8,25 @@
 # quota-axi snapshot, asks bin/fm-capacity-policy.mjs what it means, and says so
 # before it hurts.
 #
+# It takes a SECOND reading quota-axi cannot supply: the prepaid balance the
+# validation pipeline is drained from. The pipeline runs its own agents on Pi,
+# which runs on a provider balance no quota-axi lane reports, so that balance
+# reaching zero is invisible to every lane and still stops the whole fleet -
+# measured on 2026-09-18 and again on 2026-09-19, when validations in flight
+# died together on `402 Insufficient Balance` with no warning at all. The
+# balance arm lives HERE, in the guard the home already has armed, rather than
+# in a second watcher with its own record and its own way of shouting.
+#
+# HOW THE BALANCE IS READ, and what it deliberately is not. It is one bounded
+# GET of the provider's read-only balance endpoint: no model is called, no
+# tokens are spent, and no work is launched, so measuring the balance can never
+# itself be what finishes it. The credential comes from the environment or from
+# Pi's own credential file, never from the captain's keychain or password
+# manager: this script opens no interactive credential prompt, for the same
+# reason it passes no --allow-keychain-prompt to quota-axi. The amount read is
+# appended to state/.balance-history, which is private, and reaches no other
+# surface: every line this script prints speaks in time left, never in money.
+#
 # It only ever REPORTS. It never refuses a dispatch, never picks a lane, never
 # touches a credential, and never installs or signs in to anything. That
 # restraint is deliberate and is the one way this guard differs from the
@@ -33,7 +52,8 @@
 #            FM_CHECK_INTERVAL cadence and turns its one line into a `check:`
 #            wake. Idempotent; bin/fm-bootstrap.sh calls it at every locked
 #            session start.
-#   disarm   Remove the shim, its trust binding, and the report record.
+#   disarm   Remove the shim, its trust binding, the report record, and the
+#            balance reading history.
 #
 # An unmeasurable snapshot is silent under `check` on purpose. quota-axi talks to
 # vendors, so a transient timeout is ordinary, and turning each one into a wake
@@ -62,6 +82,29 @@
 #                           be falsified against a fleet that is not this one.
 #   FM_CAPACITY_PROBE_SECS  hard bound on the quota-axi call (default 20, valid
 #                           1..120).
+#   FM_BALANCE_MARGIN_SECS  reaction margin in seconds, overriding
+#                           config/balance-margin-secs for one run. A whole
+#                           number; 0 retires the balance arm and stops its
+#                           reading. Unset or empty defers to the file.
+#                           docs/configuration.md owns the operator view and
+#                           docs/verification/dispatch-auth.md owns the
+#                           measurement the default comes from.
+#   FM_CAPACITY_BALANCE     read the balance from this file instead of calling
+#                           the provider. Same JSON body the endpoint returns.
+#                           For tests and for re-examining a captured reading by
+#                           hand; it is what lets the balance arm be falsified
+#                           without a credential, a network, or a real balance.
+#   FM_CAPACITY_BALANCE_NOW epoch second to stamp this reading with, instead of
+#                           the clock. Tests only; it is what lets a history be
+#                           built at chosen spacing.
+#   FM_BALANCE_CREDENTIAL_FILE  Pi credential file the API key is read from
+#                           (default $HOME/.pi/agent/auth.json). The
+#                           DEEPSEEK_API_KEY environment variable wins over it.
+#   FM_BALANCE_PROBE_SECS   hard bound on the balance call (default 5, valid
+#                           1..60). It is small on purpose: under `check` this
+#                           call shares one FM_CHECK_TIMEOUT with the quota
+#                           probe, and a balance read that eats the budget would
+#                           take the lane arm down with it.
 set -u
 export LC_ALL=C
 
@@ -71,6 +114,17 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 MIN_LANES_FILE="$CONFIG/capacity-min-lanes"
 MIN_LANES_DEFAULT=2
+MARGIN_FILE="$CONFIG/balance-margin-secs"
+# The 90th percentile of the wall-clock span this fleet's completed validations
+# spend burning that provider, measured from the pipeline's own run telemetry.
+# Nine of ten validations that start at the moment of the warning still finish
+# inside it. It is not a round number because a round number would be a guess,
+# and a guard that guesses its threshold is a false positive waiting its turn.
+# docs/verification/dispatch-auth.md owns the measurement, its query, and its
+# output, and is the thing to re-run before changing this.
+MARGIN_DEFAULT=8294
+BALANCE_ENDPOINT='https://api.deepseek.com/user/balance'
+HISTORY="$STATE/.balance-history"
 RECORD="$STATE/.capacity"
 CHECK_ID=capacity
 CHECK_SHIM="$STATE/$CHECK_ID.check.sh"
@@ -91,11 +145,14 @@ Usage:
   fm-capacity-check.sh [report]   print the current capacity verdict when it is actionable
   fm-capacity-check.sh check      print it only when it changed since the last report
   fm-capacity-check.sh arm        write and register state/capacity.check.sh
-  fm-capacity-check.sh disarm     remove the check shim, its trust binding, and the record
+  fm-capacity-check.sh disarm     remove the check shim, its trust binding, the record, and the balance history
   fm-capacity-check.sh --help     print this help
 
 The minimum dispatchable lane count comes from config/capacity-min-lanes
-(default 2); 0 retires the guard. See docs/configuration.md.
+(default 2); 0 retires the whole guard, both arms. The validation provider's
+balance is judged against the reaction margin in config/balance-margin-secs
+(default 8294, the measured 90th-percentile validation span); 0 retires the
+balance arm alone. See docs/configuration.md.
 This guard only reports. It never refuses a dispatch and never signs in.
 EOF
 }
@@ -106,28 +163,35 @@ die_usage() {
   exit 2
 }
 
-# The configured threshold, with the same contract bin/fm-disk-space-lib.sh
+# The configured thresholds, with the same contract bin/fm-disk-space-lib.sh
 # applies to its own: a present but malformed source falls back to the default
 # rather than switching the guard off, because a guard that disables itself on a
 # typo is worse than useless. 0 is the captain's explicit off switch, not an
-# error. MIN_LANES_PROBLEM carries the whole sentence for `report` to append, so
-# the operator learns their file was rejected instead of silently ignored.
-MIN_LANES=$MIN_LANES_DEFAULT
-MIN_LANES_PROBLEM=
+# error. The PROBLEM variable carries the whole sentence for `report` to append,
+# so the operator learns their file was rejected instead of silently ignored.
+#
+# Both thresholds resolve through one owner so a second setting cannot drift
+# into a second contract: env wins over file, file wins over default, and a
+# malformed value anywhere is reported and replaced by the default.
+# RESOLVED_VALUE and RESOLVED_PROBLEM are its out-parameters.
+RESOLVED_VALUE=
+RESOLVED_PROBLEM=
 
-resolve_min_lanes() {
-  local source='' value='' reason=''
-  MIN_LANES=$MIN_LANES_DEFAULT
-  MIN_LANES_PROBLEM=
-  if [ -n "${FM_CAPACITY_MIN_LANES:-}" ]; then
-    source=FM_CAPACITY_MIN_LANES
-    value=$FM_CAPACITY_MIN_LANES
-  elif [ -e "$MIN_LANES_FILE" ]; then
-    source="config/capacity-min-lanes"
-    if [ ! -f "$MIN_LANES_FILE" ] || [ -L "$MIN_LANES_FILE" ]; then
+# resolve_threshold <env-name> <env-value> <file> <file-label> <default> <max-digits> <units>
+resolve_threshold() {
+  local env_name=$1 env_value=$2 file=$3 file_label=$4 default=$5 max_digits=$6 units=$7
+  local source='' value='' reason='' pattern=''
+  RESOLVED_VALUE=$default
+  RESOLVED_PROBLEM=
+  if [ -n "$env_value" ]; then
+    source=$env_name
+    value=$env_value
+  elif [ -e "$file" ]; then
+    source=$file_label
+    if [ ! -f "$file" ] || [ -L "$file" ]; then
       reason="not a regular file"
     else
-      value=$(cat "$MIN_LANES_FILE" 2>/dev/null) || value=
+      value=$(cat "$file" 2>/dev/null) || value=
     fi
   fi
   [ -n "$source" ] || return 0
@@ -137,13 +201,44 @@ resolve_min_lanes() {
     # wrote.
     value=${value#"${value%%[![:space:]]*}"}
     value=${value%"${value##*[![:space:]]}"}
+    # One '?' per permitted digit, then one more: the pattern matches anything
+    # LONGER than the cap, which is what gets rejected.
+    pattern=$(printf '%*s' "$((max_digits + 1))" '' | tr ' ' '?')
+    # shellcheck disable=SC2254  # the length cap is a glob pattern by construction
     case "$value" in
-      ''|*[!0-9]*|???*) reason="value must be a whole number of lanes from 0 to 99" ;;
-      *) MIN_LANES=$((10#$value)) ;;
+      ''|*[!0-9]*|$pattern*) reason="value must be a whole number of $units" ;;
+      *) RESOLVED_VALUE=$((10#$value)) ;;
     esac
   fi
   [ -z "$reason" ] \
-    || MIN_LANES_PROBLEM="invalid $source - $reason; guarding at the default $MIN_LANES_DEFAULT"
+    || RESOLVED_PROBLEM="invalid $source - $reason; guarding at the default $default"
+}
+
+MIN_LANES=$MIN_LANES_DEFAULT
+MIN_LANES_PROBLEM=
+
+resolve_min_lanes() {
+  resolve_threshold FM_CAPACITY_MIN_LANES "${FM_CAPACITY_MIN_LANES:-}" \
+    "$MIN_LANES_FILE" "config/capacity-min-lanes" "$MIN_LANES_DEFAULT" 2 "lanes from 0 to 99"
+  MIN_LANES=$RESOLVED_VALUE
+  MIN_LANES_PROBLEM=$RESOLVED_PROBLEM
+}
+
+MARGIN=$MARGIN_DEFAULT
+MARGIN_PROBLEM=
+
+resolve_margin() {
+  resolve_threshold FM_BALANCE_MARGIN_SECS "${FM_BALANCE_MARGIN_SECS:-}" \
+    "$MARGIN_FILE" "config/balance-margin-secs" "$MARGIN_DEFAULT" 6 "seconds from 0 to 999999"
+  MARGIN=$RESOLVED_VALUE
+  MARGIN_PROBLEM=$RESOLVED_PROBLEM
+}
+
+balance_probe_bound() {
+  local bound=${FM_BALANCE_PROBE_SECS:-5}
+  case "$bound" in ''|*[!0-9]*|0) bound=5 ;; esac
+  [ "$bound" -le 60 ] || bound=5
+  printf '%s\n' "$bound"
 }
 
 probe_bound() {
@@ -153,11 +248,13 @@ probe_bound() {
   # The probe has to finish inside the watcher's own per-check bound. A run the
   # watcher kills prints nothing and writes no record, so it would repeat that
   # silence on every poll and the guard would be quietly dead. Leave room for
-  # node to start and classify on top of the probe itself.
+  # node to start and classify on top of the probe itself, and for the balance
+  # read that now shares the same budget - the lane arm must not be starved by
+  # the arm that was added beside it.
   if [ "$1" = check ]; then
     ceiling=${FM_CHECK_TIMEOUT:-30}
     case "$ceiling" in ''|*[!0-9]*) ceiling=30 ;; esac
-    ceiling=$((ceiling - 5))
+    ceiling=$((ceiling - 5 - $(balance_probe_bound)))
     [ "$ceiling" -ge 1 ] || ceiling=1
     [ "$bound" -le "$ceiling" ] || bound=$ceiling
   fi
@@ -205,12 +302,197 @@ acquire_snapshot() {
   SNAPSHOT=$SNAPSHOT_TMP
 }
 
+# Publish a stand-in snapshot that reports no providers at all.
+#
+# It establishes nothing about lanes and is classified as such - the lane arm
+# cannot fire on it. What it does do is keep the balance verdict reachable when
+# the OTHER vendor call failed: a spent balance stops every validation in the
+# fleet, and having that go unreported because quota-axi timed out, or answered
+# with something unreadable, would put back exactly the silence this guard
+# exists to end. The snapshot problem is reported either way, so a guard that
+# has gone half blind still says which half.
+balance_only_snapshot() {
+  [ -n "$BALANCE_READING" ] || return 1
+  if [ -z "$SNAPSHOT_TMP" ]; then
+    SNAPSHOT_TMP=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-capacity.XXXXXX" 2>/dev/null) || return 1
+  fi
+  printf '{"schemaVersion":5,"providers":[]}\n' >"$SNAPSHOT_TMP" 2>/dev/null || return 1
+  SNAPSHOT=$SNAPSHOT_TMP
+  return 0
+}
+
+acquire_snapshot_or_balance_only() {
+  acquire_snapshot "$1" && return 0
+  balance_only_snapshot
+}
+
+BALANCE_TMP=
+
 cleanup_snapshot() {
   [ -z "$SNAPSHOT_TMP" ] || rm -f -- "$SNAPSHOT_TMP"
   SNAPSHOT_TMP=
+  [ -z "$BALANCE_TMP" ] || rm -f -- "$BALANCE_TMP"
+  BALANCE_TMP=
 }
 
 trap cleanup_snapshot EXIT
+
+# The API key for the balance read, on stdout, or nothing.
+#
+# It is read from the environment or from Pi's own credential file, and from
+# nowhere else. This script must never be what opens an interactive credential
+# prompt: such a prompt holds the captain's screen until they answer it while
+# supervision still reads their work as running, so no keychain and no password
+# manager is ever reached from here, directly or through a helper. A credential
+# that is not already sitting where Pi keeps it is simply absent, and an absent
+# credential leaves the balance unread rather than asking anybody for one.
+balance_credential() {
+  local file=${FM_BALANCE_CREDENTIAL_FILE:-$HOME/.pi/agent/auth.json} key=
+  if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+    printf '%s\n' "$DEEPSEEK_API_KEY"
+    return 0
+  fi
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  key=$(jq -r 'if (.deepseek.key | type) == "string" then .deepseek.key else empty end' "$file" 2>/dev/null) || return 1
+  [ -n "$key" ] || return 1
+  printf '%s\n' "$key"
+}
+
+# Publishes BALANCE_READING as "<balance> <0|1>", or fails with BALANCE_PROBLEM
+# set when the failure is worth stating and empty when it is not.
+#
+# An absent credential, an absent jq, and an absent curl are all SILENT. They
+# are the shape of a home that does not run its validations on this provider at
+# all, and a guard that nags every such home about a balance it does not have is
+# the guard everybody learns to scroll past.
+BALANCE_READING=
+BALANCE_PROBLEM=
+
+acquire_balance() {
+  local action=$1 body='' key='' code='' bound rc=0
+  BALANCE_READING=
+  BALANCE_PROBLEM=
+  command -v jq >/dev/null 2>&1 || return 1
+  if [ -n "${FM_CAPACITY_BALANCE:-}" ]; then
+    if [ ! -r "$FM_CAPACITY_BALANCE" ]; then
+      BALANCE_PROBLEM="cannot read the balance at FM_CAPACITY_BALANCE"
+      return 1
+    fi
+    body=$FM_CAPACITY_BALANCE
+  else
+    command -v curl >/dev/null 2>&1 || return 1
+    key=$(balance_credential) || return 1
+    BALANCE_TMP=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-balance.XXXXXX" 2>/dev/null) || {
+      BALANCE_PROBLEM="could not create a temporary file for the balance reading"
+      return 1
+    }
+    bound=$(balance_probe_bound)
+    # A read of the balance, and only that: no model is called and no work is
+    # launched, so this probe can never be what spends what it is measuring.
+    # The key travels in a header and is never echoed, logged, or stored.
+    code=$(curl -sS -m "$bound" -o "$BALANCE_TMP" -w '%{http_code}' \
+      -H "Authorization: Bearer $key" -H 'Accept: application/json' \
+      "$BALANCE_ENDPOINT" 2>/dev/null) || rc=$?
+    key=
+    if [ "$rc" -ne 0 ]; then
+      # `report` states an unreadable balance; `check` stays silent about it for
+      # the same reason it stays silent about an unreadable quota snapshot - a
+      # vendor call that times out now and then is ordinary, and one wake per
+      # timeout is the noise this guard exists to avoid.
+      BALANCE_PROBLEM="the provider did not answer the balance read within ${bound}s"
+      [ "$action" = report ] || BALANCE_PROBLEM=
+      return 1
+    fi
+    if [ "$code" != 200 ]; then
+      BALANCE_PROBLEM="the provider answered the balance read with HTTP $code"
+      [ "$action" = report ] || BALANCE_PROBLEM=
+      return 1
+    fi
+    body=$BALANCE_TMP
+  fi
+  # One jq read of the documented body, and the amount never leaves this
+  # pipeline in any captain-facing form. `is_available` is the producer's own
+  # statement that the balance can still serve work, which is why it is read
+  # rather than inferred from the amount reaching exactly zero.
+  #
+  # EXACTLY ONE currency, or no reading at all. `balance_infos` carries one
+  # entry per currency, and a runway is a projection of ONE quantity draining:
+  # adding two currencies together would produce a number the account does not
+  # have and a projection of nothing real. Every reading of this account has
+  # reported one entry (docs/verification/dispatch-auth.md), so a second one is
+  # a shape this guard has never verified, and the rule here is the same one it
+  # applies to every unestablished fact - say so rather than guess.
+  BALANCE_READING=$(jq -r '
+    (.balance_infos // []) as $infos
+    | if ($infos | length) != 1 then empty
+      else
+        ($infos[0].total_balance | tonumber?) as $total
+        | if $total == null then empty
+          else "\($total) \(if .is_available == false then 0 else 1 end)" end
+      end' "$body" 2>/dev/null) || BALANCE_READING=
+  if [ -z "$BALANCE_READING" ]; then
+    BALANCE_PROBLEM="the provider's balance answer could not be read as one draining balance"
+    [ "$action" = report ] || BALANCE_PROBLEM=
+    return 1
+  fi
+  return 0
+}
+
+# The reading history, newest last, as the JSON array the policy consumes.
+#
+# Readings older than twice the margin are dropped. Twice, because the policy
+# needs a window at least one margin long before it will project at all, and a
+# second margin of slack is what keeps that window available across a poll the
+# watcher missed or a session that was closed. Retaining more would only average
+# the present into a longer past.
+history_append() {  # <balance> <available>
+  local now retain kept tmp
+  now=${FM_CAPACITY_BALANCE_NOW:-$(date +%s)}
+  case "$now" in ''|*[!0-9]*) now=$(date +%s) ;; esac
+  mkdir -p "$STATE" 2>/dev/null || return 0
+  [ ! -L "$HISTORY" ] || return 0
+  printf '%s\t%s\t%s\n' "$now" "$1" "$2" >>"$HISTORY" 2>/dev/null || return 0
+  retain=$((now - 2 * MARGIN))
+  kept=$(awk -F'\t' -v cutoff="$retain" '$1 >= cutoff' "$HISTORY" 2>/dev/null) || return 0
+  [ -n "$kept" ] || return 0
+  # The prune arrives by rename, because session start and the watcher can both
+  # be taking a reading: a reader must see the whole history before or the whole
+  # history after, never a file being rewritten under it.
+  tmp=$(umask 077; mktemp "$STATE/.fm-balance-history.XXXXXX" 2>/dev/null) || return 0
+  if printf '%s\n' "$kept" >"$tmp" 2>/dev/null; then
+    mv -f -- "$tmp" "$HISTORY" 2>/dev/null || rm -f -- "$tmp"
+  else
+    rm -f -- "$tmp"
+  fi
+  return 0
+}
+
+history_json() {
+  [ -f "$HISTORY" ] && [ ! -L "$HISTORY" ] || { printf '[]\n'; return 0; }
+  awk -F'\t' '
+    BEGIN { printf "[" ; sep = "" }
+    NF >= 3 && $1 ~ /^[0-9]+$/ && $2 ~ /^-?[0-9]+(\.[0-9]+)?$/ {
+      printf "%s{\"at\":%s,\"balance\":%s,\"available\":%s}", sep, $1, $2, ($3 == "0" ? "false" : "true")
+      sep = ","
+    }
+    END { printf "]\n" }' "$HISTORY" 2>/dev/null || printf '[]\n'
+}
+
+# Take one balance reading and add it to the history, when the balance arm is
+# armed at all. It is deliberately separate from acquire_snapshot: a balance the
+# guard could not read must never take the lane verdict down with it, and a
+# quota snapshot that failed must not cost the balance history a reading. Every
+# failure here is already carried in BALANCE_PROBLEM, so this reports nothing
+# and never fails a caller.
+take_balance_reading() {  # <action>
+  local balance available
+  [ "$MARGIN" -gt 0 ] || return 0
+  acquire_balance "$1" || return 0
+  balance=${BALANCE_READING%% *}
+  available=${BALANCE_READING##* }
+  history_append "$balance" "$available"
+}
 
 # Publishes VERDICT_LINE and VERDICT_DIGEST, both empty when the fleet is fine.
 # Returns non-zero only when the snapshot could not be classified at all, which
@@ -219,11 +501,14 @@ VERDICT_LINE=
 VERDICT_DIGEST=
 
 classify() {
-  local record rc=0
+  local record rc=0 readings
   VERDICT_LINE=
   VERDICT_DIGEST=
   command -v node >/dev/null 2>&1 || { SNAPSHOT_PROBLEM="node is not available to classify the snapshot"; return 1; }
-  record=$(node "$POLICY" --min-lanes "$MIN_LANES" --emit record <"$SNAPSHOT" 2>/dev/null) || rc=$?
+  readings=$(history_json)
+  record=$(node "$POLICY" --min-lanes "$MIN_LANES" \
+    --balance-margin-secs "$MARGIN" --balance-readings "$readings" \
+    --emit record <"$SNAPSHOT" 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then
     SNAPSHOT_PROBLEM="quota-axi's report could not be read (policy exit $rc)"
     return 1
@@ -233,15 +518,34 @@ classify() {
   VERDICT_LINE=${record#*	}
 }
 
+# A snapshot the policy REFUSED is the same blind spot as one that never
+# arrived, so it gets the same stand-in. The refusal itself is preserved and
+# still reported: falling back must not turn an unreadable quota report into a
+# clean reading.
+classify_or_balance_only() {
+  local problem
+  classify && return 0
+  problem=$SNAPSHOT_PROBLEM
+  balance_only_snapshot || return 1
+  classify || { SNAPSHOT_PROBLEM=$problem; return 1; }
+  SNAPSHOT_PROBLEM=$problem
+  return 0
+}
+
 action_report() {
   resolve_min_lanes
   # 0 is the captain's own off switch: a retired guard probes nothing and says
   # nothing, because retiring it means stopping the vendor calls, not just the
-  # verdict.
+  # verdict. It retires both arms, so a captain who switched this guard off does
+  # not find it quietly calling a provider again.
   [ "$MIN_LANES" -eq 0 ] && return 0
-  if ! acquire_snapshot report || ! classify; then
+  resolve_margin
+  take_balance_reading report
+  if ! acquire_snapshot_or_balance_only report || ! classify_or_balance_only; then
     [ -z "$SNAPSHOT_PROBLEM" ] || printf 'capacity unknown - %s\n' "$SNAPSHOT_PROBLEM"
+    [ -z "$BALANCE_PROBLEM" ] || printf 'balance unknown - %s\n' "$BALANCE_PROBLEM"
     [ -z "$MIN_LANES_PROBLEM" ] || printf '%s\n' "$MIN_LANES_PROBLEM"
+    [ -z "$MARGIN_PROBLEM" ] || printf '%s\n' "$MARGIN_PROBLEM"
     # A failed read leaves no verdict to record. Clear any stale digest so the
     # watcher's next successful check is not suppressed against a shape this
     # session never actually reported.
@@ -257,7 +561,13 @@ action_report() {
   else
     record_clear
   fi
+  # Reachable with a snapshot problem set: the balance stand-in above classified
+  # while the provider snapshot itself stayed unread, and a guard that has gone
+  # half blind says which half.
+  [ -z "$SNAPSHOT_PROBLEM" ] || printf 'capacity unknown - %s\n' "$SNAPSHOT_PROBLEM"
+  [ -z "$BALANCE_PROBLEM" ] || printf 'balance unknown - %s\n' "$BALANCE_PROBLEM"
   [ -z "$MIN_LANES_PROBLEM" ] || printf '%s\n' "$MIN_LANES_PROBLEM"
+  [ -z "$MARGIN_PROBLEM" ] || printf '%s\n' "$MARGIN_PROBLEM"
   return 0
 }
 
@@ -265,9 +575,11 @@ action_check() {
   resolve_min_lanes
   # A retired guard probes nothing and reports nothing; see action_report.
   [ "$MIN_LANES" -eq 0 ] && return 0
+  resolve_margin
+  take_balance_reading check
   # An unmeasurable snapshot is silent here by design; see this file's header.
-  acquire_snapshot check || return 0
-  classify || return 0
+  acquire_snapshot_or_balance_only check || return 0
+  classify_or_balance_only || return 0
   if [ -z "$VERDICT_LINE" ]; then
     # Recovery is not captain-facing progress (AGENTS.md section 8), so it is
     # reported by clearing the record rather than by a line: the next genuine
@@ -407,7 +719,7 @@ action_arm() {
 }
 
 action_disarm() {
-  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD"
+  rm -f -- "$CHECK_SHIM" "$CHECK_TRUST" "$RECORD" "$HISTORY"
   printf 'disarmed: state/%s.check.sh\n' "$CHECK_ID"
   return 0
 }

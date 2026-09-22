@@ -39,12 +39,48 @@
 //   exhausted   the allowance is spent but no reset    -> recharge if prepaid,
 //               hour is reported                         or check the provider
 //
-// There is deliberately NO "balance" cause. quota-axi 0.1.29 exposes no
-// producer-verified signal that separates a spent prepaid balance from a spent
+// No quota-axi lane is ever classified as a spent prepaid BALANCE. quota-axi
+// 0.1.29 exposes no producer-verified signal that separates one from a spent
 // time window: `windows[].kind` is only ever model/session/weekly (never
 // "credits"), and `credits.remaining: 0` is a constant for codex and grok that
 // is never headroom (docs/verification/dispatch-auth.md). A spent allowance with
 // no named reset therefore reads as `exhausted`, never as a guessed "recharge".
+//
+// THE BALANCE ARM IS A SECOND PRODUCER, not a re-reading of the first. The
+// validation pipeline runs its agents on Pi, which runs on a PREPAID provider
+// balance quota-axi does not report at all, so a zero balance is invisible to
+// every lane above and yet stops the whole fleet: it is the pipeline's own
+// dependency, not one worker's lane. Measured twice, on 2026-09-18 and
+// 2026-09-19, when validations in flight died together on
+// `402 Insufficient Balance` with no warning of any kind.
+//
+// That balance is read separately (bin/fm-capacity-check.sh owns acquisition)
+// and arrives here as a bounded history of readings, never as a lane. It is
+// classified on its own terms:
+//
+//   balance-spent      the balance can no longer serve work -> recharge NOW;
+//                                                              validations stop
+//   balance-runway     the measured drain reaches zero      -> recharge before
+//                      inside the reaction margin              dispatching more
+//   balance-live       zero is further away than the margin -> silent
+//   balance-unmeasured no drain established yet             -> silent
+//
+// THE MARGIN IS MEASURED, NOT CHOSEN. It is the wall-clock span a validation
+// spends burning that provider, at the 90th percentile of this fleet's own
+// completed runs, so nine of ten validations that start at the moment of the
+// warning still finish before the balance is gone. The measurement, its query,
+// and its output are recorded in docs/verification/dispatch-auth.md; the
+// default lives in bin/fm-capacity-check.sh beside the config file that
+// overrides it. A round number would be a false positive waiting its turn.
+//
+// THE DRAIN RATE IS MEASURED OVER AT LEAST ONE MARGIN, because a prepaid
+// balance is spent in bursts: a validation burns hard for an hour and then
+// nothing for six. A rate taken across the last two readings would read as
+// infinite mid-run and as zero overnight, and would fire on the first burst of
+// every busy morning. Averaging over a span no shorter than one typical
+// validation is what makes the projection describe the fleet rather than the
+// minute. Until that much history exists the runway is `balance-unmeasured`,
+// which discloses and never alarms - the same rule every unmeasured lane obeys.
 //
 // A provider that establishes none of those is `unmeasured`, never folded into
 // one of them. AGENTS.md section 4 is explicit that unmeasurable headroom,
@@ -75,7 +111,10 @@
 //      quota-axi is reporting fresh, known headroom is a fault on a source this
 //      lane is not using.
 //
-// Input:  quota-axi's default `--json` (schemaVersion 5) on stdin.
+// Input:  quota-axi's default `--json` (schemaVersion 5) on stdin, plus the
+//         optional balance reading history as a `--balance-readings` argument.
+//         Both arrive as values, so this file still performs no I/O beyond
+//         stdin/stdout and stays falsifiable from a fixture.
 // Output: exactly one line on stdout when the guard should fire, and nothing at
 //         all when it should not. Silence is the contract, not an omission: a
 //         routine "capacity fine" line on every poll is what trains a captain to
@@ -128,12 +167,22 @@ function usage() {
     "fm-capacity-policy.mjs - classify a quota-axi snapshot into a fleet capacity verdict.",
     "",
     "Usage:",
-    "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record] < <quota-axi --json output>",
+    "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record]",
+    "                         [--balance-readings <json>] [--balance-margin-secs <n>]",
+    "                         < <quota-axi --json output>",
     "",
     "Prints one line when the fleet is worth reporting and nothing when it is not.",
-    "--min-lanes 0 retires the guard: the verdict is always silent.",
+    "--min-lanes 0 retires the lane arm: no lane count ever fires.",
     "--emit record prefixes the repeat-suppression digest and a TAB, for callers",
     "that suppress an unchanged repeat; --emit line (the default) omits it.",
+    "",
+    "--balance-readings takes the prepaid-balance history the validation provider",
+    "is drained from, oldest first, as a JSON array of",
+    "{\"at\":<epoch seconds>,\"balance\":<number>,\"available\":<bool>} objects.",
+    "Omitted or empty, the balance arm is silent and the lane arm is unchanged.",
+    "--balance-margin-secs is the measured reaction margin the projection is",
+    "judged against; 0 retires the balance arm. No balance amount is ever printed:",
+    "the verdict speaks in time left, never in money.",
     "",
     "Exit: 0 verdict reached (fired or silent), 2 usage error, 3 unusable snapshot.",
   ].join("\n");
@@ -142,8 +191,34 @@ function usage() {
 function parseArguments(argv) {
   let minLanes = null;
   let emit = "line";
+  let balanceReadings = [];
+  let balanceMarginSecs = 0;
   for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i];
+    if (name === "--balance-readings") {
+      if (i + 1 >= argv.length) throw new Error("--balance-readings requires a value");
+      const raw = argv[i + 1].trim();
+      if (raw !== "") {
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (error) {
+          throw new Error(`--balance-readings must be JSON: ${error.message}`);
+        }
+        if (!Array.isArray(parsed)) throw new Error("--balance-readings must be a JSON array");
+        balanceReadings = parsed;
+      }
+      i += 1;
+      continue;
+    }
+    if (name === "--balance-margin-secs") {
+      if (i + 1 >= argv.length) throw new Error("--balance-margin-secs requires a value");
+      const raw = argv[i + 1];
+      if (!/^\d+$/.test(raw)) throw new Error(`--balance-margin-secs must be a whole number, got '${raw}'`);
+      balanceMarginSecs = Number(raw);
+      i += 1;
+      continue;
+    }
     if (name === "--min-lanes") {
       if (i + 1 >= argv.length) throw new Error("--min-lanes requires a value");
       const raw = argv[i + 1];
@@ -163,7 +238,7 @@ function parseArguments(argv) {
     throw new Error(`unknown option: ${name}`);
   }
   if (minLanes === null) throw new Error("--min-lanes is required");
-  return { minLanes, emit };
+  return { minLanes, emit, balanceReadings, balanceMarginSecs };
 }
 
 /**
@@ -347,6 +422,100 @@ function classifyProvider(provider) {
   };
 }
 
+/**
+ * A span of seconds as the captain reads a wait: `2h18m`, `47m`, `<1m`. Whole
+ * units only, because the decision this feeds is "recharge now or dispatch
+ * anyway" and no part of it turns on a second.
+ */
+function humanSpan(seconds) {
+  const whole = Math.max(0, Math.floor(seconds));
+  if (whole < 60) return "<1m";
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  if (hours === 0) return `${minutes}m`;
+  return minutes === 0 ? `${hours}h` : `${hours}h${minutes}m`;
+}
+
+/**
+ * Classify the prepaid balance the validation pipeline runs on.
+ *
+ * The readings carry an amount, and nothing this returns ever does: the caller
+ * prints time left and the remedy, never money. That is not decoration. The
+ * amount is the captain's own financial figure, it belongs in their private
+ * runtime record and nowhere else, and it is also the wrong unit for the
+ * decision - "44 minutes, and a validation needs two hours" is actionable where
+ * a currency figure needs the reader to do this arithmetic themselves.
+ *
+ * Returns null when the arm is retired or has nothing to read.
+ */
+function classifyBalance(readings, marginSecs) {
+  if (marginSecs <= 0) return null;
+  const clean = readings
+    .filter(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        Number.isFinite(entry.at) &&
+        Number.isFinite(entry.balance),
+    )
+    .sort((a, b) => a.at - b.at);
+  if (clean.length === 0) return null;
+
+  const newest = clean[clean.length - 1];
+  // Spent is read from the vendor's own availability flag as well as the
+  // amount, because a balance can stop serving work before it reaches exactly
+  // zero and the flag is the producer's statement about that, not an inference.
+  if (newest.available === false || newest.balance <= 0) {
+    return { cause: "balance-spent", marginSecs };
+  }
+
+  // A top-up invalidates every rate measured across it: the drain before a
+  // recharge says nothing about the runway after one. Start the window at the
+  // last increase rather than smoothing over it.
+  let start = 0;
+  for (let i = 1; i < clean.length; i += 1) {
+    if (clean[i].balance > clean[i - 1].balance) start = i;
+  }
+  const window = clean.slice(start);
+  const oldest = window[0];
+  const span = newest.at - oldest.at;
+  if (window.length < 2 || span <= 0) {
+    return { cause: "balance-unmeasured", marginSecs, detail: "one reading since the last top-up" };
+  }
+  // See this file's header: a rate averaged over less than one typical
+  // validation describes the minute, not the fleet.
+  if (span < marginSecs) {
+    return {
+      cause: "balance-unmeasured",
+      marginSecs,
+      detail: `only ${humanSpan(span)} of readings since the last top-up`,
+    };
+  }
+  const drop = oldest.balance - newest.balance;
+  if (drop <= 0) {
+    return { cause: "balance-unmeasured", marginSecs, detail: "no drain measured" };
+  }
+  const secondsLeft = Math.floor((newest.balance * span) / drop);
+  if (secondsLeft < marginSecs) {
+    return { cause: "balance-runway", marginSecs, secondsLeft };
+  }
+  return { cause: "balance-live", marginSecs, secondsLeft };
+}
+
+function describeBalance(balance) {
+  switch (balance.cause) {
+    case "balance-spent":
+      return "validation provider balance spent - every validation stops until it is recharged";
+    case "balance-runway":
+      return (
+        `validation provider balance runs out in ${humanSpan(balance.secondsLeft)}, ` +
+        `inside the ${humanSpan(balance.marginSecs)} a validation needs - recharge before dispatching`
+      );
+    default:
+      return `validation provider balance runway not measured (${balance.detail})`;
+  }
+}
+
 function describe(lane) {
   const staleNote = lane.stale ? " (stale reading)" : "";
   switch (lane.cause) {
@@ -373,7 +542,7 @@ function describe(lane) {
   }
 }
 
-export function verdict(snapshot, minLanes) {
+export function verdict(snapshot, minLanes, balanceReadings = [], balanceMarginSecs = 0) {
   if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.providers)) {
     throw new Error("snapshot has no providers array");
   }
@@ -385,8 +554,15 @@ export function verdict(snapshot, minLanes) {
   const unmeasured = lanes.filter((lane) => lane.cause === "unmeasured");
 
   // 0 is the captain's own off switch, the same shape config/disk-space-min-gb
-  // uses, and it retires the guard rather than making it permanently loud.
+  // uses, and it retires the WHOLE guard - both arms - rather than making it
+  // permanently loud. Leaving the balance arm alive under it would quietly
+  // restore vendor calls a captain switched off, and would also re-arm this
+  // guard inside every test that neutralizes it by this one variable.
   if (minLanes === 0) return { fire: false, lanes, dispatchable };
+
+  const balance = classifyBalance(balanceReadings, balanceMarginSecs);
+  const balanceFires =
+    balance !== null && (balance.cause === "balance-spent" || balance.cause === "balance-runway");
 
   // Only a lane PROVEN lost may take the count below the threshold. A lane
   // nobody could measure is disclosed uncertainty, and counting it as lost is
@@ -397,27 +573,54 @@ export function verdict(snapshot, minLanes) {
   // A fleet whose every remaining lane ends before its own reset is the measured
   // incident even when the count itself looks fine, so it fires on its own.
   const allFinite = dispatchable.length > 0 && dispatchable.every((lane) => lane.finite);
-  if (!below && !allFinite) return { fire: false, lanes, dispatchable };
+  // A snapshot that reports no providers at all establishes nothing about
+  // lanes, so it must not read as "every lane is gone". "0 of 0 provider lanes
+  // dispatchable" is not a verdict; it is the absence of one, and the caller
+  // hands such a snapshot in deliberately when only the balance could be read.
+  const laneFires = lanes.length > 0 && (below || allFinite);
+  if (!laneFires && !balanceFires) {
+    return { fire: false, lanes, dispatchable, balance };
+  }
 
-  const reasons = [];
-  if (below) reasons.push(`below ${minLanes}`);
-  if (allFinite) {
-    reasons.push(
-      dispatchable.length === 1
-        ? "the only dispatchable lane is projected to run out"
-        : "every dispatchable lane is projected to run out",
+  const clauses = [];
+  if (laneFires) {
+    const reasons = [];
+    if (below) reasons.push(`below ${minLanes}`);
+    if (allFinite) {
+      reasons.push(
+        dispatchable.length === 1
+          ? "the only dispatchable lane is projected to run out"
+          : "every dispatchable lane is projected to run out",
+      );
+    }
+    const ordered = [...lanes].sort(
+      (a, b) => CAUSE_ORDER.indexOf(a.cause) - CAUSE_ORDER.indexOf(b.cause),
+    );
+    // The count of lanes nobody could measure rides in the headline, because
+    // "1 of 10 dispatchable" on its own reads as nine broken providers.
+    const unmeasuredNote = unmeasured.length > 0 ? `, ${unmeasured.length} not measured` : "";
+    clauses.push(
+      `${dispatchable.length} of ${lanes.length} provider lanes dispatchable${unmeasuredNote} ` +
+        `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`,
     );
   }
-  const ordered = [...lanes].sort(
-    (a, b) => CAUSE_ORDER.indexOf(a.cause) - CAUSE_ORDER.indexOf(b.cause),
-  );
-  // The count of lanes nobody could measure rides in the headline, because
-  // "1 of 10 dispatchable" on its own reads as nine broken providers.
-  const unmeasuredNote = unmeasured.length > 0 ? `, ${unmeasured.length} not measured` : "";
-  const line =
-    `${dispatchable.length} of ${lanes.length} provider lanes dispatchable${unmeasuredNote} ` +
-    `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`;
-  return { fire: true, line: line.slice(0, MAX_LINE), digest: digestOf(lanes, dispatchable), lanes, dispatchable };
+  // The lane inventory is deliberately NOT printed when only the balance fires:
+  // a fleet with every lane healthy still loses every validation to a spent
+  // balance, and listing ten fine lanes beside that warning buries it.
+  //
+  // An unmeasured balance runway is disclosed rather than fired on, but it is
+  // worth saying beside a fleet that is already degraded, because it names a
+  // blind spot the captain would otherwise read as an all-clear.
+  if (balance !== null && balance.cause !== "balance-live") clauses.push(describeBalance(balance));
+  const line = clauses.join("; ");
+  return {
+    fire: true,
+    line: line.slice(0, MAX_LINE),
+    digest: digestOf(lanes, dispatchable, balance),
+    lanes,
+    dispatchable,
+    balance,
+  };
 }
 
 /**
@@ -431,15 +634,21 @@ export function verdict(snapshot, minLanes) {
  * which provider is out for which reason, when a spent time window returns, and
  * whether a live lane's runway has turned finite - which is itself the
  * transition worth a second warning.
+ *
+ * The balance contributes its CAUSE and nothing else, for the same reason: the
+ * projected seconds move on every poll, while "the runway went from long enough
+ * to shorter than a validation" is exactly the transition worth waking somebody
+ * about a second time.
  */
-function digestOf(lanes, dispatchable) {
+function digestOf(lanes, dispatchable, balance = null) {
   const parts = lanes.map((lane) => {
     if (lane.cause === "dispatchable") return `${lane.id}:live:${lane.finite ? "finite" : "ok"}`;
     if (lane.cause === "window") return `${lane.id}:window:${lane.resetsAt}`;
     if (lane.cause === "unmeasured") return `${lane.id}:unmeasured:${lane.subcause}`;
     return `${lane.id}:${lane.cause}`;
   });
-  return `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}`;
+  const balanceNote = balance === null ? "" : ` ${balance.cause}`;
+  return `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}${balanceNote}`;
 }
 
 function main(argv) {
@@ -470,7 +679,7 @@ function main(argv) {
   }
   let result;
   try {
-    result = verdict(snapshot, options.minLanes);
+    result = verdict(snapshot, options.minLanes, options.balanceReadings, options.balanceMarginSecs);
   } catch (error) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n`);
     return 3;

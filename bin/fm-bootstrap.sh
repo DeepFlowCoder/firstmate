@@ -14,8 +14,10 @@
 #                 "DISK_SPACE: invalid <config/disk-space-min-gb|FM_DISK_SPACE_MIN_GB> - <reason>; guarding at the default <n> GB",
 #                 "DISK_SPACE: invalid <config/disk-space-warn-gb|FM_DISK_SPACE_WARN_GB> - <reason>; warning at the default <n> GB",
 #                 "CAPACITY: <n> of <n> provider lanes dispatchable (<why>): <lane>[ | <lane>]...",
-#                 "CAPACITY: capacity unknown - <reason>" or
-#                 "CAPACITY: invalid <config/capacity-min-lanes|FM_CAPACITY_MIN_LANES> - <reason>; guarding at the default <n>",
+#                 "CAPACITY: validation provider balance <spent|runs out in <span>|runway not measured> ...",
+#                 "CAPACITY: capacity unknown - <reason>",
+#                 "CAPACITY: balance unknown - <reason>" or
+#                 "CAPACITY: invalid <config/capacity-min-lanes|FM_CAPACITY_MIN_LANES|config/balance-margin-secs|FM_BALANCE_MARGIN_SECS> - <reason>; guarding at the default <n>",
 #                 "GH_BASE_REPO: could not write <key> in <repo>; unnamed gh and
 #                 gh-axi queries there can answer for a different repository -
 #                 make .git/config writable ... and rerun session start",
@@ -89,8 +91,10 @@
 #          the guard's three surfaces, so the liveness sweep's secondmate respawn
 #          below is never refused by it.
 #          A CAPACITY line means the fleet is running short of dispatchable
-#          provider lanes, or every remaining lane is projected to run out before
-#          its own reset; above the threshold the check is silent.
+#          provider lanes, every remaining lane is projected to run out before
+#          its own reset, or the prepaid balance every validation runs on is
+#          projected to reach zero sooner than a validation takes to finish;
+#          above those thresholds the check is silent.
 #          bin/fm-capacity-check.sh owns the threshold, its
 #          config/capacity-min-lanes and FM_CAPACITY_MIN_LANES overrides, and the
 #          wording, and bin/fm-capacity-policy.mjs owns the classification behind
