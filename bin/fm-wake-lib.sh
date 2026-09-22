@@ -162,6 +162,10 @@ FM_WATCHER_BEATLESS_CLAIM_AGE=
 # The claim's own timestamp is what separates the two, and $lockdir/pid carries
 # it: fm_lock_claim writes that file once, at claim time, and no later step
 # rewrites it, so its mtime dates the claim rather than the claimant's liveness.
+# The age is derived from that ONE reading rather than re-stat'd, so the number
+# the operator is shown and the number the verdict was made on cannot disagree:
+# a lock released between two reads would otherwise report a missing-path
+# fallback age as if it were a real claim.
 # A claim NEWER than the last beat and still beatless FM_WATCHER_FIRST_BEAT_GRACE
 # seconds on has had a full arm confirmation budget to produce one.
 #
@@ -178,7 +182,7 @@ fm_watcher_claim_without_beat() {
   [ -n "$pid" ] || return 1
   claim_at=$(fm_path_mtime "$lockdir/pid") || return 1
   case "$claim_at" in ''|*[!0-9]*) return 1 ;; esac
-  age=$(fm_path_age "$lockdir/pid")
+  age=$(( $(date +%s) - claim_at ))
   case "$age" in ''|*[!0-9]*) return 1 ;; esac
   [ "$age" -ge "$FM_WATCHER_FIRST_BEAT_GRACE" ] || return 1
   # An absent or unreadable beacon alongside an aged claim is the same verdict:

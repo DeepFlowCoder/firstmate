@@ -358,6 +358,7 @@ clock_resolves_ms() {
 # SHIPPED default rather than against a number this test picks.
 test_startup_window_before_the_first_beat_is_not_flagged() {
   local dir state err wpid claim_at beat_at bracketed delta i n default worst best runs
+  local budget_ms deadline
   # (1) A claim younger than the window is ordinary startup, never an alarm.
   dir=$(make_case guard-startup-window)
   err="$dir/guard.err"
@@ -397,6 +398,12 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
   worst=0
   best=-1
   runs=0
+  # The poll below is bounded by WALL CLOCK, not by an iteration count: `sleep`
+  # is an external binary, so each pass costs a fork (~20ms here) and a count
+  # says nothing about how long the loop actually waited. The budget IS the
+  # shipped threshold, because a window that has not closed inside it is exactly
+  # the window that would make the guard alarm on every normal start.
+  budget_ms=$(( default * 1000 ))
   n=0
   while [ "$n" -lt 3 ]; do
     dir=$(make_case "guard-startup-measure-$n")
@@ -414,8 +421,8 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
     claim_at=
     beat_at=
     bracketed=0
-    i=0
-    while [ "$i" -lt 8000 ]; do
+    deadline=$(( $(fm_timing_now_ms) + budget_ms ))
+    while [ "$(fm_timing_now_ms)" -lt "$deadline" ]; do
       if [ -z "$claim_at" ] && [ -e "$state/.watch.lock/pid" ]; then
         claim_at=$(fm_timing_now_ms)
         # The absence of the beacon is proved AFTER the stamp on purpose. The
@@ -431,28 +438,36 @@ test_startup_window_before_the_first_beat_is_not_flagged() {
         break
       fi
       sleep 0.002
-      i=$((i + 1))
     done
     kill -TERM "$wpid" 2>/dev/null || true
     wait "$wpid" 2>/dev/null || true
-    if [ "$bracketed" -eq 1 ] && [ -n "$claim_at" ] && [ -n "$beat_at" ]; then
-      delta=$(( beat_at - claim_at ))
-      [ "$delta" -ge 0 ] || fail "a real watcher beat BEFORE its own claim (${delta}ms)"
-      if [ "$delta" -gt 0 ]; then
-        [ "$delta" -gt "$worst" ] && worst=$delta
-        { [ "$best" -lt 0 ] || [ "$delta" -lt "$best" ]; } && best=$delta
-        runs=$((runs + 1))
-      fi
+    # A missing reading is not the same as an unmeasurable one, and only the
+    # second is a skip. A watcher that never claimed, or a claim whose first beat
+    # never arrived inside the threshold, are both criterion-4 FAILURES: the
+    # second is a window that would raise a false alarm on every normal start,
+    # which is the precise regression this gate exists to catch, so it must never
+    # be reported as "could not measure here".
+    [ -n "$claim_at" ] \
+      || fail "a real watcher never claimed the lock within ${budget_ms}ms, so the startup window could not be verified at all: $(tail -n 3 "$dir/watch.out" 2>/dev/null)"
+    [ -n "$beat_at" ] \
+      || fail "a real watcher claimed the lock and had still not emitted a first beat ${budget_ms}ms later, past the ${default}s threshold: normal startup would now raise a false alarm"
+    delta=$(( beat_at - claim_at ))
+    [ "$delta" -ge 0 ] || fail "a real watcher beat BEFORE its own claim (${delta}ms)"
+    if [ "$bracketed" -eq 1 ] && [ "$delta" -gt 0 ]; then
+      [ "$delta" -gt "$worst" ] && worst=$delta
+      { [ "$best" -lt 0 ] || [ "$delta" -lt "$best" ]; } && best=$delta
+      runs=$((runs + 1))
     fi
     n=$((n + 1))
   done
-  # No bracketed reading means this machine never got to watch the window open
-  # and close, so there is nothing to compare against the threshold. Saying so is
-  # honest; certifying the margin from readings that measured nothing is the
-  # exact failure this gate exists to catch.
+  # Every start here was healthy and inside the threshold, but none of them let
+  # this host watch the window open and close: the claim and the first beat were
+  # already both on disk when the poll first looked, or fell inside one
+  # millisecond of each other. That is a sampling limit of the machine, not a
+  # verdict on the code, and it is the only remaining reason to skip.
   if [ "$runs" -eq 0 ]; then
     pass "a claim still inside the startup window before the first beat is not flagged"
-    pass "SKIP (no watcher start here was sampled with its claim observed before its first beat): measuring the real claim-to-first-beat window"
+    pass "SKIP (healthy starts, but no observable window: claim and first beat were already both on disk, or inside one millisecond, at the first poll): measuring the real claim-to-first-beat window"
     return
   fi
   [ "$((best * 10))" -lt "$((default * 1000))" ] \
