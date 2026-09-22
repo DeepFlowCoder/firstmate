@@ -103,6 +103,41 @@ jobs:
       - name: Prove complete regression partition
         run: bin/fm-test-run.sh --check-coverage
 
+  # THE INTERPRETER FLOOR - why every suite lane below installs its own bash.
+  #
+  # These suites signal live processes constantly, and bash 5.2 can fail to
+  # PARSE a signal trap's body when the signal is delivered while the shell is
+  # inside a sourced function doing a command substitution. Bash then prints the
+  # parse error and CARRIES ON rather than dying, so the handler never runs and
+  # the signal is swallowed. A watcher that swallows its SIGTERM keeps this
+  # step's output pipe open, and the lane produces nothing at all until the cap
+  # cancels it - which reads as a cancelled job rather than as a failure anyone
+  # can attribute.
+  #
+  # That is measured, not hypothetical. It cancelled portable-serial-2of8 on
+  # PR 31 (2026-09-08, 18 minutes of silence after the error) and portable
+  # serial shard 8 on PR 74 (2026-09-19, 18 minutes). Both printed exactly one
+  # line first:
+  #
+  #   .../bin/fm-wake-lib.sh: trap: line 2: unexpected EOF while looking for matching `)'
+  #
+  # The file in that message is BASH_SOURCE[0] - whichever sourced function was
+  # running when the signal landed - NOT the file that installed the trap, which
+  # is why it names a library containing no trap at all. The trap is the
+  # watcher's own and its body is `exit 1`; there is no unbalanced parenthesis
+  # anywhere in this repo to close. The open parenthesis bash complains about is
+  # its own parser state, leaking from a command substitution it was parsing
+  # concurrently.
+  #
+  # Reproduced against the interpreter each version actually ships:
+  # bash 5.2.21 (what ubuntu-latest still provides) produced the parse error in
+  # 5 of 5 runs of 1500 delivered signals; bash 5.3.0 and 5.3.9 produced none in
+  # 7500 and 6000. Raising the floor removes the race at its source rather than
+  # bounding its damage. docs/verification/ci-bash-floor.md owns the harness, the
+  # exact commands, the full output, and the accepted cost of no longer
+  # exercising 5.2. tests/fm-ci-bash-floor.test.sh fails if a lane ever drops
+  # back below the floor.
+  #
   # Two duration-balanced portable parallel shards of the Phase 2 proven-isolated
   # set only. Composition owner: bin/fm-test-run.sh (docs/fm-test-portable-shards.md).
   tests-portable-parallel-1:
@@ -115,6 +150,18 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      # Interpreter floor; see THE INTERPRETER FLOOR above. The install is a
+      # no-op once the cache holds a binary at or above the pinned version.
+      - name: Cache pinned bash
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/fm-bash
+          key: fm-bash-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bin/fm-install-bash.sh') }}
+      - name: Install pinned bash
+        run: |
+          set -eu
+          bin/fm-install-bash.sh "$HOME/.cache/fm-bash/bin"
+          echo "$HOME/.cache/fm-bash/bin" >> "$GITHUB_PATH"
       - name: Install pinned ShellCheck
         run: |
           set -eu
@@ -144,6 +191,7 @@ jobs:
           path: ${{ runner.temp }}/fm-test/fm-test-timing-portable-parallel-1.json
           if-no-files-found: warn
 
+  # Interpreter floor applies here too; see THE INTERPRETER FLOOR above.
   tests-portable-parallel-2:
     name: Behavior portable parallel 2
     runs-on: ubuntu-latest
@@ -152,6 +200,17 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      # Interpreter floor; see THE INTERPRETER FLOOR above.
+      - name: Cache pinned bash
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/fm-bash
+          key: fm-bash-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bin/fm-install-bash.sh') }}
+      - name: Install pinned bash
+        run: |
+          set -eu
+          bin/fm-install-bash.sh "$HOME/.cache/fm-bash/bin"
+          echo "$HOME/.cache/fm-bash/bin" >> "$GITHUB_PATH"
       - name: Install pinned ShellCheck
         run: |
           set -eu
@@ -219,6 +278,19 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      # Interpreter floor; see THE INTERPRETER FLOOR above. This is the lane the
+      # swallowed SIGTERM actually cancelled, twice, and the one whose per-script
+      # runner streams through a pipe a survivor can hold open.
+      - name: Cache pinned bash
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/fm-bash
+          key: fm-bash-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bin/fm-install-bash.sh') }}
+      - name: Install pinned bash
+        run: |
+          set -eu
+          bin/fm-install-bash.sh "$HOME/.cache/fm-bash/bin"
+          echo "$HOME/.cache/fm-bash/bin" >> "$GITHUB_PATH"
       - name: Install pinned ShellCheck
         run: |
           set -eu
@@ -278,6 +350,17 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      # Interpreter floor; see THE INTERPRETER FLOOR above.
+      - name: Cache pinned bash
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/fm-bash
+          key: fm-bash-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bin/fm-install-bash.sh') }}
+      - name: Install pinned bash
+        run: |
+          set -eu
+          bin/fm-install-bash.sh "$HOME/.cache/fm-bash/bin"
+          echo "$HOME/.cache/fm-bash/bin" >> "$GITHUB_PATH"
       - name: Require tools for real Herdr
         run: |
           set -eu
