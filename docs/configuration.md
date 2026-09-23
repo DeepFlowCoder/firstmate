@@ -317,6 +317,7 @@ There are two things an operator sets or reads.
 
 A project may carry a tracked `.fm-critical-surfaces` file at its root naming paths that always take the expensive lane, one `<glob> <surface-name>` per line with `#` comments.
 It only adds to the built-in catalog in `bin/fm-lane-lib.sh`, so it can widen what is treated as a safety surface and can never narrow it; a malformed line is refused rather than skipped, because a silently dropped pattern is a silently lost surface.
+A surface name may not contain a comma, which is what separates names in the record's `critical` column, and a line that carries one is refused for the same reason.
 This repo carries its own for the safety boundaries the built-in name patterns do not all catch, for the two files that run the dispatch gate, and for its CI configuration.
 The CI entry is not there because CI is expected to catch a bad change, which is reasoning this policy rejects outright; it is there because the cheap lane's safety net must not be modifiable by the cheap lane.
 
