@@ -251,6 +251,7 @@ cmd_decide() {
   local evidence catalog hits critical lane reason signals note class_record
   local base head names numstat added udiff p q d seen
   local files dirs lines new_files branch_points binary unreadable repo_measured
+  local printed_signals
   local seen_dirs=()
   local signal_reasons=()
 
@@ -428,7 +429,9 @@ cmd_decide() {
   printf 'task: %s\nproject: %s\n' "$TASK" "$PROJECT"
   printf 'critical-surfaces: %s\n' "$critical"
   printf 'class: %s\n' "${class_record:--}"
-  printf 'signals: %s\n' "${signals//,/ }"
+  printed_signals=${signals//\\,/$'\001'}
+  printed_signals=${printed_signals//,/ }
+  printf 'signals: %s\n' "${printed_signals//$'\001'/,}"
   printf 'record: %s\n' "$(fm_lane_log_path)"
   if [ "$lane" = no-mistakes ] && [ "$reason" = "critical-surface" ]; then
     printf 'note: a critical surface routes to the expensive lane whatever the other signals say.\n'

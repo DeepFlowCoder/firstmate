@@ -73,9 +73,14 @@
 #          entry, resolved physically, so a decision made against the wrong
 #          clone is no longer byte-indistinguishable from a correct one.
 #          A comma inside a value is escaped \, and a backslash \\, so the k=v
-#          split survives a path that contains the separator. Reverse it by
-#          un-escaping the whole field first, then splitting on commas that are
-#          not preceded by a backslash.
+#          split survives a path that contains the separator. That is a SECOND
+#          escaping layer, applied before the field escaping below, so reversing
+#          it takes THREE steps in this order:
+#            1. un-escape the field itself (\\ -> \, \t -> tab, \n -> newline);
+#            2. split on commas NOT preceded by a backslash;
+#            3. inside each value, un-escape \, -> , and \\ -> \.
+#          Stopping after step 2 returns a path with its backslashes still
+#          doubled, which is not the tree that was measured.
 # Absent values are "-". Tabs, newlines and backslashes inside a value are
 # escaped (\t, \n, \\), so one row is always one physical line, and each field
 # is capped so the whole row stays one atomic append (FM_LANE_FIELD_MAX).
@@ -272,6 +277,12 @@ fm_lane_project_surfaces() {
       echo "error: $file: malformed line (expected \"<glob> <surface-name>\"): $line" >&2
       return 1
     fi
+    case "$name" in
+      *,*)
+        echo "error: $file: surface name may not contain a comma, which is what separates names in the record's critical column: $line" >&2
+        return 1
+        ;;
+    esac
     printf '%s\t%s\n' "$glob" "$name"
   done <"$file" || return 1
   return 0
@@ -307,6 +318,12 @@ fm_lane_critical_hits() {
       echo "error: critical-surface catalog entry has no surface name (expected \"<glob><tab><surface-name>\"): $glob" >&2
       return 1
     fi
+    case "$name" in
+      *,*)
+        echo "error: critical-surface name may not contain a comma, which separates names in the record's critical column: $name" >&2
+        return 1
+        ;;
+    esac
     case ",$hits," in
       *",$name,"*) continue ;;
     esac

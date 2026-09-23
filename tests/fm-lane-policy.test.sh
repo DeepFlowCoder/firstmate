@@ -110,6 +110,39 @@ commit_all() {  # <repo> <message> -> the new sha
 
 first_line() { printf '%s\n' "$1" | head -n 1; }
 
+# recorded_repo_of <log> <task-id> -> the measured tree, reversed out of the
+# record exactly as bin/fm-lane-lib.sh's header prescribes, in all three steps:
+# un-escape the field, split on commas the signals layer did not escape, then
+# un-escape \, and \\ inside the value. Returns non-zero if any entry in the
+# field fails to parse as k=v. A reader that stops after step one gets a path
+# whose backslashes are still doubled, which is the defect this pins.
+recorded_repo_of() {  # <log> <task-id>
+  local log=$1 task=$2 field protected kv value= kvs=()
+  field=$(awk -F'\t' -v t="$task" '$3==t { print $10 }' "$log")
+
+  field=${field//\\\\/$'\002'}
+  field=${field//\\t/$'\t'}
+  field=${field//\\n/$'\n'}
+  field=${field//$'\002'/\\}
+
+  protected=${field//\\\\/$'\002'}
+  protected=${protected//\\,/$'\001'}
+  IFS=',' read -r -a kvs <<<"$protected"
+  for kv in ${kvs[@]+"${kvs[@]}"}; do
+    case "$kv" in
+      *=*) ;;
+      *) return 1 ;;
+    esac
+    case "$kv" in
+      repo=*) value=${kv#repo=} ;;
+    esac
+  done
+
+  value=${value//$'\001'/,}
+  value=${value//$'\002'/\\}
+  printf '%s' "$value"
+}
+
 # --- 1. a critical surface beats every cheap signal -------------------------
 
 # The control matters as much as the case: the same shape of diff WITHOUT the
@@ -691,6 +724,20 @@ test_an_unreadable_surfaces_file_is_refused_rather_than_read_as_absent() {
     "the refusal did not say why the surfaces file could not be read"
   chmod 644 "$repo/.fm-critical-surfaces"
 
+  # A surface NAME carrying the separator the critical column is built on would
+  # report a surface no entry declares and let the dedup treat two distinct
+  # surfaces as one, so it is refused where every other malformed declaration is.
+  printf 'lib/* money,movement\n' > "$repo/.fm-critical-surfaces"
+  out=$(run_lane "$home" decide cat-comma --project proj --repo "$repo" \
+    --paths lib/x.rb)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a surface name containing a comma was accepted"
+  assert_contains "$out" "may not contain a comma" \
+    "the refusal did not say why the surface name was rejected"
+  assert_contains "$out" "lib/* money,movement" \
+    "the refusal did not name the offending line"
+  printf 'billing/* money-movement\n' > "$repo/.fm-critical-surfaces"
+
   # A directory in its place, and a dangling symlink, are the same answer.
   rm "$repo/.fm-critical-surfaces"
   mkdir "$repo/.fm-critical-surfaces"
@@ -771,27 +818,41 @@ EOF
   git -C "$comma_repo" commit --quiet -m base
   run_lane "$home" decide tree-c1 --project proj --repo "$comma_repo" --paths src/thing.py >/dev/null
 
-  # Read it back exactly the way the header says to reverse it: un-escape the
-  # record field, then split on commas that are not preceded by a backslash.
-  local field protected kv kvs
-  field=$(awk -F'\t' '$3=="tree-c1" { print $10 }' "$log")
-  field=${field//\\\\/\\}
-  protected=${field//\\,/$'\001'}
-  recorded=
-  kvs=()
-  IFS=',' read -r -a kvs <<<"$protected"
-  for kv in ${kvs[@]+"${kvs[@]}"}; do
-    case "$kv" in
-      *=*) ;;
-      *) fail "a signals entry did not parse as k=v: '${kv//$'\001'/,}'" ;;
-    esac
-    case "$kv" in
-      repo=*) recorded=${kv#repo=} ;;
-    esac
-  done
-  recorded=${recorded//$'\001'/,}
+  # Read it back exactly the way the header says to reverse it, all three steps.
+  recorded=$(recorded_repo_of "$log" tree-c1) \
+    || fail "a signals entry did not parse as k=v for tree-c1"
   [ "$recorded" = "$(cd "$comma_repo" && pwd -P)" ] \
     || fail "the recorded tree did not round-trip to the real path: got '$recorded'"
+
+  # A literal backslash goes through BOTH escaping layers, so a reader that
+  # stops after the field un-escape gets a path with its backslashes doubled -
+  # not the tree that was measured.
+  local bs_repo bs_comma_repo
+  bs_repo="$TMP_ROOT/measuredtree/back\\slash/repo"
+  mkdir -p "$bs_repo/src"
+  git -C "$bs_repo" init --quiet 2>/dev/null || { git init --quiet "$bs_repo"; }
+  printf 'value = 1\n' > "$bs_repo/src/thing.py"
+  git -C "$bs_repo" add -A
+  git -C "$bs_repo" commit --quiet -m base
+  run_lane "$home" decide tree-d1 --project proj --repo "$bs_repo" --paths src/thing.py >/dev/null
+  recorded=$(recorded_repo_of "$log" tree-d1) \
+    || fail "a signals entry did not parse as k=v for tree-d1"
+  [ "$recorded" = "$(cd "$bs_repo" && pwd -P)" ] \
+    || fail "a path with a backslash did not round-trip: got '$recorded'"
+
+  # And both separators at once, which is where a one-pass reversal is not
+  # merely doubled but ambiguous.
+  bs_comma_repo="$TMP_ROOT/measuredtree/back\\slash,comma/repo"
+  mkdir -p "$bs_comma_repo/src"
+  git -C "$bs_comma_repo" init --quiet 2>/dev/null || { git init --quiet "$bs_comma_repo"; }
+  printf 'value = 1\n' > "$bs_comma_repo/src/thing.py"
+  git -C "$bs_comma_repo" add -A
+  git -C "$bs_comma_repo" commit --quiet -m base
+  run_lane "$home" decide tree-e1 --project proj --repo "$bs_comma_repo" --paths src/thing.py >/dev/null
+  recorded=$(recorded_repo_of "$log" tree-e1) \
+    || fail "a signals entry did not parse as k=v for tree-e1"
+  [ "$recorded" = "$(cd "$bs_comma_repo" && pwd -P)" ] \
+    || fail "a path with a backslash and a comma did not round-trip: got '$recorded'"
 
   pass "lane: the record names the tree each decision was measured against"
 }
