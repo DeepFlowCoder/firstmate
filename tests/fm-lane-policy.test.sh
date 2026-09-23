@@ -1088,7 +1088,7 @@ test_authors_is_a_governing_document_not_an_authentication_surface() {
   home=$(lane_home authorsname)
 
   # Every spelling the prose rule accepts, because the exception was first
-  # written as three hand-listed basenames while the prose rule accepted four
+  # written as a hand-listed set of basenames narrower than the set of prose
   # extensions, and AUTHORS.rst was recorded as authentication.
   for name in AUTHORS AUTHORS.txt AUTHORS.md AUTHORS.markdown AUTHORS.rst AUTHORS.adoc; do
     n=$((n + 1))
@@ -1100,6 +1100,23 @@ test_authors_is_a_governing_document_not_an_authentication_surface() {
       "$name was not attributed to the surface this house declares for it"
     assert_not_contains "$out" "authentication" \
       "$name is still recorded as an authentication surface"
+  done
+
+  # THE COUPLING FAILS CLOSED, which is the point of naming the extension with a
+  # glob rather than enumerating the accepted ones. These spellings are NOT in
+  # the prose-extension list, so this house still declares them governing-docs
+  # without consulting that list at all. The day one of them is added to it, the
+  # *auth* glob steps aside for that spelling and this entry is the whole reason
+  # AUTHORS stays expensive; while the entries were enumerated, nothing did, and
+  # a governance document would have landed on the cheap lane.
+  for name in AUTHORS.org AUTHORS.textile docs/AUTHORS.tex; do
+    n=$((n + 1))
+    out=$(run_lane "$home" decide authors-a$n --project firstmate --repo "$ROOT" \
+      --paths "$name" --class docs-only)
+    assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+      "$name reached the cheap lane"
+    assert_contains "$out" "governing-docs" \
+      "$name is not held expensive by this house independently of the prose list"
   done
 
   # The exception is one name and nothing wider: everything else the glob

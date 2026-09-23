@@ -57,6 +57,25 @@
 # SIZE IS A WARNING, NOT A CAP. A large change routes to the expensive lane so
 # it gets looked at. Nothing here ever refuses a change for being large.
 #
+# WHEN TWO THINGS MUST BE COUPLED AND THE COUPLING CANNOT BE AVOIDED, IT MUST
+# FAIL CLOSED. This is a constraint on what may be added here later, not a note
+# about the past. If the two fall out of sync, the result must be MORE expensive,
+# never cheaper. A coupling that cheapens when it breaks is a trap with a date on
+# it: it will be sprung by someone doing something perfectly reasonable in
+# another file, and it will lower rigor silently when it is.
+#
+# The instance that produced the rule, so the shape is recognisable: the AUTHORS
+# route spanned three places - the prose-extension list here, the exception to
+# the *auth* glob that derives from it, and this repository's own
+# .fm-critical-surfaces, which is data and can derive nothing. While that last
+# one enumerated a spelling per extension, adding ONE extension here would have
+# made AUTHORS.<ext> prose, excepted it from the glob automatically, and left no
+# entry holding it expensive - sending a governance document to the cheap lane.
+# Had it shipped it would have been an eighth silently-degrading guard, and the
+# first one this delivery planted rather than inherited. The data side now names
+# AUTHORS irrespective of extension, so desynchronising costs one unnecessary
+# expensive review instead of one unreviewed governance change.
+#
 # THE RECORD. Every decision, every ship dispatch and every defect found after
 # landing appends one row to data/lane-log.tsv. Nobody has published the curve
 # "escaped defects vs time saved" for routing LLM review of agent-written

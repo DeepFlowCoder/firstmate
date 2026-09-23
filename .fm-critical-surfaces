@@ -73,25 +73,30 @@ SKILL.md governing-docs
 
 # AUTHORS is here under its truthful label. It used to reach the expensive lane
 # by accident, through the portable *auth* glob, which recorded a contributors
-# list as an AUTHENTICATION surface; that glob no longer claims the name in any
-# spelling the policy accepts as prose, so the routing is now stated rather than
+# list as an AUTHENTICATION surface; that glob no longer claims AUTHORS in the
+# spellings the prose rule accepts, so the routing is now stated rather than
 # inherited from a coincidence of letters. AUTHORS is project governance and
 # attribution: who speaks for this house, and to whom the work is credited.
 #
-# One spelling per accepted prose extension, because this file is data a glob
-# matcher reads and cannot derive the set from fm_lane_prose_extensions in
-# bin/fm-lane-lib.sh the way the code does. It is the one copy of that list that
-# has to be maintained by hand: whoever adds an extension there adds its AUTHORS
-# line here, or this house loses the expensive route for that spelling.
+# The entries name AUTHORS irrespective of its extension, and this is the one
+# place in this delivery where a coupling cannot be removed: this file is data a
+# glob matcher reads, so it cannot derive the accepted prose extensions from
+# fm_lane_prose_extensions in bin/fm-lane-lib.sh the way the code does.
+#
+# WHEN TWO THINGS MUST BE COUPLED AND THE COUPLING CANNOT BE AVOIDED, IT MUST
+# FAIL CLOSED. If they fall out of sync, the result must be MORE expensive, never
+# cheaper. A coupling that cheapens when it breaks is a trap with a date on it:
+# it will be sprung by someone doing something perfectly reasonable in another
+# file, and it will lower rigor silently when it is.
+#
+# These entries used to enumerate one spelling per accepted prose extension, and
+# that copy failed OPEN. Adding a single extension to the prose list - a
+# perfectly reasonable edit two files away - makes AUTHORS.<ext> prose and
+# excepts it from the *auth* glob automatically, while no line here covers it, so
+# a governance document lands on the CHEAP lane. Naming the extension with a glob
+# cannot narrow anything: an unforeseen spelling routes EXPENSIVE, which costs
+# one review, and no future edit to the prose list can take that away.
 AUTHORS governing-docs
 */AUTHORS governing-docs
-AUTHORS.txt governing-docs
-*/AUTHORS.txt governing-docs
-AUTHORS.md governing-docs
-*/AUTHORS.md governing-docs
-AUTHORS.markdown governing-docs
-*/AUTHORS.markdown governing-docs
-AUTHORS.rst governing-docs
-*/AUTHORS.rst governing-docs
-AUTHORS.adoc governing-docs
-*/AUTHORS.adoc governing-docs
+AUTHORS.* governing-docs
+*/AUTHORS.* governing-docs

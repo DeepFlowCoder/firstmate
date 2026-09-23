@@ -167,14 +167,14 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 # exists to measure. Naming does not infer: it forces someone to write the name
 # down, and writing it down forces them to look at it.
 #
-# Every name below is reachable. authors and authors.txt were not: the portable
+# Every name below is reachable. The AUTHORS spellings were not: the portable
 # *auth* glob claimed them first, so a contributors list never reached this
 # function and was recorded as an authentication surface instead. That glob now
-# passes those three exact basenames through (see fm_lane_critical_hits), so
-# AUTHORS is ordinary documentation for any project that says nothing else about
-# it, and expensive in this one because this repository names it a governing
-# document in .fm-critical-surfaces. authors.md needs no entry here: .md already
-# qualifies it above.
+# passes AUTHORS through in whatever spelling the rules here accept as prose -
+# fm_lane_authors_spelling derives the set rather than restating it, so no count
+# or list has to be kept in step - which makes AUTHORS ordinary documentation for
+# any project that says nothing else about it, and expensive in this one because
+# this repository names it a governing document in .fm-critical-surfaces.
 # PROSE_FILE_NAMES is the single owner of the named prose files, and the ".txt
 # suffix" rule is applied to it rather than restated beside it: the .txt
 # spellings used to be a second copy of the same seven names, so adding a name
