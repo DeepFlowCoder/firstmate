@@ -505,6 +505,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/validation-intent-freeze.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/vendor-dialogs.md",
       "audience": "maintainer-verification"
     },
