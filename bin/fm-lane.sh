@@ -39,11 +39,16 @@
 # not happen. A project that adds no surfaces simply has no such file.
 #
 # CLASSES, and how each one is demonstrated rather than alleged:
-#   docs-only     every changed path is a prose markup format (.md, .markdown,
-#                 .rst, .adoc) or a NAMED prose file - CHANGELOG, README,
-#                 NOTICE, AUTHORS, CONTRIBUTORS, LICENCE - with or without a
-#                 .txt suffix. Nothing qualifies by where it lives: docs/ widens
-#                 nothing, and docs/requirements.txt is not documentation.
+#   docs-only     every changed path carries a PROSE NAME and a PROSE OBJECT.
+#                 The name is a prose markup format (.md, .markdown, .rst,
+#                 .adoc) or a NAMED prose file - CHANGELOG, README, NOTICE,
+#                 AUTHORS, CONTRIBUTORS, LICENCE - with or without a .txt
+#                 suffix. The object is the tree entry at the range's head,
+#                 which must be a regular non-executable file or absent: a
+#                 symlink, an executable or a submodule link called guide.md is
+#                 not documentation, whatever it is called. Nothing qualifies by
+#                 where it lives: docs/ widens nothing, and docs/requirements.txt
+#                 is not documentation.
 #   clean-revert  with --revert-of <sha>: every changed path's content at the
 #                 range's head equals its content at <sha>^, so the change is
 #                 exactly that commit undone.
@@ -184,10 +189,31 @@ is_documentation_path() {
   return 1
 }
 
+# A NAME SAYS WHAT SOMETHING IS CALLED, NOT WHAT IT IS. `guide.md` can be a
+# symlink or an executable, and then the name is a perfect disguise: it passes
+# every prose test above while being something else entirely. So a docs-only
+# demonstration needs a PROSE NAME AND A PROSE OBJECT. The first is decided by
+# the list above; the second is asked of the tree. Neither is sufficient alone.
+#
+# The object half is asked at the range's HEAD, because that is the state the
+# delivery lands. An entry absent there is a deleted prose file, which is prose
+# removed rather than a foreign object introduced, so it passes.
+#
+# It has to be asked directly rather than inferred from the mode disqualification
+# cmd_decide computes, because that one only sees entries present on BOTH sides
+# of the range: an ADDED entry has no prior mode to compare against, produces no
+# mode CHANGE, and the gap read as harmless. Absence of signal taken for signal
+# of absence, one more time - the seventh member of the family the captain
+# tracks as fm-guardas-que-degradan-a-una-comprobacion-mas-debil.
 demonstrate_docs_only() {
-  local p
+  local head=$1 p entry mode
+  shift
   for p in "$@"; do
     is_documentation_path "$p" || return 1
+    entry=$(tree_entry_at "$head" "$p")
+    [ -n "$entry" ] || continue
+    mode=${entry%% *}
+    [ "$mode" = 100644 ] || return 1
   done
   return 0
 }
@@ -336,8 +362,12 @@ cmd_decide() {
   mode_changes=-
   unreadable=0
   # EVERY read here reports whether it succeeded, and a read that fails leaves
-  # its signal at "-" and routes the delivery expensive through the signal tier
-  # below, which is the tier that would otherwise have read it. A pipeline discards
+  # its signal at "-". Stated exactly, because this comment has over-claimed
+  # once already: a decision that REACHES THE SIGNAL TIER then routes expensive
+  # with reason signals:unreadable-diff. A claimed class answers above that
+  # tier, so an unreadable signal never reaches it - with one exception, the
+  # MODE count, which disqualifies the class tier as well, since a count nobody
+  # could establish is not a count of zero. A pipeline discards
   # git's exit status and `|| true` cannot tell "git failed and produced
   # nothing" from "nothing matched", so a broken diff driver on one path used to
   # resolve the whole delivery's complexity to 0 - the cheapest value there is -
@@ -416,11 +446,20 @@ cmd_decide() {
       unreadable=1
     fi
   fi
+  # UNKNOWN AND ZERO ARE NOT THE SAME ANSWER. "-" means the raw read failed and
+  # the count was never established, and reading that as "no mode change" is the
+  # same defect this tier exists to close, two lines from where the file says so.
+  # It disqualifies like any other count that is not zero.
+  #
+  # Declared evidence is a different case, not an unestablished one: there is no
+  # range to measure, and that grade already refuses the cheap lane on its own,
+  # so the disqualification is a property of a MEASURED range only. Applying it
+  # to declared evidence would rewrite a declared class claim's row from
+  # class-not-demonstrated to evidence-not-demonstrated, which says less.
   mode_disqualifies=0
-  case "$mode_changes" in
-    -|0) ;;
-    *) mode_disqualifies=1 ;;
-  esac
+  if [ "$evidence" = demonstrated ] && [ "$mode_changes" != 0 ]; then
+    mode_disqualifies=1
+  fi
   # The tree that was actually read, resolved physically so two spellings of one
   # tree record identically. --repo and --project are independent inputs, so a
   # --repo pointing at the wrong clone produced a decision byte-indistinguishable
@@ -565,7 +604,7 @@ class_record_value() {
 demonstrate_class() {
   local base=$1 head=$2
   case "$CLASS" in
-    docs-only)    demonstrate_docs_only "${PATHS[@]}" ;;
+    docs-only)    demonstrate_docs_only "$head" "${PATHS[@]}" ;;
     clean-revert) demonstrate_clean_revert "$base" "$head" "$REVERT_OF" "${PATHS[@]}" ;;
     *)            return 1 ;;
   esac

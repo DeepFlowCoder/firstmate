@@ -1409,6 +1409,72 @@ EOF
   pass "lane: no class claim carries a mode change to the cheap lane"
 }
 
+# A name says what something is called, not what it is. The mode disqualification
+# only sees entries present on both sides of a range, so an entry CREATED as a
+# symlink or as an executable produces no mode change at all, and docs-only
+# tested the path name alone - a symlink to /etc/passwd called docs/link.md
+# demonstrated as pure prose and shipped with no pipeline review.
+test_a_prose_name_over_a_non_prose_object_is_not_documentation() {
+  local rec repo base home head out
+
+  rec=$(make_repo proseobject)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home proseobject)
+
+  base=$(git -C "$repo" rev-parse HEAD)
+  ln -s ../../etc/passwd "$repo/docs/link.md"
+  head=$(commit_all "$repo" add-prose-named-symlink)
+  [ "$(git -C "$repo" ls-tree "$head" -- docs/link.md | awk '{print $1}')" = 120000 ] \
+    || fail "the fixture did not record a symlink, so this case would prove nothing"
+  out=$(run_lane "$home" decide proseobj-a1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a symlink with a prose name demonstrated as documentation"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the prose-named symlink was not reported as undemonstrated"
+  assert_contains "$out" "mode=0" \
+    "the fixture leaned on the mode count, which cannot see an added entry"
+
+  base=$head
+  printf '#!/bin/sh\necho setup\n' > "$repo/docs/setup.md"
+  chmod +x "$repo/docs/setup.md"
+  head=$(commit_all "$repo" add-prose-named-executable)
+  [ "$(git -C "$repo" ls-tree "$head" -- docs/setup.md | awk '{print $1}')" = 100755 ] \
+    || fail "the fixture did not record an executable, so this case would prove nothing"
+  out=$(run_lane "$home" decide proseobj-a2 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "an executable with a prose name demonstrated as documentation"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the prose-named executable was not reported as undemonstrated"
+  assert_contains "$out" "mode=0" \
+    "the fixture leaned on the mode count, which cannot see an added entry"
+
+  # The controls: an ordinary added regular prose file still demonstrates, and
+  # so does deleting one, because prose removed is not a foreign object added.
+  base=$head
+  printf '# notes\n\nwords\n' > "$repo/docs/notes.md"
+  head=$(commit_all "$repo" add-regular-prose)
+  out=$(run_lane "$home" decide proseobj-b1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "an added regular prose file lost its cheap route"
+  assert_contains "$out" "reason=standard-class" \
+    "the added prose file was not routed on its class"
+
+  base=$head
+  rm "$repo/docs/notes.md"
+  head=$(commit_all "$repo" delete-regular-prose)
+  out=$(run_lane "$home" decide proseobj-b2 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "deleting a prose file stopped demonstrating as documentation"
+
+  pass "lane: documentation needs a prose name and a prose object, never the name alone"
+}
+
 # --- 3. declared evidence can only ever cost more ---------------------------
 
 test_declared_evidence_never_reaches_the_cheap_lane() {
@@ -1988,6 +2054,7 @@ test_a_path_git_escapes_is_matched_as_itself
 test_a_binary_change_is_unmeasurable_rather_than_small
 test_a_mode_change_never_reaches_the_cheap_lane
 test_a_class_claim_does_not_carry_a_mode_change_to_the_cheap_lane
+test_a_prose_name_over_a_non_prose_object_is_not_documentation
 test_documents_that_govern_an_agent_are_not_ordinary_documentation
 test_authors_is_a_governing_document_not_an_authentication_surface
 test_declared_evidence_never_reaches_the_cheap_lane
