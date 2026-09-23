@@ -38,7 +38,11 @@ Three properties follow and are load-bearing for dispatch:
 - A named-model window can be tighter than the account bound, so it must not be read across models. In the same snapshot Claude reported `all_models` with `effectivePercentRemaining` 10 while `model:fable` reported 4, limited by the `model:fable` window itself. A non-Fable Claude model reads 10, not 4.
 
 `quotaSemantics.status` is `unknown` with no `effectiveAvailability` entries at all for providers whose vendor exposes no window (observed for `cursor` and `copilot`).
-`state.authStatus` is present only for some providers (observed for `grok` alone), so its absence is missing evidence, not a credential fault.
+`state.authStatus` facts are recorded in two evidence classes, never conflated.
+Observed in output (quota-axi 0.1.42, 2026-09-23): among `auth_required` providers only `grok` emitted `authStatus`, with `unusable`; `kimi`, `zai`, `opencode-go`, and `copilot` were `auth_required` with no `authStatus`, `claude` and `codex` were `known` or `fresh` with no credential fault, `cursor` was `exhausted_now`, and `agy` and `alibaba` were `unavailable`.
+That first-hand reading confirms an absent `authStatus` is missing evidence, not a proven credential fault.
+Read in source (quota-axi 0.1.42, `/opt/homebrew/lib/node_modules/quota-axi/dist/src/providers/`): only `grok.js` sets `authStatus: "expired_refreshable"` (`grok.js:505`, consumed at `grok.js:197` and `grok.js:576`). `codex.js` and `pi-codex-credential.js` contain zero `authStatus` references and surface a different slug, `credentials_expired_refreshable`, in fields the quota command never serializes into the policy's input (`codex.js:302` inside a redacted `attempts[].error`; `pi-codex-credential.js:27` inside `inspect()` output), so the policy's `expired_refreshable` softening reaches only grok today. The source also emits `state.error: "provider_auth_rejected"` from `kimi`, `zai`, and `opencode-go`.
+The 2026-09-23 output reproduced neither value for any provider, so those two are recorded as emissions the code contemplates, not as observed output.
 
 ## Completion-runway and selection shape the judgment depends on
 
@@ -204,9 +208,9 @@ These are the verified structural facts that classification rests on:
   There is no `credits` kind, so a window's kind never separates a spent prepaid balance from a spent time window.
 - A provider-level `credits` object appears only for `codex` (`{"remaining":0,"unlimited":false,"unit":"credits"}`) and reads the same zero while that provider's weekly window is at 84%, matching the Grok note above on a healthy account.
   `credits.remaining: 0` is therefore never headroom and never evidence of a spent balance.
-- A spent time window is `percentRemaining: 0` with a `resetsAt`; a credential fault is `state.status === "auth_required"` or `state.authStatus === "unusable"` (or a slug in the policy's `AUTH_REASON_FAULTS` set).
-  A `state.reason` in the policy's `AUTH_UNREAD_REASONS` set is not one of those, because it reports that quota-axi could not open the credential store rather than that it examined the credential and found it unusable.
-  That distinction is load-bearing for the capacity guard, which runs `quota-axi --json` without `--allow-keychain-prompt`, so a store it cannot read is its ordinary reading rather than an exception.
+- A spent time window is `percentRemaining: 0` with a `resetsAt`.
+  The producer's auth-signal fields are `state.status`, `state.authStatus`, `state.reason`, and per-provider `state.error`; the "Quota granularity" section above owns which of their values are observed in output and which are read in the 0.1.42 source.
+  Which of those the capacity policy reads as a fault, as renewable, or as an unread store is owned by the policy's header; the load-bearing producer fact is that an `AUTH_UNREAD_REASONS` reason reports quota-axi could not open the credential store rather than that it examined the credential and found it unusable, and the capacity guard runs `quota-axi --json` without `--allow-keychain-prompt`, so a store it cannot read is its ordinary reading rather than an exception.
 - quota-axi 0.1.29 exposes no signal that separates "balance exhausted (recharge)" from a spent allowance with no reset reported, so the capacity policy reports that shape as `exhausted` rather than guessing `balance`.
 
 The policy's own header owns the classification contract and its wording; this record only pins the producer facts that contract reads.
@@ -300,7 +304,7 @@ Re-run the query above and update this section and the default together when the
 It asserts that the script accepts no harness, model, or provider input, never calls `quota-axi`, exits alike for every probe result because it renders no verdict, invokes only the two fixed non-destructive argv forms with stdin closed, holds a real bound even when the configured bound is zero or malformed, and never echoes raw vendor output.
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
 `tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic.
-`tests/fm-capacity.test.sh` owns the capacity classification, including that an unopened credential store is neither reported as a sign-out nor counted as a lost lane, and that a lane nobody could measure never sounds the minimum-lane alarm by itself.
+`tests/fm-capacity.test.sh` owns the capacity classification, including that an unopened credential store is neither reported as a sign-out nor counted as a lost lane, that a lane nobody could measure never sounds the minimum-lane alarm by itself, and that a renewable expiry or keyed rejected request is softened without swallowing a real sign-out.
 It also owns the balance arm: that a balance heading for zero warns while balance is still left, that a healthy one stays silent, that too little history discloses instead of alarming, that the default margin is the measured value on both sides of it, and that no amount or currency ever reaches the output.
 It owns the standing warning as its own contract: that a warning once raised is anchored to the drain that raised it and survives an idle night, a further drain, a cent of rounding in either direction, a spent-by-flag reading, and the loss from disk of the very readings that raised it; that a top-up too small to buy back one validation does not end it; and that a recharge past one validation's worth does, so it can never become an alarm nobody can switch off.
 It owns the measuring side of the same rule: that consumption is the sum of the downward moves, so a recharge quiets the guard by lengthening the runway rather than by discarding the drain measured before it, and a balance that reads upward now and then is still warned about.

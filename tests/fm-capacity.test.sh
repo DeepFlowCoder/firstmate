@@ -174,6 +174,48 @@ store_unread_blind_provider() {
 EOF
 }
 
+# renewable_rejection_provider <id> - one rejected REQUEST, not a dead
+# credential. Copied field for field from the live reading taken on 2026-09-22
+# while kimi's access token was 55 hours past expiry and its session was still
+# good: quota-axi forwards the stale bearer, the provider answers 401, and the
+# renewable refresh token beside it is never consulted.
+renewable_rejection_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"auth_required","stale":false,"error":"provider_auth_rejected"},
+ "windows":[],
+ "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
+EOF
+}
+
+# signed_out_provider <id> <slug> - a REAL sign-out, which quota-axi decides
+# locally without ever reaching the network: a revoked kimi credential is a
+# zero-length tombstone read as `kimi_code_cli_credential_invalid`, and an absent
+# one as `kimi_code_cli_credential_unavailable`. This is the fixture the
+# renewable cases below must never be allowed to soften.
+signed_out_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"auth_required","stale":false,"error":"$2",
+          "remedyCommand":"$1 login"},
+ "windows":[],
+ "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
+EOF
+}
+
+# refreshable_provider <id> - quota-axi's own `expired_refreshable`, the status
+# that names its own remedy: past its hour, renewed by the vendor CLI on the next
+# call, no captain involved.
+refreshable_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"auth_required","stale":false,"authStatus":"expired_refreshable",
+          "remedyCommand":"$1 login"},
+ "windows":[],
+ "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
+EOF
+}
+
 # snapshot <file> <provider-json>... - wrap providers in a schema-5 report.
 snapshot() {
   local out=$1 first=1
@@ -453,6 +495,112 @@ out=$(run_guard "$home" 2 "$home/snap.json" report)
 assert_contains "$out" "grok sign-in required" "an examined, unusable credential must still ask the captain to sign in"
 assert_contains "$out" "claude not measured" "an unopened store must not be softened into the same words as a real fault"
 pass "an examined credential fault and an unopened store are told apart in one snapshot"
+
+# === a renewable expiry is not a lost lane ==================================
+#
+# Measured on 2026-09-22. A kimi access token 55 HOURS past its expiry, with no
+# revocation tombstone beside it, answered a prompt normally with no login and
+# rotated both tokens in the doing. Nothing was signed out; the credential had
+# simply not been spent in two days. Yet the guard read that lane as lost and
+# reported "1 of 10 provider lanes dispatchable" with kimi named "sign-in
+# required" - and one ordinary prompt took the same fleet back to silence.
+#
+# Two separate signals carried that error and both are covered here: quota-axi's
+# `expired_refreshable`, which names its own renewability and was nonetheless
+# sitting among the faults, and the 401 that kimi earns by forwarding a bearer
+# quota-axi has already resolved as expired.
+#
+# THE SIGN-OUT CASES BELOW ARE THE POINT OF THIS SECTION, not a footnote to it.
+# A guard that stops seeing a real sign-out is worse than one that miscounts a
+# live lane, so every softening case here is paired with the sign-out it must
+# not swallow.
+
+home=$(fresh_home renewable-rejection)
+snapshot "$home/snap.json" \
+  "$(renewable_rejection_provider kimi)" \
+  "$(healthy_provider codex 60)" \
+  "$(healthy_provider claude 70)"
+out=$(run_guard "$home" 3 "$home/snap.json" report)
+[ -z "$out" ] || fail "a rejected request on a renewable credential must not sound the alarm, got: $out"
+pass "a rejected request on a renewable credential does not sound the alarm"
+
+# Fired for another reason, that lane has to say what actually happened, so the
+# captain does not re-authenticate an account that was never signed out.
+home=$(fresh_home renewable-rejection-words)
+snapshot "$home/snap.json" \
+  "$(renewable_rejection_provider kimi)" \
+  "$(window_exhausted_provider codex)"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "kimi not measured (expired, renewed by the vendor on next use: provider_auth_rejected)" "a renewable rejection must name itself rather than blaming the credential"
+assert_not_contains "$out" "kimi sign-in required" "a renewable rejection must never be reported as a sign-out"
+pass "a renewable rejection names itself rather than blaming the credential"
+
+# THE NON-NEGOTIABLE. A real sign-out is a different slug, decided locally
+# without ever reaching the network, and it must still be counted lost and still
+# ask the captain to sign in. Both revoked and absent are checked, because they
+# reach the guard by different paths.
+for slug in kimi_code_cli_credential_invalid kimi_code_cli_credential_unavailable; do
+  home=$(fresh_home "signed-out-$slug")
+  snapshot "$home/snap.json" \
+    "$(signed_out_provider kimi "$slug")" \
+    "$(healthy_provider codex 60)"
+  out=$(run_guard "$home" 2 "$home/snap.json" report)
+  assert_contains "$out" "1 of 2 provider lanes dispatchable" "a real sign-out ($slug) must still take its lane out of the count"
+  assert_contains "$out" "kimi sign-in required" "a real sign-out ($slug) must still ask the captain to sign in"
+  assert_contains "$out" "(kimi login)" "a real sign-out ($slug) must still carry quota-axi's remedy command"
+  assert_not_contains "$out" "kimi not measured" "a real sign-out ($slug) must never be softened into uncertainty"
+  pass "a real sign-out via $slug is still detected and still counted lost"
+done
+
+# The two readings must stay visibly different inside ONE snapshot, so the fix
+# cannot go vacuous by softening both.
+home=$(fresh_home renewable-vs-signed-out)
+snapshot "$home/snap.json" \
+  "$(renewable_rejection_provider kimi)" \
+  "$(signed_out_provider copilot kimi_code_cli_credential_invalid)" \
+  "$(window_exhausted_provider codex)"
+out=$(run_guard "$home" 3 "$home/snap.json" report)
+assert_contains "$out" "copilot sign-in required" "a real sign-out must still ask for a signature beside a renewable one"
+assert_contains "$out" "kimi not measured" "a renewable rejection must not be reported in the same words as a real sign-out"
+pass "a renewable rejection and a real sign-out are told apart in one snapshot"
+
+# `expired_refreshable` names its own renewability, so it is not a lost lane
+# either - while `unusable`, examined and dead, still is. Both in one snapshot.
+home=$(fresh_home refreshable-vs-unusable)
+snapshot "$home/snap.json" \
+  "$(refreshable_provider grok)" \
+  "$(credential_provider copilot)" \
+  "$(window_exhausted_provider codex)"
+out=$(run_guard "$home" 3 "$home/snap.json" report)
+assert_contains "$out" "grok not measured (expired, renewed by the vendor on next use: expired_refreshable)" "a refreshable expiry must name its own renewability"
+assert_not_contains "$out" "grok sign-in required" "a refreshable expiry must never be reported as a sign-out"
+assert_contains "$out" "copilot sign-in required" "an examined, unusable credential must still ask the captain to sign in"
+pass "a refreshable expiry and an unusable credential are told apart in one snapshot"
+
+# A refreshable expiry must not sound the alarm by itself either.
+home=$(fresh_home refreshable-counts)
+snapshot "$home/snap.json" \
+  "$(refreshable_provider grok)" \
+  "$(healthy_provider codex 60)" \
+  "$(healthy_provider claude 70)"
+out=$(run_guard "$home" 3 "$home/snap.json" report)
+[ -z "$out" ] || fail "a refreshable expiry must not sound the alarm, got: $out"
+pass "a refreshable expiry does not sound the alarm"
+
+# THE BLAST RADIUS IS DELIBERATE. quota-axi emits `provider_auth_rejected` from
+# zai and opencode-go too, and whether THEIR credentials renew behind it was
+# never measured. They keep firing until somebody measures them, because a
+# softening applied by reading across from another vendor would be exactly the
+# guess this guard exists to avoid.
+home=$(fresh_home renewable-keyed-by-provider)
+snapshot "$home/snap.json" \
+  "$(renewable_rejection_provider zai)" \
+  "$(renewable_rejection_provider opencode-go)" \
+  "$(healthy_provider codex 60)"
+out=$(run_guard "$home" 3 "$home/snap.json" report)
+assert_contains "$out" "zai sign-in required" "an unmeasured vendor must not inherit kimi's renewability"
+assert_contains "$out" "opencode-go sign-in required" "an unmeasured vendor must not inherit kimi's renewability"
+pass "renewability is keyed to the vendor it was measured on and is not read across"
 
 # === the incident's own shape ===============================================
 #
