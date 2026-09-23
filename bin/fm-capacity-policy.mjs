@@ -320,6 +320,7 @@ function usage() {
     "Usage:",
     "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record]",
     "                         [--lanes-unreadable] [--balance-margin-secs <n>]",
+    "                         [--only-unreported]",
     "                         < <quota-axi --json output>",
     "",
     "Prints one line when the fleet is worth reporting and nothing when it is not.",
@@ -327,11 +328,18 @@ function usage() {
     "--lanes-unreadable says the quota snapshot could not be read at all, so the",
     "lane arm has no reading to judge. It is NOT the same as a snapshot reporting",
     "zero providers, which is a fleet with no lanes and still fires.",
-    "--emit record answers every poll with three TAB-separated fields, for callers",
-    "that suppress an unchanged repeat and remember a standing warning: the",
-    "repeat-suppression digest, the drain to carry forward (empty when no warning",
-    "stands, which is how a warning is retired), and the line. Any field may be",
-    "empty. --emit line (the default) prints the line and stays silent otherwise.",
+    "--emit record answers every poll with four TAB-separated fields, for callers",
+    "that suppress an unchanged repeat and remember a standing warning: the lane",
+    "arm's repeat-suppression key, the balance arm's key, the drain to carry",
+    "forward (empty when no warning stands, which is how a warning is retired),",
+    "and the line. Any field may be empty. Store both keys verbatim: an arm this",
+    "poll could not read already carries its previous key forward, so a caller",
+    "that merges them itself can only get it wrong. --emit line (the default)",
+    "prints the line and stays silent otherwise.",
+    "--only-unreported withholds an arm whose key has not changed since the key",
+    "handed back in, so an unchanged degraded fleet is reported once rather than",
+    "on every poll. Without it every arm worth reporting is reported, which is",
+    "what a new observer needs.",
     "",
     "The FM_CAPACITY_BALANCE_READINGS environment variable carries the",
     "prepaid-balance history the validation provider is drained from, oldest first,",
@@ -347,6 +355,12 @@ function usage() {
     "guard has already given, as seconds of runway per unit of balance, so the",
     "same condition can be re-asked against whatever the account holds now.",
     "It rides the environment too, being measured from those same amounts.",
+    "FM_CAPACITY_REPORTED_LANES and FM_CAPACITY_REPORTED_BALANCE carry the two",
+    "keys this caller stored last, which is what --only-unreported compares",
+    "against and what an unreadable arm's key is preserved from. They are",
+    "separate variables because the arms are measured separately: one shared key",
+    "lets a poll that could read only one arm erase what was known about the",
+    "other, and then both arms read as new in turn, forever.",
     "",
     "Exit: 0 verdict reached (fired or silent), 2 usage error, 3 unusable snapshot.",
   ].join("\n");
@@ -375,17 +389,29 @@ function parseStanding(raw) {
   return value > 0 ? value : null;
 }
 
+function parseReported(raw) {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  return text === "" ? null : text;
+}
+
 function parseArguments(argv, env) {
   let minLanes = null;
   let emit = "line";
   let balanceMarginSecs = 0;
   const balanceStandingPerUnit = parseStanding(env.FM_CAPACITY_BALANCE_STANDING);
   let lanesUnreadable = false;
+  let onlyUnreported = false;
   const balanceReadings = parseReadings(env.FM_CAPACITY_BALANCE_READINGS);
+  const reportedLanes = parseReported(env.FM_CAPACITY_REPORTED_LANES);
+  const reportedBalance = parseReported(env.FM_CAPACITY_REPORTED_BALANCE);
   for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i];
     if (name === "--lanes-unreadable") {
       lanesUnreadable = true;
+      continue;
+    }
+    if (name === "--only-unreported") {
+      onlyUnreported = true;
       continue;
     }
     if (name === "--balance-margin-secs") {
@@ -422,6 +448,9 @@ function parseArguments(argv, env) {
     balanceMarginSecs,
     balanceStandingPerUnit,
     lanesUnreadable,
+    onlyUnreported,
+    reportedLanes,
+    reportedBalance,
   };
 }
 
@@ -863,6 +892,8 @@ export function verdict(
   balanceMarginSecs = 0,
   lanesUnreadable = false,
   balanceStandingPerUnit = null,
+  reported = {},
+  onlyUnreported = false,
 ) {
   if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.providers)) {
     throw new Error("snapshot has no providers array");
@@ -879,7 +910,7 @@ export function verdict(
   // permanently loud. Leaving the balance arm alive under it would quietly
   // restore vendor calls a captain switched off, and would also re-arm this
   // guard inside every test that neutralizes it by this one variable.
-  if (minLanes === 0) return { fire: false, lanes, dispatchable };
+  if (minLanes === 0) return { fire: false, lanes, dispatchable, recordLanes: "", recordBalance: "" };
 
   const balance = classifyBalance(balanceReadings, balanceMarginSecs, balanceStandingPerUnit);
   // `balance-unmeasured` is deliberately absent: too little history yet is the
@@ -902,9 +933,6 @@ export function verdict(
   // because a real quota-axi report carrying an empty `providers[]` is a
   // different fact - a fleet with no lanes at all - and still has to fire.
   const laneFires = !lanesUnreadable && (below || allFinite);
-  if (!laneFires && !balanceFires) {
-    return { fire: false, lanes, dispatchable, balance };
-  }
 
   // The lane inventory is deliberately NOT printed when only the balance fires:
   // a fleet with every lane healthy still loses every validation to a spent
@@ -915,15 +943,52 @@ export function verdict(
   // blind spot the captain would otherwise read as an all-clear.
   const balanceClause =
     balance !== null && balance.cause !== "balance-live" ? describeBalance(balance) : "";
-  // The digest is built from the clauses that were actually SAID, never from
-  // facts the line left out. Keying it on the lane inventory while that
-  // inventory is withheld re-wakes the captain with a byte-identical balance
-  // sentence every time one provider's error text changes or a flaky quota-axi
-  // alternates between a full reading and none - the cry-wolf failure this guard
-  // exists to avoid, wearing the suppression's own clothes.
+
+  // THE TWO ARMS REMEMBER SEPARATELY, because they are measured separately and
+  // either one can have no reading on a poll the other reads fine.
+  //
+  // Keying one shared memory on the clauses that were actually SAID keeps a
+  // withheld lane inventory out of the key, which is right, but it also throws
+  // the lane arm's memory away: a poll that says only the balance overwrites the
+  // whole key with the balance cause alone. The next poll's lane inventory then
+  // reads as new, is reported in full, and rewrites the key with both arms - and
+  // the poll after that reads as new again. Measured on 2026-09-23: with a
+  // quota-axi that answered every other call, one unchanged degraded fleet and
+  // one standing balance warning woke the captain on EVERY poll, alternating
+  // between the balance sentence alone and the full inventory, for hours. Each
+  // wake was individually justified by the key it was compared against; the key
+  // was just no longer a record of what the captain had been told.
+  //
+  // So each arm carries its own key, and a poll that could not read an arm
+  // preserves that arm's key rather than replacing it with the other arm's.
+  // Preserving loses nothing: a key holds a SHAPE and not a moment, so if the
+  // arm changed while it was unreadable the next good reading differs and warns
+  // anyway.
+  const laneKey = laneFires ? laneDigest(lanes, dispatchable) : "";
+  const balanceKey = balanceClause === "" ? "" : balance.cause;
+  const reportedLanes = reported.lanes ?? "";
+  const reportedBalance = reported.balance ?? "";
+  const recordLanes = lanesUnreadable ? reportedLanes : laneKey;
+  const recordBalance = balance === null ? reportedBalance : balanceKey;
+
+  // Suppression is per arm too, and it is the CALLER's surface that asks for it:
+  // session start reports whatever was reported before, because a new session is
+  // a new observer, while the watcher speaks only about what has changed.
+  const sayLane = laneFires && (!onlyUnreported || laneKey !== reportedLanes);
+  // The balance clause rides along with a lane report even when it is unchanged,
+  // because a wake that is already happening should carry the whole picture. What
+  // it may not do is cause a wake of its own on an unchanged reading - and
+  // `balance-unmeasured` never causes one at all; see BALANCE_FIRES above.
+  const sayBalance =
+    balanceClause !== "" &&
+    (sayLane || (balanceFires && (!onlyUnreported || balanceKey !== reportedBalance)));
+
+  if (!sayLane && !sayBalance) {
+    return { fire: false, lanes, dispatchable, balance, recordLanes, recordBalance };
+  }
+
   const clauses = [];
-  const digestParts = [];
-  if (laneFires) {
+  if (sayLane) {
     const reasons = [];
     if (below) reasons.push(`below ${minLanes}`);
     if (allFinite) {
@@ -945,26 +1010,23 @@ export function verdict(
     // joined line from the end instead dropped the balance warning first, and
     // mid-sentence, whenever enough lanes carried long errors: the most urgent
     // thing this guard says would have been the first thing lost.
-    const room = MAX_LINE - (balanceClause === "" ? 0 : balanceClause.length + 2);
+    const room = MAX_LINE - (sayBalance ? balanceClause.length + 2 : 0);
     clauses.push(
       (
         `${dispatchable.length} of ${lanes.length} provider lanes dispatchable${unmeasuredNote} ` +
         `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`
       ).slice(0, Math.max(0, room)),
     );
-    digestParts.push(laneDigest(lanes, dispatchable));
   }
-  if (balanceClause !== "") {
-    clauses.push(balanceClause);
-    digestParts.push(balance.cause);
-  }
+  if (sayBalance) clauses.push(balanceClause);
   return {
     fire: true,
     line: clauses.join("; "),
-    digest: digestParts.join(" "),
     lanes,
     dispatchable,
     balance,
+    recordLanes,
+    recordBalance,
   };
 }
 
@@ -1031,6 +1093,8 @@ function main(argv, env) {
       options.balanceMarginSecs,
       options.lanesUnreadable,
       options.balanceStandingPerUnit,
+      { lanes: options.reportedLanes, balance: options.reportedBalance },
+      options.onlyUnreported,
     );
   } catch (error) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n`);
@@ -1047,13 +1111,17 @@ function main(argv, env) {
   // poll - including the quiet ones. A poll that finds the condition no longer
   // true is exactly when the standing warning must be retired, and that poll
   // prints nothing at all, so a record emitted only on a fire could never carry
-  // the news. Digest, then the drain to carry forward, then the line; any of the
-  // three may be empty, and an empty drain means "no warning stands".
+  // the news. The two arms' keys to remember, then the drain to carry forward,
+  // then the line; any field may be empty, and an empty drain means "no warning
+  // stands". Each key already accounts for what this poll could read, so the
+  // caller stores both verbatim and decides nothing about them itself.
   const standing =
     result.balance && result.balance.standingPerUnit
       ? result.balance.standingPerUnit.toFixed(6)
       : "";
-  process.stdout.write(`${result.digest ?? ""}\t${standing}\t${result.line ?? ""}\n`);
+  process.stdout.write(
+    `${result.recordLanes ?? ""}\t${result.recordBalance ?? ""}\t${standing}\t${result.line ?? ""}\n`,
+  );
   return 0;
 }
 
