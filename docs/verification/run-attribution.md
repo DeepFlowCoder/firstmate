@@ -2,15 +2,16 @@
 
 Audience: maintainer verification.
 
-This record supports two active guarantees about the worktree the pipeline works in, each resting on a different fact about it:
+This record supports three active guarantees, each resting on a different measured fact:
 
 - On the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work. This one rests on the pipeline working in its own managed worktree and never in the crew's.
 - A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
+- A request to the pipeline whose result was never established is reported as unestablished and never as a failed request. This one rests on the daemon's response time being load-dependent, so a bound that fires says nothing about what the request did.
 
 [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, and the submitted-head binding - and, for the second guarantee, why the `failed` phrase reads as it does.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns how an attributed run becomes a reported state.
 
-The guarantee is scoped to that path deliberately, because the submitted head is only carried by the `axi status` output.
+The first guarantee is scoped to that path deliberately, because the submitted head is only carried by the `axi status` output.
 `axi status` is repo-scoped, so when it answers for another branch the read falls through to the coarse `no-mistakes runs` list, whose rows carry the pipeline-advanced head and no submitted head, and that path still reports unknown attribution after a head move.
 Work to close that second door is tracked as `fm-atribucion-segunda-puerta-repo-scoped`.
 
@@ -194,3 +195,69 @@ ls -t ~/.no-mistakes/logs/ | grep -n -e 01M238R9XKMRKRKYKJRS7X0BWH -e 01M242NA3G
 
 The listing is newest first, so every run that started after the failed one sits on an earlier line than it; here the failed run is line 53, and the successor that resumed this branch, `01M242NA3GYJB5RB0BQ8ZWMWTB`, is the row directly above it at line 52.
 Its own `review.log` then says what it resumed - here, `round 1` on the same branch.
+
+## A request whose result was never established
+
+The third guarantee is about the CLIENT, not the daemon: `fm_nm_call_answered` in [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh) separates "the daemon answered" from "no answer came back", and [`bin/fm-teardown.sh`](../../bin/fm-teardown.sh)'s post-abort read-back is the caller that reports the second as unestablished rather than as a failed abort.
+The portable regressions in `tests/fm-teardown.test.sh` pin the three outcomes apart with a faked `no-mistakes`; what a fake cannot establish is the two live facts recorded here.
+
+### The daemon's response time is load-dependent
+
+Recorded 2026-09-22 with no-mistakes v1.75.2 on Darwin 24.6.0 (arm64), three sequential calls from a task worktree on an otherwise quiet fleet:
+
+```sh
+for i in 1 2 3; do
+  s=$(python3 -c 'import time;print(int(time.time()*1000))')
+  no-mistakes axi status >/dev/null 2>&1
+  e=$(python3 -c 'import time;print(int(time.time()*1000))')
+  echo "call $i: $((e-s))ms"
+done
+```
+
+```
+call 1: 113ms
+call 2: 57ms
+call 3: 69ms
+```
+
+The same three-call reading taken on 2026-09-19 while seven lanes were working against this one daemon answered 1359ms, 425ms and 645ms, and the reading taken on 2026-09-09 answered 1053ms, 935ms and 902ms.
+One daemon serves every lane of every home, so its latency tracks fleet load across more than an order of magnitude.
+That is the fact the guarantee needs: a fixed bound narrower than the loaded latency does not measure health, and what fires when it is crossed is the bound, not a fault.
+Refresh this by re-running the loop above while the fleet is busy and again while it is quiet.
+
+### What the client says when it could not confirm
+
+Observed 2026-09-22, delivered to a worker reattaching to its own live validation, twice on the same gate:
+
+```
+drive run: reconcile run 01M354M59S16BBBCEA7ZD8M61S: get_run timed out and daemon health probe failed: read response: daemon health did not reply within 250ms
+```
+
+Read at that moment without touching anything, `no-mistakes doctor` reported the daemon `running` and that same run was `status: running` on its branch, and the worker's own words on being reattached were that its gate response "had in fact landed - review is in fix round 1 right now".
+So the service was healthy, the run was live, and the operation the client had reported as failed had already applied.
+That 250ms bound is the CLI's own and has no configuration surface in v1.75.2: neither `no-mistakes --help` nor `no-mistakes axi --help` exposes a timeout flag, and the only environment variables the binary carries are a test override and the gate, telemetry, update-check and forge-credential ones:
+
+```sh
+strings "$(command -v no-mistakes)" | grep -oE "NO_MISTAKES_[A-Z0-9_]+" | sort -u
+```
+
+```
+NO_MISTAKES_ALLOW_DEFAULT_ROOT_IN_TESTS
+NO_MISTAKES_BITBUCKET_API_BASE_URL
+NO_MISTAKES_BITBUCKET_API_TOKENB
+NO_MISTAKES_BITBUCKET_EMAIL
+NO_MISTAKES_GATE
+NO_MISTAKES_GATEG
+NO_MISTAKES_NO_UPDATE_CHECK
+NO_MISTAKES_TELEMETRY
+NO_MISTAKES_TELEMETRY186264514923095703125931322574615478515625
+NO_MISTAKES_UMAMI_HOST
+NO_MISTAKES_UMAMI_WEBSITE_ID
+```
+
+The trailing characters on three of those rows are where the binary's string table runs one constant into the next; the names themselves are a test override and the gate, telemetry, update-check and Bitbucket-credential ones, and none of them bounds a probe.
+
+So widening that particular probe belongs to the no-mistakes project; what this repo owns is its own bound and what it concludes when one fires.
+`fm_nm_text_is_unconfirmed` matches the request-scoped and probe-scoped clauses of that payload and nothing broader, because a bare "timed out" is also the pipeline's own vocabulary for a real fact about a run.
+That wording is un-owned vendor text, so the classifier never rests on it alone: a bound that fires and an empty answer are classified as unestablished independently of any string.
+Refresh the clauses by re-reading the CLI's failure text after a no-mistakes upgrade; a reworded payload costs a clause, never the guarantee.
