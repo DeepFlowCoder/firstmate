@@ -322,6 +322,8 @@ It also lists the shared tracked material AGENTS.md section 1 already requires s
 
 Every lane decision, every ship dispatch and every defect found after a delivery landed is appended to the home's gitignored `data/lane-log.tsv`, tab-separated, one event per line.
 Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"` and read the file back with `bin/fm-lane.sh log`.
+A `dispatch` row records an authorised dispatch rather than a completed launch, because it is written before the worker starts, so a spawn that fails afterwards still leaves a row and a retry leaves a second one for the same delivery.
+Anyone computing an escape rate from this file must therefore not treat dispatch rows as deliveries.
 That record is the only measurement of rigor skipped against defects escaped, which nothing published covers for agent-written changes, so it is what makes the policy correctable rather than permanent.
 
 ## Captain Preferences (data/captain.md / data/captain-shared.md)

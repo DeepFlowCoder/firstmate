@@ -69,6 +69,15 @@
 # escaped (\t, \n, \\), so one row is always one physical line, and each field
 # is capped so the whole row stays one atomic append (FM_LANE_FIELD_MAX).
 #
+# A dispatch row records an AUTHORISED DISPATCH, not a completed launch. It is
+# written before the backend launch, so a spawn that dies afterwards still
+# leaves a row, and a retry leaves a second one for the same delivery. The
+# concrete consequence: anyone computing an escape rate must NOT treat dispatch
+# rows as deliveries. This is a DECLARED ASYMMETRY, not a defect - writing
+# before launching is what "a dispatch that cannot be recorded is refused rather
+# than run unmeasured" requires, and the two cannot both be satisfied. A
+# declared asymmetry misleads nobody; a silent one does.
+#
 # Mechanics - exact flags and commands - are owned by bin/fm-lane.sh --help.
 
 # --- record primitives ------------------------------------------------------
@@ -209,11 +218,22 @@ fm_lane_catalog() {
 
 # fm_lane_critical_hits <catalog-file> <path>... -> the distinct surface names
 # the paths touch, one per line, in catalog order.
+#
+# An entry that does not yield BOTH a glob and a surface name is refused here,
+# for the same reason fm_lane_project_surfaces refuses a malformed project line:
+# a silently dropped pattern is a silently lost surface. This is where the rule
+# reaches the built-in catalog too, whose entries are tab-separated and would
+# otherwise collapse into the glob field - and vanish - if anything ever
+# de-tabbed them.
 fm_lane_critical_hits() {
   local catalog=$1 path glob name lglob lpath hits=""
   shift
   while IFS=$'\t' read -r glob name; do
     [ -n "$glob" ] || continue
+    if [ -z "$name" ]; then
+      echo "error: critical-surface catalog entry has no surface name (expected \"<glob><tab><surface-name>\"): $glob" >&2
+      return 1
+    fi
     case ",$hits," in
       *",$name,"*) continue ;;
     esac

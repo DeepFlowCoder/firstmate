@@ -414,11 +414,15 @@ fm_git_worktree() {
 # OTHER reason calls this first. It goes through the real decide command rather
 # than writing the record by hand, so those suites never pin the record's
 # format; the captain-override route is used because it is the one path to the
-# cheap lane that needs no git range to demonstrate.
+# cheap lane that needs no git range to demonstrate. decide requires --repo on
+# every grade, so it is pointed at a throwaway project directory that declares
+# no critical surfaces of its own.
 fm_authorize_cheap_lane() {
-  local home=$1 id=$2 project=$3
+  local home=$1 id=$2 project=$3 repo
+  repo="$home/lane-fixture-project"
+  mkdir -p "$repo"
   FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
-    "$ROOT/bin/fm-lane.sh" decide "$id" --project "$project" \
+    "$ROOT/bin/fm-lane.sh" decide "$id" --project "$project" --repo "$repo" \
     --paths lane-authorization-fixture --captain-override "test fixture authorization" >/dev/null
 }
 

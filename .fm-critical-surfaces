@@ -45,6 +45,18 @@ bin/fm-stash-guard.sh teardown-and-discard
 # that DECLARE the routing policy; these are the two that RUN its dispatch gate,
 # and a delivery that deleted the gate adds no lines, so every diff signal would
 # read cheap and it would route itself past the gate it just removed.
+#
+# Do not delete these two as redundant with the bin/* entry below. That entry
+# protects the gate only INCIDENTALLY, because this repository's shared tracked
+# material happens to include bin/; a protection that stands because some list
+# currently happens to include some directory is exactly the kind that
+# disappears without anyone noticing. Narrowing this file is itself a critical
+# surface, but that defends against DELIBERATE narrowing, not against narrowing
+# that happens in passing inside a legitimate reorganisation.
+# The surface NAME also carries real information. A row in the record saying
+# routing-policy tells whoever reads it in six months that the delivery touched
+# the policy's own enforcement point; shared-tracked-material does not, and the
+# record is half the point of this policy.
 bin/fm-spawn.sh routing-policy
 bin/fm-promote.sh routing-policy
 

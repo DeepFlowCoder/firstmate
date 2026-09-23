@@ -91,6 +91,16 @@ make_repo() {  # <name> -> "<repo>|<base-sha>"
   printf '%s\n' "$repo|$(git -C "$repo" rev-parse HEAD)"
 }
 
+# decide requires --repo on every evidence grade, because the project's own
+# .fm-critical-surfaces is what completes the catalog. A case that means to
+# exercise the BUILT-IN catalog alone points it here: a project directory that
+# declares no surfaces of its own.
+plain_repo() {  # <name> -> the directory
+  local dir="$TMP_ROOT/$1/plain-project"
+  mkdir -p "$dir"
+  printf '%s\n' "$dir"
+}
+
 commit_all() {  # <repo> <message> -> the new sha
   local repo=$1 message=$2
   git -C "$repo" add -A
@@ -99,6 +109,33 @@ commit_all() {  # <repo> <message> -> the new sha
 }
 
 first_line() { printf '%s\n' "$1" | head -n 1; }
+
+# A --reproduce command is never run without a bound, and the coreutils
+# `timeout` is not installed everywhere - this fleet's macOS hosts ship neither
+# it nor gtimeout. A case about the DEMONSTRATION rather than about the bound
+# puts this stand-in first on PATH so it runs anywhere; it drops the seconds
+# argument and execs the command, which is all a demonstration expected to
+# finish needs. The missing-bound behaviour has its own case.
+path_with_a_timeout_binary() {  # <dir> -> "<dir>:$PATH"
+  local dir=$1
+  mkdir -p "$dir"
+  printf '#!/bin/sh\nshift\nexec "$@"\n' > "$dir/timeout"
+  chmod +x "$dir/timeout"
+  printf '%s\n' "$dir:$PATH"
+}
+
+# The mirror image: a PATH holding exactly the commands fm-lane.sh needs and
+# deliberately neither `timeout` nor `gtimeout`, so a case can put the decision
+# on a machine where a --reproduce command cannot be bounded at all.
+path_without_a_timeout_binary() {  # <dir> -> the dir
+  local dir=$1 cmd src
+  mkdir -p "$dir"
+  for cmd in env bash git awk grep sed sort tr wc cut paste head date dirname mkdir rm mktemp cat; do
+    src=$(command -v "$cmd") || fail "this fixture needs $cmd on PATH and cannot find it"
+    ln -sf "$src" "$dir/$cmd"
+  done
+  printf '%s\n' "$dir"
+}
 
 # --- 1. a critical surface beats every cheap signal -------------------------
 
@@ -150,13 +187,14 @@ EOF
 # Each surface the captain named must actually be in the catalog. A catalog that
 # silently lost one would still pass every other case in this file.
 test_every_named_critical_surface_is_in_the_catalog() {
-  local home out label path surface n=0
+  local home repo out label path surface n=0
 
   home=$(lane_home surfaces)
+  repo=$(plain_repo surfaces)
   while IFS='|' read -r label path surface; do
     [ -n "$label" ] || continue
     n=$((n + 1))
-    out=$(run_lane "$home" decide "surface-case-$n" --project proj --paths "$path")
+    out=$(run_lane "$home" decide "surface-case-$n" --project proj --repo "$repo" --paths "$path")
     assert_contains "$(first_line "$out")" "lane=no-mistakes" \
       "$label did not route to the expensive lane"
     assert_contains "$out" "critical-surfaces: $surface" \
@@ -307,7 +345,7 @@ EOF
     "a false class claim was not reported as undemonstrated"
 
   # Claimed with nothing to demonstrate it against: a path list is an allegation.
-  out=$(run_lane "$home" decide class-declared --project proj \
+  out=$(run_lane "$home" decide class-declared --project proj --repo "$repo" \
     --paths docs/guide.md --class docs-only)
   assert_contains "$(first_line "$out")" "lane=no-mistakes" \
     "a class claimed over a declared path list reached the cheap lane"
@@ -355,24 +393,25 @@ EOF
 }
 
 test_a_mechanical_change_must_be_re_derivable() {
-  local rec repo base home head out
+  local rec repo base home head bounded out
 
   rec=$(make_repo mechclass)
   IFS='|' read -r repo base <<EOF
 $rec
 EOF
   home=$(lane_home mechclass)
+  bounded=$(path_with_a_timeout_binary "$TMP_ROOT/mechclass/bin")
 
   printf 'value = 1\nvalue2 = 1\n' > "$repo/src/thing.py"
   head=$(commit_all "$repo" mechanical)
 
-  out=$(run_lane "$home" decide mech-real --project proj \
+  out=$(PATH="$bounded" run_lane "$home" decide mech-real --project proj \
     --repo "$repo" --range "$base..$head" --class mechanical-pattern \
     --reproduce "printf 'value = 1\nvalue2 = 1\n' > src/thing.py")
   assert_contains "$(first_line "$out")" "lane=direct-PR" \
     "a re-derivable mechanical change did not reach the cheap lane"
 
-  out=$(run_lane "$home" decide mech-false --project proj \
+  out=$(PATH="$bounded" run_lane "$home" decide mech-false --project proj \
     --repo "$repo" --range "$base..$head" --class mechanical-pattern \
     --reproduce "true")
   assert_contains "$(first_line "$out")" "lane=no-mistakes" \
@@ -392,10 +431,11 @@ EOF
 # --- 3. declared evidence can only ever cost more ---------------------------
 
 test_declared_evidence_never_reaches_the_cheap_lane() {
-  local home out
+  local home repo out
 
   home=$(lane_home declared)
-  out=$(run_lane "$home" decide declared-1 --project proj --paths README.md)
+  repo=$(plain_repo declared)
+  out=$(run_lane "$home" decide declared-1 --project proj --repo "$repo" --paths README.md)
   assert_contains "$(first_line "$out")" "lane=no-mistakes" \
     "a declared path list reached the cheap lane"
   assert_contains "$out" "reason=evidence-not-demonstrated" \
@@ -411,25 +451,26 @@ test_declared_evidence_never_reaches_the_cheap_lane() {
 # the record as if it were a real one - and the record is the only thing that
 # makes this policy reviewable.
 test_an_invalid_class_claim_is_refused_on_declared_evidence() {
-  local home log out status
+  local home repo log out status
 
   home=$(lane_home classclaim)
+  repo=$(plain_repo classclaim)
   log="$home/data/lane-log.tsv"
 
-  out=$(run_lane "$home" decide claim-a1 --project proj --paths src/thing.py \
+  out=$(run_lane "$home" decide claim-a1 --project proj --repo "$repo" --paths src/thing.py \
     --class not-a-real-class)
   status=$?
   [ "$status" -ne 0 ] || fail "an unknown class on declared evidence should exit non-zero"
   assert_contains "$out" "--class must be one of docs-only, clean-revert, mechanical-pattern" \
     "the refusal did not name the classes that exist"
 
-  out=$(run_lane "$home" decide claim-a2 --project proj --paths src/thing.py \
+  out=$(run_lane "$home" decide claim-a2 --project proj --repo "$repo" --paths src/thing.py \
     --class clean-revert)
   status=$?
   [ "$status" -ne 0 ] || fail "a revert claim naming no commit should exit non-zero"
   assert_contains "$out" "requires --revert-of" "the refusal did not name the missing flag"
 
-  out=$(run_lane "$home" decide claim-a3 --project proj --paths src/thing.py \
+  out=$(run_lane "$home" decide claim-a3 --project proj --repo "$repo" --paths src/thing.py \
     --class mechanical-pattern)
   status=$?
   [ "$status" -ne 0 ] || fail "a mechanical claim with no command to re-derive it should exit non-zero"
@@ -438,7 +479,7 @@ test_an_invalid_class_claim_is_refused_on_declared_evidence() {
   assert_absent "$log" "a refused class claim still reached the record"
 
   # A well-formed claim on declared evidence is still routed, and still expensive.
-  out=$(run_lane "$home" decide claim-b1 --project proj --paths docs/guide.md \
+  out=$(run_lane "$home" decide claim-b1 --project proj --repo "$repo" --paths docs/guide.md \
     --class docs-only)
   assert_contains "$(first_line "$out")" "lane=no-mistakes" \
     "a class claim on declared evidence reached the cheap lane"
@@ -483,7 +524,7 @@ $rec
 EOF
   log="$home/data/lane-log.tsv"
 
-  run_lane "$home" decide record-a1 --project proj --paths src/thing.py >/dev/null
+  run_lane "$home" decide record-a1 --project proj --repo "$proj" --paths src/thing.py >/dev/null
   assert_grep 'decide	record-a1	proj	no-mistakes' "$log" \
     "the decision did not reach the record"
 
@@ -495,7 +536,7 @@ EOF
     "an expensive-lane dispatch was not recorded"
 
   out=$(run_lane "$home" escape record-b1 --project proj \
-    --note "the guard regressed after landing" --defect-class logic)
+    --note "the guard regressed after landing")
   assert_contains "$out" "recorded escape for record-b1" "the escape was not reported as recorded"
   assert_grep 'escape	record-b1	proj' "$log" "a defect found after landing did not reach the record"
   assert_grep 'the guard regressed after landing' "$log" "the escape record lost the defect description"
@@ -538,7 +579,7 @@ EOF
 
   # A decision that says the expensive lane.
   write_brief "$home" gate-b1 direct-PR
-  run_lane "$home" decide gate-b1 --project proj --paths bin/fm-pr-merge.sh >/dev/null
+  run_lane "$home" decide gate-b1 --project proj --repo "$proj" --paths bin/fm-pr-merge.sh >/dev/null
   out=$(run_spawn "$home" "$fakebin" gate-b1 "$proj" claude --mode direct-PR --yolo off)
   status=$?
   [ "$status" -ne 0 ] || fail "a cheap dispatch against an expensive decision should exit non-zero"
@@ -646,11 +687,12 @@ EOF
 # --- 8. the captain, and only the captain, can override ---------------------
 
 test_only_the_captain_reaches_the_cheap_lane_past_a_critical_surface() {
-  local home out
+  local home repo out
 
   home=$(lane_home override)
-  out=$(run_lane "$home" decide override-a1 --project proj --paths bin/fm-pr-merge.sh \
-    --captain-override "ship it direct, my call")
+  repo=$(plain_repo override)
+  out=$(run_lane "$home" decide override-a1 --project proj --repo "$repo" \
+    --paths bin/fm-pr-merge.sh --captain-override "ship it direct, my call")
   assert_contains "$(first_line "$out")" "lane=direct-PR" \
     "the captain's explicit instruction did not reach the cheap lane"
   assert_contains "$out" "reason=captain-override" "the override was not recorded as one"
@@ -659,6 +701,153 @@ test_only_the_captain_reaches_the_cheap_lane_past_a_critical_surface() {
   assert_grep 'ship it direct, my call' "$home/data/lane-log.tsv" \
     "the override did not record the captain's own words"
   pass "lane: the captain's explicit instruction overrides a critical surface, on the record"
+}
+
+# The row that bypasses the one always-expensive tier is the row that most needs
+# the surface named. A project's own .fm-critical-surfaces is read from --repo,
+# so a decide that could omit it recorded `-` in the critical column for a path
+# that IS a surface in that project: a record implying a check that never ran.
+test_an_override_records_a_surface_only_this_project_declares() {
+  local home repo out log status
+
+  home=$(lane_home overrideproj)
+  repo="$TMP_ROOT/overrideproj/project"
+  mkdir -p "$repo/src/billing"
+  printf 'src/billing/* money-movement\n' > "$repo/.fm-critical-surfaces"
+  log="$home/data/lane-log.tsv"
+
+  # The path matches no built-in pattern, so only the project's file makes it a
+  # surface, and only reading that file can put its name in the record.
+  out=$(run_lane "$home" decide override-b1 --project proj --repo "$repo" \
+    --paths src/billing/ledger.rb --captain-override "I know, ship it")
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "the captain's explicit instruction did not reach the cheap lane"
+  assert_contains "$out" "critical-surfaces: money-movement" \
+    "the override did not name the surface only this project declares"
+  assert_not_contains "$out" "critical-surfaces: -" \
+    "the override recorded no surface for a path that is one in this project"
+  assert_grep 'money-movement' "$log" "the record lost the surface the override bypassed"
+
+  # A decide with no --repo cannot make that check, so it is refused rather than
+  # recorded against an incomplete catalog.
+  out=$(run_lane "$home" decide override-b2 --project proj \
+    --paths src/billing/ledger.rb --captain-override "I know, ship it")
+  status=$?
+  [ "$status" -ne 0 ] || fail "a decide with no --repo should exit non-zero"
+  assert_contains "$out" "requires --repo" "the refusal did not name the missing flag"
+  assert_no_grep 'override-b2' "$log" "a refused decide still reached the record"
+
+  pass "lane: an override records the surface it overrode, including one only the project declares"
+}
+
+# --- 9. inputs the policy refuses rather than guesses at --------------------
+
+# `<base>...<head>` is the common branch-versus-base idiom and means merge-base
+# semantics, which this policy does not implement. Parsing it as two dots would
+# route the delivery against a diff that includes everything that landed on the
+# base since the fork point, so the recorded signals would describe a change
+# nobody made.
+test_a_three_dot_range_is_refused_rather_than_guessed_at() {
+  local rec repo base home head out status
+
+  rec=$(make_repo threedot)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home threedot)
+
+  printf 'value = 2\n' > "$repo/src/thing.py"
+  head=$(commit_all "$repo" edit)
+
+  out=$(run_lane "$home" decide dots-a1 --project proj --repo "$repo" --range "$base...$head")
+  status=$?
+  [ "$status" -ne 0 ] || fail "a three-dot range should exit non-zero"
+  assert_contains "$out" "two-dot" "the refusal did not name the form it wanted"
+  assert_absent "$home/data/lane-log.tsv" "a refused range still reached the record"
+
+  # The control: the two-dot form of the same range is routed normally.
+  out=$(run_lane "$home" decide dots-a2 --project proj --repo "$repo" --range "$base..$head")
+  assert_contains "$(first_line "$out")" "evidence=demonstrated" \
+    "the two-dot form of the same range was not accepted"
+
+  pass "lane: a three-dot range is refused rather than routed against the wrong diff"
+}
+
+# The catalog reader is the one place both layers meet, so it is where the file's
+# own rule - a silently dropped pattern is a silently lost surface - has to hold
+# for the built-in entries too. Their fields are tab-separated; anything that
+# de-tabbed one would fold it into the glob and the surface would simply vanish.
+test_a_catalog_entry_with_no_surface_name_is_refused() {
+  local dir detabbed wellformed out status
+
+  dir="$TMP_ROOT/catalogentry"
+  mkdir -p "$dir"
+  detabbed="$dir/detabbed"
+  wellformed="$dir/wellformed"
+  printf '*guard*\tsecurity-guards\n*merge* merge-routes\n' > "$detabbed"
+  printf '*guard*\tsecurity-guards\n*merge*\tmerge-routes\n' > "$wellformed"
+
+  out=$(
+    # shellcheck source=bin/fm-lane-lib.sh
+    . "$ROOT/bin/fm-lane-lib.sh"
+    fm_lane_critical_hits "$detabbed" scripts/merge_release.sh 2>&1
+  )
+  status=$?
+  [ "$status" -ne 0 ] || fail "a catalog entry with no surface name should exit non-zero"
+  assert_contains "$out" "has no surface name" "the refusal did not say what was wrong"
+
+  # The control: the same two entries, tab-separated throughout, still match.
+  out=$(
+    # shellcheck source=bin/fm-lane-lib.sh
+    . "$ROOT/bin/fm-lane-lib.sh"
+    fm_lane_critical_hits "$wellformed" scripts/merge_release.sh 2>&1
+  )
+  status=$?
+  expect_code 0 "$status" "a well-formed catalog should not be refused"
+  assert_contains "$out" "merge-routes" "the well-formed entry did not match the path"
+
+  pass "lane: a catalog entry that names no surface is refused, never skipped"
+}
+
+# A --reproduce command that loops would hang intake, which the operator is
+# waiting on, with no output and no timer. Without a bound the command is not
+# run at all: the class simply stays undemonstrated, which is where the policy
+# already sends anything it cannot prove benign. It refuses a demonstration,
+# never a change, so the exit code stays 0.
+test_a_mechanical_claim_needs_a_bound_and_never_runs_unbounded() {
+  local rec repo base home head unbounded bounded out status
+
+  rec=$(make_repo nobound)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home nobound)
+  unbounded=$(path_without_a_timeout_binary "$TMP_ROOT/nobound/bare")
+  bounded=$(path_with_a_timeout_binary "$TMP_ROOT/nobound/bin")
+
+  printf 'value = 1\nvalue = 1\n' > "$repo/src/thing.py"
+  head=$(commit_all "$repo" duplicated)
+
+  out=$(PATH="$unbounded" run_lane "$home" decide bound-a1 --project proj --repo "$repo" \
+    --range "$base..$head" --class mechanical-pattern \
+    --reproduce 'printf "value = 1\nvalue = 1\n" > src/thing.py')
+  status=$?
+  expect_code 0 "$status" "an unbounded machine refused the change instead of the demonstration"
+  assert_contains "$out" "lane=no-mistakes evidence=demonstrated" \
+    "a class that could not be bounded still reached the cheap lane"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the routing was not attributed to the undemonstrated class"
+  assert_contains "$out" "needs timeout or gtimeout" \
+    "the missing bound was not named as the reason the class could not be demonstrated"
+
+  # The control: with a bound available the same claim demonstrates and is cheap.
+  out=$(PATH="$bounded" run_lane "$home" decide bound-a2 --project proj --repo "$repo" \
+    --range "$base..$head" --class mechanical-pattern \
+    --reproduce 'printf "value = 1\nvalue = 1\n" > src/thing.py')
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "the same claim did not demonstrate on a machine that can bound it"
+
+  pass "lane: a mechanical claim with no way to bound its command stays undemonstrated"
 }
 
 test_a_critical_surface_outranks_every_cheap_signal
@@ -676,5 +865,9 @@ test_a_cheap_dispatch_needs_a_decision_that_authorizes_it
 test_promotion_carries_the_same_gate
 test_a_project_can_widen_the_catalog_but_never_narrow_it
 test_only_the_captain_reaches_the_cheap_lane_past_a_critical_surface
+test_an_override_records_a_surface_only_this_project_declares
+test_a_three_dot_range_is_refused_rather_than_guessed_at
+test_a_catalog_entry_with_no_surface_name_is_refused
+test_a_mechanical_claim_needs_a_bound_and_never_runs_unbounded
 
 echo "# all fm-lane-policy tests passed"

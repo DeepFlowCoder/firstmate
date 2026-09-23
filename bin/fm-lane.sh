@@ -7,13 +7,13 @@
 # surface over it.
 #
 # Usage:
-#   fm-lane.sh decide <task-id> --project <name>
-#                     ( --repo <dir> --range <base>..<head> | --paths <p> [<p>...] )
+#   fm-lane.sh decide <task-id> --project <name> --repo <dir>
+#                     ( --range <base>..<head> | --paths <p> [<p>...] )
 #                     [--class docs-only|clean-revert|mechanical-pattern]
 #                     [--revert-of <sha>] [--reproduce <command>]
 #                     [--captain-override <the captain's own words>]
 #                     [--note <text>]
-#   fm-lane.sh escape <task-id> --note <text> [--project <name>] [--defect-class <slug>]
+#   fm-lane.sh escape <task-id> --note <text> [--project <name>]
 #   fm-lane.sh log [--task <id>] [--event decide|dispatch|escape]
 #   fm-lane.sh catalog [--repo <dir>]
 #
@@ -25,12 +25,21 @@
 # record.
 #
 # EVIDENCE:
-#   --repo/--range  DEMONSTRATED. Paths and signals are computed from the real
-#                   diff. Only this grade can produce the cheap lane.
+#   --range         DEMONSTRATED. Paths and signals are computed from the real
+#                   diff. Only this grade can produce the cheap lane. The range
+#                   is the two-dot <base>..<head> form; three dots are refused
+#                   rather than guessed at, because a caller who wrote them
+#                   meant merge-base semantics and would get the wrong diff.
 #   --paths         DECLARED. A list the caller asserts the change will touch.
 #                   It routes critical surfaces to the expensive lane and stops;
 #                   it can never produce the cheap lane, because a change that is
 #                   not written yet cannot be shown benign.
+#
+# --repo is REQUIRED on BOTH grades, because the project's own
+# .fm-critical-surfaces is read from it. Without it the decision would be made
+# against the built-in catalog alone and the record would name no surface for a
+# path that IS one in that project - a record implying a surface check that did
+# not happen. A project that adds no surfaces simply has no such file.
 #
 # CLASSES, and how each one is demonstrated rather than alleged:
 #   docs-only          every changed path is documentation or plain text.
@@ -52,8 +61,11 @@
 #
 # --reproduce runs the given command in a throwaway clone under TMPDIR. The
 # clone is read-only on the source repository: nothing is written into the
-# project. A constant 120-second bound applies when timeout or gtimeout is
-# installed; like the tier-3 thresholds it is not tunable.
+# project. A constant 120-second bound applies, and like the tier-3 thresholds
+# it is not tunable. The bound needs timeout or gtimeout on PATH; on a machine
+# with neither, the command is NOT run unbounded - the demonstration fails for
+# want of a bound and the change routes to the expensive lane with reason
+# class-not-demonstrated, which refuses a demonstration and never a change.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,7 +118,6 @@ REVERT_OF=
 REPRODUCE=
 OVERRIDE=
 NOTE=
-DEFECT_CLASS=
 FILTER_TASK=
 FILTER_EVENT=
 PATHS=()
@@ -161,28 +172,26 @@ blob_at() {
   git -C "$REPO" rev-parse --verify --quiet "$1:$2" 2>/dev/null || true
 }
 
-run_bounded() {
-  local secs=$1
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$secs" "$@"
-  else
-    "$@"
-  fi
-}
-
 # Re-derive the change: run the declared command on a throwaway clone of the
-# base and require the resulting tree to equal head's tree exactly.
+# base and require the resulting tree to equal head's tree exactly. An unbounded
+# run is not one of the outcomes: without a bound the command is never started,
+# so a looping --reproduce cannot hang an intake the operator is waiting on.
 demonstrate_mechanical_pattern() {
-  local base=$1 head=$2 cmd=$3 tmp wc produced expected
+  local base=$1 head=$2 cmd=$3 tmp wc produced expected runner
+  if command -v timeout >/dev/null 2>&1; then
+    runner=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then
+    runner=gtimeout
+  else
+    echo "error: --reproduce needs timeout or gtimeout on PATH to bound the command, and neither is installed, so the mechanical-pattern class cannot be demonstrated here." >&2
+    return 1
+  fi
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-lane-repro.XXXXXX") || return 1
   TMPDIRS+=("$tmp")
   wc="$tmp/wc"
   git clone --quiet --shared --no-checkout "$REPO" "$wc" >/dev/null 2>&1 || return 1
   git -C "$wc" checkout --quiet --detach "$base" >/dev/null 2>&1 || return 1
-  ( cd "$wc" && run_bounded "$LANE_REPRODUCE_TIMEOUT" bash -c "$cmd" ) >/dev/null 2>&1 || return 1
+  ( cd "$wc" && "$runner" "$LANE_REPRODUCE_TIMEOUT" bash -c "$cmd" ) >/dev/null 2>&1 || return 1
   git -C "$wc" add -A >/dev/null 2>&1 || return 1
   produced=$(git -C "$wc" write-tree 2>/dev/null) || return 1
   expected=$(git -C "$REPO" rev-parse --verify --quiet "$head^{tree}" 2>/dev/null) || return 1
@@ -199,14 +208,16 @@ cmd_decide() {
 
   [ -n "$TASK" ] || die "decide requires a task id"
   [ -n "$PROJECT" ] || die "decide requires --project <name>"
+  [ -n "$REPO" ] || die "decide requires --repo <dir>, the project whose .fm-critical-surfaces completes the catalog"
+  [ -d "$REPO" ] || die "--repo is not a directory: $REPO"
   [ -z "$CLASS" ] || validate_class_claim
 
   if [ -n "$RANGE" ]; then
-    [ -n "$REPO" ] || die "--range requires --repo <dir>"
     [ "${#PATHS[@]}" -eq 0 ] || die "--paths is declared evidence and cannot be combined with --range"
     git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
       || die "--repo is not a git repository: $REPO"
     case "$RANGE" in
+      *...*) die "--range must be the two-dot <base>..<head> form; '$RANGE' asks for merge-base semantics this policy does not implement" ;;
       *..*) ;;
       *) die "--range must be <base>..<head> (got '$RANGE')" ;;
     esac
@@ -215,7 +226,7 @@ cmd_decide() {
     [ -n "$base" ] && [ -n "$head" ] || die "--range must name both sides: <base>..<head>"
     evidence=demonstrated
   else
-    [ "${#PATHS[@]}" -gt 0 ] || die "decide needs evidence: --repo with --range for a real diff, or --paths for a declared list"
+    [ "${#PATHS[@]}" -gt 0 ] || die "decide needs evidence: --range for a real diff, or --paths for a declared list"
     evidence=declared
     base=
     head=
@@ -233,8 +244,9 @@ cmd_decide() {
   catalog=$(mktemp "${TMPDIR:-/tmp}/fm-lane-catalog.XXXXXX")
   TMPDIRS+=("$catalog")
   fm_lane_catalog "$REPO" >"$catalog" || exit 1
-  hits=$(fm_lane_critical_hits "$catalog" "${PATHS[@]}" | paste -sd, -)
-  critical=${hits:--}
+  hits=$(fm_lane_critical_hits "$catalog" "${PATHS[@]}") || exit 1
+  critical=$(printf '%s\n' "$hits" | paste -sd, -)
+  critical=${critical:--}
 
   files=${#PATHS[@]}
   dirs=$(printf '%s\n' "${PATHS[@]}" \
@@ -347,7 +359,7 @@ demonstrate_class() {
 cmd_escape() {
   [ -n "$TASK" ] || die "escape requires a task id"
   [ -n "$NOTE" ] || die "escape requires --note <what the defect was>"
-  fm_lane_append escape "$TASK" "${PROJECT:--}" - - "${DEFECT_CLASS:--}" - - - "$NOTE" || exit 1
+  fm_lane_append escape "$TASK" "${PROJECT:--}" - - - - - - "$NOTE" || exit 1
   printf 'recorded escape for %s in %s\n' "$TASK" "$(fm_lane_log_path)"
 }
 
@@ -394,8 +406,6 @@ while [ "$#" -gt 0 ]; do
     --captain-override=*) OVERRIDE=${1#--captain-override=}; shift ;;
     --note) need_value "$@"; NOTE=$2; shift 2 ;;
     --note=*) NOTE=${1#--note=}; shift ;;
-    --defect-class) need_value "$@"; DEFECT_CLASS=$2; shift 2 ;;
-    --defect-class=*) DEFECT_CLASS=${1#--defect-class=}; shift ;;
     --task) need_value "$@"; FILTER_TASK=$2; shift 2 ;;
     --task=*) FILTER_TASK=${1#--task=}; shift ;;
     --event) need_value "$@"; FILTER_EVENT=$2; shift 2 ;;
