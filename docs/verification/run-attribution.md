@@ -7,7 +7,7 @@ This record supports four active guarantees, each resting on a different measure
 - On the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work. This one rests on the pipeline working in its own managed worktree and never in the crew's.
 - A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work - and the one failed run the fourth guarantee below reports as `unknown` instead still carries the work-is-not-lost fact. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
 - A request to the pipeline whose result was never established is reported as unestablished and never as a failed request. This one rests on the daemon's response time being load-dependent, so a bound that fires says nothing about what the request did.
-- A run a step's own time cap cut off is reported as a verdict that was never reached and never as a verdict against the code. This one rests on the run's own `error:` text distinguishing the two, and on the cut wordings being disjoint from every other failure the store carries.
+- On the full `axi status` read, and only there, a run a step's own time cap cut off is reported as a verdict that was never reached and never as a verdict against the code. This one rests on the run's own `error:` text distinguishing the two, and on the cut wordings being disjoint from every other failure the store carries. Its two bounds are stated with it below, because a guarantee stated without its limit is the defect it exists to fix.
 
 [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, and the submitted-head binding - and, for the second guarantee, why the `failed` phrase reads as it does.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns how an attributed run becomes a reported state.
@@ -306,6 +306,16 @@ Neither carries a statement about the code, which is the fact the guarantee need
 The detector was run over every run in the store that carries an `error:` text at all - 55 failed and 32 cancelled - and answered on exactly the 14 rows the query above counts, with no cancelled row and no other failure among them.
 The nearest neighbour it must not take is `01M2G0NYSGBTZK6F3F2DGR1JMV` (2026-09-14), `step review failed: agent review: pi exited: signal: killed`: an agent that died with no cap involved, which stays an ordinary failure.
 It is also disjoint from the client-side wording `fm_nm_text_is_unconfirmed` owns, because `get_run timed out` names neither an agent nor a duration.
+
+### The two bounds of this guarantee
+
+The guarantee is scoped to the full `axi status` read, and it does NOT reach the coarse runs-list arm or the superseding-failed-row arm of [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh).
+On those two arms a cut still prints the old word `failed`, because both read the `no-mistakes runs` listing, whose rows carry status, branch, short sha, date and pull request and no error column at all - so the evidence the distinction is made from is not present there to read.
+That is a known, deliberate limit of the source rather than a second opinion about the word, it is tracked as `fm-corte-por-tope-fuera-del-brazo-de-lista`, and the full read reports the cut as soon as `axi status` answers for that branch again.
+
+The second bound applies on the full read itself: the cut reading is asserted only once the run it describes has been identified, and it degrades to the ordinary failure word when that identity cannot be proved.
+The list carries no run id, and a reported head identifies nothing either (the submitted-head measurement above), so the only identity available is a counting one: a branch carrying exactly ONE row of the reported word must have been reported from that row.
+The branch in the table below with two `failed` rows is exactly the shape that fails the test, and it is not hypothetical - when `axi status` lags and answers with the older cut while the newer failed run is a real rejection of the code, the cut's phrase would tell a reader nobody looked at code that a reviewer really did reject.
 
 ### How long the reading stands
 

@@ -1252,6 +1252,52 @@ test_a_cap_cut_is_not_handed_over_to_a_busy_pane() {
   pass "a cut stands on its own reading while an abort still hands the question on"
 }
 
+# THE DEGRADATION THAT KEEPS THE CUT'S PHRASE OFF A REAL REJECTION. The
+# arbitration decides a terminal reading is still current by matching its WORD
+# against this branch's newest row, and a cut and a code rejection carry the same
+# word. So a branch that ran a cut, re-validated, and had the second run reject
+# the code has TWO `failed` rows, and a lagging `axi status` answering with the
+# older cut would otherwise be declared current over the rejection - printing "no
+# verdict was reached about the work" over code a reviewer really did reject,
+# which is worse than the word this change exists to correct.
+#
+# The cut reading is the stronger claim, so it is asserted only where the run it
+# describes is identified. Two rows of one word identify nothing, and the reading
+# falls back to exactly what it used to say.
+test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word() {
+  reset_fakes
+  local d short two_rows one_row; d=$(new_case cut-two-failed)
+  make_repo_on_branch "$d/wt" fm/feat-2f
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/2f.meta" "window=fm:fm-2f" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-2f)"
+
+  # Newest first: the rejection, then the cut that preceded it.
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-2f ${short}  2026-09-22 21:40
+  failed  fm/feat-2f ${short}  2026-09-22 20:12"
+  two_rows=$(run_crew_state "$d" 2f)
+
+  # The same cut against a branch whose one failed row can only be this run.
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-2f ${short}  2026-09-22 20:12"
+  one_row=$(run_crew_state "$d" 2f)
+
+  assert_contains "$two_rows" "state: failed" \
+    "an unidentifiable cut must degrade to the word it used to report"
+  assert_not_contains "$two_rows" "time cap" \
+    "an unidentifiable cut must not claim nobody judged code a reviewer may have rejected"
+  assert_not_contains "$two_rows" "no verdict was reached about the work" \
+    "the cut's phrase belongs only to a run this read can identify"
+
+  # ...and the degradation is the IDENTITY and not the cut, or it would have
+  # quietly taken the whole reading away.
+  assert_contains "$one_row" "state: unknown" \
+    "an identified cut still reports as the state nothing established"
+  assert_contains "$one_row" "cut off by its own 30m0s time cap" \
+    "an identified cut still names what ended the run"
+  pass "a cut over a branch whose reported run cannot be identified keeps the failure word"
+}
+
 # THE THIRD PARTY THE FALSE WORD COST. A task idling on a correctly declared
 # external wait was read as a possible wedge, because the old run's `failed`
 # outranked its pause and the watcher's absorb classifier saw an answered
@@ -3844,6 +3890,7 @@ test_cap_cut_bad_code_and_healthy_run_read_differently
 test_wall_clock_cut_reads_the_same_as_a_timeout_cut
 test_a_killed_agent_without_a_cap_stays_an_ordinary_failure
 test_a_cap_cut_is_not_handed_over_to_a_busy_pane
+test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word
 test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path
 
 echo "all fm-crew-state tests passed"

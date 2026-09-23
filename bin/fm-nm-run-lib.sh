@@ -333,6 +333,45 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
   return 1
 }
 
+# WHICH run a reported terminal word belongs to - the question the newest-row
+# read above deliberately does not answer, and the one a reading that says more
+# than the bare word has to answer before it may be asserted.
+#
+# Nothing identifies a run directly. The list carries no run id at all (its rows
+# are status, branch, short sha, date, pull request), and a run's reported head
+# identifies nothing either: head_sha equals last_pushed_sha for every run in the
+# store, and an aborted run and the live run that replaced it report the SAME
+# submitted head for the whole successor run - the measurement the header above
+# records. Resting an identity on sha equality would be a false proof of exactly
+# the kind this library exists to prevent.
+#
+# One thing the list CAN prove: if <branch> carries exactly ONE row whose status
+# is <word>, then the run reported with that word must be that row. Two such rows
+# and nothing here says which of them answered, so identity is not established.
+# The proof also needs every row the branch has, so a listing that filled its own
+# <scanned-limit> may be hiding an older row of the same word and proves nothing.
+#
+# 0 ONLY when identity is established. Every other answer - a missing argument, a
+# malformed limit, a listing that may be truncated, a word that matches no row or
+# more than one - is "not established", because a caller asks this to decide
+# whether it may make a STRONGER claim and silence must never read as permission.
+fm_nm_runs_row_identifies_run() {  # <runs-output> <branch> <word> <scanned-limit>
+  local out=${1:-} branch=${2:-} word=${3:-} limit=${4:-}
+  local row parsed st br rows=0 hits=0
+  [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
+  case "$limit" in ''|*[!0-9]*) return 1 ;; esac
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    rows=$((rows + 1))
+    IFS=$'\t' read -r st br _ <<< "$parsed"
+    if [ "$br" = "$branch" ] && [ "$st" = "$word" ]; then
+      hits=$((hits + 1))
+    fi
+  done <<< "$out"
+  [ "$rows" -lt "$limit" ] || return 1
+  [ "$hits" = 1 ]
+}
+
 # 0 when captured list output $1 carries EVIDENCE - at least one line that parses
 # as a run row AND whose status word this library models, active or terminal.
 # Non-empty stdout alone is not evidence: the real listing prints a trailer after
@@ -570,28 +609,20 @@ fm_nm_failure_is_cap_cut() {  # <run-error-text>
     | grep -Eqi 'agent[^:]{0,40} (timed out|reached its absolute wall-clock limit) after [0-9]'
 }
 
-# The cap a cut names, e.g. `30m0s`, or nothing when the text names none. The
-# duration is the one detail that tells a reader whether the cap is the problem
-# or the work outgrew it, so it is carried rather than flattened away.
-fm_nm_cap_cut_duration() {  # <run-error-text>
+# The phrase for a cap cut: what happened, what it did NOT establish, and the one
+# action it asks for. It replaces the failure phrase rather than qualifying it,
+# because the failure phrase is the thing that was wrong.
+#
+# PRECONDITION: fm_nm_failure_is_cap_cut has already matched this text. That
+# detector requires a trailing duration, so the cap this names is always there
+# and there is no duration-less spelling of the phrase to fall back to. The
+# duration is carried rather than flattened away because it is the one detail
+# that tells a reader whether the cap is the problem or the work outgrew it.
+fm_nm_cap_cut_detail() {  # <run-error-text>
   local dur
   dur=$(printf '%s' "${1:-}" \
     | grep -oEi '(timed out|wall-clock limit) after [0-9][a-z0-9]*' \
     | head -1)
-  [ -n "$dur" ] || return 0
-  printf '%s' "${dur##* }"
-}
-
-# The phrase for a cap cut: what happened, what it did NOT establish, and the one
-# action it asks for. It replaces the failure phrase rather than qualifying it,
-# because the failure phrase is the thing that was wrong.
-fm_nm_cap_cut_detail() {  # <run-error-text>
-  local dur
-  dur=$(fm_nm_cap_cut_duration "${1:-}")
-  if [ -n "$dur" ]; then
-    printf 'validation was cut off by its own %s time cap' "$dur"
-  else
-    printf 'validation was cut off by its own time cap'
-  fi
+  printf 'validation was cut off by its own %s time cap' "${dur##* }"
   printf ': no verdict was reached about the work, which still needs validating (the work is not lost)'
 }
