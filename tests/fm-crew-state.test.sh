@@ -2128,6 +2128,170 @@ test_other_branch_run_is_refused_despite_a_matching_submitted_head() {
   pass "another branch's run is refused even with a matching submitted head"
 }
 
+# --- the second door: the vendor answers for another branch -------------------
+#
+# `axi status` returns ONE run and cannot be asked for a branch, so which run it
+# picks is the vendor's choice and has changed across versions. Measured
+# 2026-08-29 it answered with a foreign branch's run; measured 2026-09-23 on
+# v1.75.2 it is branch-scoped in both directions. A fake is what pins the
+# behavior the installed binary no longer produces, which is the only reason
+# these cases can exist at all - and the fallback has to work under either, since
+# nothing in this repo controls which version a home runs.
+#
+# On the foreign-branch answer the branch gate refuses the run, correctly, and
+# attribution falls to the runs list - where the branch's own row carries the
+# head the PIPELINE pushed. That head cannot bind: it is either not a git object
+# in this worktree, or (with the shared object store freshly fetched, measured
+# 2026-09-23) resolvable but not an ancestor of this worktree's commit, because
+# the pipeline rebased. Both are dead ends, so a crew with its pull request open
+# and its checks running read as unknown.
+#
+# The signal that binds it is in the output the read ALREADY has: branch_sync is
+# branch-scoped, so it keeps describing the checked-out branch's push binding
+# while `run:` shows someone else's run. These fixtures put the two in exactly
+# that disagreement, which is what makes the branch name inside the binding
+# load-bearing rather than decorative.
+run_for_other_branch_bound_to() {  # <run-branch> <binding-branch> <advanced-head> <submitted-head> [<pipeline-status>]
+  cat <<EOF
+run:
+  id: "01RUNFOREIGN"
+  branch: $1
+  status: running
+  head: $3
+  head_sha: $3
+  pr: ""
+  findings: none
+  steps[2]{step,status,findings,duration_ms}:
+    intent,completed,0,22
+    review,running,0,0
+branch_sync:
+  state: diverged
+  changed: false
+  local:
+    branch: $2
+    head: $4
+    clean: true
+  pipeline:
+    run: "01RUNMINE"
+    status: ${5:-running}
+    phase: ci
+    submitted_head: $4
+    current_head: $3
+    pushed_head: $3
+    pushed_at: 1790152904
+    push_generation: 1
+  relation: unknown
+  pr_state: open
+EOF
+}
+
+# Case 1 of three: correct attribution. The vendor answered for another branch,
+# and this crew's own run is reported from its branch's newest row - the row
+# whose head the pipeline moved - because the binding proves this branch's work
+# came out of this worktree. The line must also say WHICH identity bound it, or a
+# reader checking the row's head finds it does not match and re-opens this.
+test_a_foreign_branch_answer_still_attributes_this_branchs_run() {
+  reset_fakes
+  local d submitted out
+  d=$(new_case binding-attributes)
+  make_repo_on_branch "$d/wt" fm/feat-bind-a
+  submitted=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/bind-a.meta" "window=fm:fm-bind-a" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/bind-a.status"
+  FM_FAKE_AXI_STATUS="$(run_for_other_branch_bound_to fm/other-crew fm/feat-bind-a f0f0f0f0f0f0f0f0 "$submitted")"
+  # The branch's newest row carries the pipeline-pushed head, at a sha this
+  # worktree cannot resolve: the shape that used to stop the scan outright.
+  FM_FAKE_RUNS_LIST="$(cat <<'EOF'
+  running    fm/other-crew aaaaaaa  2026-09-23 08:00
+  running    fm/feat-bind-a 9999999  2026-09-23 07:45
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" bind-a
+  out=$(run_crew_state "$d" bind-a)
+  assert_contains "$out" "state: working" "a crew whose checks are running is working, not unknown"
+  assert_contains "$out" "source: run-step" "its own branch's run is what answers"
+  assert_contains "$out" "validating (running)" "the row's own status word is reported"
+  assert_contains "$out" "bound by this branch's pipeline push" \
+    "the line names the identity that bound the row, not just the row"
+  assert_not_contains "$out" "could not be determined" "attribution is no longer refused"
+  pass "a foreign-branch answer still attributes this branch's own run"
+}
+
+# Case 2 of three: the foreign branch answering, with nothing here that binds.
+# Both halves are adversarial, and each removes exactly one of the two things the
+# binding asserts, so neither can pass by accident: first the binding describes
+# ANOTHER branch (a foreign block, which must not be borrowed however well its
+# submitted head lines up), then it describes this branch but from a commit this
+# worktree is not sitting on. Both must stay refused, and must still say so.
+test_a_foreign_binding_does_not_attribute_this_branchs_run() {
+  reset_fakes
+  local d submitted out
+  d=$(new_case binding-refused)
+  make_repo_on_branch "$d/wt" fm/feat-bind-b
+  submitted=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/bind-b.meta" "window=fm:fm-bind-b" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/bind-b.status"
+  FM_FAKE_RUNS_LIST="$(cat <<'EOF'
+  running    fm/other-crew aaaaaaa  2026-09-23 08:00
+  running    fm/feat-bind-b 9999999  2026-09-23 07:45
+EOF
+)"
+  FM_FAKE_BUSY=0
+
+  # The binding is for the branch whose run was reported, not for this crew's.
+  FM_FAKE_AXI_STATUS="$(run_for_other_branch_bound_to fm/other-crew fm/other-crew f0f0f0f0f0f0f0f0 "$submitted")"
+  arm_idle_record "$d/state" bind-b
+  out=$(run_crew_state "$d" bind-b)
+  assert_contains "$out" "state: unknown" "a binding for another branch attributes nothing here"
+  assert_contains "$out" "run attribution for fm/feat-bind-b could not be determined" \
+    "and the read still says attribution could not be made"
+
+  # The binding is for this branch, from a commit this worktree never had.
+  FM_FAKE_AXI_STATUS="$(run_for_other_branch_bound_to fm/other-crew fm/feat-bind-b f0f0f0f0f0f0f0f0 d1d1d1d1d1d1d1d1)"
+  arm_idle_record "$d/state" bind-b
+  out=$(run_crew_state "$d" bind-b)
+  assert_contains "$out" "state: unknown" "a submitted head this worktree never had binds nothing"
+  assert_contains "$out" "run attribution for fm/feat-bind-b could not be determined" \
+    "and the read still says attribution could not be made"
+  pass "a binding that is not this worktree's own leaves the run unattributed"
+}
+
+# Case 3 of three: what the binding may never license. It names the BRANCH, not a
+# run, so it can only speak for the run that is the branch's current one - the
+# newest row. Here the newest row is an unbindable `running` successor and an
+# OLDER `cancelled` row sits beneath it: letting the binding reach down to that
+# older row would report a cancelled run as this crew's state and resurrect
+# exactly the superseded verdict the newest-first arbitration exists to bury.
+test_the_binding_never_licenses_an_older_row() {
+  reset_fakes
+  local d submitted out
+  d=$(new_case binding-older-row)
+  make_repo_on_branch "$d/wt" fm/feat-bind-c
+  submitted=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/bind-c.meta" "window=fm:fm-bind-c" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: re-validating after the abort\n' > "$d/state/bind-c.status"
+  FM_FAKE_AXI_STATUS="$(run_for_other_branch_bound_to fm/other-crew fm/feat-bind-c f0f0f0f0f0f0f0f0 "$submitted")"
+  # The newest row for this branch is unbindable by head; the older row beneath it
+  # is a terminal run at a sha this worktree CAN resolve.
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-09-23 08:00
+  running    fm/feat-bind-c 9999999  2026-09-23 07:45
+  cancelled  fm/feat-bind-c $(git -C "$d/wt" rev-parse --short=8 HEAD)  2026-09-23 01:30
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" bind-c
+  out=$(run_crew_state "$d" bind-c)
+  assert_not_contains "$out" "cancelled" "an older terminal row must not be reported as this crew's state"
+  assert_contains "$out" "validating (running)" "the branch's newest row is the only one the binding reaches"
+  assert_contains "$out" "bound by this branch's pipeline push" "and it is bound by the branch binding"
+  pass "the branch binding never licenses a row older than the branch's newest"
+}
+
 test_missing_run_head_falls_back_to_current_state() {
   reset_fakes
   local d out
@@ -3570,6 +3734,9 @@ test_pipeline_moved_head_reports_a_finished_runs_verdict
 test_foreign_submitted_head_is_still_refused
 test_a_resolvable_but_unequal_submitted_head_is_refused
 test_other_branch_run_is_refused_despite_a_matching_submitted_head
+test_a_foreign_branch_answer_still_attributes_this_branchs_run
+test_a_foreign_binding_does_not_attribute_this_branchs_run
+test_the_binding_never_licenses_an_older_row
 test_missing_run_head_falls_back_to_current_state
 test_cancelled_run_superseded_by_live_run_reports_the_live_run
 test_passed_run_superseded_by_live_run_is_not_done
