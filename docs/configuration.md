@@ -317,7 +317,8 @@ There are two things an operator sets or reads.
 
 A project may carry a tracked `.fm-critical-surfaces` file at its root naming paths that always take the expensive lane, one `<glob> <surface-name>` per line with `#` comments.
 It only adds to the built-in catalog in `bin/fm-lane-lib.sh`, so it can widen what is treated as a safety surface and can never narrow it; a malformed line is refused rather than skipped, because a silently dropped pattern is a silently lost surface.
-This repo carries its own for the safety boundaries the built-in name patterns do not all catch.
+This repo carries its own for the safety boundaries the built-in name patterns do not all catch, for the two files that run the dispatch gate, and for its CI configuration.
+It also lists the shared tracked material AGENTS.md section 1 already requires ship through the no-mistakes pipeline and PR path, so the lane policy enforces that rule instead of offering a cheap route around it.
 
 Every lane decision, every ship dispatch and every defect found after a delivery landed is appended to the home's gitignored `data/lane-log.tsv`, tab-separated, one event per line.
 Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"` and read the file back with `bin/fm-lane.sh log`.

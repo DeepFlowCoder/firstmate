@@ -10,6 +10,13 @@
 # work discarded, a branch landed that should not have, a guard stepped around,
 # a lock or lease that stops protecting what it names. Add a path here when it
 # joins that set; never remove one to make a delivery cheaper.
+#
+# It also carries the two boundaries this house raises for itself rather than
+# imposing on every project through the portable catalog: this repo's CI
+# configuration, which is what the cheap lane leans on, and the shared tracked
+# material AGENTS.md section 1 already requires ship through the no-mistakes
+# pipeline and PR path. Listing that material here makes the lane policy ENFORCE
+# that rule instead of offering a cheap route around it.
 
 bin/fm-gate-refuse-lib.sh security-guards
 bin/fm-arm-pretool-check.sh security-guards
@@ -33,3 +40,22 @@ bin/fm-pr-lib.sh merge-routes
 
 bin/fm-landed-lib.sh teardown-and-discard
 bin/fm-stash-guard.sh teardown-and-discard
+
+# The policy's own enforcement points. The built-in catalog protects the files
+# that DECLARE the routing policy; these are the two that RUN its dispatch gate,
+# and a delivery that deleted the gate adds no lines, so every diff signal would
+# read cheap and it would route itself past the gate it just removed.
+bin/fm-spawn.sh routing-policy
+bin/fm-promote.sh routing-policy
+
+.github/workflows/* ci-configuration
+
+# AGENTS.md section 1's shared tracked material, minus what a built-in surface
+# already covers. bin/* makes every bin change here expensive, which is what
+# AGENTS.md already requires today.
+README.md shared-tracked-material
+CONTRIBUTING.md shared-tracked-material
+.tasks.toml shared-tracked-material
+bin/* shared-tracked-material
+.agents/skills/* shared-tracked-material
+skills/* shared-tracked-material

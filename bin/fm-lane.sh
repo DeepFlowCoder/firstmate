@@ -52,8 +52,8 @@
 #
 # --reproduce runs the given command in a throwaway clone under TMPDIR. The
 # clone is read-only on the source repository: nothing is written into the
-# project. FM_LANE_REPRODUCE_TIMEOUT (default 120) bounds it when timeout or
-# gtimeout is installed.
+# project. A constant 120-second bound applies when timeout or gtimeout is
+# installed; like the tier-3 thresholds it is not tunable.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,6 +73,12 @@ export FM_ROOT FM_HOME
 LANE_MAX_DIRS=4
 LANE_MAX_LINES=400
 LANE_MAX_BRANCH_POINTS=10
+
+# How long a --reproduce command gets to re-derive the head tree. A constant for
+# the same reason: a value that decides how hard a mechanical claim is
+# re-derived is a rigor dial too, and turning it down turns "not demonstrable"
+# into "demonstrable" without anyone saying so.
+LANE_REPRODUCE_TIMEOUT=120
 
 TMPDIRS=()
 cleanup() {
@@ -170,14 +176,13 @@ run_bounded() {
 # Re-derive the change: run the declared command on a throwaway clone of the
 # base and require the resulting tree to equal head's tree exactly.
 demonstrate_mechanical_pattern() {
-  local base=$1 head=$2 cmd=$3 tmp wc produced expected secs
-  secs=${FM_LANE_REPRODUCE_TIMEOUT:-120}
+  local base=$1 head=$2 cmd=$3 tmp wc produced expected
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-lane-repro.XXXXXX") || return 1
   TMPDIRS+=("$tmp")
   wc="$tmp/wc"
   git clone --quiet --shared --no-checkout "$REPO" "$wc" >/dev/null 2>&1 || return 1
   git -C "$wc" checkout --quiet --detach "$base" >/dev/null 2>&1 || return 1
-  ( cd "$wc" && run_bounded "$secs" bash -c "$cmd" ) >/dev/null 2>&1 || return 1
+  ( cd "$wc" && run_bounded "$LANE_REPRODUCE_TIMEOUT" bash -c "$cmd" ) >/dev/null 2>&1 || return 1
   git -C "$wc" add -A >/dev/null 2>&1 || return 1
   produced=$(git -C "$wc" write-tree 2>/dev/null) || return 1
   expected=$(git -C "$REPO" rev-parse --verify --quiet "$head^{tree}" 2>/dev/null) || return 1
@@ -194,6 +199,7 @@ cmd_decide() {
 
   [ -n "$TASK" ] || die "decide requires a task id"
   [ -n "$PROJECT" ] || die "decide requires --project <name>"
+  [ -z "$CLASS" ] || validate_class_claim
 
   if [ -n "$RANGE" ]; then
     [ -n "$REPO" ] || die "--range requires --repo <dir>"
@@ -254,7 +260,7 @@ cmd_decide() {
     note=$OVERRIDE
   elif [ "$critical" != - ]; then
     lane=no-mistakes
-    reason=critical-surface
+    reason="critical-surface"
     note=$NOTE
   elif [ -n "$CLASS" ]; then
     note=$NOTE
@@ -270,7 +276,7 @@ cmd_decide() {
     fi
   elif [ "$evidence" != demonstrated ]; then
     lane=no-mistakes
-    reason=evidence-not-demonstrated
+    reason="evidence-not-demonstrated"
     note=$NOTE
   else
     note=$NOTE
@@ -301,25 +307,38 @@ cmd_decide() {
   fi
 }
 
-demonstrate_class() {
-  local base=$1 head=$2
+# Whether the claim is even a well-formed one, checked on EVERY evidence grade
+# before any lane is chosen. It is separate from the demonstration below because
+# the demonstration only runs on demonstrated evidence: a class nobody can
+# demonstrate is still the expensive lane, but a class that does not exist, or
+# one missing the flag its demonstration needs, is a refusal - otherwise it is
+# accepted and written into the record as if it were a real claim, and the
+# record is what makes this policy reviewable.
+validate_class_claim() {
   case "$CLASS" in
     docs-only)
       [ -z "$REVERT_OF" ] && [ -z "$REPRODUCE" ] \
         || die "--class docs-only takes no --revert-of or --reproduce"
-      demonstrate_docs_only "${PATHS[@]}"
       ;;
     clean-revert)
       [ -n "$REVERT_OF" ] || die "--class clean-revert requires --revert-of <sha>"
-      demonstrate_clean_revert "$base" "$head" "$REVERT_OF" "${PATHS[@]}"
       ;;
     mechanical-pattern)
       [ -n "$REPRODUCE" ] || die "--class mechanical-pattern requires --reproduce <command>"
-      demonstrate_mechanical_pattern "$base" "$head" "$REPRODUCE"
       ;;
     *)
       die "--class must be one of docs-only, clean-revert, mechanical-pattern (got '$CLASS')"
       ;;
+  esac
+}
+
+demonstrate_class() {
+  local base=$1 head=$2
+  case "$CLASS" in
+    docs-only)          demonstrate_docs_only "${PATHS[@]}" ;;
+    clean-revert)       demonstrate_clean_revert "$base" "$head" "$REVERT_OF" "${PATHS[@]}" ;;
+    mechanical-pattern) demonstrate_mechanical_pattern "$base" "$head" "$REPRODUCE" ;;
+    *)                  return 1 ;;
   esac
 }
 

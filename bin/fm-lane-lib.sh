@@ -38,12 +38,15 @@
 #      no-mistakes. Everything left goes to direct-PR.
 #
 # EVIDENCE GRADES. Declared evidence - a list of paths the caller asserts the
-# change will touch - can only ever make the lane MORE expensive, never less.
-# It reaches tier 1 and stops; it never reaches tier 2 or 3. Only demonstrated
-# evidence, computed by this library from a real git range, can produce the
-# cheap lane. Work that is not written yet therefore stays on the expensive
+# change will touch - reaches tier 1 and stops; it never reaches tier 2 or 3.
+# So no SIGNAL and no CLASS CLAIM can produce the cheap lane on declared
+# evidence: only demonstrated evidence, computed by this library from a real
+# git range, can. Work that is not written yet therefore stays on the expensive
 # lane, which is exactly the status quo: this policy can only lower cost where
-# it can prove the change is benign.
+# it can prove the change is benign. The captain's explicit --captain-override
+# is the one exception, deliberately, and it is recorded as such - so a
+# "evidence=declared lane=direct-PR" row in the record is the captain's own
+# call in their own words, and never a signal that talked its way past this.
 #
 # SIZE IS A WARNING, NOT A CAP. A large change routes to the expensive lane so
 # it gets looked at. Nothing here ever refuses a change for being large.
@@ -163,7 +166,6 @@ bin/fm-lane.sh	routing-policy
 bin/fm-lane-lib.sh	routing-policy
 .fm-critical-surfaces	routing-policy
 */.fm-critical-surfaces	routing-policy
-.github/workflows/*	ci-configuration
 EOF
 }
 

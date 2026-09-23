@@ -177,7 +177,10 @@ EOF
 # The built-in patterns are portable name-shaped guesses. Firstmate's own safety
 # boundaries are named things the patterns do not all catch, so this repo carries
 # its own .fm-critical-surfaces, and a delivery that drops an entry from it would
-# quietly send that file to the cheap lane.
+# quietly send that file to the cheap lane. It covers three groups: the guards,
+# merge routes and teardown paths the patterns miss; the two files that run the
+# dispatch gate; and the shared tracked material AGENTS.md section 1 already
+# requires ship through the no-mistakes pipeline.
 test_firstmates_own_safety_surfaces_are_covered() {
   local home out path n=0
   home=$(lane_home ownsurfaces)
@@ -186,7 +189,11 @@ test_firstmates_own_safety_surfaces_are_covered() {
     bin/fm-subagent-pretool-check.sh bin/fm-check-register.sh bin/fm-lock-lib.sh \
     bin/fm-lease-lib.sh bin/fm-ff-lib.sh bin/fm-pr-check.sh bin/fm-landed-lib.sh \
     bin/fm-pr-merge.sh bin/fm-merge-local.sh bin/fm-teardown.sh bin/fm-stash-guard.sh \
-    bin/fm-lane.sh bin/fm-lane-lib.sh AGENTS.md
+    bin/fm-lane.sh bin/fm-lane-lib.sh AGENTS.md \
+    bin/fm-spawn.sh bin/fm-promote.sh \
+    .github/workflows/ci.yml \
+    README.md CONTRIBUTING.md .tasks.toml \
+    .agents/skills/stow/SKILL.md skills/stow/SKILL.md
   do
     [ -e "$ROOT/$path" ] || fail "$path no longer exists; update the critical-surface list with it"
     n=$((n + 1))
@@ -198,6 +205,73 @@ test_firstmates_own_safety_surfaces_are_covered() {
       "$path matched no critical surface"
   done
   pass "lane: firstmate's own safety boundaries all route to the expensive lane"
+}
+
+# A file that calls the dispatch gate, and the same file with that call removed.
+# The deletion is the shape a delivery retiring the gate has: three lines gone
+# and nothing added anywhere.
+write_gate_caller() {  # <file>
+  cat > "$1" <<'EOF'
+dispatch_ship() {
+  if [ "$REUSE" -eq 0 ]; then
+    fm_lane_gate_dispatch "$TASK" "$PROJECT" "$MODE" "$YOLO" || exit 1
+  fi
+  launch_backend "$TASK"
+}
+EOF
+}
+
+strip_gate_call() {  # <file>
+  local file=$1
+  grep -v -e 'REUSE' -e 'fm_lane_gate_dispatch' -e '^  fi$' "$file" > "$file.stripped"
+  mv "$file.stripped" "$file"
+}
+
+# The catalog protects the files that DECLARE this policy; these are the two
+# that RUN its dispatch gate. Deleting a gate adds no lines, so novelty,
+# complexity and size all read cheap - which means without a catalog entry the
+# very delivery that removed the gate would be routed past the gate it removed.
+test_deleting_the_dispatch_gate_cannot_route_itself_cheap() {
+  local repo home base control_head gate_head out
+
+  repo="$TMP_ROOT/gatedelete/repo"
+  mkdir -p "$repo/bin" "$repo/src"
+  git -C "$repo" init --quiet 2>/dev/null || { git init --quiet "$repo"; }
+  home=$(lane_home gatedelete)
+
+  # This repo's real catalog file decides the case, so what is pinned below is
+  # the entry firstmate actually ships and not one the fixture invented.
+  cp "$ROOT/.fm-critical-surfaces" "$repo/.fm-critical-surfaces"
+  write_gate_caller "$repo/bin/fm-spawn.sh"
+  write_gate_caller "$repo/src/unrelated.sh"
+  base=$(commit_all "$repo" seed-gate)
+
+  # Control: the identical deletion in a path no surface claims.
+  strip_gate_call "$repo/src/unrelated.sh"
+  control_head=$(commit_all "$repo" drop-unrelated-block)
+  out=$(run_lane "$home" decide gate-del-control --project firstmate \
+    --repo "$repo" --range "$base..$control_head")
+  assert_contains "$out" "signals: files=1 dirs=1 lines=3 new-files=0 branch-points=0" \
+    "the control deletion was not the shape the case needs it to be"
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a pure deletion did not reach the cheap lane, so the case below would prove nothing"
+  assert_contains "$out" "reason=low-signal" "the control deletion was not routed on its signals"
+
+  # The case: the same deletion, in the file that runs the gate.
+  strip_gate_call "$repo/bin/fm-spawn.sh"
+  gate_head=$(commit_all "$repo" drop-dispatch-gate)
+  out=$(run_lane "$home" decide gate-del-case --project firstmate \
+    --repo "$repo" --range "$control_head..$gate_head")
+  assert_contains "$out" "signals: files=1 dirs=1 lines=3 new-files=0 branch-points=0" \
+    "the case deletion was not the same cheap-reading shape as its control"
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a delivery deleting the dispatch gate routed itself to the cheap lane"
+  assert_contains "$out" "reason=critical-surface" \
+    "the expensive routing was not attributed to a critical surface"
+  assert_contains "$out" "routing-policy" \
+    "the gate's enforcement point is not protected as routing policy"
+
+  pass "lane: a delivery that deletes the dispatch gate cannot route itself past it"
 }
 
 # --- 2. a standard class must be demonstrated, never alleged ----------------
@@ -329,6 +403,50 @@ test_declared_evidence_never_reaches_the_cheap_lane() {
   assert_contains "$(first_line "$out")" "evidence=declared" \
     "the decision did not record the evidence grade it ran on"
   pass "lane: a declared path list can raise rigor and never lower it"
+}
+
+# A class claim is checked for being well formed on EVERY evidence grade, not
+# only where it can be demonstrated. On declared evidence the demonstration
+# never runs, so an invalid claim would otherwise be accepted and written into
+# the record as if it were a real one - and the record is the only thing that
+# makes this policy reviewable.
+test_an_invalid_class_claim_is_refused_on_declared_evidence() {
+  local home log out status
+
+  home=$(lane_home classclaim)
+  log="$home/data/lane-log.tsv"
+
+  out=$(run_lane "$home" decide claim-a1 --project proj --paths src/thing.py \
+    --class not-a-real-class)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an unknown class on declared evidence should exit non-zero"
+  assert_contains "$out" "--class must be one of docs-only, clean-revert, mechanical-pattern" \
+    "the refusal did not name the classes that exist"
+
+  out=$(run_lane "$home" decide claim-a2 --project proj --paths src/thing.py \
+    --class clean-revert)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a revert claim naming no commit should exit non-zero"
+  assert_contains "$out" "requires --revert-of" "the refusal did not name the missing flag"
+
+  out=$(run_lane "$home" decide claim-a3 --project proj --paths src/thing.py \
+    --class mechanical-pattern)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a mechanical claim with no command to re-derive it should exit non-zero"
+  assert_contains "$out" "requires --reproduce" "the refusal did not name the missing flag"
+
+  assert_absent "$log" "a refused class claim still reached the record"
+
+  # A well-formed claim on declared evidence is still routed, and still expensive.
+  out=$(run_lane "$home" decide claim-b1 --project proj --paths docs/guide.md \
+    --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a class claim on declared evidence reached the cheap lane"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "an undemonstrable class claim was not reported as undemonstrated"
+  assert_grep 'docs-only' "$log" "the well-formed claim did not reach the record"
+
+  pass "lane: an invalid class claim is refused instead of recorded as a real one"
 }
 
 # --- 4. size is a warning, not a cap ----------------------------------------
@@ -546,10 +664,12 @@ test_only_the_captain_reaches_the_cheap_lane_past_a_critical_surface() {
 test_a_critical_surface_outranks_every_cheap_signal
 test_every_named_critical_surface_is_in_the_catalog
 test_firstmates_own_safety_surfaces_are_covered
+test_deleting_the_dispatch_gate_cannot_route_itself_cheap
 test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only
 test_a_revert_must_be_the_commit_it_claims_to_undo
 test_a_mechanical_change_must_be_re_derivable
 test_declared_evidence_never_reaches_the_cheap_lane
+test_an_invalid_class_claim_is_refused_on_declared_evidence
 test_size_routes_a_change_to_be_looked_at_and_never_refuses_it
 test_every_decision_dispatch_and_escape_reaches_the_record
 test_a_cheap_dispatch_needs_a_decision_that_authorizes_it
