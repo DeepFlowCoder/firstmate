@@ -718,11 +718,19 @@ nm_scan_runs_for_branch() {  # <branch>
     # does not match this worktree (rewritten or advanced tip) cannot answer.
     # When it does not, the branch's own push binding is tried before giving up -
     # see nm_branch_binding_is_this_worktree for what it may and may not license.
+    #
+    # The binding needs no newest-row guard here, and one would be dead code: the
+    # three values it reads ($WT, $RUN_OUT and $branch) are all assigned outside
+    # this loop, so it returns the same answer on every row. A success therefore
+    # happens on the FIRST branch row it is reached from - seen=1, the only row
+    # where COARSE_STATUS can still be empty when no earlier row bound - and sets
+    # COARSE_STATUS, which breaks the loop. A failure repeats on every later row.
+    # Neither outcome can ever be consumed on an older row.
     if [ -z "$COARSE_STATUS" ]; then
       if nm_coarse_head_matches_worktree "$sha"; then
         COARSE_STATUS=$st
         [ "$seen" = 1 ] && COARSE_ROW_IS_NEWEST=1
-      elif [ "$seen" = 1 ] && nm_branch_binding_is_this_worktree "$branch"; then
+      elif nm_branch_binding_is_this_worktree "$branch"; then
         COARSE_STATUS=$st
         COARSE_ROW_IS_NEWEST=1
         COARSE_VIA_BINDING=1
@@ -843,6 +851,15 @@ nm_coarse_head_matches_worktree() {  # <short-sha>
 # current one. The caller applies it to the branch's NEWEST row and to no other:
 # newest-first is what makes that row the branch's current run, and licensing an
 # older row would resurrect a superseded verdict the arbitration exists to bury.
+#
+# That restriction holds structurally, not by a guard at the call site, so do not
+# add one back believing it protects this. The answer depends on nothing the
+# caller's row loop assigns - only on the worktree, the `axi status` output and
+# the branch name, all fixed before the loop starts - so it is constant across
+# rows: the first row that reaches it either binds and ends the scan, or fails
+# and goes on failing. Keeping it row-invariant is what makes that true, so a
+# future version taking row-scoped input (a sha, a run id) would need the newest-
+# row check restored along with it.
 #
 # It licenses nothing else either. A branch name a later task reused moves the
 # binding to that task's own submitted head, so the binding stops answering the

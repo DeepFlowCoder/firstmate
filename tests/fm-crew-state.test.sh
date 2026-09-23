@@ -2262,9 +2262,14 @@ EOF
 # Case 3 of three: what the binding may never license. It names the BRANCH, not a
 # run, so it can only speak for the run that is the branch's current one - the
 # newest row. Here the newest row is an unbindable `running` successor and an
-# OLDER `cancelled` row sits beneath it: letting the binding reach down to that
-# older row would report a cancelled run as this crew's state and resurrect
-# exactly the superseded verdict the newest-first arbitration exists to bury.
+# OLDER `cancelled` row sits beneath it, so reaching down to that older row would
+# report a cancelled run as this crew's state and resurrect exactly the
+# superseded verdict the newest-first arbitration exists to bury.
+#
+# What this pins is that outcome, not any one mechanism producing it: the scan
+# ends at the newest row the binding answers for, so the older row is never even
+# parsed. The assertions below stay true of any implementation that keeps the
+# binding row-invariant, which is the property the scan actually relies on.
 test_the_binding_never_licenses_an_older_row() {
   reset_fakes
   local d submitted out
