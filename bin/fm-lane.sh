@@ -204,8 +204,9 @@ blob_at() {
 
 cmd_decide() {
   local evidence catalog hits critical lane reason signals note class_record
-  local base head names numstat p
+  local base head names numstat p q d seen
   local files dirs lines new_files branch_points binary
+  local seen_dirs=()
   local signal_reasons=()
 
   [ -n "$TASK" ] || die "decide requires a task id"
@@ -254,9 +255,21 @@ cmd_decide() {
   critical=${critical:--}
 
   files=${#PATHS[@]}
-  dirs=$(printf '%s\n' "${PATHS[@]}" \
-    | awk '{ i=match($0, /\/[^\/]*$/); print (i ? substr($0, 1, i-1) : ".") }' \
-    | sort -u | wc -l | tr -d ' ')
+  # Counted off the array rather than through a newline-delimited stream, the
+  # same way files reads ${#PATHS[@]}. Printing one path per line re-split a
+  # path holding a newline that PATHS had just been read NUL-delimited to keep
+  # whole, so a single file under one directory reported dirs=2.
+  dirs=0
+  seen_dirs=()
+  for p in ${PATHS[@]+"${PATHS[@]}"}; do
+    d=${p%/*}
+    [ "$d" != "$p" ] || d=.
+    seen=0
+    for q in ${seen_dirs[@]+"${seen_dirs[@]}"}; do
+      [ "$q" != "$d" ] || { seen=1; break; }
+    done
+    [ "$seen" -eq 1 ] || { seen_dirs+=("$d"); dirs=$((dirs + 1)); }
+  done
   lines=-
   new_files=-
   branch_points=-

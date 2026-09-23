@@ -386,13 +386,21 @@ EOF
   # Half of a commit undone is a tree that never shipped, which is exactly what
   # the class's premise excludes. Proving only over the paths the RANGE changed
   # never examines the file the delivery left carrying the commit's change.
+  #
+  # src/thing.py must come back to EXACTLY its pre-commit content, so the range's
+  # own path passes both halves and the only thing left to fail the claim is
+  # src/other.py, which the range never touched. Any other value would fail on
+  # the range path instead and the case would pass without the union it exists
+  # to pin.
   printf 'left alone\n' > "$repo/src/other.py"
   commit_all "$repo" seed-second-file >/dev/null
   printf 'value = 9\n' > "$repo/src/thing.py"
   printf 'changed too\n' > "$repo/src/other.py"
   two_file_head=$(commit_all "$repo" two-file-change)
-  printf 'value = 2\n' > "$repo/src/thing.py"
+  printf 'value = 1\n' > "$repo/src/thing.py"
   partial_head=$(commit_all "$repo" revert-only-one)
+  [ "$(git -C "$repo" show "$two_file_head^:src/thing.py")" = "$(cat "$repo/src/thing.py")" ] \
+    || fail "the fixture did not restore src/thing.py to its pre-commit content"
   out=$(run_lane "$home" decide revert-partial --project proj \
     --repo "$repo" --range "$two_file_head..$partial_head" \
     --class clean-revert --revert-of "$two_file_head")
@@ -606,6 +614,8 @@ test_a_path_git_escapes_is_matched_as_itself() {
       "a change on a declared critical surface was routed cheap (case $n)"
     assert_contains "$out" "files=1" \
       "an escaped path was not counted as exactly one changed file (case $n)"
+    assert_contains "$out" "dirs=1" \
+      "an escaped path was re-split into more directories than it touches (case $n)"
   done
 
   pass "lane: a path git escapes is matched and counted as itself"
