@@ -318,12 +318,6 @@ fm_lane_critical_hits() {
       echo "error: critical-surface catalog entry has no surface name (expected \"<glob><tab><surface-name>\"): $glob" >&2
       return 1
     fi
-    case "$name" in
-      *,*)
-        echo "error: critical-surface name may not contain a comma, which separates names in the record's critical column: $name" >&2
-        return 1
-        ;;
-    esac
     case ",$hits," in
       *",$name,"*) continue ;;
     esac
