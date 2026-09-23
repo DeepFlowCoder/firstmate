@@ -314,8 +314,16 @@ On those two arms a cut still prints the old word `failed`, because both read th
 That is a known, deliberate limit of the source rather than a second opinion about the word, it is tracked as `fm-corte-por-tope-fuera-del-brazo-de-lista`, and the full read reports the cut as soon as `axi status` answers for that branch again.
 
 The second bound applies on the full read itself: the cut reading is asserted only once the run it describes has been identified, and it degrades to the ordinary failure word when that identity cannot be proved.
-The list carries no run id, and a reported head identifies nothing either (the submitted-head measurement above), so the only identity available is a counting one: a branch carrying exactly ONE row of the reported word must have been reported from that row.
-The branch in the table below with two `failed` rows is exactly the shape that fails the test, and it is not hypothetical - when `axi status` lags and answers with the older cut while the newer failed run is a real rejection of the code, the cut's phrase would tell a reader nobody looked at code that a reviewer really did reject.
+It does NOT reach any reading that would have to match the reported run to a listing row, and it never will, because the two surfaces share no unique key: a `no-mistakes runs` row carries status, branch, short sha, date and pull request and no run id (v1.75.2 exposes only `--limit` on that command, with no branch and no status filter), while `axi status` carries the run id and no timestamp.
+A branch carrying more than one run of the reported word therefore keeps the old word `failed`, that is a permanent limit rather than one pending a better read, and it is tracked as `fm-listado-de-corridas-sin-id`.
+This is a different limit from the first one and neither stands in for the other: the first is about rows that carry no error column, this one is about rows that carry no identity.
+
+The identity that IS available counts rather than matches, which is why it needs no key: a branch carrying exactly ONE row of the reported word leaves no second row the reported run could be.
+Two identities that look available are ruled out by measurement rather than by taste.
+A reported head proves nothing, because `head_sha` equals `last_pushed_sha` for every run in the store (the submitted-head measurement above) and, read on 2026-09-23, five of the ten branches carrying two or more `failed` rows carry two or more of them on the same head sha.
+A proof resting on the listing being complete, or shorter than the limit it was asked for, is a proof with an expiry date: the listing is repo-scoped and this registration gains runs daily, so a fixed limit fills permanently and would retire the guarantee it guards with no signal at all, which is strictly worse than a limit that is stated.
+The counting proof avoids both and holds however long the list grows, because `axi status` answers with the repo's active-or-most-recent run, which sits at the newest-first end of that same listing rather than past it.
+The branch in the table below with two `failed` rows is exactly the shape that keeps the old word, and it is not hypothetical - when `axi status` lags and answers with the older cut while the newer failed run is a real rejection of the code, the cut's phrase would tell a reader nobody looked at code that a reviewer really did reject.
 
 ### How long the reading stands
 

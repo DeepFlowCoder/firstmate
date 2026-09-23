@@ -47,9 +47,11 @@
 #      nobody chose it and a busy pane would read as healthy work over a dead
 #      validation. bin/fm-nm-run-lib.sh owns that whole distinction, including
 #      why the reading is right to outlive its run. It is the STRONGER of the two
-#      readings of one word, so it is bounded twice below: the runs-list arms
-#      cannot see the evidence it is made from, and the full arm asserts it only
-#      once the run it describes has been identified.
+#      readings of one word, so it is bounded twice below, and both bounds are
+#      permanent: the runs-list arms cannot see the evidence it is made from
+#      (`fm-corte-por-tope-fuera-del-brazo-de-lista`), and a branch carrying more
+#      than one row of the reported word offers no key to say which of them was
+#      reported (`fm-listado-de-corridas-sin-id`). Each of those keeps `failed`.
 #      EXCEPT: while the active step is ci, `axi status` alone cannot tell "still
 #      waiting on checks" from "checks green, waiting on merge" (see
 #      nm_ci_checks_state) - a ci-step log-tail check overrides working -> done
@@ -1151,9 +1153,18 @@ if [ "$HAVE_RUN" = 1 ]; then
   # failure word and phrase, because the safe direction is the old word and never
   # the new phrase. Nothing else about the arbitration changes: the cut still
   # pairs with the runs-list row through the unchanged RUN_WORD.
+  #
+  # AND WHERE THE TIE HAS TO BE BROKEN, IT CANNOT BE, so the cut reading does not
+  # reach that reading at all and never will: a runs-list row carries no run id
+  # and `axi status` carries no timestamp, so a branch carrying more than one row
+  # of the reported word offers nothing to match the reported run to one of them.
+  # That degrade is permanent rather than pending, it is why the identity proof
+  # counts rather than matches, and it is tracked as `fm-listado-de-corridas-sin-id`.
+  # It is a different limit from the runs-list arms above, which print `failed`
+  # for their own reason - their rows carry no error column - and neither limit
+  # stands in for the other.
   if [ "$RUN_CAP_CUT" = 1 ] && [ "$VERDICT_STANDING" = current ] \
-    && ! fm_nm_runs_row_identifies_run \
-      "$RUNS_LIST_OUT" "$CREW_BRANCH" "$RUN_TERMINAL_WORD" "$FM_CREW_STATE_RUNS_LIMIT"; then
+    && ! fm_nm_runs_row_identifies_run "$RUNS_LIST_OUT" "$CREW_BRANCH" "$RUN_TERMINAL_WORD"; then
     RUN_STATE=failed
     RUN_DETAIL=$RUN_FAILED_DETAIL
     RUN_CAP_CUT=0

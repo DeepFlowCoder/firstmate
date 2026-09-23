@@ -337,38 +337,49 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # read above deliberately does not answer, and the one a reading that says more
 # than the bare word has to answer before it may be asserted.
 #
-# Nothing identifies a run directly. The list carries no run id at all (its rows
-# are status, branch, short sha, date, pull request), and a run's reported head
-# identifies nothing either: head_sha equals last_pushed_sha for every run in the
-# store, and an aborted run and the live run that replaced it report the SAME
-# submitted head for the whole successor run - the measurement the header above
-# records. Resting an identity on sha equality would be a false proof of exactly
-# the kind this library exists to prevent.
+# THE TWO SURFACES SHARE NO UNIQUE KEY, and that is the shape of the whole
+# problem. A `no-mistakes runs` row carries status, branch, short sha, date and
+# pull request and NO run id (v1.75.2 exposes only `--limit` on that command,
+# with no branch and no status filter); `axi status` carries the run id and no
+# timestamp. So a reported run and a listing row can never be MATCHED to one
+# identity, and no reading that has to match them may be asserted at all.
+# Tracked as `fm-listado-de-corridas-sin-id`.
 #
-# One thing the list CAN prove: if <branch> carries exactly ONE row whose status
-# is <word>, then the run reported with that word must be that row. Two such rows
-# and nothing here says which of them answered, so identity is not established.
-# The proof also needs every row the branch has, so a listing that filled its own
-# <scanned-limit> may be hiding an older row of the same word and proves nothing.
+# Two identities that look available are ruled out by measurement, not by taste:
+#   sha equality    head_sha equals last_pushed_sha for every run in the store,
+#                   and of the 10 branches carrying 2+ `failed` rows on
+#                   2026-09-23, FIVE carry two or more of them on the SAME head
+#                   sha. That proof would assert falsely in half the cases.
+#   a whole listing any proof that needs the list complete, or shorter than the
+#                   limit it was asked for, carries an expiry date: the listing
+#                   is repo-scoped and this registration gains runs daily, so a
+#                   fixed limit fills permanently and would retire the reading it
+#                   guards with no signal at all. A guarantee that expires
+#                   silently is worse than a limit that is stated.
+#
+# What is left is COUNTING, which matches nothing and therefore needs no key: if
+# <branch> carries exactly ONE row whose status is <word>, there is no second row
+# the reported run could be, so identity is established without ever asking which
+# row it is. That holds however long the list is, because `axi status` answers
+# with the repo's active-or-most-recent run, which is at the newest-first end of
+# the same listing rather than somewhere past it. More than one row of the word
+# is the tie above, and nothing here can break it.
 #
 # 0 ONLY when identity is established. Every other answer - a missing argument, a
-# malformed limit, a listing that may be truncated, a word that matches no row or
-# more than one - is "not established", because a caller asks this to decide
-# whether it may make a STRONGER claim and silence must never read as permission.
-fm_nm_runs_row_identifies_run() {  # <runs-output> <branch> <word> <scanned-limit>
-  local out=${1:-} branch=${2:-} word=${3:-} limit=${4:-}
-  local row parsed st br rows=0 hits=0
+# word that matches no row, a word that matches more than one - is "not
+# established", because a caller asks this to decide whether it may make a
+# STRONGER claim and silence must never read as permission.
+fm_nm_runs_row_identifies_run() {  # <runs-output> <branch> <word>
+  local out=${1:-} branch=${2:-} word=${3:-}
+  local row parsed st br hits=0
   [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
-  case "$limit" in ''|*[!0-9]*) return 1 ;; esac
   while IFS= read -r row; do
     parsed=$(fm_nm_runs_parse_row "$row") || continue
-    rows=$((rows + 1))
     IFS=$'\t' read -r st br _ <<< "$parsed"
     if [ "$br" = "$branch" ] && [ "$st" = "$word" ]; then
       hits=$((hits + 1))
     fi
   done <<< "$out"
-  [ "$rows" -lt "$limit" ] || return 1
   [ "$hits" = 1 ]
 }
 

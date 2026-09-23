@@ -1298,6 +1298,49 @@ test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word() {
   pass "a cut over a branch whose reported run cannot be identified keeps the failure word"
 }
 
+# THE IDENTITY PROOF MUST NOT CARRY AN EXPIRY DATE. `no-mistakes runs` is
+# repo-scoped and this registration gains runs daily, so a listing that fills the
+# limit this read asks for is the STEADY STATE, not an edge: measured 2026-09-23,
+# 170 runs with 56 of them in the preceding week. An identity that only holds
+# while the listing is short would therefore stop holding within days and retire
+# the whole cap-cut reading with no signal at all.
+#
+# The proof counts rather than matches, so a full listing costs it nothing: one
+# row of the reported word on this branch still leaves no second row the reported
+# run could be, however many other branches' runs are listed beside it.
+test_a_listing_that_filled_its_limit_still_identifies_one_row() {
+  reset_fakes
+  local d short out; d=$(new_case cut-full-list)
+  make_repo_on_branch "$d/wt" fm/feat-fl
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/fl.meta" "window=fm:fm-fl" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-fl)"
+
+  # Four rows for a four-row budget, with the trailer the real listing prints
+  # when it has more to give: this branch's single failed run, and other work
+  # filling the window around it.
+  FM_FAKE_RUNS_LIST="  running  fm/other-a 1111111  2026-09-23 09:01
+  completed  fm/other-b 2222222  2026-09-23 08:40
+  failed  fm/feat-fl ${short}  2026-09-22 20:12
+  completed  fm/other-c 3333333  2026-09-22 19:10
+
+ (166 more runs, use --limit to see more)"
+
+  FM_CREW_STATE_RUNS_LIMIT=4
+  export FM_CREW_STATE_RUNS_LIMIT
+  out=$(run_crew_state "$d" fl)
+  unset FM_CREW_STATE_RUNS_LIMIT
+
+  assert_contains "$out" "state: unknown" \
+    "a listing that filled its limit must not retire the cut reading"
+  assert_contains "$out" "cut off by its own 30m0s time cap" \
+    "the cut is still named when its one row is the only row of that word"
+  assert_not_contains "$out" "state: failed" \
+    "a full listing is not a reason to spend the code verdict's word on a cut"
+  pass "a listing that filled its own limit still identifies a branch's single row"
+}
+
 # THE THIRD PARTY THE FALSE WORD COST. A task idling on a correctly declared
 # external wait was read as a possible wedge, because the old run's `failed`
 # outranked its pause and the watcher's absorb classifier saw an answered
@@ -3891,6 +3934,7 @@ test_wall_clock_cut_reads_the_same_as_a_timeout_cut
 test_a_killed_agent_without_a_cap_stays_an_ordinary_failure
 test_a_cap_cut_is_not_handed_over_to_a_busy_pane
 test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word
+test_a_listing_that_filled_its_limit_still_identifies_one_row
 test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path
 
 echo "all fm-crew-state tests passed"
