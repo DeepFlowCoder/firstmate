@@ -13,8 +13,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-sessionstart-cursor.sh` | Cursor session-open adapter: the RUN tier transport for Cursor Agent CLI             |
 | `fm-operational-input.sh` | Construct and parse the canonical cross-language operational-input protocol |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
-| `fm-capacity-check.sh`   | Report aggregate provider capacity at session start and register its transition-only watcher poll |
-| `fm-capacity-policy.mjs` | Classify one quota-axi snapshot into dispatchable lanes and distinct exhaustion remedies |
+| `fm-capacity-check.sh`   | Report aggregate provider capacity and the validation provider's prepaid balance at session start, and register its transition-only watcher poll |
+| `fm-capacity-policy.mjs` | Classify one quota-axi snapshot and the balance reading history into dispatchable lanes, distinct exhaustion remedies, and a balance runway |
 | `fm-startup-network.sh`  | Run session start's network checks off its blocking path, retaining every report while waking only for actionable results |
 | `fm-startup-memory-budget.sh` | Read and account for the local startup-memory budget                                 |
 | `fm-startup-memory-budget-lib.sh` | Shared startup-memory budget parsing, default publication, and prompt-memory estimate |

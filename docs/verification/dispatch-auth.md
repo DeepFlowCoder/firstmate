@@ -250,6 +250,18 @@ Every observed answer has carried exactly one `balance_infos` entry; more than o
 A second run against a history backdated to a steep drain printed `validation provider balance runs out in 7m, inside the 2h18m a validation needs - recharge before dispatching`, with no amount or currency anywhere in the output.
 That pair is the end-to-end proof of the vendor surface; `tests/fm-capacity.test.sh` pins the classification from fixtures and needs no credential.
 
+**The signature a spent balance leaves in the run record.**
+This one belongs to `bin/fm-crew-state.sh` rather than to the guard above: it is what a run says after the balance has already killed it.
+The pipeline records the provider's refusal verbatim, and the runs that died on 2026-09-18 and 2026-09-19 all carry this `error:` text in `~/.no-mistakes/state.sqlite`:
+
+```text
+step review failed: agent review: pi reported error: 402: {"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}
+```
+
+Two independent signals sit in it, and either one alone carries the verdict: the vendor's own `Insufficient Balance` message, and the standardized HTTP `402` payment-required status underneath it, whose reason phrase RFC 9110 fixes.
+Requiring both would let one vendor rewording take the distinction away silently, which is the whole failure mode naming this cause exists to prevent.
+`bin/fm-nm-run-lib.sh`'s `fm_nm_failure_cause_detail` header owns the exact clauses, and `tests/fm-crew-state.test.sh` pins this payload.
+
 **The reaction margin.**
 The margin is the wall-clock span a validation spends burning that provider, taken from the pipeline's own run store over every completed run that used it:
 
