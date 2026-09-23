@@ -387,6 +387,45 @@ EOF
   pass "lane: docs/ widens the prose set to .txt and extensionless, and no further"
 }
 
+# A Makefile is extensionless, is canonical Sphinx layout, and runs arbitrary
+# shell at build time. Widening docs/ by SHAPE admitted it; widening by NAME
+# does not, which is the whole reason the list names each entry.
+test_docs_widening_is_a_named_list_rather_than_a_shape() {
+  local rec repo base home head out name n=0
+
+  rec=$(make_repo docsnames)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home docsnames)
+
+  for name in Makefile Dockerfile CNAME; do
+    n=$((n + 1))
+    base=$(git -C "$repo" rev-parse HEAD)
+    printf 'html:\n\tsphinx-build .\n' > "$repo/docs/$name"
+    head=$(commit_all "$repo" "add-$name")
+    out=$(run_lane "$home" decide docsname-a$n --project proj --repo "$repo" \
+      --range "$base..$head" --class docs-only)
+    assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+      "docs/$name demonstrated as documentation"
+    assert_contains "$out" "reason=class-not-demonstrated" \
+      "docs/$name was not reported as undemonstrated"
+  done
+
+  # The named prose keeps working, so the narrowing did not take the class.
+  base=$(git -C "$repo" rev-parse HEAD)
+  printf 'v1\n' > "$repo/docs/CHANGELOG"
+  printf 'notes\n' > "$repo/docs/notes.txt"
+  printf 'more\n' >> "$repo/docs/guide.md"
+  head=$(commit_all "$repo" named-prose)
+  out=$(run_lane "$home" decide docsname-b1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "named prose under docs/ lost its cheap route"
+
+  pass "lane: docs/ widens by named prose files, not by having no extension"
+}
+
 # A signal that cannot be computed must never resolve to its most permissive
 # value. A diff driver whose textconv is missing fails the unified-diff read
 # with no output, which the old pipeline could not tell from "nothing matched",
@@ -417,16 +456,24 @@ EOF
   assert_contains "$out" "branch-points=-" \
     "an unread complexity signal was recorded as a measured number"
 
-  # The control: the same repo with the driver removed measures normally, so the
-  # case above is the broken read and not the fixture.
+  # The control has to contain the file type the driver breaks, or it proves
+  # nothing: a range whose only path is .gitattributes never exercises a .py
+  # diff at all and would pass with every .py read still broken.
   rm "$repo/.gitattributes"
-  head=$(commit_all "$repo" drop-broken-driver)
+  commit_all "$repo" drop-broken-driver >/dev/null
+  base=$(git -C "$repo" rev-parse HEAD)
+  printf 'value = 2\nif value:\n    pass\nif value:\n    pass\n' > "$repo/src/thing.py"
+  head=$(commit_all "$repo" edit-through-working-driver)
   out=$(run_lane "$home" decide unread-b1 --project proj --repo "$repo" \
-    --range "$(git -C "$repo" rev-parse HEAD~1)..$head")
+    --range "$base..$head")
   assert_not_contains "$out" "unreadable-diff" \
     "a readable diff was reported as unreadable"
   assert_not_contains "$out" "branch-points=-" \
     "a readable diff left the complexity signal unmeasured"
+  # A count only a .py diff can produce: the added line is a branch point, which
+  # a range carrying nothing but .gitattributes could never report.
+  assert_contains "$out" "branch-points=1" \
+    "the control did not decide over a range carrying the file type the driver broke"
 
   pass "lane: a diff the policy cannot read routes expensive instead of measuring zero"
 }
@@ -1068,6 +1115,56 @@ EOF
   pass "lane: a missing decision refuses the cheap lane and only warns the expensive one"
 }
 
+# A binding a later command can step on was never binding. Declared evidence
+# always lands in the advisory branch, so re-running decide in its intake shape -
+# the spelling the gate's own refusal text recommends - erased an earlier
+# critical-surface decision and let the cheap dispatch through with no captain
+# override anywhere. Only a real diff may lift a binding.
+test_a_later_declared_decide_cannot_erase_a_binding() {
+  local rec home proj fakebin repo base head out status
+
+  rec=$(make_home bindingrow)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  rec=$(make_repo bindingrepo)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+
+  mkdir -p "$repo/bin"
+  printf 'merge\n' > "$repo/bin/fm-pr-merge.sh"
+  base=$(commit_all "$repo" seed-merge-route)
+  printf 'merge again\n' > "$repo/bin/fm-pr-merge.sh"
+  head=$(commit_all "$repo" touch-merge-route)
+
+  write_brief "$home" bind-a1 direct-PR
+  out=$(run_lane "$home" decide bind-a1 --project proj --repo "$repo" --range "$base..$head")
+  assert_contains "$out" "reason=critical-surface" \
+    "the fixture's first decision did not bind on a critical surface"
+
+  # The intake-shaped decide that used to erase it.
+  run_lane "$home" decide bind-a1 --project proj --repo "$repo" --paths docs/guide.md >/dev/null
+  out=$(run_spawn "$home" "$fakebin" bind-a1 "$proj" claude --mode direct-PR --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a later declared decide let a critical-surface task reach the cheap lane"
+  assert_contains "$out" "A critical surface binds under every evidence grade" \
+    "the refusal did not come from the binding decision"
+
+  # The mirror: a later DEMONSTRATED decision that no longer touches the surface
+  # does lift the binding, so the honest correction path stays open.
+  printf 'value = 2\n' > "$repo/src/thing.py"
+  head=$(commit_all "$repo" ordinary-change)
+  write_brief "$home" bind-b1 direct-PR
+  run_lane "$home" decide bind-b1 --project proj --repo "$repo" \
+    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" >/dev/null
+  out=$(run_spawn "$home" "$fakebin" bind-b1 "$proj" claude --mode direct-PR --yolo off)
+  assert_not_contains "$out" "not authorized" \
+    "a re-measured non-critical change could not reach the cheap lane"
+
+  pass "lane: only a real diff lifts a binding, and a declared decide never erases one"
+}
+
 test_promotion_carries_the_same_gate() {
   local home meta out status
 
@@ -1295,6 +1392,7 @@ test_firstmates_own_safety_surfaces_are_covered
 test_deleting_the_dispatch_gate_cannot_route_itself_cheap
 test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only
 test_docs_directory_widens_the_prose_set_rather_than_replacing_it
+test_docs_widening_is_a_named_list_rather_than_a_shape
 test_a_diff_the_policy_cannot_read_is_not_measured_as_zero
 test_a_revert_must_be_the_commit_it_claims_to_undo
 test_a_partial_revert_of_a_root_commit_is_not_demonstrated
@@ -1310,6 +1408,7 @@ test_every_decision_dispatch_and_escape_reaches_the_record
 test_a_cheap_dispatch_needs_a_decision_that_authorizes_it
 test_the_gate_is_advisory_at_intake_and_binding_on_a_measured_change
 test_a_missing_decision_stops_the_cheap_lane_and_only_warns_the_expensive_one
+test_a_later_declared_decide_cannot_erase_a_binding
 test_promotion_carries_the_same_gate
 test_a_project_can_widen_the_catalog_but_never_narrow_it
 test_only_the_captain_reaches_the_cheap_lane_past_a_critical_surface

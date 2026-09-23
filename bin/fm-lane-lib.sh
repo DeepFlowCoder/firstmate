@@ -142,13 +142,41 @@ fm_lane_append() {
 }
 
 # fm_lane_last_decision <log> <task-id> -> that task's most recent decide row, or
-# nothing. A later decision supersedes an earlier one, so re-deciding a task
-# after its change took a different shape is the supported way to correct a
-# lane rather than editing the record.
+# nothing. A later decision supersedes an earlier one EXCEPT where the earlier
+# one bound: see fm_lane_binding_decision. Re-deciding a task after its change
+# took a different shape is the supported way to correct a lane rather than
+# editing the record, but correcting it downwards takes a real diff.
 fm_lane_last_decision() {
   local log=$1 task=$2
   [ -f "$log" ] || return 0
   awk -F'\t' -v t="$task" '$2=="decide" && $3==t { last=$0 } END { if (last != "") print last }' "$log"
+}
+
+# fm_lane_binding_decision <log> <task-id> <project> -> the most recent decide
+# row for that task and project that BOUND the cheap lane, or nothing. A row
+# binds when it names a critical surface, or when it was expensive on
+# DEMONSTRATED evidence.
+#
+# It exists because a binding a later command can step on was never binding.
+# Declared evidence always lands in the advisory branch below, so re-running
+# decide in its intake shape - the very spelling this gate's own refusal text
+# recommends - erased an earlier critical-surface decision and let the cheap
+# dispatch through, with no captain override anywhere. Only a later DEMONSTRATED
+# decision may lift a binding, which keeps the honest correction path open: the
+# change genuinely no longer touches the surface, re-measured from a real diff.
+#
+# A captain override CLEARS any binding before it, because the captain's
+# explicit instruction is the one deliberate exception and must not be undone by
+# a row that predates it.
+fm_lane_binding_decision() {
+  local log=$1 task=$2 project=$3
+  [ -f "$log" ] || return 0
+  awk -F'\t' -v t="$task" -v p="$project" '
+    $2=="decide" && $3==t && $4==p {
+      if ($7=="captain-override") { last="" }
+      else if ($7=="critical-surface" || ($5=="no-mistakes" && $6=="demonstrated")) { last=$0 }
+    }
+    END { if (last != "") print last }' "$log"
 }
 
 # --- critical-surface catalog ----------------------------------------------
@@ -298,7 +326,7 @@ fm_lane_critical_hits() {
 # registry posture, unchanged by this policy. It is recorded and never gated.
 fm_lane_gate_dispatch() {
   local task=$1 project=$2 mode=$3 yolo=$4
-  local log row lane evidence reason decided_project dispatch_reason
+  local log row binding lane evidence reason decided_project dispatch_reason
 
   case "$mode" in
     no-mistakes|direct-PR|local-only) ;;
@@ -320,6 +348,12 @@ fm_lane_gate_dispatch() {
     fi
     echo "warning: the recorded lane decision for $task is for project $decided_project, not $project, so it says nothing about this delivery." >&2
     row=
+  fi
+
+  if [ -n "$row" ] && [ "$(printf '%s\n' "$row" | cut -f6)" != demonstrated ] \
+    && [ "$(printf '%s\n' "$row" | cut -f7)" != captain-override ]; then
+    binding=$(fm_lane_binding_decision "$log" "$task" "$project")
+    [ -z "$binding" ] || row=$binding
   fi
 
   if [ -z "$row" ]; then

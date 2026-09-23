@@ -154,7 +154,16 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 # executes at documentation-build time. Accepting it by location sent code to
 # the cheap lane LABELLED AS PROSE, which also writes a false class into the
 # record this policy exists to measure. So docs/ only WIDENS the prose set to
-# the two shapes that cannot be source there - .txt and no extension at all.
+# .txt and to a NAMED list of prose filenames.
+#
+# The list names rather than describes, and that is the point. "Extensionless"
+# was the first form of this widening and it looked narrow while being wide:
+# it was authorised with CHANGELOG, README and LICENSE in mind, and it also
+# admitted Makefile, Dockerfile and Jenkinsfile - files that are EXECUTABLE BY
+# CONVENTION and that nobody calls prose. A docs/Makefile piping curl into sh
+# reaching the cheap lane labelled as documentation is not a classification gap,
+# it is an execution path dressed as prose. Naming each entry forces it to be
+# thought about, which is what a shape-based rule never made anyone do.
 is_documentation_path() {
   local p base
   p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
@@ -170,9 +179,9 @@ is_documentation_path() {
   base=${p##*/}
   case "$base" in
     *.txt) return 0 ;;
-    *.*) return 1 ;;
+    changelog|readme|notice|authors|contributors) return 0 ;;
   esac
-  return 0
+  return 1
 }
 
 demonstrate_docs_only() {
