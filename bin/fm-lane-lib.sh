@@ -28,15 +28,20 @@
 #      explicitly (AGENTS.md "Captain instruction precedence"), and that
 #      override is recorded rather than silent.
 #   2. Standard class. docs-only and clean-revert reach the
-#      cheap lane only when membership is DEMONSTRATED from a real diff. A class
+#      cheap lane only when membership is DEMONSTRATED from a real diff, and
+#      only when the range carries no MODE CHANGE: a class claim over one is
+#      not evaluated at all, and the decision falls through to tier 3. A class
 #      that is claimed and cannot be demonstrated is not that class: it routes to
 #      no-mistakes with reason class-not-demonstrated. Alleging a class never
 #      earns the cheap lane, which is the whole difference between a catalog and
 #      a hot judgment.
 #   3. Diff signals. Novelty (a file added), diffusion (distinct directories),
-#      complexity (added control-flow branch points), size, and a mode change
-#      (an exec bit or a file type flipped, which leaves no lines to measure at
-#      all) each route to no-mistakes. Everything left goes to direct-PR.
+#      complexity (added control-flow branch points) and size each route to
+#      no-mistakes. So does a MODE CHANGE - an exec bit or a file type flipped,
+#      which leaves no lines to measure at all - and that one is more than a
+#      tier-3 signal: it is a DISQUALIFICATION from the cheap lane by any route,
+#      which is why tier 2 defers to this tier rather than answering over it.
+#      Everything left goes to direct-PR.
 #
 # EVIDENCE GRADES. Declared evidence - a list of paths the caller asserts the
 # change will touch - reaches tier 1 and stops; it never reaches tier 2 or 3.

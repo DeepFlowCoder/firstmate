@@ -49,6 +49,9 @@
 #                 exactly that commit undone.
 # A class that is claimed and fails its demonstration is not that class: the
 # decision is the expensive lane with reason class-not-demonstrated.
+# A range carrying a MODE CHANGE is not offered to either demonstration at all:
+# no class reaches the cheap lane over one, the claim is left unevaluated, and
+# the record says so with class - and reason signals:mode.
 #
 # THE THIRD CLASS THE CAPTAIN NAMED, mechanical-pattern, WAS REMOVED, and this
 # policy is narrower than the one he approved because of it. His own condition
@@ -260,7 +263,7 @@ cmd_decide() {
   local evidence catalog hits critical lane reason signals note class_record
   local base head names numstat added udiff raw meta p q d seen
   local files dirs lines new_files branch_points binary unreadable repo_measured
-  local mode_changes src_mode dst_mode
+  local mode_changes mode_disqualifies src_mode dst_mode
   local printed_signals class_evaluated base_measured head_measured
   local seen_dirs=()
   local signal_reasons=()
@@ -333,7 +336,8 @@ cmd_decide() {
   mode_changes=-
   unreadable=0
   # EVERY read here reports whether it succeeded, and a read that fails leaves
-  # its signal at "-" and routes the delivery expensive. A pipeline discards
+  # its signal at "-" and routes the delivery expensive through the signal tier
+  # below, which is the tier that would otherwise have read it. A pipeline discards
   # git's exit status and `|| true` cannot tell "git failed and produced
   # nothing" from "nothing matched", so a broken diff driver on one path used to
   # resolve the whole delivery's complexity to 0 - the cheapest value there is -
@@ -380,6 +384,14 @@ cmd_decide() {
     # measure, and it treats that emptiness as harmless. ABSENCE OF SIGNAL IS
     # NOT SIGNAL OF ABSENCE. A mode change never reaches the cheap lane.
     #
+    # NEVER MEANS BY NO ROUTE, which is why mode_disqualifies below is read by
+    # the CLASS tier and not only here. Written as a tier-3 signal alone, the
+    # rule above was false the moment a class was claimed: a demonstrated
+    # docs-only answers first and never looks at the count, so `chmod +x
+    # README.md` shipped labelled documentation with mode=1 in the same row.
+    # A path's NAME is all docs-only proves, and a name says nothing about the
+    # entry's mode, so the class cannot stand in for this check.
+    #
     # The raw diff carries the modes the numstat line cannot, one
     # ":<src> <dst> <srcsha> <dstsha> <status>" record per path. A side that
     # does not exist is 000000, so an addition and a deletion are not mode
@@ -404,6 +416,11 @@ cmd_decide() {
       unreadable=1
     fi
   fi
+  mode_disqualifies=0
+  case "$mode_changes" in
+    -|0) ;;
+    *) mode_disqualifies=1 ;;
+  esac
   # The tree that was actually read, resolved physically so two spellings of one
   # tree record identically. --repo and --project are independent inputs, so a
   # --repo pointing at the wrong clone produced a decision byte-indistinguishable
@@ -450,7 +467,7 @@ cmd_decide() {
     lane=no-mistakes
     reason="critical-surface"
     note=$NOTE
-  elif [ -n "$CLASS" ]; then
+  elif [ -n "$CLASS" ] && [ "$mode_disqualifies" -eq 0 ]; then
     note=$NOTE
     class_evaluated=$class_record
     if [ "$evidence" != demonstrated ]; then

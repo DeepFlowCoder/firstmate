@@ -619,16 +619,35 @@ test_a_revert_that_leaves_a_mode_change_is_not_clean() {
   assert_contains "$out" "reason=class-not-demonstrated" \
     "the surviving mode change was not reported as undemonstrated"
 
-  # The control: undoing the mode too really is that commit undone.
+  # Undoing the mode too really is that commit undone, but restoring a mode is
+  # itself a mode change in this range, and a mode change disqualifies the cheap
+  # lane by every route. So it is still refused - for the OTHER reason, which is
+  # what separates a disqualified range from a failed demonstration.
   chmod 644 "$repo/scripts/deploy.sh"
   head=$(commit_all "$repo" restore-mode-too)
   out=$(run_lane "$home" decide mode-a2 --project proj --repo "$repo" \
     --range "$s_head..$head" --class clean-revert --revert-of "$s_head")
-  assert_contains "$(first_line "$out")" "lane=direct-PR" \
-    "a revert that restored content and mode did not demonstrate"
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a range carrying a mode change reached the cheap lane as a clean revert"
+  assert_contains "$out" "reason=signals:mode" \
+    "the refusal was attributed to the demonstration rather than to the mode change"
   [ "$(git -C "$repo" ls-tree "$head" -- scripts/deploy.sh | awk '{print $1}')" = \
     "$(git -C "$repo" ls-tree "$parent" -- scripts/deploy.sh | awk '{print $1}')" ] \
     || fail "the control did not restore the parent's mode"
+
+  # The control that keeps the first case from passing vacuously: the same claim
+  # over the same repo still demonstrates when no mode moved in the range, so
+  # what refused it above was the mode and not the fixture.
+  printf 'value = 3\n' > "$repo/src/app.py"
+  s_head=$(commit_all "$repo" content-only-edit)
+  printf 'value = 1\n' > "$repo/src/app.py"
+  head=$(commit_all "$repo" undo-content-only-edit)
+  out=$(run_lane "$home" decide mode-a3 --project proj --repo "$repo" \
+    --range "$s_head..$head" --class clean-revert --revert-of "$s_head")
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a content-only revert carrying no mode change lost its cheap route"
+  assert_contains "$out" "reason=standard-class" \
+    "the content-only revert was not routed on its class"
 
   pass "lane: a revert that leaves a file's mode changed is not a clean revert"
 }
@@ -1319,6 +1338,77 @@ EOF
   pass "lane: a mode change never reaches the cheap lane"
 }
 
+# "Never" has to mean by no route. The rule shipped as a tier-3 signal only, and
+# the class tier answers before tier 3 is ever read, so a mode flip on a prose
+# path reached the cheap lane labelled documentation. docs-only proves a path's
+# NAME, and a name says nothing about the entry's mode.
+test_a_class_claim_does_not_carry_a_mode_change_to_the_cheap_lane() {
+  local rec repo base home head out sha
+
+  rec=$(make_repo modeclass)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home modeclass)
+
+  printf '# project\n' > "$repo/README.md"
+  base=$(commit_all "$repo" seed-prose)
+
+  chmod +x "$repo/README.md"
+  head=$(commit_all "$repo" make-prose-executable)
+  out=$(run_lane "$home" decide modeclass-a1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a documentation claim carried a mode change to the cheap lane"
+  assert_contains "$out" "reason=signals:mode" \
+    "the routing was not attributed to the mode change"
+  assert_contains "$out" "class: -" \
+    "the record evaluated a class claim the decision never reached"
+
+  # A prose path swapped for a symlink passes every name test docs-only applies,
+  # which is why the class cannot stand in for this check.
+  base=$head
+  rm "$repo/README.md"
+  ln -s ../etc/passwd "$repo/README.md"
+  head=$(commit_all "$repo" swap-prose-for-symlink)
+  out=$(run_lane "$home" decide modeclass-a2 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a prose path became a symlink on the cheap lane, labelled documentation"
+  assert_contains "$out" "reason=signals:mode" \
+    "the file-type swap on a prose path was not attributed to the mode change"
+
+  # A clean-revert claim over a mode change is refused for the same reason, on
+  # the route that would otherwise have demonstrated.
+  base=$head
+  rm "$repo/README.md"
+  printf '# project\n' > "$repo/README.md"
+  sha=$(commit_all "$repo" restore-prose)
+  out=$(run_lane "$home" decide modeclass-a3 --project proj --repo "$repo" \
+    --range "$base..$sha" --class clean-revert --revert-of "$sha")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a revert claim carried a mode change to the cheap lane"
+  assert_contains "$out" "reason=signals:mode" \
+    "the revert claim's mode change was not what routed it"
+
+  # The control: the same class claim over the same repo with no mode change in
+  # the range still reaches the cheap lane, so the cases above are the mode and
+  # not the claim.
+  base=$sha
+  printf 'more\n' >> "$repo/docs/guide.md"
+  head=$(commit_all "$repo" prose-edit)
+  out=$(run_lane "$home" decide modeclass-b1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a documentation change with no mode change lost its cheap route"
+  assert_contains "$out" "reason=standard-class" \
+    "the documentation change was not routed on its class"
+  assert_contains "$out" "class: docs-only" \
+    "the evaluated class claim did not reach the record"
+
+  pass "lane: no class claim carries a mode change to the cheap lane"
+}
+
 # --- 3. declared evidence can only ever cost more ---------------------------
 
 test_declared_evidence_never_reaches_the_cheap_lane() {
@@ -1897,6 +1987,7 @@ test_a_non_ascii_path_is_read_as_itself
 test_a_path_git_escapes_is_matched_as_itself
 test_a_binary_change_is_unmeasurable_rather_than_small
 test_a_mode_change_never_reaches_the_cheap_lane
+test_a_class_claim_does_not_carry_a_mode_change_to_the_cheap_lane
 test_documents_that_govern_an_agent_are_not_ordinary_documentation
 test_authors_is_a_governing_document_not_an_authentication_surface
 test_declared_evidence_never_reaches_the_cheap_lane
