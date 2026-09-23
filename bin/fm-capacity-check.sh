@@ -39,7 +39,12 @@
 #            reported before. This is the session-start surface: a NEW session is
 #            a new observer, and a fleet that was already down to one lane before
 #            it opened is exactly what that session needs told. It also states an
-#            unmeasurable snapshot, so a guard that has gone blind says so.
+#            unmeasurable snapshot, so a guard that has gone blind says so - and
+#            going blind only SAYS so: it never retracts the shape a successful
+#            read recorded, because a read that failed establishes nothing about
+#            the lanes. That is the same principle the stand-in guards rest on,
+#            and clearing here is what used to wake the captain with the
+#            identical sentence once per session.
 #   check    Print the verdict only when it has CHANGED since the last report.
 #            This is the watcher surface, and the repeat suppression is the whole
 #            reason it is separate: a warning that fires on every poll is one the
@@ -713,10 +718,24 @@ action_report() {
     [ -z "$BALANCE_PROBLEM" ] || printf 'balance unknown - %s\n' "$BALANCE_PROBLEM"
     [ -z "$MIN_LANES_PROBLEM" ] || printf '%s\n' "$MIN_LANES_PROBLEM"
     [ -z "$MARGIN_PROBLEM" ] || printf '%s\n' "$MARGIN_PROBLEM"
-    # A failed read leaves no verdict to record. Clear any stale digest so the
-    # watcher's next successful check is not suppressed against a shape this
-    # session never actually reported.
-    record_clear
+    # A failed read leaves no verdict to record - and no standing to RETRACT
+    # one either. This is the same principle the two guards below rest on,
+    # reached from the third direction: a read that never happened establishes
+    # nothing about the lanes, so it cannot be what deletes a shape a
+    # SUCCESSFUL read wrote. Clearing here deleted exactly that, and the watcher
+    # then re-reported the unchanged degraded fleet - so with a quota-axi that
+    # fails intermittently, the captain was woken by the identical sentence once
+    # per session, forever.
+    #
+    # Nothing is lost by keeping it, because the record holds a SHAPE and not a
+    # moment. If the fleet changed while this session was blind, the next good
+    # read produces a different digest and warns anyway; if it did not change,
+    # suppression is the correct answer. A shape digest cannot suppress a
+    # changed shape - only an identical one, which is its whole job.
+    #
+    # Going blind is still announced: the `capacity unknown` line above is
+    # printed either way. Saying "I could not look" is right; throwing away the
+    # last thing that was known is not.
     return 0
   fi
   if [ -n "$VERDICT_LINE" ]; then

@@ -719,20 +719,74 @@ out=$(run_guard "$home" 2 "$home/snap.json" check)
 [ -z "$out" ] || fail "the watcher must not repeat what session start just reported, got: $out"
 pass "session start reports an already-suppressed shape and does not double up with the watcher"
 
-# A failed session-start report must clear the record, not preserve it: if the
-# fleet stays degraded across the session boundary and the next report's read
-# fails, the stale digest must not suppress the watcher's next successful check.
-home=$(fresh_home report-failure-clears)
+# A failed session-start report must PRESERVE the record, not clear it.
+#
+# WHAT STOOD HERE BEFORE, AND WHY IT FELL. This case used to assert the
+# opposite - that a failed report clears the record so the watcher re-reports -
+# and its stated fear was that "the stale digest must not suppress the watcher's
+# next successful check". That fear does not survive examination, which is why
+# it could be overturned rather than merely traded away: the record holds a
+# SHAPE, not a moment. If the fleet changed while the guard was blind, the next
+# good read produces a different digest and warns anyway. If it did not change,
+# suppressing is the correct answer. A shape digest cannot suppress a changed
+# shape; it can only suppress an identical one, which is exactly its job. So
+# what the old case meant to protect - that the guard never goes quiet about
+# something that moved while it could not look - is kept here without deleting
+# anything.
+#
+# What the old assertion cost was measured on the live fleet: a quota-axi that
+# fails intermittently made every session start delete a record a SUCCESSFUL
+# read had written, and the watcher then re-reported the unchanged degraded
+# fleet - the captain woken by the identical sentence once per session. It is
+# also the third instance of one principle this file already enforces twice
+# (see the stand-in cases below): a read that never happened establishes
+# nothing about the lanes and must not retract a lane shape.
+#
+# Do not restore the old assertion without answering the paragraph above.
+home=$(fresh_home report-failure-preserves)
 snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
 run_guard "$home" 2 "$home/snap.json" report >/dev/null
 printf 'not json at all\n' >"$home/snap.json"
 out=$(run_guard "$home" 2 "$home/snap.json" report)
+# Going blind is still announced. That half of the old case was right and is
+# kept: saying "I could not look" is correct; throwing away the last thing that
+# was known is not.
 assert_contains "$out" "capacity unknown" "a failed report must still say the guard went blind"
-assert_absent "$home/state/.capacity" "a failed report must clear the stale record"
+assert_present "$home/state/.capacity" "a failed read must not retract a shape a successful read established"
 snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
 out=$(run_guard "$home" 2 "$home/snap.json" check)
-assert_contains "$out" "1 of 2 provider lanes dispatchable" "the watcher must re-report after a failed report cleared the record"
-pass "a failed report clears the record so the watcher re-reports"
+[ -z "$out" ] || fail "an unchanged degraded fleet must not be re-reported after a blind session start, got: $out"
+pass "a failed report keeps the record instead of making the watcher repeat itself"
+
+# And the half the old case was protecting, proven directly rather than assumed:
+# a fleet that CHANGES while the guard is blind is still reported. This is what
+# makes the preservation above safe instead of merely quieter.
+home=$(fresh_home report-failure-still-sees-change)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+run_guard "$home" 2 "$home/snap.json" report >/dev/null
+printf 'not json at all\n' >"$home/snap.json"
+run_guard "$home" 2 "$home/snap.json" report >/dev/null
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(credential_provider kimi)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+assert_contains "$out" "0 of 2 provider lanes dispatchable" "a shape that moved while the guard was blind must still be reported"
+pass "preserving the record does not hide a fleet that changed during the blindness"
+
+# The defect itself, as the captain measured it on the live fleet: three
+# consecutive polls of one unchanged degraded shape with a blind session start
+# in the middle. The captain must be woken ONCE.
+home=$(fresh_home blind-session-start-no-repeat)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+assert_contains "$out" "1 of 2 provider lanes dispatchable" "the first degraded poll must report"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+[ -z "$out" ] || fail "the second poll of an unchanged shape must be silent, got: $out"
+# The blind session start lands between the polls, exactly as it did live.
+printf 'not json at all\n' >"$home/snap.json"
+run_guard "$home" 2 "$home/snap.json" report >/dev/null
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+[ -z "$out" ] || fail "a blind session start must not make the third poll repeat the same shape, got: $out"
+pass "three polls of one unchanged degraded shape wake the captain once, blind session start included"
 
 # === a record that cannot be written ========================================
 #
