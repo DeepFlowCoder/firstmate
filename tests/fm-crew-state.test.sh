@@ -31,6 +31,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-classify-lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-pr-lib.sh"
 
 CREW_STATE="$ROOT/bin/fm-crew-state.sh"
 TMP_ROOT=$(fm_test_tmproot fm-crew-state)
@@ -221,6 +223,19 @@ arm_idle_record() {  # <state-dir> <id>
     --source claude-hook --event stop
 }
 
+# The durable local record of a merge this home already confirmed - the one
+# thing that can establish a landing without asking the forge. Production writes
+# it through bin/fm-merge-outcome-lib.sh, after bin/fm-pr-merge.sh performs a
+# merge or the watcher's poll observes one, and these cases use that same writer
+# rather than a hand-made file: a marker whose shape nothing in production
+# writes would leave every case below passing against a fiction.
+record_confirmed_merge() {  # <state-dir> <id> <pr-url>
+  fm_pr_url_parse "$3" || fail "fixture: unparseable pull request URL $3"
+  fm_pr_poll_merge_mark_notified "$1" "$2" \
+    "$FM_PR_PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" \
+    || fail "fixture: could not record the confirmed merge for $2"
+}
+
 # Clear the fake-driver vars and (re-)mark them exported, so the per-test plain
 # assignments below stay exported into the fakes without an `export VAR=$(...)`
 # command-substitution assignment (SC2155).
@@ -362,9 +377,41 @@ outcome: passed
 EOF
 }
 
+# The same merge-claiming outcome whose recorded `pr:` is on a host neither the
+# GitHub nor the GitLab shape accepts, so the pull request's identity cannot be
+# reconstructed by anything - forge read or local record alike.
+run_passed_with_unreadable_pr() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://ghe.example.com/o/r/pull/5"
+  findings: none
+outcome: passed
+EOF
+}
+
+# The same merge-claiming outcome with no `pr:` recorded at all, which is what a
+# run that never reached the pull request step leaves behind.
+run_passed_without_pr() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  findings: none
+outcome: passed
+EOF
+}
+
 # A run that finished green through the checks without claiming the pull request
-# went anywhere. It records a `pr:` like any other, which is the point: a recorded
-# pull request is not a merge claim, so nothing here needs verifying.
+# went anywhere. It records a `pr:` like any other, which is the point twice over:
+# a recorded pull request is not a merge claim, so no forge is ever asked to
+# refute one - and it is why the coarse runs-list arm, which sees that same row,
+# cannot tell this run from one that did claim a merge.
 run_checks_passed() {  # <branch>
   cat <<EOF
 run:
@@ -1445,20 +1492,22 @@ test_dead_window_still_reports_terminal_run_step() {
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-dead-done)"
   FM_FAKE_RUNS_LIST="  completed  fm/feat-dead-done ${short}  2026-08-29 07:45"
   FM_FAKE_TMUX_MISSING=1   # the crew's window has closed
+  # Landed work on the DEFAULT path: this home confirmed and recorded the merge,
+  # so `done` is established from the record rather than from the run's claim,
+  # and no forge is asked for it.
+  record_confirmed_merge "$d/state" feat-dead-done https://github.com/o/r/pull/1
   local out; out=$(run_crew_state "$d" feat-dead-done)
-  # The DEFAULT path, which every timer-driven caller takes: the run's own verdict
-  # is established and reported, and the merge it claims is left unresolved with
-  # its reason. What the closed pane must not change is WHO answers - the finished
-  # run still reports itself here rather than falling through to the no-run
-  # fallback, where a dead target would have called the crew gone.
+  # What the closed pane must not change is WHO answers - the finished run still
+  # reports itself here rather than falling through to the no-run fallback, where
+  # a dead target would have called the crew gone.
   assert_contains "$out" "source: run-step" "a finished run answers for itself, pane or no pane"
   assert_not_contains "$out" "source: none" "a finished run never falls to the no-run fallback"
   assert_not_contains "$out" "backend target gone" "a closed pane is not the answer for a finished run"
   assert_contains "$out" "state: done" "the established run verdict is reported"
   assert_not_contains "$out" "merged/closed" "and no merge is inferred from it"
   assert_contains "$out" "run passed" "the run's own claim is still shown"
-  assert_contains "$out" "pull request state not resolved: this read asks no forge" \
-    "with the merge declined and the reason named"
+  assert_contains "$out" "own record of that confirmed merge" \
+    "with the merge established by the record instead of the claim"
   pass "closed pane still reports a terminal run-step"
 }
 
@@ -2032,6 +2081,10 @@ outcome: passed"
   # shape a row can have once the pipeline has pushed: a sha this worktree cannot
   # resolve at all.
   FM_FAKE_RUNS_LIST="  completed  fm/feat-moved-d f0f0f0f0  2026-09-12 17:12"
+  # This case is about head binding, not about the merge the `passed` outcome
+  # claims, so the merge is settled the way a landed crew settles it on this
+  # path: from this home's own record of the confirmed merge.
+  record_confirmed_merge "$d/state" moved-d https://github.com/o/r/pull/44
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" moved-d
   out=$(run_crew_state "$d" moved-d)
@@ -2879,18 +2932,265 @@ test_default_read_asks_no_forge_and_never_claims_the_merge() {
   arm_idle_record "$d/state" defaultpr
   out=$(run_crew_state "$d" defaultpr)
   [ ! -s "$calls" ] || fail "the default read called gh: $(cat "$calls")"
-  # Only the unresolved PART degrades. The run finished and the runs list
-  # corroborates it, so that verdict is established and is reported; what nobody
-  # asked about is the merge, and that is what the line declines to state. The
-  # fleet snapshot and the inactive-crew scan both key on this `done`, so
-  # discarding it over an adjacent unknown loses a landed crew twice over.
+  # Nothing here established the merge: no forge was asked and this home holds no
+  # record of having confirmed one. `done` is what authorises cleanup, so
+  # asserting it over an unchecked delivery is the optimistic half of an answer
+  # this read does not have - and the half that closes a ticket over work that
+  # never arrived. The verdict itself is not thrown away: the run's own words stay
+  # on the line, and the reason says what was not read and how it could be.
   assert_not_contains "$out" "merged/closed" "a merge is still never inferred from the outcome"
-  assert_contains "$out" "state: done" "an established run verdict is still reported"
-  assert_contains "$out" "source: run-step" "and it is the run-step that reports it"
+  assert_not_contains "$out" "state: done" "an unverified merge is not finished work"
+  assert_contains "$out" "state: unknown" "the unestablished merge is reported as unknown"
+  assert_contains "$out" "source: run-step" "and it is still the run-step that reports it"
   assert_contains "$out" "run passed" "the run's own claim is shown"
   assert_contains "$out" "pull request state not resolved" "the merge is declined, not guessed"
   assert_contains "$out" "FM_CREW_STATE_RESOLVE_PR" "and the reason names what would resolve it"
-  pass "the default read asks no forge and reports the run without the merge"
+  assert_contains "$out" "whether the work landed is unknown" "in the reader's own terms"
+  pass "the default read asks no forge and never reports an unverified merge as done"
+}
+
+# THE CASE THIS PATH EXISTS FOR. Same unattended read, and in the world outside
+# it the pull request was CLOSED WITHOUT MERGING - somebody abandoned, replaced,
+# or discarded the work. The periodic read is forbidden to ask the forge, so it
+# cannot know that; what it must not do is say the opposite. Before this, `done`
+# came through here unchanged, which is a ticket closed over work that never
+# landed and nobody noticing until someone goes looking for the code.
+# The forge stub WOULD answer `closed`, so the case also proves the honest
+# reading is reached without asking it.
+test_a_closed_unmerged_pull_request_is_never_done_on_the_unasked_path() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case default-closed-unmerged)
+  make_repo_on_branch "$d/wt" fm/feat-defaultclosed
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/defaultclosed.meta" "window=fm:fm-defaultclosed" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-defaultclosed)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-defaultclosed ${short}  2026-08-30 07:45"
+  FM_FAKE_GH_PR_STATE=CLOSED
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" defaultclosed
+  out=$(run_crew_state "$d" defaultclosed)
+  [ ! -s "$calls" ] || fail "the periodic read called gh: $(cat "$calls")"
+  assert_not_contains "$out" "state: done" "abandoned work is never reported as landed"
+  assert_contains "$out" "state: unknown" "the unestablished merge is reported as unknown"
+  assert_contains "$out" "pull request state not resolved" "and the line says what it could not read"
+  pass "a pull request closed without merging is never done on the unasked path"
+}
+
+# The other half, and what keeps the timer-driven callers whole: work that really
+# landed still reaches `done` without a forge call, because this home recorded
+# the merge when it confirmed it. That record is evidence, not the pipeline's own
+# claim read back - which is the whole difference between this and the reading it
+# replaced.
+test_a_locally_recorded_merge_is_done_without_asking_the_forge() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case default-recorded-merge)
+  make_repo_on_branch "$d/wt" fm/feat-recordedmerge
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/recordedmerge.meta" "window=fm:fm-recordedmerge" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-recordedmerge)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-recordedmerge ${short}  2026-08-30 07:45"
+  # The pull request run_passed reports, merged and recorded as such.
+  record_confirmed_merge "$d/state" recordedmerge https://github.com/o/r/pull/1
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" recordedmerge
+  out=$(run_crew_state "$d" recordedmerge)
+  [ ! -s "$calls" ] || fail "the periodic read called gh: $(cat "$calls")"
+  assert_contains "$out" "state: done" "a merge this home confirmed is landed work"
+  assert_contains "$out" "source: run-step" "the verdict is still the run-step's own line"
+  assert_contains "$out" "own record of that confirmed merge" \
+    "and the line names the record as what established it"
+  assert_not_contains "$out" "not resolved" "nothing was left unresolved, because the record settled it"
+  pass "a locally recorded merge is done without asking the forge"
+}
+
+# The record is identity-bound, and that binding is load-bearing: a task re-armed
+# on a SECOND pull request must not inherit the first one's merge. Without the
+# comparison, every task that ever landed anything would read `done` forever,
+# which is the original defect with a longer fuse.
+test_a_merge_record_for_another_pull_request_does_not_land_this_run() {
+  reset_fakes
+  local d short out
+  d=$(new_case merge-record-other-pr)
+  make_repo_on_branch "$d/wt" fm/feat-otherpr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/otherpr.meta" "window=fm:fm-otherpr" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-otherpr)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-otherpr ${short}  2026-08-30 07:45"
+  # The run reports pull/1; the recorded merge is a DIFFERENT pull request.
+  record_confirmed_merge "$d/state" otherpr https://github.com/o/r/pull/7
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" otherpr
+  out=$(run_crew_state "$d" otherpr)
+  assert_not_contains "$out" "state: done" "another pull request's merge lands nothing here"
+  assert_contains "$out" "state: unknown" "this run's own merge is still unestablished"
+  assert_contains "$out" "pull request state not resolved" "and the line says so"
+  pass "a merge record for another pull request does not land this run"
+}
+
+# A `passed` run that recorded no pull request at all - the normal terminal shape
+# for a push target configured without one. It names no delivery, and a pull
+# request that does not exist cannot have been closed without merging, so there
+# is nothing here to verify and the run keeps its own verdict. Degrading it was
+# the earlier reading and it bought nothing: with no URL, no forge answer is
+# possible even under the opt-in and no local merge record can ever exist, so the
+# `unknown` was one NOTHING could settle - the crew surfaced to the supervisor
+# forever and bin/fm-inactive-reconcile.sh wrote no terminal record for it.
+test_a_passed_run_with_no_pull_request_keeps_its_own_verdict() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case passed-no-pr-recorded)
+  make_repo_on_branch "$d/wt" fm/feat-noprrecorded
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/noprrecorded.meta" "window=fm:fm-noprrecorded" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed_without_pr fm/feat-noprrecorded)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-noprrecorded ${short}  2026-08-30 07:45"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" noprrecorded
+  out=$(run_crew_state "$d" noprrecorded)
+  [ ! -s "$calls" ] || fail "a run naming no pull request still called gh: $(cat "$calls")"
+  assert_contains "$out" "state: done" "a run naming no delivery keeps its own verdict"
+  assert_contains "$out" "run passed" "the run's own words stay on the line"
+  assert_not_contains "$out" "pull request" "and nothing is said about one it never recorded"
+  pass "a passed run with no pull request keeps its own verdict"
+}
+
+# A `passed` run whose recorded `pr:` is on a host neither provider shape
+# accepts. Nothing can reconstruct that pull request's identity, so neither the
+# forge read nor the local merge record can settle it - and a reason naming the
+# opt-in would send the reader after a switch that would answer "no readable
+# pull request URL to resolve" and ask no forge either.
+test_an_unreadable_pull_request_url_names_itself_as_the_reason() {
+  reset_fakes
+  local d short out
+  d=$(new_case passed-unreadable-pr)
+  make_repo_on_branch "$d/wt" fm/feat-unreadablepr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unreadablepr.meta" "window=fm:fm-unreadablepr" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed_with_unreadable_pr fm/feat-unreadablepr)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-unreadablepr ${short}  2026-08-30 07:45"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" unreadablepr
+  out=$(run_crew_state "$d" unreadablepr)
+  assert_not_contains "$out" "state: done" "an unreadable pull request establishes no landing"
+  assert_contains "$out" "state: unknown" "so the reading is unknown"
+  assert_contains "$out" "cannot be read" "and the reason names the URL it could not read"
+  assert_not_contains "$out" "FM_CREW_STATE_RESOLVE_PR" \
+    "never a switch that could not have resolved it"
+  pass "an unreadable pull request URL names itself as the reason"
+}
+
+# THE COARSE ARM, which is the one a multi-crew fleet routinely takes: `axi
+# status` answers for whichever run was most recently touched, so while another
+# crew validates, this crew misses direct attribution and the runs list answers
+# for it. The list's one terminal green word is `completed`, which is what a
+# `passed` run looks like there - and the row names the pull request. Before
+# this, that row carried `done` through untouched, so the same abandoned pull
+# request read `unknown` when attribution hit and `done` when it missed.
+#
+# The decline covers the WHOLE bucket, which is this arm's declared limit rather
+# than an oversight: `completed` is also what a `checks-passed` run looks like
+# here, the row carries no run id to ask about, so a ready delivery reads
+# `unknown` on this arm too. Less informative than the full path, and not false.
+test_a_coarse_row_naming_a_pull_request_is_not_done_unverified() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case coarse-pr-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-coarseclosed
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/coarseclosed.meta" "window=fm:fm-coarseclosed" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-30 08:00
+  completed  fm/feat-coarseclosed ${short}  2026-08-30 07:45  https://github.com/o/r/pull/5
+EOF
+)"
+  # The pull request was closed WITHOUT merging, which the stub would say - and
+  # which this path must reach the honest reading without asking.
+  FM_FAKE_GH_PR_STATE=CLOSED
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" coarseclosed
+  out=$(run_crew_state "$d" coarseclosed)
+  [ ! -s "$calls" ] || fail "the coarse read called gh: $(cat "$calls")"
+  assert_not_contains "$out" "state: done" "an unverified merge is not landed work on this arm either"
+  assert_contains "$out" "state: unknown" "the unestablished merge is reported as unknown"
+  assert_contains "$out" "background run" "and the coarse reading still says where it was read"
+  assert_contains "$out" "pull request state not resolved" "with the reason it could not be settled"
+  pass "a coarse row naming a pull request is not done unverified"
+}
+
+# The other half on the same arm: work this home confirmed and recorded still
+# reaches `done` from the coarse row, with no forge call, so the fleet snapshot
+# and the inactive-crew scan keep a landed crew that missed attribution.
+test_a_coarse_row_reaches_done_from_the_local_merge_record() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case coarse-pr-recorded)
+  make_repo_on_branch "$d/wt" fm/feat-coarsemerged
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/coarsemerged.meta" "window=fm:fm-coarsemerged" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-30 08:00
+  completed  fm/feat-coarsemerged ${short}  2026-08-30 07:45  https://github.com/o/r/pull/5
+EOF
+)"
+  record_confirmed_merge "$d/state" coarsemerged https://github.com/o/r/pull/5
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" coarsemerged
+  out=$(run_crew_state "$d" coarsemerged)
+  [ ! -s "$calls" ] || fail "the coarse read called gh: $(cat "$calls")"
+  assert_contains "$out" "state: done" "a merge this home confirmed is landed work here too"
+  assert_contains "$out" "own record of that confirmed merge" \
+    "and the line names the record as what established it"
+  pass "a coarse row reaches done from the local merge record"
+}
+
+# The boundary of that decline, and it is the ROW rather than the run word that
+# draws it: a coarse row naming no pull request puts no delivery on the line, so
+# there is nothing to decline and the verdict is untouched. It is emphatically
+# NOT "the `checks-passed` case" - a `checks-passed` run records a `pr:` like any
+# other and its row names it, which is precisely why the case above cannot be
+# narrowed by run word on this arm.
+test_a_coarse_row_without_a_pull_request_has_no_delivery_to_decline() {
+  reset_fakes
+  local d short out
+  d=$(new_case coarse-no-pr)
+  make_repo_on_branch "$d/wt" fm/feat-coarsenopr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/coarsenopr.meta" "window=fm:fm-coarsenopr" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-30 08:00
+  completed  fm/feat-coarsenopr ${short}  2026-08-30 07:45
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" coarsenopr
+  out=$(run_crew_state "$d" coarsenopr)
+  assert_contains "$out" "state: done" "a row naming no delivery keeps its verdict"
+  assert_not_contains "$out" "pull request state not resolved" \
+    "and says nothing about a pull request it never named"
+  pass "a coarse row without a pull request has no delivery to decline"
 }
 
 # Instance 3, closed. The measured 2026-09-09 reading: `axi status` keeps
@@ -3421,14 +3721,19 @@ test_open_forge_still_surfaces_a_contradicting_record() {
   pass "a forge-refuted merge claim does not drop a contradicting record"
 }
 
-# Only `passed` claims a merge, so only `passed` owes an answer about one. A run
-# that finished its checks says nothing about where the pull request went, so it
-# reports done, asks nobody, and adds no pull-request clause to a line that made
-# no pull-request claim.
-test_checks_passed_reports_done_without_a_pull_request_claim() {
+# Only `passed` claims a merge, so only `passed` owes an answer about one, and a
+# run that finished its checks is never degraded for the lack of one and never
+# spends a forge call: what a run did not assert, the forge is not asked to
+# refute. What the line DOES owe the reader is what THIS HOME knows about the
+# delivery, stated as the local record and nothing more. The forge stub here
+# would answer MERGED, which is the point: a pull request a human merges on the
+# web leaves no trace in this home, so a line that said "awaiting its merge" or
+# "not landed" would be asserting a forge state nobody read - the same defect as
+# the optimistic `done`, pointing the other way.
+test_checks_passed_reports_what_the_local_record_holds() {
   reset_fakes
   local d short out calls
-  d=$(new_case checks-passed-no-claim)
+  d=$(new_case checks-passed-ready)
   make_repo_on_branch "$d/wt" fm/feat-checkspassed
   short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
@@ -3442,11 +3747,46 @@ test_checks_passed_reports_done_without_a_pull_request_claim() {
   FM_FAKE_GH_PR_STATE=MERGED
   out=$(run_crew_state "$d" checkspassed)
   [ ! -s "$calls" ] || fail "a run that claims no merge still called gh: $(cat "$calls")"
+  # `done` stays the word: the next step belongs to a human, which is what the
+  # absorb class means, and changing it would ripple through the watcher, the
+  # inactive-crew scan and the bearings snapshot for a crew that is healthy.
   assert_contains "$out" "state: done" "a finished checks run is done on its own word"
   assert_contains "$out" "source: run-step" "the verdict is still run-step sourced"
+  assert_contains "$out" "green with its checks passed" "the line reports what the run left behind"
+  assert_contains "$out" "no merge of it is recorded in this home" \
+    "and what this home holds, which is the only thing it read"
+  assert_not_contains "$out" "awaiting" "never a claim about where the pull request now is"
+  assert_not_contains "$out" "not landed" "nor about whether it landed, which nobody asked the forge"
   assert_not_contains "$out" "on the forge" "a line that claims no merge gains no forge clause"
   assert_not_contains "$out" "not resolved" "nothing was left unresolved, because nothing was claimed"
-  pass "a checks-passed run reports done without a pull request claim"
+  pass "a checks-passed run reports what the local record holds"
+}
+
+# The same run after the merge this home performed and recorded. Nothing asked
+# the forge here either - the record is a local file - and the line now names the
+# landing this home witnessed, which is the difference the reader needs and the
+# only one either wording is entitled to draw.
+test_checks_passed_names_the_record_once_the_merge_is_confirmed() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case checks-passed-recorded)
+  make_repo_on_branch "$d/wt" fm/feat-checksmerged
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/checksmerged.meta" "window=fm:fm-checksmerged" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_checks_passed fm/feat-checksmerged)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-checksmerged ${short}  2026-08-30 07:45"
+  # The pull request run_checks_passed reports, merged and recorded as such.
+  record_confirmed_merge "$d/state" checksmerged https://github.com/o/r/pull/1
+  out=$(run_crew_state "$d" checksmerged)
+  [ ! -s "$calls" ] || fail "the record was settled by a forge call: $(cat "$calls")"
+  assert_contains "$out" "state: done" "a recorded merge is landed work"
+  assert_contains "$out" "own record of that confirmed merge" \
+    "and the line names the record as what established it"
+  assert_not_contains "$out" "no merge of it is recorded" "the record exists and the line says so instead"
+  pass "a checks-passed run names the record once the merge is confirmed"
 }
 
 # INSTANCE 2 (measured 2026-08-30, later). On baby-menu-widget-cuota the line was
@@ -3770,8 +4110,17 @@ test_unknown_attribution_without_a_refusal_claims_none
 test_cancelled_run_does_not_claim_to_contradict_a_blocker
 test_unmodelled_status_keeps_its_own_unknown
 test_default_read_asks_no_forge_and_never_claims_the_merge
+test_a_closed_unmerged_pull_request_is_never_done_on_the_unasked_path
+test_a_locally_recorded_merge_is_done_without_asking_the_forge
+test_a_merge_record_for_another_pull_request_does_not_land_this_run
+test_a_passed_run_with_no_pull_request_keeps_its_own_verdict
+test_an_unreadable_pull_request_url_names_itself_as_the_reason
+test_a_coarse_row_naming_a_pull_request_is_not_done_unverified
+test_a_coarse_row_reaches_done_from_the_local_merge_record
+test_a_coarse_row_without_a_pull_request_has_no_delivery_to_decline
 test_open_forge_still_surfaces_a_contradicting_record
-test_checks_passed_reports_done_without_a_pull_request_claim
+test_checks_passed_reports_what_the_local_record_holds
+test_checks_passed_names_the_record_once_the_merge_is_confirmed
 test_active_reading_degrades_to_unknown_when_the_list_is_silent
 test_an_answered_list_with_no_row_names_the_row_limit_not_the_budget
 test_an_unparseable_listing_is_silence_not_a_row_limit
