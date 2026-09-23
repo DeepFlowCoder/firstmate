@@ -58,26 +58,49 @@ Available Commands:
   sync        Check or apply guarded current-branch synchronization
 ```
 
-A listing of names says nothing about flags, so the sweep below asks every one of those commands for `--intent`:
+A listing of names says nothing about flags, and neither listing reaches the subcommands that `completion`, `daemon` and `eval` have of their own.
+So the sweep below walks the whole command tree from the root and asks every node for `--intent`:
 
 ```sh
-for c in attach axi ci-workflow completion daemon doctor eject eval help init rerun runs stats status sync update; do
-  printf '%s %s\n' "$c" "$(no-mistakes help $c | grep -c -- '--intent')"
-done
-for c in abort logs respond run status sync; do
-  printf 'axi %s %s\n' "$c" "$(no-mistakes help axi $c | grep -c -- '--intent')"
-done
+walk() {
+  printf '%s %s\n' "${*:-no-mistakes}" "$(no-mistakes help "$@" | grep -c -- '--intent')"
+  no-mistakes help "$@" | sed -n '/Available Commands:/,/^$/p' | awk 'NR>1 && NF {print $1}' |
+    while read -r sub; do walk "$@" "$sub"; done
+}
+walk
 ```
 
 ```
+no-mistakes 0
 attach 0
 axi 0
+axi abort 0
+axi logs 0
+axi respond 0
+axi run 2
+axi status 0
+axi sync 0
 ci-workflow 0
 completion 0
+completion bash 0
+completion fish 0
+completion powershell 0
+completion zsh 0
 daemon 0
+daemon restart 0
+daemon start 0
+daemon status 0
+daemon stop 0
 doctor 0
 eject 0
 eval 0
+eval capture 0
+eval miss 0
+eval miss ingest 0
+eval relabel 0
+eval report 0
+eval run 0
+eval sets 0
 help 0
 init 0
 rerun 2
@@ -86,15 +109,9 @@ stats 0
 status 0
 sync 0
 update 0
-axi abort 0
-axi logs 0
-axi respond 0
-axi run 2
-axi status 0
-axi sync 0
 ```
 
-`rerun` and `axi run` are the only non-zero entries, and both of them start a run.
+Across all 38 nodes, `rerun` and `axi run` are the only non-zero entries, and both of them start a run.
 
 ```sh
 no-mistakes axi run --help | grep -- '--intent'
@@ -244,20 +261,29 @@ That contrast is what the decision policy rests on: after the intent freezes, th
 ## Only a fix round can write it down
 
 Writing to the branch is not available on every gate answer.
-The response takes one of three actions, and the instructions a fix round would carry apply to `fix` alone:
+Here is the response command's whole surface, not an excerpt of it:
 
 ```sh
-no-mistakes axi respond --help | grep -E -- '--action|--instructions'
+no-mistakes axi respond --help | sed -n '/^Usage:/,$p'
 ```
 
 ```
+Usage:
+  no-mistakes axi respond [flags]
+
+Flags:
       --action string         approve | fix | skip (required)
       --add-finding string    JSON finding object to add and fix (with --action fix)
       --findings string       comma-separated finding IDs to fix (with --action fix)
+  -h, --help                  help for respond
       --instructions string   guidance applied to the selected findings (with --action fix)
+      --step string           step to respond to (default: the step awaiting approval)
+      --wait duration         maximum time to block driving this run before returning so the caller can reattach (default 8m0s)
+  -y, --yes                   auto-resolve subsequent eligible gates until a decision point or outcome; protected-path refusals require an explicit response
 ```
 
-So an `approve` or `skip` answer retires the constraint only inside that one response, and nothing lands on the branch for the next round to re-derive.
+There is no positional argument and no free-text flag other than `--instructions`, which the help marks "(with --action fix)".
+So an `approve` or `skip` answer carries no text whatsoever: on those paths the retirement is recorded nowhere, neither on the branch nor inside the response.
 That is why the decision policy is conditional on whether the retraction is load-bearing: a fix round is the only vehicle that writes it down, and a round spends review, test and CI, so it is worth spending only when a later round would otherwise re-derive the original wording.
 
 ## Cost
