@@ -1225,10 +1225,13 @@ families_for_changed_path() {
       # Shared no-mistakes run-attribution primitives, sourced by three
       # consumers: bin/fm-crew-state.sh (pure-contract-unit),
       # bin/fm-teardown.sh's pre-teardown run abort (pr-forge), and
-      # bin/fm-inactive-reconcile.sh's cap-cut wake (watcher-wake-lock), which
-      # reads the cut phrase back out of a crew-state line through the same
-      # literal that writes it - so a rewording here has to re-select the suite
-      # that proves the supervisor is still woken.
+      # bin/fm-inactive-reconcile.sh's cap-cut wake (watcher-wake-lock).
+      # The third family is selected for the same reason as the other two - the
+      # consumer depends on this library, so a change here has to run the suite
+      # that covers it - and that suite is the only coverage the wake has: a
+      # change to the cut predicate's field parsing, or to where the phrase sits
+      # in the detail it reads, leaves the supervisor unwoken with every
+      # crew-state assertion still green.
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
       printf '%s\n' watcher-wake-lock
