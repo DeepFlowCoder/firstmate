@@ -1273,12 +1273,13 @@ EOF
 # of fact can prove its first reading wrong - so the report says only that the
 # two records disagree and names both reconciliation directions above.
 #
-# Cost stays bounded on a healthy home: three `tasks-axi list` calls, one key
-# scan per status log, the precise per-key fold only for a key that already
-# names a still-open task, and one `show` per row that is either held or still
-# retained as Done - never one per row in the book. If tasks-axi is unavailable
-# or its listing cannot be parsed, the guard cannot read the structured record
-# and prints nothing.
+# Cost stays bounded on a healthy home: three `tasks-axi list` calls, one of
+# them asking for the single extra `hold_kind` column, one key scan per status
+# log, the precise per-key fold only for a key that already names a still-open
+# task, and one `show` per open row the listing already showed to carry the
+# captain's mark plus one per row still retained as Done - never one per row in
+# the book. If tasks-axi is unavailable or its listing cannot be parsed, the
+# guard cannot read the structured record and prints nothing.
 #
 # Output: one `<class>\t<task-id>\t<origin>\t<key>\t<title>` line per
 # divergence, class by class; `origin` and `key` are empty for the two shapes
@@ -1298,19 +1299,49 @@ open_task_ids() {
   '
 }
 
-# Every task id tasks-axi reports for one state filter, one per line. Only the
-# leading slug field is read, for the same reason open_task_ids reads two: a
-# title carrying a comma or a quote cannot shift it. The filter is what keeps
-# the two record-coherence scans below bounded - `done` to the rows retention
-# still keeps in the backlog, `held` to the calls actually carrying a hold -
-# rather than opening every row in the book.
-task_ids_in_state() {  # <state>
-  tasks_axi list --state "$1" 2>/dev/null | awk '
+# Every task id tasks-axi reports as Done, one per line. Only the leading slug
+# field is read, for the same reason open_task_ids reads two: a title carrying a
+# comma or a quote cannot shift it. The filter is what keeps the closed-call scan
+# below bounded to the rows retention still keeps in the backlog, rather than
+# opening every row in the book.
+done_task_ids() {
+  tasks_axi list --state "done" 2>/dev/null | awk '
     /^  [A-Za-z0-9._-]+,/ {
       id = $0
       sub(/^ +/, "", id)
       sub(/,.*$/, "", id)
       print id
+    }
+  '
+}
+
+# Every still-open task id whose row carries the captain's mark, one per line,
+# from the tool's own listing rather than a second reader of the backlog file.
+# Exactly ONE extra column is requested, which makes the row
+# `id,state,kind,repo,title,hold_kind`: `id` and `state` are slugs that PRECEDE
+# the free-text title, and `hold_kind` is the LAST comma-separated token, itself
+# a slug (or the quoted empty marker) that FOLLOWS it, so a title carrying
+# commas or quotes can shift none of the three. A second extra column would sit
+# after `hold_kind` and break exactly that argument, so this asks for one.
+# `held:` is deliberately not the test here. A hold the captain deferred with
+# `--until` reports `held: no` once its date passes while keeping its
+# annotations, and it drops out of `tasks-axi list --state held` - so reading
+# the live bit would miss his own "revisit later" calls twice over, at the
+# listing and at the gate. The surviving annotations prove he owned it, which is
+# the same rule `answer` above already follows.
+captain_marked_open_task_ids() {
+  tasks_axi list --fields hold_kind 2>/dev/null | awk '
+    /^  [A-Za-z0-9._-]+,/ {
+      row = $0
+      sub(/^ +/, "", row)
+      id = row
+      sub(/,.*$/, "", id)
+      state = row
+      sub(/^[^,]*,/, "", state)
+      sub(/,.*$/, "", state)
+      mark = row
+      sub(/^.*,/, "", mark)
+      if (mark == "captain" && state != "done") print id
     }
   '
 }
@@ -1321,8 +1352,9 @@ task_ids_in_state() {  # <state>
 # annotations survived the close. Both of the measured losses this reports were
 # found by hand - one by a repair attempt, one because a dispatch happened to
 # look at the row - and neither emitted a signal of any kind.
-# Bounded by retention: tasks-axi keeps only the newest Done rows in the
-# backlog, so a stranded call pruned into the archive stops being reported here.
+# Bounded by retention: tasks-axi keeps only the newest ten Done rows in the
+# backlog, so this signal survives roughly ten subsequent closures before the
+# call is pruned into the archive and stops being reported here.
 # It is not lost from every guard - verify_hold_durable still refuses to
 # complete or tear down the origin that attested it, reading both files - but
 # this report is the live one, and repairing a call while it is still in the
@@ -1337,13 +1369,14 @@ report_closed_unanswered() {
     printf 'closed-unanswered\t%s\t\t\t%s\n' "$id" \
       "$(sanitize_field "$(show_field_value "$show" title)")"
   done <<EOF
-$(task_ids_in_state "done")
+$(done_task_ids)
 EOF
 }
 
-# A live captain hold whose reason is the one a recorded answer on that same
-# task annulled. `answer` records the hold reason it consumed, so the comparison
-# is between two recorded strings and never a reading of what the captain meant.
+# A still-open captain call whose live hold reason is the one a recorded answer
+# on that same task annulled. `answer` records the hold reason it consumed, so
+# the comparison is between two recorded strings and never a reading of what the
+# captain meant.
 # The measured cause is a raw `tasks-axi reopen`, which restores the whole
 # pre-close state including the hold the answer had annulled; this owner's
 # `--reopen` refuses an answered call outright, so it cannot produce the shape,
@@ -1359,7 +1392,6 @@ report_hold_resurrected() {
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     show=$(task_show "$id") || continue
-    [ "$(show_field_value "$show" held)" = yes ] || continue
     [ "$(show_field_value "$show" hold_kind)" = captain ] || continue
     body=$(show_field "$show" body)
     body_has_resolution_record "$body" || continue
@@ -1379,7 +1411,7 @@ report_hold_resurrected() {
     printf 'hold-resurrected\t%s\t\t\t%s\n' "$id" \
       "$(sanitize_field "$(show_field_value "$show" title)")"
   done <<EOF
-$(task_ids_in_state "held")
+$(captain_marked_open_task_ids)
 EOF
 }
 

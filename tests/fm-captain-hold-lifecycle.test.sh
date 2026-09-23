@@ -1816,6 +1816,43 @@ whatever he said' >/dev/null || fail "could not write the legacy resolution reco
   pass "a hold repeating an annulled question is signalled as a contradiction, and a new question or a released close is not"
 }
 
+# The captain's own "revisit later" is the variant the live `held:` bit hides: a
+# hold deferred by date reports `held: no` once the date passes and leaves
+# `tasks-axi list --state held` entirely, while remaining just as much his call.
+# Reading the bit missed Case 4 on that variant twice over, at the listing and
+# at the gate, so both now read the surviving annotation instead. The title
+# carries a comma and quotes because the enumeration asks the tool for one extra
+# column and reads the row from both ends around the free text.
+test_expired_deferral_resurrection_is_signalled() {
+  local home out drain title
+  home=$(make_home hold-resurrected-deferred)
+  title='titulo con, coma y "comillas", y mas'
+  printf 'adelante\n' > "$home/decision.txt"
+
+  run_captain "$home" hold sample-deferred-call --title "$title" \
+    --reason "held over the pilot" --repo sample --until 2020-01-01 >/dev/null \
+    || fail "could not register the deferred captain call"
+  tasks_in "$home" show sample-deferred-call --full | grep -E '^  held: no' >/dev/null \
+    || fail "setup error: the expired deferral still reports a live hold"
+  run_captain "$home" answer sample-deferred-call --decision-file "$home/decision.txt" >/dev/null \
+    || fail "an expired deferral refused the captain's answer"
+
+  tasks_in "$home" reopen sample-deferred-call >/dev/null || fail "could not reproduce the raw reopen"
+  tasks_in "$home" show sample-deferred-call --full | grep -E '^  hold_reason: held over the pilot' >/dev/null \
+    || fail "setup error: the raw reopen did not restore the annulled hold"
+  tasks_in "$home" show sample-deferred-call --full | grep -E '^  held: no' >/dev/null \
+    || fail "setup error: the restored deferral should still read as not live"
+
+  out=$(run_captain "$home" diverged) || fail "diverged failed on the expired-deferral resurrection"
+  printf '%s\n' "$out" | grep -F 'hold-resurrected	sample-deferred-call' >/dev/null \
+    || fail "the resurrected hold on an expired deferral was not reported: $out"
+  drain=$(run_drain "$home") || fail "the drain failed while reporting the deferred call"
+  printf '%s\n' "$drain" \
+    | grep -F "sample-deferred-call carries a live captain hold whose reason matches one its own record says an answer annulled - check whether that question is still open: $title" >/dev/null \
+    || fail "the expired-deferral resurrection, or the hostile title naming it, never reached the drain: $drain"
+  pass "an expired deferral's resurrected hold is reported, hostile title and all"
+}
+
 # Case 2's trace has to reach the path Case 2 was measured on. The captain
 # answers through the board, and every production caller of the keyed intake
 # discards its stdout, so the printed consequence alone leaves the order
@@ -2058,6 +2095,7 @@ test_closed_call_with_its_mark_is_still_stranded
 test_close_names_what_it_did_to_the_held_work
 test_close_that_ended_the_work_leaves_a_durable_record
 test_resurrected_hold_over_an_answered_call_is_signalled
+test_expired_deferral_resurrection_is_signalled
 test_pruned_answer_still_proves_the_captains_call
 test_pruned_inventory_still_blocks_an_unanswered_call
 test_blank_inventory_entry_refuses_and_is_repairable
