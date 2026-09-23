@@ -31,7 +31,7 @@ Registered classes, all answered by their option's own digit, which selects and 
 | Class | Asking | Answers | Provenance |
 |---|---|---|---|
 | `directory-trust` | `Do you trust the contents of this directory?` | `trust`, `decline-and-quit` | Captured live from a real codex 0.147.0 pane |
-| `rate-limit-switch` | `Approaching rate limits`, offering a cheaper model | `switch-cheaper`, `keep-model`, `keep-model-never-ask` | Inferred from codex-cli 0.147.0 binary strings; never seen on screen |
+| `rate-limit-switch` | `Approaching rate limits`, offering a cheaper model | `switch-cheaper`, `keep-model`, `keep-model-never-ask` | Captured live 2026-09-19; see `../../../docs/verification/vendor-dialogs.md` |
 | `update-available` | `Update available!`, offering to upgrade the install | `skip`, `skip-until-next-version` | Captured live from a real codex 0.147.0 pane |
 
 `update-available`'s first option runs a package-manager upgrade of the captain's codex, so it is recorded as declined and never offered as an answer.
