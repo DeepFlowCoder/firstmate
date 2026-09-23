@@ -347,6 +347,74 @@ EOF
   pass "a completed blocker pruned into the archive frees its dependents while pending ones still hold"
 }
 
+# The same every-copy rule proved just above for the archive, proved here for the
+# backlog itself, because the two halves of one notebook read must not disagree
+# about what "done" means. An id can end up in two sections with nobody making a
+# mistake worth the name - a half-finished prune, a copied row, a hand edit - and
+# under the old alternative-operator form the LAST row won, which in a file
+# written In flight, Queued, Done always meant the Done one. The failure is
+# silent by construction: nothing marks a duplicate id, so the only symptom is a
+# dependent released to nobody while its blocker is still genuinely live.
+# Both section orders are written out, and each one is load-bearing, because an
+# order-dependent rule can lean either way and only the order that disagrees with
+# it can catch it. Queued-before-Done catches a last-copy-wins rule, which is the
+# defect this test was written for and the order the real file always uses;
+# Done-before-Queued catches a first-copy-wins rule, which is the same defect
+# mirrored and would otherwise pass here unseen. Verified by reintroducing each
+# rule in turn against exactly these fixtures. Keep both: dropping either leaves
+# half of "the order decides" untested.
+test_duplicate_backlog_id_does_not_resolve_by_section_order() {
+  local home fakebin out sections
+  home=$(make_home duplicate-backlog-id)
+  : > "$home/data/done-archive.md"
+  fakebin=$(make_fakebin "$home")
+  for sections in queued-first done-first; do
+    if [ "$sections" = "queued-first" ]; then
+      cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] held-by-duplicate - Waits on an id written twice blocked-by: twice (repo: alpha) (kind: ship)
+- [ ] twice - Still live work under a duplicated id (repo: alpha) (kind: ship)
+
+## Done
+- [x] twice - An older completed run under the same id (repo: alpha) (kind: ship) (done 2026-09-12)
+EOF
+    else
+      cat > "$home/data/backlog.md" <<'EOF'
+## Done
+- [x] twice - An older completed run under the same id (repo: alpha) (kind: ship) (done 2026-09-12)
+
+## Queued
+- [ ] held-by-duplicate - Waits on an id written twice blocked-by: twice (repo: alpha) (kind: ship)
+- [ ] twice - Still live work under a duplicated id (repo: alpha) (kind: ship)
+EOF
+    fi
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+    printf '%s' "$out" | jq -e '
+      (.backlog.records[] | select(.id == "held-by-duplicate")
+        | .unresolved_blocker_ids == ["twice"] and .unknown_blocker_ids == [])
+      and ([.backlog.records[] | select(.id == "twice")] | length) == 2
+    ' >/dev/null \
+      || fail "section order $sections resolved a duplicated id as done and freed its dependent: $out"
+  done
+
+  # Counterfactual, so the rule cannot pass by refusing to free anything: with
+  # every copy of the id checked off, the same dependent must clear.
+  cat > "$home/data/backlog.md" <<'EOF'
+## Queued
+- [ ] held-by-duplicate - Waits on an id written twice blocked-by: twice (repo: alpha) (kind: ship)
+
+## Done
+- [x] twice - An earlier completed run under the same id (repo: alpha) (kind: ship) (done 2026-09-12)
+- [x] twice - A later completed run under the same id (repo: alpha) (kind: ship) (done 2026-09-20)
+EOF
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    .backlog.records[] | select(.id == "held-by-duplicate")
+    | .unresolved_blocker_ids == [] and .unknown_blocker_ids == []
+  ' >/dev/null || fail "an id done in every copy did not release its dependent: $out"
+  pass "a duplicated backlog id is resolved by every copy, not by which section comes first"
+}
+
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
 test_main_inventory_orphan_and_unstructured_disclosure() {
@@ -1200,6 +1268,7 @@ test_fixture_snapshot_json
 test_home_summary_landed_and_queued_carry_repo_and_since
 test_main_inventory_orphan_and_unstructured_disclosure
 test_pruned_done_blocker_resolves_from_the_archive
+test_duplicate_backlog_id_does_not_resolve_by_section_order
 test_normalized_roles_and_plural_blocker_readiness
 test_in_flight_captain_hold_is_actionable_under_the_same_two_guards
 test_home_summary_captain_hold_survives_a_live_child_worker
