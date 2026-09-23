@@ -399,10 +399,19 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # What is left is COUNTING, which matches nothing and therefore needs no key: if
 # <branch> carries exactly ONE row whose status is <word>, there is no second row
 # the reported run could be, so identity is established without ever asking which
-# row it is. That holds however long the list is, because `axi status` answers
-# with the repo's active-or-most-recent run, which is at the newest-first end of
-# the same listing rather than somewhere past it. More than one row of the word
-# is the tie above, and nothing here can break it.
+# row it is. More than one row of the word is the tie above, and nothing here can
+# break it.
+#
+# THAT SOUNDNESS HAS A CONDITION: the reported run's OWN row must fall inside the
+# listing this was handed. `axi status` can answer with a run that is not the
+# newest, so a reported run whose row has already fallen past the scanned window,
+# while a newer row of the same word is still inside it, counts as ONE and would
+# be called identified when it is not - asserting the stronger reading over the
+# newer run instead. Nothing here can detect that: with no key joining the two
+# surfaces, a reported run absent from the listing looks exactly like a reported
+# run present in it. So this is an unclosed residual of the SAME root cause,
+# recorded under `fm-listado-de-corridas-sin-id` rather than as a limit of its
+# own.
 #
 # 0 ONLY when identity is established. Every other answer - a missing argument, a
 # word that matches no row, a word that matches more than one - is "not

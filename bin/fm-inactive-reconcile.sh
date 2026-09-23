@@ -260,6 +260,14 @@ queue_presentation() { # <record> <fingerprint> <payload>
 # design this delivery is not taking on. Tracked as
 # `fm-aviso-de-corte-hacia-el-hogar-padre`.
 #
+# WHAT THAT COSTS, recorded because a consequence chosen knowingly is only a
+# defect when nobody wrote it down: a cut in a secondmate home used to read
+# `failed`, so it filed a terminal outcome and reached the parent as
+# `failed [key=...]` with a durable receipt. That word was wrong - it said a
+# reviewer rejected code nothing had judged - but it WAS a signal, and the
+# delegated half of the fleet now has none for a dead validation. The ticket
+# above owns closing that.
+#
 # A local row is not the fallback either: in a secondmate home that row already
 # means "the upward report failed", and spending it on a delivery would cost that
 # diagnostic its meaning.

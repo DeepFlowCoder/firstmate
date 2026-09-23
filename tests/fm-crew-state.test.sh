@@ -1354,9 +1354,11 @@ test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word() {
 # while the listing is short would therefore stop holding within days and retire
 # the whole cap-cut reading with no signal at all.
 #
-# The proof counts rather than matches, so a full listing costs it nothing: one
-# row of the reported word on this branch still leaves no second row the reported
-# run could be, however many other branches' runs are listed beside it.
+# The proof counts rather than matches, so a listing filled by OTHER branches'
+# runs costs it nothing: one row of the reported word on this branch, inside the
+# window, still leaves no second row the reported run could be. What the count
+# does need is the reported run's own row inside that window, which is the
+# residual bin/fm-nm-run-lib.sh states and this case supplies.
 test_a_listing_that_filled_its_limit_still_identifies_one_row() {
   reset_fakes
   local d short out; d=$(new_case cut-full-list)
