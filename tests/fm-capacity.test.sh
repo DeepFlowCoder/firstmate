@@ -1099,6 +1099,33 @@ assert_contains "$out" "balance runs out in" "a faster burn must be believed, wh
 assert_present "$home/state/.balance-warning" "the more urgent drain must be carried forward, not discarded"
 pass "fresh evidence sharpens a standing warning instead of retiring it"
 
+# AND THE BAR FOR CLEARING MUST NOT MOVE WHILE THE WARNING STANDS.
+#
+# Sharpening the report is one thing; overwriting the remembered drain with
+# every faster burn is another. It ratchets: the bar for clearing only ever
+# rises, so a burst that has long since aged out of the measuring window goes on
+# deciding what counts as recovered, and the captain can no longer reach it.
+#
+# This continues the busy day above. The captain now tops up to 35 - nearly
+# double the 19 that raised the alarm - and the fleet goes quiet, so the window
+# measures no drain at all. Both the drain that raised the alarm and every drain
+# still in evidence say the account holds more than one validation, so the
+# warning is over. With the bar ratcheted down it went on printing "recharge
+# before dispatching" at every session start, on a balance nothing had measured
+# as short: a threshold with no measurement behind it, which is the false
+# positive this guard exists not to be.
+balance_body "$home/bal-recovered.json" 35.00 true
+at=$((at + 900))
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recovered.json" "$at" check >/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  at=$((at + 900))
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recovered.json" "$at" check >/dev/null
+done
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recovered.json" "$((at + 900))" report)
+[ -z "$out" ] || fail "a balance recovered past the drain that raised the alarm must not keep warning, got: $out"
+assert_absent "$home/state/.balance-warning" "the bar for clearing must be the drain that raised the alarm, not the worst burn since"
+pass "a recovered balance clears the warning instead of meeting a bar that moved"
+
 # A HARD BURST SHORTER THAN ONE MARGIN, THEN IDLE, MUST STILL BE PROJECTED.
 #
 # This is the fleet's ordinary rhythm: the captain dispatches, the balance falls

@@ -512,9 +512,11 @@ acquire_balance() {
 # recharge before dispatching. An idle stretch is the absence of a measurement,
 # never a measurement that the drain stopped, so it must not erase one.
 #
-# The flat tail that stretch produces keeps only its newest row, because every
-# row in it carries the same amount and the policy's rate window ends at the
-# movement anyway. That is what stops an idle fleet growing this file forever.
+# The flat tail that stretch produces keeps only its newest row. Every row in it
+# carries the same amount, so none of them adds any consumption, and the span the
+# policy measures runs from the oldest row to the newest - both of which survive
+# this prune. Dropping the rows between them changes no measurement, and it is
+# what stops an idle fleet growing this file forever.
 #
 # THE MOST RECENT POSITIVE READING IS NEVER DROPPED, whatever its age. It is not
 # there for the rate - the policy bounds its own rate window by time, so an old
@@ -596,11 +598,17 @@ take_balance_reading() {  # <action>
 # ask, at every poll, whether the balance the account holds NOW has risen far
 # enough to buy back a validation at the rate that raised the alarm.
 #
-# This rate never expires. It stays in evidence beside whatever the current
-# window measures, and the policy projects from whichever of the two is the more
-# urgent - so no reshaping of that window can retire a warning, and a drain that
-# has got WORSE since the alarm is believed immediately rather than being held
-# back to the rate that happened to raise it.
+# This rate is the one that RAISED the alarm, and it does not move again while
+# the alarm stands. It sits in evidence beside whatever the current window
+# measures, and the policy projects from whichever of the two is the more urgent
+# - so no reshaping of that window can retire a warning, and a drain that has got
+# WORSE since the alarm is believed immediately rather than being held back to
+# the rate that happened to raise it.
+#
+# It is the ALARM'S rate that is kept, not the worst one ever seen while it
+# stood. Letting a faster burn overwrite it ratcheted the bar for clearing ever
+# downward, so a balance the account had genuinely recovered to could no longer
+# reach it and the warning became one nobody could switch off.
 #
 # A frozen VERDICT would be wrong in the other direction, which is why this holds
 # a rate and not a runway: a rate re-applied to the current balance answers a

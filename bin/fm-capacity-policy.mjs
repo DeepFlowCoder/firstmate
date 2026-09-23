@@ -665,12 +665,24 @@ function classifyBalance(readings, marginSecs, standingPerUnit = null) {
   // raised the alarm, and a second top-up, which the anchor by construction
   // could never learn about.
   //
+  // WHAT IS REPORTED AND WHAT IS REMEMBERED ARE DIFFERENT QUESTIONS. The report
+  // takes the most urgent drain, every poll. What is carried forward is only
+  // ever the drain that RAISED the alarm, unchanged for as long as it stands.
+  //
+  // Carrying the minimum instead let the anchor ratchet: every poll that still
+  // fired overwrote it with a strictly faster burn, so a burst that had long
+  // since aged out of the window went on setting the bar for clearing. A
+  // balance topped up to nearly double the one that raised the alarm, with no
+  // drain measurable in the window at all, kept printing "recharge before
+  // dispatching" at every session start - a threshold with no measurement
+  // behind it, which is the false positive this guard was built not to be.
+  //
   // A warning is still retired only when the balance has risen far enough to buy
-  // back a validation - now against every drain in evidence rather than one of
-  // them. It cannot become an alarm nobody can switch off: a real recharge
-  // clears both projections on the very next reading. And if the fleet goes
-  // quiet forever the stored drain stands, which is correct, because the
-  // balance is still low.
+  // back a validation against every drain in evidence. It cannot become an alarm
+  // nobody can switch off: the bar for clearing never moves while the warning
+  // stands, so a real recharge clears both projections on the very next reading.
+  // And if the fleet goes quiet forever the drain that raised the alarm stands,
+  // which is correct, because the balance is still low.
   const perUnit =
     carried !== null && measuredPerUnit !== null
       ? Math.min(carried, measuredPerUnit)
@@ -680,7 +692,7 @@ function classifyBalance(readings, marginSecs, standingPerUnit = null) {
   }
   const secondsLeft = Math.floor(newest.balance * perUnit);
   if (secondsLeft < marginSecs) {
-    return { cause: "balance-runway", marginSecs, secondsLeft, standingPerUnit: perUnit };
+    return { cause: "balance-runway", marginSecs, secondsLeft, standingPerUnit: carried ?? perUnit };
   }
   return { cause: "balance-live", marginSecs, secondsLeft, standingPerUnit: null };
 }
