@@ -73,6 +73,18 @@ export FM_DISK_SPACE_MIN_GB=0
 # drives the real guard end to end.
 export FM_CAPACITY_MIN_LANES=0
 
+# Retire the capacity guard's balance arm independently, and point its
+# credential lookup at a path that cannot exist.
+#
+# FM_CAPACITY_MIN_LANES=0 already retires both arms, so neither of these is what
+# keeps the suite quiet. They are the second and third locks on one specific
+# door: the balance arm reads a real credential and calls a real provider, and
+# no test must ever do either. A future edit that separates the two off switches,
+# or a suite that pins the lane threshold for its own reasons, would otherwise
+# silently start reading the developer's own credential file from CI.
+export FM_BALANCE_MARGIN_SECS=0
+export FM_BALANCE_CREDENTIAL_FILE=/nonexistent/fm-tests-never-read-a-real-credential
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

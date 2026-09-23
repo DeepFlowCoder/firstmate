@@ -858,6 +858,12 @@ if [ "$HAVE_RUN" = 1 ]; then
       RUN_WORD=$outcome
       RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
       RUN_DETAIL=$(fm_nm_verdict_detail "$RUN_WORD")
+      # The run's own error text is a fact about this READING, so the qualifier
+      # is appended here rather than asked of the one-phrase-per-word owner -
+      # the same split the coarse arm's `(background run)` qualifier follows.
+      # It names the one failure that is not a verdict on the work at all.
+      failure_cause=$(fm_nm_failure_cause_detail "$(strip_quotes "$(nm_field error)")")
+      [ -z "$failure_cause" ] || RUN_DETAIL="$RUN_DETAIL: $failure_cause"
       fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
     elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
       if [ "$has_gate" = 1 ]; then

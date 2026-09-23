@@ -211,6 +211,89 @@ These are the verified structural facts that classification rests on:
 
 The policy's own header owns the classification contract and its wording; this record only pins the producer facts that contract reads.
 
+## Validation provider balance and reaction margin
+
+Verified 2026-09-22 against quota-axi 0.1.42, no-mistakes 1.75.2, and Pi 0.84.2.
+
+The capacity guard's balance arm rests on four facts: the validation pipeline depends on one provider whatever lane a worker runs on, quota-axi does not report that provider's prepaid balance, the provider does report it without running any work, and the margin the guard judges it against is measured rather than chosen.
+
+**The pipeline's dependency.**
+Pi's `~/.pi/agent/settings.json` selects `defaultProvider: deepseek`, and the pipeline's own telemetry confirms the pairing: `model_provider` over `~/.no-mistakes/state.sqlite`'s `agent_invocations` reports `pi`/`deepseek`/`deepseek-v4-pro` for every Pi invocation.
+Whenever the pipeline runs on Pi, every step of every run draws on that one prepaid balance regardless of the harness the task's own worker was dispatched on, which is why a spent balance stops the whole fleet rather than degrading one lane.
+
+The measured incidents happened under `agent: [pi, codex]`, where Pi was first and every validation therefore burned that balance.
+On 2026-09-22 the captain changed the selection to `agent: [claude, codex, pi]`, which moves Pi to last resort until the balance is recharged.
+That changes how soon this guard's warning matters, not whether it is needed: Pi is still in the chain and returns to it on recharge, and the same silence would follow it back.
+Re-read this selection before concluding how much of a given run's spend lands on that balance.
+
+**quota-axi does not cover it.**
+`quota-axi --help` lists the providers it knows as `claude,codex,cursor,copilot,grok,kimi,zai,agy,alibaba,opencode-go`, and `quota-axi --json --no-credential-refresh` returns exactly those ten in `providers[]`.
+Neither `pi` nor `deepseek` is among them, so no lane in a quota snapshot can establish anything about this balance and a second producer is required rather than preferred.
+
+**The provider's balance surface.**
+One bounded `GET https://api.deepseek.com/user/balance` with the API key as a bearer token answered `200` with this shape, recorded through `jq` so no amount is persisted:
+
+```json
+{
+  "topKeys": ["balance_infos", "is_available"],
+  "is_available": true,
+  "infoKeys": [["currency", "granted_balance", "topped_up_balance", "total_balance"]],
+  "currencies": ["USD"]
+}
+```
+
+`total_balance` is a decimal string, and `is_available` is the producer's own statement that the balance can still serve work, which is why the guard reads it instead of inferring availability from the amount reaching exactly zero.
+This endpoint runs no model and spends no tokens, so reading the balance can never be what finishes it.
+Every observed answer has carried exactly one `balance_infos` entry; more than one would be one entry per currency, which cannot be reduced to a single runway, so the guard refuses such an answer rather than adding currencies together.
+
+`bin/fm-capacity-check.sh report` was run once against this real endpoint on 2026-09-22 with no fixture, in a throwaway home: it resolved the credential from Pi's own file without opening any prompt, recorded one reading, and stayed silent because a single reading establishes no drain.
+A second run against a history backdated to a steep drain printed `validation provider balance runs out in 7m, inside the 2h18m a validation needs - recharge before dispatching`, with no amount or currency anywhere in the output.
+That pair is the end-to-end proof of the vendor surface; `tests/fm-capacity.test.sh` pins the classification from fixtures and needs no credential.
+
+**The signature a spent balance leaves in the run record.**
+This one belongs to `bin/fm-crew-state.sh` rather than to the guard above: it is what a run says after the balance has already killed it.
+The pipeline records the provider's refusal verbatim, and the runs that died on 2026-09-18 and 2026-09-19 all carry this `error:` text in `~/.no-mistakes/state.sqlite`:
+
+```text
+step review failed: agent review: pi reported error: 402: {"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}
+```
+
+Two independent signals sit in it, and either one alone carries the verdict: the vendor's own `Insufficient Balance` message, and the standardized HTTP `402` payment-required status underneath it, whose reason phrase RFC 9110 fixes.
+Requiring both would let one vendor rewording take the distinction away silently, which is the whole failure mode naming this cause exists to prevent.
+`bin/fm-nm-run-lib.sh`'s `fm_nm_failure_cause_detail` header owns the exact clauses, and `tests/fm-crew-state.test.sh` pins this payload.
+
+**The reaction margin.**
+The margin is the wall-clock span a validation spends burning that provider, taken from the pipeline's own run store over every completed run that used it:
+
+```sh
+sqlite3 "file:$HOME/.no-mistakes/state.sqlite?mode=ro" "
+WITH s AS (SELECT r.id, (MAX(a.completed_at)-MIN(a.started_at)) sec
+           FROM runs r JOIN agent_invocations a ON a.run_id=r.id
+           WHERE a.model_provider='deepseek' AND r.status='completed' GROUP BY r.id),
+     f AS (SELECT sec FROM s ORDER BY sec), c AS (SELECT COUNT(*) n FROM f)
+SELECT 'n',(SELECT n FROM c)
+UNION ALL SELECT 'p50',(SELECT sec FROM f LIMIT 1 OFFSET (SELECT n/2 FROM c))
+UNION ALL SELECT 'p75',(SELECT sec FROM f LIMIT 1 OFFSET (SELECT n*3/4 FROM c))
+UNION ALL SELECT 'p90',(SELECT sec FROM f LIMIT 1 OFFSET (SELECT n*9/10 FROM c))
+UNION ALL SELECT 'p95',(SELECT sec FROM f LIMIT 1 OFFSET (SELECT n*95/100 FROM c))
+UNION ALL SELECT 'max',(SELECT MAX(sec) FROM f);"
+```
+
+```text
+n|31
+p50|2224
+p75|3539
+p90|8294
+p95|10155
+max|38673
+```
+
+The 31 runs span 2026-09-13 to 2026-09-22, the whole period this fleet has run its pipeline on that provider.
+`bin/fm-capacity-check.sh` defaults the margin to **p90, 8294 seconds**: nine of ten validations that begin at the moment of the warning still finish before the balance is gone.
+p95 and the maximum are a thin tail of runs that looped in CI fixes for hours, and sizing the margin to them would warn on runways that were never at risk.
+The same measurement sets the minimum span the drain rate is averaged over, because a rate taken across less than one typical validation describes the burst rather than the fleet.
+Re-run the query above and update this section and the default together when the pipeline's provider, its agent selection, or its run profile changes.
+
 ## Regression coverage
 
 `tests/fm-vendor-auth-probe.test.sh` drives the real script against a fake vendor CLI that records every invocation's argv and anything readable on stdin.
@@ -218,6 +301,13 @@ It asserts that the script accepts no harness, model, or provider input, never c
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
 `tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic.
 `tests/fm-capacity.test.sh` owns the capacity classification, including that an unopened credential store is neither reported as a sign-out nor counted as a lost lane, and that a lane nobody could measure never sounds the minimum-lane alarm by itself.
+It also owns the balance arm: that a balance heading for zero warns while balance is still left, that a healthy one stays silent, that too little history discloses instead of alarming, that the default margin is the measured value on both sides of it, and that no amount or currency ever reaches the output.
+It owns the standing warning as its own contract: that a warning once raised is anchored to the drain that raised it and survives an idle night, a further drain, a cent of rounding in either direction, a spent-by-flag reading, and the loss from disk of the very readings that raised it; that a top-up too small to buy back one validation does not end it; and that a recharge past one validation's worth does, so it can never become an alarm nobody can switch off.
+It owns the measuring side of the same rule: that consumption is the sum of the downward moves, so a recharge quiets the guard by lengthening the runway rather than by discarding the drain measured before it, and a balance that reads upward now and then is still warned about.
+It walks the firing boundary from both sides in units of one validation's cost, which is where the margin being a measured duration puts it, and it pins the shapes a working fleet actually produces - an idle fleet, rounding jitter, one heavy validation early in the window, and a recharge - as silent.
+It also pins that an amount which has only ever read zero is never called spent, reports its permanent blind spot once, and still yields to the provider's own unavailable flag.
+Every balance case drives the real guard against a fixture reading, so no test reaches a credential, a network, or a real balance.
+`tests/fm-crew-state.test.sh` owns the record's own distinction between a run the provider balance killed and every other failure.
 `tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake schema-5 snapshot per case, served as quota-axi's default TOON.
 It covers TOON-first `spendPriority` ranking among candidates that pass eligibility, reasoning-class, and runway-feasibility gates, explicit accounting for unmeasurable runway, the strongest-reasoning constraint, and the runway feasibility floor over a higher `spendPriority`.
 The skill's primary path is that default TOON; `--json` is the documented defensive fallback, and this section records the producer `--json` shape that fallback consumes.

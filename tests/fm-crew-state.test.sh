@@ -348,6 +348,24 @@ outcome: failed
 EOF
 }
 
+# A run the PROVIDER BALANCE killed. The error text is transcribed from the
+# measured incident (run 01M2Y30F0X, 2026-09-19 18:21), where three validations
+# in flight died together on the same answer and the record said only that they
+# had failed.
+run_failed_balance() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+outcome: failed
+error: "step review failed: agent review: pi reported error: 402: {\\"message\\":\\"Insufficient Balance\\",\\"type\\":\\"unknown_error\\",\\"param\\":null,\\"code\\":\\"invalid_request_error\\"}"
+EOF
+}
+
 # A run whose ci step the worker deliberately aborted, so the run ends
 # `cancelled` while the work itself is finished. Transcribed from the record of
 # baby-menu-widget-cuota (2026-08-30): that repository runs no CI at all, so the
@@ -841,7 +859,32 @@ test_terminal_failed() {
   # the reassurance while keeping the verdict.
   assert_contains "$out" "the work is not lost" \
     "the failed line says the run failed without claiming the work is gone"
+  # And the ordinary failure must stay ordinary: the balance qualifier below is
+  # only worth having if it is absent from every failure it does not describe.
+  assert_not_contains "$out" "provider balance" \
+    "an ordinary failure must not be dressed up as a balance failure"
   pass "terminal failed run is authoritative and does not read as lost work"
+}
+
+# A failure the PROVIDER BALANCE caused is not a verdict on the work at all: the
+# pipeline never got an answer, so there is nothing to fix and exactly one
+# action helps. On 2026-09-19 three validations died together on it and the
+# record said only "failed", which is how the same wall got run into twice.
+test_terminal_failed_balance() {
+  reset_fakes
+  local d short; d=$(new_case failed-balance)
+  make_repo_on_branch "$d/wt" fm/feat-bal
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-bal.meta" "window=fm:fm-feat-bal" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_balance fm/feat-bal)"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-bal ${short}  2026-09-19 18:21"
+  local out; out=$(run_crew_state "$d" feat-bal)
+  assert_contains "$out" "state: failed" "a balance failure is still a failed run"
+  assert_contains "$out" "the provider balance ran out" \
+    "a balance failure must be distinguishable from every other failure"
+  assert_contains "$out" "recharged" "the record must name the one action that clears it"
+  pass "a run killed by the provider balance says so instead of reading as a plain failure"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -3303,6 +3346,7 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_terminal_failed_balance
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status

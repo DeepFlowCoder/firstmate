@@ -203,11 +203,56 @@ fresh_home() {
 }
 
 # run_guard <home> <min-lanes> <snapshot> <action>
+#
+# The balance arm is pinned off here for the same reason the lane threshold is
+# pinned on: these cases are about lanes, and a balance arm left live would make
+# them depend on a credential and a vendor call. run_balance below is the one
+# runner that drives it, and it only ever reads a fixture.
 run_guard() {
   FM_HOME="$1" \
   FM_CAPACITY_MIN_LANES="$2" \
   FM_CAPACITY_SNAPSHOT="$3" \
+  FM_BALANCE_MARGIN_SECS=0 \
     "$CHECK" "$4" 2>&1
+}
+
+# balance_body <file> <total> <is-available> - the provider's own balance answer,
+# in the shape docs/verification/dispatch-auth.md records.
+balance_body() {
+  printf '{"is_available":%s,"balance_infos":[{"currency":"USD","total_balance":"%s","granted_balance":"0.00","topped_up_balance":"%s"}]}\n' \
+    "$3" "$2" "$2" >"$1"
+}
+
+# history_amount_present <history-file> <amount> - true when some reading in the
+# guard's own private history carries exactly this amount.
+#
+# state/.balance-history is persisted state this guard owns, and its row
+# contract is `<epoch>TAB<amount>TAB<available>`, so the amount is compared as a
+# FIELD. A substring search over the same file answers a different question -
+# and a fixed-string matcher carrying a regex escape, which is what stood here,
+# answers none at all: it looks for characters the file can never hold, so it
+# can never fail. Reading the file is legitimate; only the way it was read was
+# not.
+history_amount_present() {  # <history-file> <amount>
+  [ -f "$1" ] || return 1
+  awk -F'\t' -v want="$2" '$2 == want { found = 1 } END { exit !found }' "$1"
+}
+
+# run_balance <home> <snapshot> <margin> <balance-file> <at> <action>
+#
+# Every balance case drives the real guard against a FIXTURE reading stamped at
+# a chosen second. No case reaches a credential, a network, or a real balance:
+# a guard that can only be exercised against the developer's own account cannot
+# be falsified, and the one thing that must never happen while testing a balance
+# guard is spending the balance.
+run_balance() {
+  FM_HOME="$1" \
+  FM_CAPACITY_MIN_LANES=2 \
+  FM_CAPACITY_SNAPSHOT="$2" \
+  FM_BALANCE_MARGIN_SECS="$3" \
+  FM_CAPACITY_BALANCE="$4" \
+  FM_CAPACITY_BALANCE_NOW="$5" \
+    "$CHECK" "$6" 2>&1
 }
 
 # === the falsifier ==========================================================
@@ -638,6 +683,868 @@ rc=0
 run_guard "$home" 2 "$home/snap.json" check >/dev/null || rc=$?
 expect_code 0 "$rc" "check must exit 0 even with no lanes left"
 pass "a fleet with no lanes left still exits 0 - this guard reports, it never refuses"
+
+# === the balance falsifier ==================================================
+#
+# The second thing that kills a validation round is not a lane at all. The
+# pipeline runs its own agents on a prepaid provider balance that no quota-axi
+# lane reports, so a zero balance is invisible above and still stops every
+# validation in the fleet at once - measured on 2026-09-18 and 2026-09-19, when
+# runs in flight died together on `402 Insufficient Balance`.
+#
+# The brief that commissioned this arm named its falsifier exactly: drive a
+# balance close to exhaustion and watch the guard warn BEFORE it dies, then a
+# healthy one and watch it stay silent. Those are the next two cases. Every
+# case after them defends one of the two from going vacuous.
+#
+# MARGIN is the reaction margin: the guard warns once zero is nearer than the
+# span a validation needs. The cases below use a readable hour where the exact
+# value does not matter, and the real default where it does.
+MARGIN=3600
+
+home=$(fresh_home balance-dying)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+# Two readings an hour apart establish the drain; the guard needs a window at
+# least one margin long before it will project at all.
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "a balance heading for zero must be reported before it gets there"
+assert_contains "$out" "recharge before dispatching" "the warning must name the one action that helps"
+assert_contains "$out" "1h" "the warning must state the margin it was judged against"
+pass "a balance heading for zero warns while there is still balance left"
+
+# And the other half. A balance draining slowly enough that a validation
+# starting now finishes with room to spare is not news, and a guard that says so
+# anyway is the guard the captain learns to scroll past.
+home=$(fresh_home balance-healthy)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-still-full.json" 39.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-still-full.json" 1003600 check)
+[ -z "$out" ] || fail "a healthy balance must keep the guard silent, got: $out"
+pass "a healthy balance keeps the guard silent"
+
+# WHERE THE WARNING STARTS, in the only unit that means anything here.
+#
+# The guard fires when `balance / drain rate < margin`, and the margin IS how
+# long a validation takes. Rearranged, that is `balance < rate x one
+# validation's duration` - which is to say it fires exactly when less than one
+# validation's worth of spend is left, at the rate the fleet has actually been
+# spending. That is not a threshold anybody picked; it falls out of the margin
+# being a measured duration, and it is the whole answer to "can this thing cry
+# wolf on a healthy balance": a balance holding more than one validation cannot
+# make it speak.
+#
+# The cases below walk that boundary from both sides, in units of one
+# validation's cost C, so a future edit cannot drift the trigger without a
+# deliberate change here. The window spans exactly one margin, which is the
+# most pessimistic reading the guard will ever take: the entire burn is as
+# fresh as it can be.
+home=$(fresh_home balance-boundary)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+boundary_readings() {  # <balance-left-in-validations> <window-in-margins>
+  local left=$1 span=$((MARGIN * $2))
+  printf '[{"at":1000000,"balance":%s,"available":true},{"at":%s,"balance":%s,"available":true}]' \
+    "$(awk -v l="$left" 'BEGIN{printf "%.4f", l+1.0}')" "$((1000000 + span))" "$left"
+}
+for left in 5 3 2 1.5 1.1; do
+  out=$(FM_CAPACITY_BALANCE_READINGS="$(boundary_readings "$left" 1)" \
+    node "$POLICY" --min-lanes 2 --balance-margin-secs "$MARGIN" <"$home/snap.json")
+  [ -z "$out" ] || fail "${left}x one validation left is not a balance to warn about, got: $out"
+done
+for left in 0.9 0.5 0.1; do
+  out=$(FM_CAPACITY_BALANCE_READINGS="$(boundary_readings "$left" 1)" \
+    node "$POLICY" --min-lanes 2 --balance-margin-secs "$MARGIN" <"$home/snap.json")
+  assert_contains "$out" "balance runs out in" "${left}x one validation left must warn"
+done
+pass "the warning starts at one validation's worth of spend left, and not before"
+
+# The same balance judged over a two-margin window - a burst diluted across the
+# whole retained history - moves the trigger DOWN, never up. Averaging over more
+# time can only make the guard quieter, so the boundary above is its loudest.
+out=$(FM_CAPACITY_BALANCE_READINGS="$(boundary_readings 0.9 2)" \
+  node "$POLICY" --min-lanes 2 --balance-margin-secs "$MARGIN" <"$home/snap.json")
+[ -z "$out" ] || fail "a longer averaging window must not warn sooner, got: $out"
+pass "a longer averaging window only ever makes the guard quieter"
+
+# And the shapes a working fleet actually produces, none of which is news.
+home=$(fresh_home balance-healthy-shapes)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+quiet_case() {  # <label> <readings>
+  local out
+  out=$(FM_CAPACITY_BALANCE_READINGS="$2" \
+    node "$POLICY" --min-lanes 2 --balance-margin-secs "$MARGIN" <"$home/snap.json")
+  [ -z "$out" ] || fail "$1 must not warn, got: $out"
+}
+quiet_case "an idle fleet spending nothing" \
+  '[{"at":1000000,"balance":40,"available":true},{"at":1008300,"balance":40,"available":true},{"at":1016600,"balance":40,"available":true}]'
+quiet_case "rounding jitter on a healthy balance" \
+  '[{"at":1000000,"balance":40.01,"available":true},{"at":1004150,"balance":40.00,"available":true},{"at":1008300,"balance":40.01,"available":true},{"at":1016600,"balance":40.00,"available":true}]'
+quiet_case "one heavy validation early in the window, comfortable balance" \
+  '[{"at":1000000,"balance":40,"available":true},{"at":1004000,"balance":31,"available":true},{"at":1008300,"balance":31,"available":true},{"at":1016600,"balance":31,"available":true}]'
+quiet_case "a recharge followed by a light drain" \
+  '[{"at":1000000,"balance":2,"available":true},{"at":1008300,"balance":1,"available":true},{"at":1008600,"balance":90,"available":true},{"at":1017000,"balance":89,"available":true}]'
+pass "the shapes a working fleet produces are never reported as news"
+
+# === what the balance warning is allowed to say =============================
+
+# A spent balance and a lane running out are different events with different
+# remedies, so they are never folded into one sentence.
+home=$(fresh_home balance-spent)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-gone.json" 0.00 false
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1003600 check)
+assert_contains "$out" "balance spent" "a spent balance must be named as spent"
+assert_contains "$out" "every validation stops" "a spent balance must say what it costs the fleet"
+assert_not_contains "$out" "provider lanes dispatchable" \
+  "a healthy fleet's lane inventory must not be printed beside a spent balance"
+pass "a spent balance is reported as spent, without burying it in the lane inventory"
+
+# The amount is the captain's own financial figure and the wrong unit for the
+# decision. It stays in the private reading history and reaches no other
+# surface: what the guard prints is how long is left, never how much.
+assert_not_contains "$out" "40.0" "the balance amount must never be printed"
+assert_not_contains "$out" "USD" "the balance currency must never be printed"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1007200 report)
+assert_not_contains "$out" "40.0" "the balance amount must never be printed by session start either"
+pass "the warning speaks in time left, never in money"
+
+# The balance clause must never be the text a length cap drops, and must never
+# be cut mid-sentence. The lane inventory grows with the fleet and quotes each
+# vendor error verbatim, so it is the clause that overflows; the balance warning
+# is one fixed sentence and is the most urgent thing this guard ever says.
+long_error_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"error","stale":false,
+          "error":"request to https://api.example.com/v1/quota failed, reason: connect ETIMEDOUT 104.18.32.5:443"},
+ "windows":[],
+ "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
+EOF
+}
+home=$(fresh_home balance-clause-survives)
+noisy_lanes=("$(finite_provider claude 5)")
+for n in 1 2 3 4 5 6 7 8 9; do
+  noisy_lanes+=("$(long_error_provider "upstream$n")")
+done
+snapshot "$home/snap.json" "${noisy_lanes[@]}"
+out=$(FM_CAPACITY_BALANCE_READINGS='[{"at":1000000,"balance":40,"available":true},{"at":1003600,"balance":0,"available":false}]' \
+  node "$POLICY" --min-lanes 2 --balance-margin-secs "$MARGIN" <"$home/snap.json")
+assert_contains "$out" "1 of 10 provider lanes dispatchable" "the lane inventory must still be reported"
+assert_contains "$out" \
+  "validation provider balance spent - every validation stops until it is recharged" \
+  "the balance warning must reach the captain whole, however long the lane inventory grows"
+[ "${#out}" -le 1000 ] || fail "the reported line must stay within its length cap, got ${#out} characters"
+pass "an overlong lane inventory is what gets trimmed, never the balance warning"
+
+# === what it refuses to guess ===============================================
+
+# A rate taken over less than one validation describes the minute, not the
+# fleet: a prepaid balance is spent in bursts, so a window shorter than the
+# margin would read as empty-by-lunchtime every time a run started.
+home=$(fresh_home balance-thin-history)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1000300 check)
+[ -z "$out" ] || fail "five minutes of readings must not project an exhaustion, got: $out"
+pass "too little history discloses rather than alarms"
+
+# The same shortfall IS worth saying beside a fleet that is already degraded,
+# because there it names a blind spot the captain would otherwise read as an
+# all-clear.
+home=$(fresh_home balance-thin-beside-degraded)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(credential_provider kimi)"
+balance_body "$home/bal-full.json" 40.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 report)
+assert_contains "$out" "runway not measured" "an unmeasured balance must be disclosed beside a degraded fleet"
+pass "an unmeasured balance runway discloses beside a fleet that is already degraded"
+
+# A zero amount is only evidence once the account has been seen holding
+# something. grok and codex both report a constant zero purse on a perfectly
+# healthy account, and reading such a field as a spent balance would arm a
+# warning that fires on every poll forever - the exact shape a captain learns to
+# scroll past, on the guard that has to be believed the one day it is right.
+home=$(fresh_home balance-always-zero)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-zero.json" 0.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-zero.json" 1000000 check)
+assert_not_contains "$out" "balance spent" "an amount that has only ever read zero is not a spent balance"
+# It is not silent either, and the difference from a merely short history is the
+# point: waiting fixes a short history and never fixes this, so the guard says
+# once that it cannot do its job here rather than sitting quiet looking armed.
+assert_contains "$out" "only ever reported zero" "a guard that can never measure this account must say so"
+for at in 1003600 1007200 1010800; do
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-zero.json" "$at" check)
+  [ -z "$out" ] || fail "the blind-guard notice must report once, not on every poll, got: $out"
+done
+pass "a balance that has only ever read zero is never called spent, and reports its blindness once"
+
+# The producer's own statement that the account cannot serve work is different
+# evidence, and it fires on that account exactly as it would on any other.
+balance_body "$home/bal-unavailable.json" 0.00 false
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-unavailable.json" 1014400 check)
+assert_contains "$out" "balance spent" "the provider saying it cannot serve work must fire whatever the amount reads"
+pass "the provider's own unavailable flag still fires on an amount that never moved"
+
+# And once the balance HAS been seen holding something, a later zero means the
+# purse ran out - including after it has sat at zero long enough for the drain
+# measurement itself to go flat, which is the morning after the fleet died.
+home=$(fresh_home balance-zero-overnight)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-zero.json" 0.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-zero.json" 1003600 check >/dev/null
+# Twelve hours later, every reading in the rate window is a flat zero.
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-zero.json" 1043200 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-zero.json" 1046800 report)
+assert_contains "$out" "balance spent" "a balance seen draining to zero must still read as spent the next morning"
+pass "a balance watched falling to zero still reads as spent after a night of flat readings"
+
+# A WARNING THAT HAS FIRED IS CLEARED BY EXACTLY ONE EVENT: AN OBSERVED
+# INCREASE. Not silence, not elapsed time, not another reading, not a rate
+# window re-anchoring, not retention pruning - and emphatically not a LOWER
+# reading, because a balance that keeps falling is strictly worse news than one
+# sitting still.
+#
+# The overnight idle period is the exact moment this whole arm exists for: it is
+# when the captain decides whether to recharge BEFORE dispatching. A guard that
+# warns while the fleet runs and goes quiet the moment it resumes spending does
+# not warn, it accompanies.
+home=$(fresh_home balance-idle-overnight)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the drain to a short runway must fire before the fleet goes idle"
+# The reading that raised the alarm is on disk NOW. Pinning that here is what
+# keeps the pruning assertion below from being one that cannot fail: the same
+# check is shown answering both ways against the same file.
+history_amount_present "$home/state/.balance-history" 40.00 \
+  || fail "the reading that raised the alarm must be on disk while it is still retained"
+# Fourteen hours of an idle fleet, every reading the same untouched amount, well
+# past the span the retained history used to cover.
+for at in 1007200 1010800 1025000 1039000 1053000; do
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" "$at" check >/dev/null
+done
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1056600 report)
+assert_contains "$out" "balance runs out in" "an idle night must not turn an already-warned balance back into an unmeasured one"
+assert_not_contains "$out" "runway not measured" "silence is not a measurement that the drain stopped"
+pass "a warned balance still warns at the next session start after an idle night"
+
+# The morning the captain dispatches: the balance moves again, DOWNWARD by one
+# cent. That is the situation getting worse, so the warning must still be there.
+# It is also the poll that used to silence the guard outright - a fresh movement
+# re-anchored the rate window onto a thirty-second span that measured nothing,
+# and "no drain measured" read as an all-clear on a balance with under a minute
+# of runway left.
+balance_body "$home/bal-lower.json" 0.39 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-lower.json" 1056630 report)
+assert_contains "$out" "balance runs out in" "a further drain must never clear a warning that has already fired"
+assert_not_contains "$out" "runway not measured" "a balance falling further is worse news, never an all-clear"
+pass "a resumed drain leaves a standing warning exactly where it stands"
+
+# Taken to its end: a long run of further-drain readings spanning far more than
+# the retention horizon, so every row that raised the alarm is gone from disk.
+# An alarm that forgets why it rang and therefore stops ringing cannot heal
+# itself, which is the worst failure mode an alarm has.
+# The drain has to stay fast enough that the condition keeps holding - a balance
+# that starts draining slowly enough to last the night SHOULD clear, and does,
+# which is the case below. Each reading here is a margin later and under half
+# what came before, so every fresh measurement still projects zero inside one
+# validation, and the run spans the whole four-margin retention horizon.
+at=1060230
+for amount in 0.18 0.08 0.03 0.01; do
+  balance_body "$home/bal-drip.json" "$amount" true
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-drip.json" "$at" check >/dev/null
+  at=$((at + MARGIN))
+done
+at=$((at - MARGIN))
+history_amount_present "$home/state/.balance-history" 40.00 \
+  && fail "the readings that raised the alarm must be long pruned by now"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-drip.json" "$at" report)
+assert_contains "$out" "balance runs out in" "a standing warning must survive the loss of the readings that raised it"
+pass "a warning outlives the readings that raised it"
+
+# WHAT ENDS A STANDING WARNING IS THE CONDITION ENDING, AND NOTHING ELSE.
+#
+# The three cases below walk that rule across the line from both sides, on one
+# balance whose numbers are readable by hand: draining 40.00 to 0.40 in an hour
+# measures a drain under which one validation costs 39.6, so anything the
+# account holds below that is still less than one validation's worth of spend -
+# which is the entire claim the warning makes.
+home=$(fresh_home balance-condition-clears)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the drain must raise the warning these cases are about ending"
+
+# A cent of the provider's own rounding is not a recharge. The quiet cases above
+# pin `40.01, 40.00, 40.01, 40.00` as one of "the shapes a working fleet
+# produces", so this file's own evidence says this balance reads upward without
+# anybody topping it up. A rule that retired the warning on any reading higher
+# than the one before handed that noise the power to silence the guard on an
+# account with seconds left - the same silence as the idle night above, arriving
+# through a different door.
+balance_body "$home/bal-jitter.json" 0.41 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-jitter.json" 1007200 report)
+assert_contains "$out" "balance runs out in" "a cent of rounding must not retire a standing warning"
+assert_present "$home/state/.balance-warning" "noise must not be read as a recharge"
+pass "rounding jitter upward leaves a standing warning exactly where it stands"
+
+# The vendor's own "cannot serve work" flag is a worse reading, not a recovery,
+# so it must not take the drain with it. It used to: that verdict returned
+# without the measured drain, the caller deleted the record, and the small
+# top-up below - an eighth of one validation - then had nothing left to be
+# judged against and went silent on the very next poll.
+balance_body "$home/bal-unavailable.json" 0.41 false
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-unavailable.json" 1008400 report)
+assert_contains "$out" "balance spent" "the provider's own flag must be reported as spent"
+assert_present "$home/state/.balance-warning" "a spent account has not recovered, so the drain must survive it"
+pass "a spent-by-flag reading keeps the drain that judges what comes after it"
+
+# Nor is a top-up too small to buy back a validation - and this is the sharp
+# edge of the rule, the case that separates it from "any increase clears". 5.00
+# is more than twelve times the balance that raised the warning and still buys
+# less than one validation at the drain measured here, so the condition is still
+# true and the warning still stands.
+balance_body "$home/bal-small-topup.json" 5.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-small-topup.json" 1010800 report)
+assert_contains "$out" "balance runs out in" "a top-up that does not buy back a validation must not clear the warning"
+assert_present "$home/state/.balance-warning" "the warning ends with the condition, not with an increase"
+pass "a top-up too small to restore one validation leaves the warning standing"
+
+# And the other direction, so none of this can be satisfied by a guard that
+# simply never stops warning: a top-up that genuinely puts the runway back
+# beyond one validation's worth ends the condition, and that ends the warning.
+balance_body "$home/bal-recharged.json" 90.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json" 1014400 report)
+[ -z "$out" ] || fail "a recharge past one validation's worth must clear the standing warning, got: $out"
+assert_absent "$home/state/.balance-warning" "a recharge must retire the standing warning, not just silence it"
+pass "the condition ceasing to hold is what clears a standing warning"
+
+# A CENT AT THE END OF AN IDLE STRETCH IS STILL NOT A RECOVERY, and this is the
+# case the magnitudes above are too kind to catch. Here the account holds 19 and
+# one validation costs 21 at the drain that fired, so the margin is barely
+# cleared - which is what the guard is for and where it has to be right.
+#
+# The whole idle stretch sits between the drain and the cent. While a standing
+# warning was re-derived from a freshly measured rate, that one cent moved the
+# window's end past the idle hours, spread the same consumption across twice the
+# time, halved the apparent drain and read as an all-clear. The warning is
+# anchored to the drain that raised it now, so no later window arithmetic can
+# reach it: only the balance rising far enough to buy back a validation does.
+home=$(fresh_home balance-idle-then-one-cent)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-near.json" 19.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-near.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "21 units an hour with 19 left is less than one validation"
+# An hour of an idle fleet, then the provider's amount ticks by a cent. Both
+# directions, because either one used to be enough to end the warning.
+for cent in 19.01 18.99; do
+  balance_body "$home/bal-cent.json" "$cent" true
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-cent.json" 1007200 report)
+  assert_contains "$out" "balance runs out in" "a cent after an idle hour must not retire a standing warning"
+  assert_present "$home/state/.balance-warning" "no window arithmetic may reach an anchored warning"
+done
+pass "a cent at the end of an idle stretch leaves the warning anchored where it stands"
+
+# A STANDING WARNING MUST NEVER MAKE THE GUARD QUIETER THAN NO WARNING AT ALL.
+#
+# The remembered drain is evidence, not a ceiling. When the fleet starts burning
+# FASTER than it was when the alarm rang, the fresh measurement is the urgent
+# one, and answering from the remembered drain alone reported an all-clear on a
+# balance the guard had just measured as having thirty-seven minutes left - and
+# deleted the drain on the way out, so the state went with it.
+#
+# The sequence is ordinary for a prepaid account and needs nothing exotic: the
+# warning fires, the captain keeps the fleet going with small top-ups while it
+# burns far harder than it was when the alarm rang, and then tops up once to a
+# figure the old, slower drain calls comfortable. A remembered drain cannot
+# learn about that acceleration on its own, so it has to be checked against the
+# measurement rather than trusted instead of it.
+home=$(fresh_home balance-accelerated-burn)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 19.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "21 units an hour with 19 left is less than one validation"
+# Small top-ups and a much harder burn, every reading still under the 21 that one
+# validation cost when the alarm rang, so the warning rightly stands throughout.
+at=1004500
+for amount in 20.00 1.00 20.00 1.00 20.00 1.00; do
+  balance_body "$home/bal-step.json" "$amount" true
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+  at=$((at + 900))
+done
+# Now a top-up to 30: comfortable at the remembered drain, barely an hour at the
+# one the fleet is actually burning at. Answering from the remembered drain alone
+# printed an all-clear here and deleted the drain on its way out.
+balance_body "$home/bal-topup.json" 30.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-topup.json" "$at" report)
+assert_contains "$out" "balance runs out in" "a faster burn must be believed, whatever the remembered drain says"
+assert_present "$home/state/.balance-warning" "the more urgent drain must be carried forward, not discarded"
+pass "fresh evidence sharpens a standing warning instead of retiring it"
+
+# AND THE BAR FOR CLEARING MUST NOT MOVE WHILE THE WARNING STANDS.
+#
+# Sharpening the report is one thing; overwriting the remembered drain with
+# every faster burn is another. It ratchets: the bar for clearing only ever
+# rises, so a burst that has long since aged out of the measuring window goes on
+# deciding what counts as recovered, and the captain can no longer reach it.
+#
+# This continues the busy day above. The captain now tops up to 35 - nearly
+# double the 19 that raised the alarm - and the fleet goes quiet, so the window
+# measures no drain at all. Both the drain that raised the alarm and every drain
+# still in evidence say the account holds more than one validation, so the
+# warning is over. With the bar ratcheted down it went on printing "recharge
+# before dispatching" at every session start, on a balance nothing had measured
+# as short: a threshold with no measurement behind it, which is the false
+# positive this guard exists not to be.
+balance_body "$home/bal-recovered.json" 35.00 true
+at=$((at + 900))
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recovered.json" "$at" check >/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  at=$((at + 900))
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recovered.json" "$at" check >/dev/null
+done
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recovered.json" "$((at + 900))" report)
+[ -z "$out" ] || fail "a balance recovered past the drain that raised the alarm must not keep warning, got: $out"
+assert_absent "$home/state/.balance-warning" "the bar for clearing must be the drain that raised the alarm, not the worst burn since"
+pass "a recovered balance clears the warning instead of meeting a bar that moved"
+
+# A HARD BURST SHORTER THAN ONE MARGIN, THEN IDLE, MUST STILL BE PROJECTED.
+#
+# This is the fleet's ordinary rhythm: the captain dispatches, the balance falls
+# hard inside the first hour, the runs finish, the fleet goes quiet. While the
+# measuring window ended at the last reading where the balance moved, the span
+# froze the moment the burn stopped, so it never reached the margin's worth of
+# readings the guard needs before it will project - and the account sat at a
+# twelfth of its morning balance in silence until it hit zero, which is the
+# forensic report after the fact this whole guard exists to replace.
+home=$(fresh_home balance-burst-then-idle)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+at=1000000
+for amount in 25.00 22.00 19.00 16.00 13.00 10.00 7.00 4.00 2.00; do
+  balance_body "$home/bal-step.json" "$amount" true
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+  at=$((at + 300))
+done
+# The burn is over in forty minutes, well inside one margin. Now the fleet idles,
+# polling the same untouched amount, and the window keeps growing.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+  at=$((at + 300))
+done
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" report)
+assert_contains "$out" "balance runs out in" "a burst shorter than one margin must still be projected once the readings reach one"
+pass "a hard burst followed by idle is warned about rather than left unmeasurable"
+
+# AND THE IDLE THAT COMES BEFORE A BURST MUST NOT BE THROWN AWAY EITHER.
+#
+# This is the shape the fleet is actually in since the captain moved this
+# provider to last resort: the balance sits untouched for a day, then a run
+# picks it and drains it hard. The readings taken while it sat still are the
+# only history that burn can be measured against.
+#
+# Retention and the policy's rate window now count back from the same row - the
+# newest reading - so every reading that window can reach is still on disk by
+# construction. While this prune counted from the last reading where the balance
+# MOVED instead, a flat stretch was collapsed and then swept away the instant the
+# balance moved again, so the span restarted from zero and the entire drain ran
+# in silence.
+home=$(fresh_home balance-flat-then-drained)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+at=1000000
+balance_body "$home/bal-step.json" 50.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+at=$((at + 300))
+balance_body "$home/bal-step.json" 49.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+# Five hours of an untouched balance, far past the four margins retention keeps,
+# with the watcher polling throughout.
+for _ in $(seq 1 60); do
+  at=$((at + 300))
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+done
+# Then the morning dispatch burns it down over forty minutes.
+for amount in 43.25 37.50 31.75 26.00 20.25 14.50 8.75 3.00; do
+  at=$((at + 300))
+  balance_body "$home/bal-step.json" "$amount" true
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" report)
+done
+assert_contains "$out" "balance runs out in" "a balance flat for hours and then drained must be warned about, not measured from scratch"
+pass "the readings taken while a balance sat still are what its drain is measured against"
+
+# THE BALANCE GOING UP MUST NOT BE ABLE TO KEEP THE GUARD FROM EVER SPEAKING.
+#
+# The case above protects a warning already raised. This one protects the first
+# one, which nothing can carry forward because it does not exist yet. The quiet
+# cases pin `40.01, 40.00, 40.01, 40.00` as a shape a working fleet produces, so
+# the provider's own amount reads upward without anybody paying; a rule that
+# discarded every reading before such a tick could never accumulate the margin's
+# worth of history it refuses to project without, and an account draining hard
+# with a cent of rounding in it was never warned about at all.
+home=$(fresh_home balance-jitter-while-draining)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+at=1000000
+for amount in 40.00 20.00 20.01 10.00 5.00 5.01 1.00; do
+  balance_body "$home/bal-step.json" "$amount" true
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" report)
+  at=$((at + 600))
+done
+assert_contains "$out" "balance runs out in" "upward rounding must not stop the guard raising its first warning"
+pass "a draining balance that reads upward now and then is still warned about"
+
+# And the same shape on a HEALTHY balance stays silent, so the case above cannot
+# be satisfied by a guard that simply warns about everything: a cent of jitter
+# is a cent of consumption, not an erased history and not an alarm.
+home=$(fresh_home balance-jitter-while-healthy)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+at=1000000
+for amount in 40.01 40.00 40.01 40.00 39.99 40.00; do
+  balance_body "$home/bal-step.json" "$amount" true
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" report)
+  at=$((at + 3600))
+done
+[ -z "$out" ] || fail "a healthy balance that jitters must stay silent, got: $out"
+pass "rounding jitter on a healthy balance is a cent of consumption, not an alarm"
+
+# The clearing event must be recognised whatever SHAPE the previous reading
+# took, and an overdrawn account reads below zero. A comparison that refused a
+# signed amount skipped the clear silently, so the captain recharged to 90.00
+# and the guard went on telling them to recharge before dispatching - the
+# cry-wolf verdict this whole arm exists to avoid, on a balance that was fine.
+home=$(fresh_home balance-negative-then-recharge)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+balance_body "$home/bal-overdrawn.json" -0.10 true
+balance_body "$home/bal-recharged.json" 90.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the drain must raise the warning this case is about clearing"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-overdrawn.json" 1007200 check)
+assert_contains "$out" "balance spent" "an account below zero has been seen holding something and is spent"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json" 1010800 report)
+assert_not_contains "$out" "recharge before dispatching" "a balance just recharged must never be reported as running out"
+[ -z "$out" ] || fail "a recharge after an overdrawn reading must clear the standing warning, got: $out"
+assert_absent "$home/state/.balance-warning" "the clearing event must be seen whatever sign the previous reading carried"
+pass "an overdrawn reading does not block the recharge that clears a standing warning"
+
+# A recharge quiets the guard by LENGTHENING THE RUNWAY, not by erasing what was
+# measured. How fast this fleet burns does not change when the captain pays, so
+# the drain measured before the top-up is still the drain; the balance is simply
+# higher now, and the same arithmetic puts zero further away.
+home=$(fresh_home balance-topped-up)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+balance_body "$home/bal-recharged.json" 90.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-recharged.json" 1003900 check)
+[ -z "$out" ] || fail "a recharge past one validation's worth must quiet the guard, got: $out"
+pass "a recharge quiets the guard by lengthening the runway, not by erasing the drain"
+
+# AND NOTHING IS RESET BY IT, which is the half a reset-based rule could never
+# show. The balance falls again barely ten minutes after the recharge - far less
+# than the margin the guard refuses to project inside. A rule that discarded the
+# history at the top-up would have nothing to measure and would go silent; the
+# drain measured across the whole window is still there, so the guard speaks.
+balance_body "$home/bal-after-recharge.json" 1.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-after-recharge.json" 1004500 report)
+assert_contains "$out" "balance runs out in" "a recharge must not discard the drain measured before it"
+pass "a drain resumed right after a recharge is measured, not waited out"
+
+# === the margin is measured, and configurable ===============================
+#
+# The default is the 90th percentile of this fleet's own completed validation
+# spans (docs/verification/dispatch-auth.md), a shade over two and a quarter
+# hours. It is pinned here through BEHAVIOR at two projections that straddle it,
+# so a future edit cannot quietly round it to a number nobody measured.
+home=$(fresh_home balance-default-margin)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+# Drain 90% of the balance over three hours: the remaining tenth is about
+# twenty minutes, well inside the measured margin.
+balance_body "$home/bal-a.json" 40.00 true
+balance_body "$home/bal-b.json" 4.00 true
+run_balance "$home" "$home/snap.json" "" "$home/bal-a.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "" "$home/bal-b.json" 1010800 check)
+assert_contains "$out" "balance runs out in" "a twenty-minute runway must fire against the measured default margin"
+assert_contains "$out" "2h18m" "the default margin must be the measured validation span, not a round number"
+# Now the other side of it: half the balance over three hours leaves three more,
+# comfortably beyond the margin.
+home=$(fresh_home balance-default-margin-clear)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-a.json" 40.00 true
+balance_body "$home/bal-b.json" 20.00 true
+run_balance "$home" "$home/snap.json" "" "$home/bal-a.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "" "$home/bal-b.json" 1010800 check)
+[ -z "$out" ] || fail "a three-hour runway must clear the measured default margin, got: $out"
+pass "the default margin is the measured validation span, on both sides of it"
+
+home=$(fresh_home balance-config-margin)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-a.json" 40.00 true
+balance_body "$home/bal-b.json" 4.00 true
+printf '18000\n' >"$home/config/balance-margin-secs"
+# Six hours apart, because the drain window has to be at least one margin long
+# before the guard will project from it at all.
+run_balance "$home" "$home/snap.json" "" "$home/bal-a.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "" "$home/bal-b.json" 1021600 check)
+assert_contains "$out" "inside the 5h" "config/balance-margin-secs must set the margin"
+pass "config/balance-margin-secs sets the reaction margin"
+
+# Same contract as the lane threshold: a typo must not switch a guard off.
+printf 'ages\n' >"$home/config/balance-margin-secs"
+out=$(run_balance "$home" "$home/snap.json" "" "$home/bal-b.json" 1025200 report)
+assert_contains "$out" "invalid config/balance-margin-secs" "a malformed margin must be reported"
+assert_contains "$out" "guarding at the default 8294" "a malformed margin must fall back, never switch the arm off"
+pass "a malformed margin falls back to the default and says so"
+
+# 0 retires the balance arm on its own, leaving the lane arm exactly as it was.
+home=$(fresh_home balance-retired)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+balance_body "$home/bal-gone.json" 0.00 false
+out=$(run_balance "$home" "$home/snap.json" 0 "$home/bal-gone.json" 1000000 report)
+assert_contains "$out" "1 of 2 provider lanes dispatchable" "retiring the balance arm must leave the lane arm working"
+assert_not_contains "$out" "balance" "a retired balance arm must say nothing about the balance"
+assert_absent "$home/state/.balance-history" "a retired balance arm must not even take a reading"
+pass "the balance arm has its own off switch, and retiring it takes no reading"
+
+# And the captain's whole-guard off switch still retires both arms, so nobody
+# who switched this guard off finds it calling a provider again.
+home=$(fresh_home balance-whole-guard-retired)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)"
+balance_body "$home/bal-gone.json" 0.00 false
+out=$(FM_HOME="$home" FM_CAPACITY_MIN_LANES=0 FM_CAPACITY_SNAPSHOT="$home/snap.json" \
+  FM_BALANCE_MARGIN_SECS="$MARGIN" FM_CAPACITY_BALANCE="$home/bal-gone.json" \
+  FM_CAPACITY_BALANCE_NOW=1000000 "$CHECK" report 2>&1)
+[ -z "$out" ] || fail "the whole-guard off switch must retire the balance arm too, got: $out"
+assert_absent "$home/state/.balance-history" "a retired guard must take no balance reading"
+pass "0 lanes retires the balance arm with the rest of the guard"
+
+# === the balance arm does not share the lane arm's blind spots ==============
+
+# A spent balance stops every validation in the fleet. Having that go unreported
+# because the OTHER vendor call timed out would put back the silence this guard
+# exists to end, so the balance verdict survives an unreadable snapshot - and
+# says which half of the guard went blind.
+home=$(fresh_home balance-without-snapshot)
+printf 'not json at all\n' >"$home/snap.json"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-gone.json" 0.00 false
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1003600 report)
+assert_contains "$out" "balance spent" "a spent balance must be reported even when the quota snapshot cannot be read"
+assert_contains "$out" "capacity unknown" "a guard that went half blind must say which half"
+assert_not_contains "$out" "0 of 0 provider lanes" "a quota reading that never arrived must not read as a lane verdict"
+pass "the balance verdict survives a quota snapshot that could not be read"
+
+# A BROKEN METER AND A FLEET WITH NO LANES MUST NEVER READ THE SAME.
+#
+# The stand-in above is the guard's own word that the quota call failed, and it
+# has to be told apart from a quota-axi report that genuinely answered with an
+# empty provider list - a misconfigured or broken install. The first is a
+# measuring tool that stopped working and says so; the second is a fleet with
+# nothing left to dispatch on and fires the lane warning like any other.
+home=$(fresh_home empty-provider-list)
+snapshot "$home/snap.json"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "0 of 0 provider lanes dispatchable" "a quota report with no providers is a fleet with no lanes and must fire"
+assert_contains "$out" "below 2" "a fleet with no lanes must name the threshold it fell under"
+assert_not_contains "$out" "capacity unknown" "a snapshot that was read is not a guard that went blind"
+pass "a quota report that answers with no providers still fires the lane warning"
+
+# And the broken meter, with no balance to fall back on either: it is reported
+# in its own words and is never silent, because a guard that cannot see is not a
+# fleet that is fine.
+home=$(fresh_home meter-broken)
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_guard "$home" 2 "$home/snap.json" report)
+assert_contains "$out" "capacity unknown" "a quota report that could not be read must say so"
+assert_not_contains "$out" "provider lanes dispatchable" "a broken meter must never be reported as a lane count"
+pass "a broken quota reading and an empty provider list are told apart"
+
+# An unreadable balance is not a healthy one. Session start says so; the watcher
+# stays quiet about it for the same reason it stays quiet about an unreadable
+# snapshot, because a vendor that times out now and then is ordinary.
+home=$(fresh_home balance-unreadable)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+printf 'not json at all\n' >"$home/bal-bad.json"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-bad.json" 1000000 report)
+assert_contains "$out" "balance unknown" "an unreadable balance must be reported as unknown"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-bad.json" 1003600 check)
+[ -z "$out" ] || fail "the watcher must not wake on an unreadable balance, got: $out"
+assert_absent "$home/state/.balance-history" "an unreadable balance must not be recorded as a reading"
+pass "an unreadable balance is reported as unknown, never as a healthy one"
+
+# A runway is a projection of ONE quantity draining. An answer carrying two
+# currencies cannot be reduced to one without inventing a number the account
+# does not have, so it is refused rather than added up.
+printf '{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"40.00"},{"currency":"CNY","total_balance":"120.00"}]}\n' \
+  >"$home/bal-two-currencies.json"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-two-currencies.json" 1007200 report)
+assert_contains "$out" "one draining balance" "two currencies must be refused, not summed"
+assert_absent "$home/state/.balance-history" "a balance that cannot be reduced to one runway must not be recorded"
+pass "two currencies are refused rather than added into a balance nobody has"
+
+# === repeat suppression covers the balance too ==============================
+
+home=$(fresh_home balance-repeat)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+balance_body "$home/bal-lower.json" 0.20 true
+balance_body "$home/bal-gone.json" 0.00 false
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the first short runway must report"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-lower.json" 1007200 check)
+[ -z "$out" ] || fail "a still-shrinking runway is the same situation and must not re-report, got: $out"
+# Actually running out IS a different situation, with a different remedy and a
+# different urgency, so it wakes somebody again.
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1010800 check)
+assert_contains "$out" "balance spent" "running out after a warning must report again"
+pass "a shrinking runway reports once, and reaching zero reports again"
+
+# Suppression must key on WHAT THE LINE SAYS, not on facts the line withheld.
+# The lane inventory is deliberately omitted when only the balance fires, so
+# keying the record on it would re-wake the captain with a byte-identical
+# sentence every time one provider's error text changed or quota-axi wobbled.
+home=$(fresh_home balance-suppression-ignores-lanes)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+first=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$first" "balance runs out in" "the first short runway must report"
+# The lane inventory changes underneath: a lane that was healthy now cannot be
+# measured, and the fleet is still above the threshold, so the printed line is
+# unchanged. Nothing new was said, so nothing new may be shouted.
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(unmeasured_provider codex)"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1007200 check)
+[ -z "$out" ] || fail "a lane change the line does not mention must not re-report the same balance warning, got: $out"
+# And the harshest version of the same wobble: quota-axi stops answering at all,
+# so the guard falls back to the balance-only stand-in. The captain reads the
+# identical sentence, so it must not arrive twice.
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1010800 check)
+[ -z "$out" ] || fail "a quota-axi outage must not re-report an unchanged balance warning, got: $out"
+pass "an unchanged balance warning survives lane wobble without repeating itself"
+
+# And the stand-in must not retract a lane verdict either. A quota reading that
+# never arrived establishes nothing about the lanes, so it cannot be what clears
+# the record that suppresses an unchanged degraded fleet.
+home=$(fresh_home standin-keeps-record)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+balance_body "$home/bal-full.json" 40.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check)
+assert_contains "$out" "1 of 2 provider lanes dispatchable" "the first degraded poll must report"
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1003600 check)
+[ -z "$out" ] || fail "the watcher must stay quiet while quota-axi is down, got: $out"
+assert_present "$home/state/.capacity" "a quota-axi outage must not retract a lane shape it never read"
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1007200 check)
+[ -z "$out" ] || fail "an unchanged degraded fleet must not be re-reported after a quota-axi outage, got: $out"
+pass "a quota-axi outage does not make an unchanged degraded fleet report twice"
+
+# === the credential never reaches a command line ============================
+#
+# macOS `ps` shows every process's full argument list to every local user, so a
+# bearer token handed to curl as an argument is a token published to the machine
+# for the length of the call - and this call runs on the watcher cadence and at
+# every session start, so the window repeats forever. The stub below stands in
+# for curl and records exactly what it was handed. Nothing here reaches a
+# network, a credential store, or a real balance: the key is a literal this file
+# invented and the endpoint is never contacted.
+if command -v jq >/dev/null 2>&1; then
+  home=$(fresh_home balance-credential-argv)
+  snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+  mkdir -p "$home/stub" "$home/tmp"
+  cat >"$home/stub/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$FM_TEST_CURL_ARGV"
+out=
+prev=
+for arg in "$@"; do
+  [ "$prev" = -o ] && out=$arg
+  case "$arg" in
+    @*) [ ! -f "${arg#@}" ] || cat "${arg#@}" >>"$FM_TEST_CURL_HEADERS" ;;
+  esac
+  prev=$arg
+done
+[ -z "$out" ] \
+  || printf '{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"40.00"}]}\n' >"$out"
+printf '200'
+STUB
+  chmod 0700 "$home/stub/curl"
+  : >"$home/curl-argv"
+  : >"$home/curl-headers"
+  FM_HOME="$home" FM_CAPACITY_MIN_LANES=2 FM_CAPACITY_SNAPSHOT="$home/snap.json" \
+    FM_BALANCE_MARGIN_SECS="$MARGIN" FM_CAPACITY_BALANCE_NOW=1000000 \
+    DEEPSEEK_API_KEY=fm-tests-invented-this-key \
+    FM_TEST_CURL_ARGV="$home/curl-argv" FM_TEST_CURL_HEADERS="$home/curl-headers" \
+    TMPDIR="$home/tmp" PATH="$home/stub:$PATH" "$CHECK" report >/dev/null 2>&1
+  assert_contains "$(cat "$home/curl-headers")" "Authorization: Bearer fm-tests-invented-this-key" \
+    "the balance read must still authenticate, through a header file"
+  assert_not_contains "$(cat "$home/curl-argv")" "fm-tests-invented-this-key" \
+    "the credential must never reach the balance probe's argument list"
+  assert_present "$home/state/.balance-history" "the reading must still be recorded"
+  leftover=$(find "$home/tmp" -name 'fm-balance-auth.*' 2>/dev/null | head -n 1)
+  [ -z "$leftover" ] || fail "the header file holding the credential must not outlive the read, got: $leftover"
+  pass "the balance probe authenticates without putting the credential in any argv"
+
+  # The amounts ride the same rule as the credential. They are the captain's own
+  # financial figures, a poll's worth of them is their whole spending history,
+  # and a command line is readable by every local user - so the fact that they
+  # are private state rather than a secret changes nothing about where they may
+  # appear. This stub records what the classifier was invoked with and then runs
+  # the real one, so the guard's verdict still has to come out right.
+  home=$(fresh_home balance-amounts-argv)
+  snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+  mkdir -p "$home/stub"
+  cat >"$home/stub/node" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$FM_TEST_NODE_ARGV"
+exec "$FM_TEST_REAL_NODE" "$@"
+STUB
+  chmod 0700 "$home/stub/node"
+  : >"$home/node-argv"
+  balance_body "$home/bal-full.json" 40.55 true
+  balance_body "$home/bal-low.json" 0.40 true
+  real_node=$(command -v node)
+  run_recorded() {  # <balance-file> <at> <action>
+    FM_HOME="$home" FM_CAPACITY_MIN_LANES=2 FM_CAPACITY_SNAPSHOT="$home/snap.json" \
+      FM_BALANCE_MARGIN_SECS="$MARGIN" FM_CAPACITY_BALANCE="$1" \
+      FM_CAPACITY_BALANCE_NOW="$2" \
+      FM_TEST_NODE_ARGV="$home/node-argv" FM_TEST_REAL_NODE="$real_node" \
+      PATH="$home/stub:$PATH" "$CHECK" "$3" 2>&1
+  }
+  run_recorded "$home/bal-full.json" 1000000 check >/dev/null
+  out=$(run_recorded "$home/bal-low.json" 1003600 check)
+  assert_contains "$out" "balance runs out in" "the readings must still reach the classifier and fire"
+  assert_not_contains "$(cat "$home/node-argv")" "40.55" "a balance amount must never reach the classifier's argument list"
+  assert_not_contains "$(cat "$home/node-argv")" "0.40" "a balance amount must never reach the classifier's argument list"
+  pass "the classifier is handed the captain's amounts without publishing them in any argv"
+else
+  printf 'ok - SKIP the credential-argv case needs jq\n'
+fi
 
 # === watcher registration ===================================================
 

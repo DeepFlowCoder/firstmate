@@ -10,10 +10,11 @@
 //
 // WHAT IT DECIDES, and nothing else: given one quota-axi snapshot and a minimum
 // lane count, whether the fleet's remaining capacity is worth reporting, and in
-// what words. It performs no I/O beyond stdin/stdout, runs no command, reads no
-// configuration, keeps no state, and never refuses a dispatch. Acquiring the
-// snapshot, reading the threshold, suppressing a repeat, and carrying the line
-// to the watcher or the session start all belong to bin/fm-capacity-check.sh.
+// what words. It performs no I/O beyond stdin/stdout and its own environment,
+// runs no command, reads no configuration, keeps no state, and never refuses a
+// dispatch. Acquiring the snapshot, reading the threshold, remembering a
+// standing warning, suppressing a repeat, and carrying the line to the watcher
+// or the session start all belong to bin/fm-capacity-check.sh.
 // That split is the same one bin/fm-arm-pretool-check.sh has with
 // bin/fm-arm-command-policy.mjs, and it is what makes the classification
 // testable from a fixture instead of from whatever the host's providers happen
@@ -39,12 +40,98 @@
 //   exhausted   the allowance is spent but no reset    -> recharge if prepaid,
 //               hour is reported                         or check the provider
 //
-// There is deliberately NO "balance" cause. quota-axi 0.1.29 exposes no
-// producer-verified signal that separates a spent prepaid balance from a spent
+// No quota-axi lane is ever classified as a spent prepaid BALANCE. quota-axi
+// 0.1.29 exposes no producer-verified signal that separates one from a spent
 // time window: `windows[].kind` is only ever model/session/weekly (never
 // "credits"), and `credits.remaining: 0` is a constant for codex and grok that
 // is never headroom (docs/verification/dispatch-auth.md). A spent allowance with
 // no named reset therefore reads as `exhausted`, never as a guessed "recharge".
+//
+// THE BALANCE ARM IS A SECOND PRODUCER, not a re-reading of the first. The
+// validation pipeline runs its agents on Pi, which runs on a PREPAID provider
+// balance quota-axi does not report at all, so a zero balance is invisible to
+// every lane above and yet stops the whole fleet: it is the pipeline's own
+// dependency, not one worker's lane. Measured twice, on 2026-09-18 and
+// 2026-09-19, when validations in flight died together on
+// `402 Insufficient Balance` with no warning of any kind.
+//
+// That balance is read separately (bin/fm-capacity-check.sh owns acquisition)
+// and arrives here as a bounded history of readings, never as a lane. It is
+// classified on its own terms:
+//
+//   balance-spent      the balance can no longer serve work -> recharge NOW;
+//                                                              validations stop
+//   balance-runway     the measured drain reaches zero      -> recharge before
+//                      inside the reaction margin              dispatching more
+//   balance-unestablished the amount has only ever read zero -> this guard
+//                                                              cannot work here
+//   balance-live       zero is further away than the margin -> silent
+//   balance-unmeasured no drain established yet             -> silent
+//
+// WHERE THE WARNING STARTS, which is the answer to "can it cry wolf". It fires
+// when `balance / rate < margin`, and the margin IS how long a validation
+// takes, so rearranged it fires exactly when less than ONE VALIDATION'S worth
+// of spend is left at the rate the fleet has actually been spending. Nobody
+// picked that trigger; it falls out of the margin being a measured duration. A
+// balance holding more than one validation cannot make this speak, and
+// averaging over a longer window only ever moves the trigger lower.
+// tests/fm-capacity.test.sh walks that boundary from both sides.
+//
+// THE MARGIN IS MEASURED, NOT CHOSEN. It is the wall-clock span a validation
+// spends burning that provider, at the 90th percentile of this fleet's own
+// completed runs, so nine of ten validations that start at the moment of the
+// warning still finish before the balance is gone. The measurement, its query,
+// and its output are recorded in docs/verification/dispatch-auth.md; the
+// default lives in bin/fm-capacity-check.sh beside the config file that
+// overrides it. A round number would be a false positive waiting its turn.
+//
+// THE DRAIN RATE IS MEASURED OVER AT LEAST ONE MARGIN, because a prepaid
+// balance is spent in bursts: a validation burns hard for an hour and then
+// nothing for six. A rate taken across the last two readings would read as
+// infinite mid-run and as zero overnight, and would fire on the first burst of
+// every busy morning. Averaging over a span no shorter than one typical
+// validation is what makes the projection describe the fleet rather than the
+// minute. Until that much history exists the runway is `balance-unmeasured`,
+// which discloses and never alarms - the same rule every unmeasured lane obeys.
+// That window always ends at the newest reading, so an idle stretch keeps
+// lengthening it until there is a margin's worth to project from - which is how
+// a hard burst that was itself shorter than one margin becomes measurable at
+// all. Idle readings make the measured drain slower, never faster, so they can
+// only quiet the guard; what stops them reading as an all-clear is the anchored
+// warning below, not the shape of this window.
+//
+// WHAT IS CONSUMED IS THE SUM OF THE DOWNWARD MOVES over that window, and the
+// balance going up is not an event: an increase contributes nothing to
+// consumption and resets nothing. A recharge therefore needs no handling of its
+// own - the drain measured before it stays valid, because how fast this fleet
+// burns does not change when the captain pays, and the higher balance lengthens
+// the runway by itself.
+//
+// A WARNING ALREADY RAISED IS ANCHORED. The drain measured at the moment it
+// fired arrives in FM_CAPACITY_BALANCE_STANDING, as seconds of runway per unit
+// of balance, and it never expires: it stays in evidence until the balance has
+// risen far enough to buy back a validation against it. Keeping the DRAIN
+// rather than the finished runway is what makes that possible without inventing
+// a second number - a remembered rate re-applies to any later balance, so a
+// recharge answers the question on the very next reading instead of waiting a
+// whole margin for a fresh window.
+//
+// THE PROJECTION THEN TAKES THE MOST URGENT DRAIN IN EVIDENCE, anchored or
+// freshly measured, and that single rule carries the whole invariant: fresh
+// evidence can sharpen a standing warning and can never soften one, because a
+// minimum only ever falls. Nothing has to remember the invariant separately, so
+// nothing can forget it.
+//
+// Every earlier rule let one drain answer alone, and the same silence came back
+// seven times: an idle night flattened the rate, a quota snapshot that never
+// arrived emptied the lane list, a further drain re-anchored the window onto a
+// span too short to measure, a cent of provider rounding read as a recharge,
+// the same cent stopped a first warning being raised at all, a cent at the end
+// of an idle stretch halved the apparent drain, and finally the anchor itself
+// answered all-clear while the fresh window was measuring thirty-seven minutes
+// of runway. Each one read as an all-clear on an account that was nearly empty.
+// Consulting every drain and believing the worst ends that sequence, because
+// there is no longer a single number whose reshaping can produce silence.
 //
 // A provider that establishes none of those is `unmeasured`, never folded into
 // one of them. AGENTS.md section 4 is explicit that unmeasurable headroom,
@@ -75,7 +162,13 @@
 //      quota-axi is reporting fresh, known headroom is a fault on a source this
 //      lane is not using.
 //
-// Input:  quota-axi's default `--json` (schemaVersion 5) on stdin.
+// Input:  quota-axi's default `--json` (schemaVersion 5) on stdin, plus the
+//         optional balance reading history in the FM_CAPACITY_BALANCE_READINGS
+//         environment variable. Both arrive as values, so this file opens no
+//         file of its own and stays falsifiable from a fixture. The readings
+//         carry the captain's amounts, and the environment is where a value
+//         like that can be handed over without `ps` publishing it to every
+//         local user the way it publishes a command line.
 // Output: exactly one line on stdout when the guard should fire, and nothing at
 //         all when it should not. Silence is the contract, not an omission: a
 //         routine "capacity fine" line on every poll is what trains a captain to
@@ -128,22 +221,84 @@ function usage() {
     "fm-capacity-policy.mjs - classify a quota-axi snapshot into a fleet capacity verdict.",
     "",
     "Usage:",
-    "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record] < <quota-axi --json output>",
+    "  fm-capacity-policy.mjs --min-lanes <n> [--emit line|record]",
+    "                         [--lanes-unreadable] [--balance-margin-secs <n>]",
+    "                         < <quota-axi --json output>",
     "",
     "Prints one line when the fleet is worth reporting and nothing when it is not.",
-    "--min-lanes 0 retires the guard: the verdict is always silent.",
-    "--emit record prefixes the repeat-suppression digest and a TAB, for callers",
-    "that suppress an unchanged repeat; --emit line (the default) omits it.",
+    "--min-lanes 0 retires the lane arm: no lane count ever fires.",
+    "--lanes-unreadable says the quota snapshot could not be read at all, so the",
+    "lane arm has no reading to judge. It is NOT the same as a snapshot reporting",
+    "zero providers, which is a fleet with no lanes and still fires.",
+    "--emit record answers every poll with three TAB-separated fields, for callers",
+    "that suppress an unchanged repeat and remember a standing warning: the",
+    "repeat-suppression digest, the drain to carry forward (empty when no warning",
+    "stands, which is how a warning is retired), and the line. Any field may be",
+    "empty. --emit line (the default) prints the line and stays silent otherwise.",
+    "",
+    "The FM_CAPACITY_BALANCE_READINGS environment variable carries the",
+    "prepaid-balance history the validation provider is drained from, oldest first,",
+    "as a JSON array of",
+    "{\"at\":<epoch seconds>,\"balance\":<number>,\"available\":<bool>} objects.",
+    "It is read from the environment rather than an argument because it carries the",
+    "captain's own amounts and a command line is readable by every local user.",
+    "Unset or empty, the balance arm is silent and the lane arm is unchanged.",
+    "--balance-margin-secs is the measured reaction margin the projection is",
+    "judged against; 0 retires the balance arm. No balance amount is ever printed:",
+    "the verdict speaks in time left, never in money.",
+    "FM_CAPACITY_BALANCE_STANDING carries the drain that raised a warning this",
+    "guard has already given, as seconds of runway per unit of balance, so the",
+    "same condition can be re-asked against whatever the account holds now.",
+    "It rides the environment too, being measured from those same amounts.",
     "",
     "Exit: 0 verdict reached (fired or silent), 2 usage error, 3 unusable snapshot.",
   ].join("\n");
 }
 
-function parseArguments(argv) {
+function parseReadings(raw) {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (text === "") return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`FM_CAPACITY_BALANCE_READINGS must be JSON: ${error.message}`);
+  }
+  if (!Array.isArray(parsed)) throw new Error("FM_CAPACITY_BALANCE_READINGS must be a JSON array");
+  return parsed;
+}
+
+function parseStanding(raw) {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (text === "") return null;
+  if (!/^\d+(\.\d+)?$/.test(text)) {
+    throw new Error(`FM_CAPACITY_BALANCE_STANDING must be a non-negative number, got '${text}'`);
+  }
+  const value = Number(text);
+  return value > 0 ? value : null;
+}
+
+function parseArguments(argv, env) {
   let minLanes = null;
   let emit = "line";
+  let balanceMarginSecs = 0;
+  const balanceStandingPerUnit = parseStanding(env.FM_CAPACITY_BALANCE_STANDING);
+  let lanesUnreadable = false;
+  const balanceReadings = parseReadings(env.FM_CAPACITY_BALANCE_READINGS);
   for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i];
+    if (name === "--lanes-unreadable") {
+      lanesUnreadable = true;
+      continue;
+    }
+    if (name === "--balance-margin-secs") {
+      if (i + 1 >= argv.length) throw new Error("--balance-margin-secs requires a value");
+      const raw = argv[i + 1];
+      if (!/^\d+$/.test(raw)) throw new Error(`--balance-margin-secs must be a whole number, got '${raw}'`);
+      balanceMarginSecs = Number(raw);
+      i += 1;
+      continue;
+    }
     if (name === "--min-lanes") {
       if (i + 1 >= argv.length) throw new Error("--min-lanes requires a value");
       const raw = argv[i + 1];
@@ -163,7 +318,14 @@ function parseArguments(argv) {
     throw new Error(`unknown option: ${name}`);
   }
   if (minLanes === null) throw new Error("--min-lanes is required");
-  return { minLanes, emit };
+  return {
+    minLanes,
+    emit,
+    balanceReadings,
+    balanceMarginSecs,
+    balanceStandingPerUnit,
+    lanesUnreadable,
+  };
 }
 
 /**
@@ -347,6 +509,213 @@ function classifyProvider(provider) {
   };
 }
 
+/**
+ * A span of seconds as the captain reads a wait: `2h18m`, `47m`, `<1m`. Whole
+ * units only, because the decision this feeds is "recharge now or dispatch
+ * anyway" and no part of it turns on a second.
+ */
+function humanSpan(seconds) {
+  const whole = Math.max(0, Math.floor(seconds));
+  if (whole < 60) return "<1m";
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  if (hours === 0) return `${minutes}m`;
+  return minutes === 0 ? `${hours}h` : `${hours}h${minutes}m`;
+}
+
+/**
+ * Classify the prepaid balance the validation pipeline runs on.
+ *
+ * The readings carry an amount, and nothing this returns ever does: the caller
+ * prints time left and the remedy, never money. That is not decoration. The
+ * amount is the captain's own financial figure, it belongs in their private
+ * runtime record and nowhere else, and it is also the wrong unit for the
+ * decision - "44 minutes, and a validation needs two hours" is actionable where
+ * a currency figure needs the reader to do this arithmetic themselves.
+ *
+ * Returns null when the arm is retired or has nothing to read.
+ */
+function classifyBalance(readings, marginSecs, standingPerUnit = null) {
+  if (marginSecs <= 0) return null;
+  const clean = readings
+    .filter(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        Number.isFinite(entry.at) &&
+        Number.isFinite(entry.balance),
+    )
+    .sort((a, b) => a.at - b.at);
+  if (clean.length === 0) return null;
+
+  const newest = clean[clean.length - 1];
+  // A standing warning is carried through every verdict that is not a measured
+  // recovery, so the drain that raised it is still there to judge the next
+  // reading against. A spent account has not recovered, and neither has one
+  // topped up by less than a validation's worth. This is computed FIRST because
+  // every branch below needs it: a branch that returns without it silently
+  // deletes the caller's record, and the spent-by-flag branch did exactly that.
+  const carried = Number.isFinite(standingPerUnit) && standingPerUnit > 0 ? standingPerUnit : null;
+
+  // The vendor's own availability flag is its statement that this account can
+  // no longer serve work, so it is spent whatever the amount says: a balance
+  // can stop serving before it reaches exactly zero.
+  if (newest.available === false) {
+    return { cause: "balance-spent", marginSecs, standingPerUnit: carried };
+  }
+
+  // A ZERO AMOUNT IS ONLY EVIDENCE ONCE THE ACCOUNT HAS BEEN SEEN HOLDING
+  // SOMETHING. This is the same trap the lane arm documents above: grok and
+  // codex both report `credits.remaining: 0` on a perfectly healthy account,
+  // where the zero is a field that never carries headroom rather than a purse
+  // that ran out. An amount that has only ever read zero establishes nothing,
+  // and reading it as spent would arm a warning that fires on every poll
+  // forever - the exact shape a captain learns to scroll past, on the guard
+  // that has to be believed the one day it is right. Having WATCHED it fall is
+  // what makes the zero mean something, and the retained history is what
+  // remembers that after the balance has sat at zero all night.
+  const everPositive = clean.some((entry) => entry.balance > 0);
+  if (newest.balance <= 0) {
+    if (everPositive) return { cause: "balance-spent", marginSecs, standingPerUnit: carried };
+    // Structurally blind, not merely early. An amount that has only ever read
+    // zero will never produce a runway, so unlike a history that is simply too
+    // short this does not resolve itself by waiting - and a guard that can
+    // never do its job has to say so once rather than sit quiet looking armed.
+    // It says so ONCE: the caller's repeat suppression keys on the cause, so it
+    // does not become the per-poll noise the rule above exists to prevent.
+    return { cause: "balance-unestablished", marginSecs, standingPerUnit: carried };
+  }
+
+  // THE BALANCE GOING UP IS NOT AN EVENT. Consumption is the sum of the
+  // DOWNWARD moves across the window, so an upward move contributes nothing and
+  // triggers nothing - no reset, no re-anchoring, nothing to get wrong.
+  //
+  // Reading an increase as a recharge produced this guard's whole catalogue of
+  // silences, because the provider's own rounding reads upward too. It cleared
+  // standing warnings, and on the measuring side it discarded every reading
+  // before the tick, so a genuinely draining balance whose amount ticked up a
+  // cent more often than once per margin could never accumulate a window long
+  // enough to project from and was never warned about at all.
+  //
+  // A recharge needs no special handling once consumption is counted this way:
+  // the drain measured before it stays valid, because how fast this fleet burns
+  // does not change when the captain pays, and the higher balance lengthens the
+  // runway by itself.
+  //
+  // THE WINDOW ENDS AT THE NEWEST READING, always. Ending it at the last
+  // reading where the balance MOVED was the last place this file still treated
+  // movement as an event, and it froze the span: once the balance stopped
+  // moving, every further poll landed outside the window, so a drain shorter
+  // than one margin followed by an idle stretch could never reach the margin's
+  // worth of readings the projection needs and was never projected at all -
+  // silence on an account down to a twelfth of what it held that morning, for
+  // as long as the fleet stayed quiet.
+  //
+  // Letting the idle hours into the window makes the measured drain SLOWER, not
+  // faster, so this can only ever quiet the guard. What keeps an idle stretch
+  // from reading as an all-clear is not the shape of this window - it is that a
+  // warning already raised is anchored below and no measurement can retire it.
+  //
+  // The rate is averaged over at most two margins, and the history may reach
+  // further back than that. The two are deliberately different spans: the rate
+  // has to describe the CURRENT burn, while the history also has to remember
+  // that this account once held a balance, which is what the zero-amount rule
+  // above rests on. Bounding the rate window here rather than by what was
+  // retained is what lets the second outlive the first.
+  const rateWindowStart = newest.at - 2 * marginSecs;
+  const window = clean.filter((entry) => entry.at >= rateWindowStart);
+  const oldest = window.length > 0 ? window[0] : newest;
+  const span = newest.at - oldest.at;
+  let consumed = 0;
+  for (let i = 1; i < window.length; i += 1) {
+    const fall = window[i - 1].balance - window[i].balance;
+    if (fall > 0) consumed += fall;
+  }
+  // The drain, as seconds of runway per unit of balance. Measuring it this way
+  // rather than as a finished runway is what lets the same drain be re-applied
+  // to whatever the account holds later.
+  let measuredPerUnit = null;
+  let detail = null;
+  if (window.length < 2 || span <= 0) {
+    detail = "only one reading in the measuring window";
+  } else if (span < marginSecs) {
+    // See this file's header: a rate averaged over less than one typical
+    // validation describes the minute, not the fleet.
+    detail = `only ${humanSpan(span)} of readings to measure a drain from`;
+  } else if (consumed <= 0) {
+    detail = "no drain measured";
+  } else {
+    measuredPerUnit = span / consumed;
+  }
+
+  // THE PROJECTION USES THE MOST URGENT DRAIN ANYBODY HAS MEASURED: the one
+  // that raised the standing warning, the one measured from the window above,
+  // or the worse of the two when both exist. A smaller seconds-per-unit is a
+  // faster burn, so the minimum IS the most urgent, and taking it is the whole
+  // of the rule.
+  //
+  // THAT MAKES "FRESH EVIDENCE MAY NEVER SOFTEN A STANDING WARNING" TRUE BY
+  // CONSTRUCTION rather than by a branch that has to remember it. An anchored
+  // exit that consulted only the stored drain broke exactly that invariant in
+  // the other direction: on readings where the guard would have fired outright
+  // had no warning been standing, it read the frozen drain against a balance
+  // topped up past it, answered all-clear, and deleted the drain as it went -
+  // so a standing warning made the guard QUIETER than no warning at all. The
+  // sequence needs nothing exotic: a top-up, a burn faster than the drain that
+  // raised the alarm, and a second top-up, which the anchor by construction
+  // could never learn about.
+  //
+  // WHAT IS REPORTED AND WHAT IS REMEMBERED ARE DIFFERENT QUESTIONS. The report
+  // takes the most urgent drain, every poll. What is carried forward is only
+  // ever the drain that RAISED the alarm, unchanged for as long as it stands.
+  //
+  // Carrying the minimum instead let the anchor ratchet: every poll that still
+  // fired overwrote it with a strictly faster burn, so a burst that had long
+  // since aged out of the window went on setting the bar for clearing. A
+  // balance topped up to nearly double the one that raised the alarm, with no
+  // drain measurable in the window at all, kept printing "recharge before
+  // dispatching" at every session start - a threshold with no measurement
+  // behind it, which is the false positive this guard was built not to be.
+  //
+  // A warning is still retired only when the balance has risen far enough to buy
+  // back a validation against every drain in evidence. It cannot become an alarm
+  // nobody can switch off: the bar for clearing never moves while the warning
+  // stands, so a real recharge clears both projections on the very next reading.
+  // And if the fleet goes quiet forever the drain that raised the alarm stands,
+  // which is correct, because the balance is still low.
+  const perUnit =
+    carried !== null && measuredPerUnit !== null
+      ? Math.min(carried, measuredPerUnit)
+      : (carried ?? measuredPerUnit);
+  if (perUnit === null) {
+    return { cause: "balance-unmeasured", marginSecs, detail, standingPerUnit: null };
+  }
+  const secondsLeft = Math.floor(newest.balance * perUnit);
+  if (secondsLeft < marginSecs) {
+    return { cause: "balance-runway", marginSecs, secondsLeft, standingPerUnit: carried ?? perUnit };
+  }
+  return { cause: "balance-live", marginSecs, secondsLeft, standingPerUnit: null };
+}
+
+function describeBalance(balance) {
+  switch (balance.cause) {
+    case "balance-spent":
+      return "validation provider balance spent - every validation stops until it is recharged";
+    case "balance-runway":
+      return (
+        `validation provider balance runs out in ${humanSpan(balance.secondsLeft)}, ` +
+        `inside the ${humanSpan(balance.marginSecs)} a validation needs - recharge before dispatching`
+      );
+    case "balance-unestablished":
+      return (
+        "validation provider balance has only ever reported zero, so this guard cannot warn " +
+        "before it runs out - check whether that account bills some other way"
+      );
+    default:
+      return `validation provider balance runway not measured (${balance.detail})`;
+  }
+}
+
 function describe(lane) {
   const staleNote = lane.stale ? " (stale reading)" : "";
   switch (lane.cause) {
@@ -373,7 +742,14 @@ function describe(lane) {
   }
 }
 
-export function verdict(snapshot, minLanes) {
+export function verdict(
+  snapshot,
+  minLanes,
+  balanceReadings = [],
+  balanceMarginSecs = 0,
+  lanesUnreadable = false,
+  balanceStandingPerUnit = null,
+) {
   if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.providers)) {
     throw new Error("snapshot has no providers array");
   }
@@ -385,8 +761,18 @@ export function verdict(snapshot, minLanes) {
   const unmeasured = lanes.filter((lane) => lane.cause === "unmeasured");
 
   // 0 is the captain's own off switch, the same shape config/disk-space-min-gb
-  // uses, and it retires the guard rather than making it permanently loud.
+  // uses, and it retires the WHOLE guard - both arms - rather than making it
+  // permanently loud. Leaving the balance arm alive under it would quietly
+  // restore vendor calls a captain switched off, and would also re-arm this
+  // guard inside every test that neutralizes it by this one variable.
   if (minLanes === 0) return { fire: false, lanes, dispatchable };
+
+  const balance = classifyBalance(balanceReadings, balanceMarginSecs, balanceStandingPerUnit);
+  // `balance-unmeasured` is deliberately absent: too little history yet is the
+  // ordinary state of a home whose guard was armed this morning, and it
+  // resolves itself by waiting. The three below do not.
+  const BALANCE_FIRES = new Set(["balance-spent", "balance-runway", "balance-unestablished"]);
+  const balanceFires = balance !== null && BALANCE_FIRES.has(balance.cause);
 
   // Only a lane PROVEN lost may take the count below the threshold. A lane
   // nobody could measure is disclosed uncertainty, and counting it as lost is
@@ -397,32 +783,80 @@ export function verdict(snapshot, minLanes) {
   // A fleet whose every remaining lane ends before its own reset is the measured
   // incident even when the count itself looks fine, so it fires on its own.
   const allFinite = dispatchable.length > 0 && dispatchable.every((lane) => lane.finite);
-  if (!below && !allFinite) return { fire: false, lanes, dispatchable };
-
-  const reasons = [];
-  if (below) reasons.push(`below ${minLanes}`);
-  if (allFinite) {
-    reasons.push(
-      dispatchable.length === 1
-        ? "the only dispatchable lane is projected to run out"
-        : "every dispatchable lane is projected to run out",
-    );
+  // A quota reading that never arrived establishes nothing about lanes, so it
+  // must not read as "every lane is gone". The caller says so explicitly,
+  // because a real quota-axi report carrying an empty `providers[]` is a
+  // different fact - a fleet with no lanes at all - and still has to fire.
+  const laneFires = !lanesUnreadable && (below || allFinite);
+  if (!laneFires && !balanceFires) {
+    return { fire: false, lanes, dispatchable, balance };
   }
-  const ordered = [...lanes].sort(
-    (a, b) => CAUSE_ORDER.indexOf(a.cause) - CAUSE_ORDER.indexOf(b.cause),
-  );
-  // The count of lanes nobody could measure rides in the headline, because
-  // "1 of 10 dispatchable" on its own reads as nine broken providers.
-  const unmeasuredNote = unmeasured.length > 0 ? `, ${unmeasured.length} not measured` : "";
-  const line =
-    `${dispatchable.length} of ${lanes.length} provider lanes dispatchable${unmeasuredNote} ` +
-    `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`;
-  return { fire: true, line: line.slice(0, MAX_LINE), digest: digestOf(lanes, dispatchable), lanes, dispatchable };
+
+  // The lane inventory is deliberately NOT printed when only the balance fires:
+  // a fleet with every lane healthy still loses every validation to a spent
+  // balance, and listing ten fine lanes beside that warning buries it.
+  //
+  // An unmeasured balance runway is disclosed rather than fired on, but it is
+  // worth saying beside a fleet that is already degraded, because it names a
+  // blind spot the captain would otherwise read as an all-clear.
+  const balanceClause =
+    balance !== null && balance.cause !== "balance-live" ? describeBalance(balance) : "";
+  // The digest is built from the clauses that were actually SAID, never from
+  // facts the line left out. Keying it on the lane inventory while that
+  // inventory is withheld re-wakes the captain with a byte-identical balance
+  // sentence every time one provider's error text changes or a flaky quota-axi
+  // alternates between a full reading and none - the cry-wolf failure this guard
+  // exists to avoid, wearing the suppression's own clothes.
+  const clauses = [];
+  const digestParts = [];
+  if (laneFires) {
+    const reasons = [];
+    if (below) reasons.push(`below ${minLanes}`);
+    if (allFinite) {
+      reasons.push(
+        dispatchable.length === 1
+          ? "the only dispatchable lane is projected to run out"
+          : "every dispatchable lane is projected to run out",
+      );
+    }
+    const ordered = [...lanes].sort(
+      (a, b) => CAUSE_ORDER.indexOf(a.cause) - CAUSE_ORDER.indexOf(b.cause),
+    );
+    // The count of lanes nobody could measure rides in the headline, because
+    // "1 of 10 dispatchable" on its own reads as nine broken providers.
+    const unmeasuredNote = unmeasured.length > 0 ? `, ${unmeasured.length} not measured` : "";
+    // ONLY THE LANE INVENTORY IS EVER TRUNCATED. It is the clause that grows
+    // without bound - one entry per provider, each quoting a vendor error
+    // verbatim - while the balance clause is one fixed sentence. Cutting the
+    // joined line from the end instead dropped the balance warning first, and
+    // mid-sentence, whenever enough lanes carried long errors: the most urgent
+    // thing this guard says would have been the first thing lost.
+    const room = MAX_LINE - (balanceClause === "" ? 0 : balanceClause.length + 2);
+    clauses.push(
+      (
+        `${dispatchable.length} of ${lanes.length} provider lanes dispatchable${unmeasuredNote} ` +
+        `(${reasons.join("; ")}): ${ordered.map(describe).join(" | ")}`
+      ).slice(0, Math.max(0, room)),
+    );
+    digestParts.push(laneDigest(lanes, dispatchable));
+  }
+  if (balanceClause !== "") {
+    clauses.push(balanceClause);
+    digestParts.push(balance.cause);
+  }
+  return {
+    fire: true,
+    line: clauses.join("; "),
+    digest: digestParts.join(" "),
+    lanes,
+    dispatchable,
+    balance,
+  };
 }
 
 /**
- * The repeat-suppression key: what has to CHANGE before the same degraded fleet
- * is worth waking somebody about again.
+ * The lane half of the repeat-suppression key: what has to CHANGE before the
+ * same degraded fleet is worth waking somebody about again.
  *
  * It carries only fields that hold still while the situation does. A projected
  * exhaustion timestamp and a remaining percentage both move on every poll, so
@@ -431,8 +865,14 @@ export function verdict(snapshot, minLanes) {
  * which provider is out for which reason, when a spent time window returns, and
  * whether a live lane's runway has turned finite - which is itself the
  * transition worth a second warning.
+ *
+ * It is asked for only when the lane inventory was actually reported. The
+ * balance's own half is its CAUSE and nothing else, for the same reason: the
+ * projected seconds move on every poll, while "the runway went from long enough
+ * to shorter than a validation" is exactly the transition worth waking somebody
+ * about a second time.
  */
-function digestOf(lanes, dispatchable) {
+function laneDigest(lanes, dispatchable) {
   const parts = lanes.map((lane) => {
     if (lane.cause === "dispatchable") return `${lane.id}:live:${lane.finite ? "finite" : "ok"}`;
     if (lane.cause === "window") return `${lane.id}:window:${lane.resetsAt}`;
@@ -442,10 +882,10 @@ function digestOf(lanes, dispatchable) {
   return `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}`;
 }
 
-function main(argv) {
+function main(argv, env) {
   let options;
   try {
-    options = parseArguments(argv);
+    options = parseArguments(argv, env);
   } catch (error) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n${usage()}\n`);
     return 2;
@@ -470,16 +910,36 @@ function main(argv) {
   }
   let result;
   try {
-    result = verdict(snapshot, options.minLanes);
+    result = verdict(
+      snapshot,
+      options.minLanes,
+      options.balanceReadings,
+      options.balanceMarginSecs,
+      options.lanesUnreadable,
+      options.balanceStandingPerUnit,
+    );
   } catch (error) {
     process.stderr.write(`fm-capacity-policy: ${error.message}\n`);
     return 3;
   }
-  if (!result.fire) return 0;
-  // `record` prefixes the repeat-suppression digest and a TAB, so the caller gets
-  // both halves from one parse of the snapshot. `line` stays the default so the
-  // CLI is readable when a person runs it directly.
-  process.stdout.write(options.emit === "record" ? `${result.digest}\t${result.line}\n` : `${result.line}\n`);
+  // `line` prints only when the guard fires, because silence is the contract on
+  // the captain's surface: a routine "capacity fine" on every poll is what
+  // trains somebody to skip the section carrying the real warning.
+  if (options.emit !== "record") {
+    if (result.fire) process.stdout.write(`${result.line}\n`);
+    return 0;
+  }
+  // `record` is the caller's channel, not the captain's, and it answers every
+  // poll - including the quiet ones. A poll that finds the condition no longer
+  // true is exactly when the standing warning must be retired, and that poll
+  // prints nothing at all, so a record emitted only on a fire could never carry
+  // the news. Digest, then the drain to carry forward, then the line; any of the
+  // three may be empty, and an empty drain means "no warning stands".
+  const standing =
+    result.balance && result.balance.standingPerUnit
+      ? result.balance.standingPerUnit.toFixed(6)
+      : "";
+  process.stdout.write(`${result.digest ?? ""}\t${standing}\t${result.line ?? ""}\n`);
   return 0;
 }
 
@@ -495,4 +955,4 @@ const invokedDirectly = (() => {
   }
 })();
 
-if (invokedDirectly) process.exit(main(process.argv.slice(2)));
+if (invokedDirectly) process.exit(main(process.argv.slice(2), process.env));

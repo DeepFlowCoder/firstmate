@@ -229,6 +229,49 @@ Headroom the vendor has already answered for is read as a working lane even when
 The guard reports only and never refuses a dispatch.
 [`bin/fm-capacity-check.sh`](../bin/fm-capacity-check.sh)'s header owns snapshot acquisition, threshold precedence, transition state, and watcher registration, while [`bin/fm-capacity-policy.mjs`](../bin/fm-capacity-policy.mjs)'s header owns classification and wording.
 
+### The validation provider's balance (config/balance-margin-secs)
+
+The same guard takes a second reading no quota lane can supply.
+The validation pipeline runs its own agents, and while it is running them on the prepaid provider it draws on one balance whatever lane each task's worker was dispatched on.
+quota-axi reports no such provider at all, so that balance reaching zero is invisible to every lane above and still stops every validation in the fleet at once.
+Which agent the pipeline prefers is its own setting and can be changed; the guard watches the balance either way, because an agent moved to last resort comes back when the balance does.
+The guard reads that balance directly, on the same cadence and through the same `CAPACITY:` line and watcher check as the lane arm, so there is one place this warning comes from rather than two.
+
+The reading is one bounded request to the provider's read-only balance endpoint: it runs no model, spends no tokens, and launches no work, so measuring the balance is never what finishes it.
+The credential comes from the `DEEPSEEK_API_KEY` environment variable or from Pi's own credential file, and from nowhere else; this guard opens no interactive credential prompt, and a home with no such credential simply takes no reading and says nothing.
+The amount read is kept in the private `state/.balance-history` and reaches no other surface: the warning states how long is left and what to do, never how much money remains.
+A warning the guard has already raised lives in the private `state/.balance-warning`, which holds the measured drain that raised it so the same question can be asked again of whatever the account holds later; like the history beside it, it is never captain-facing.
+
+The guard warns once the measured drain projects the balance reaching zero sooner than a validation needs to finish, and it names both spans.
+That reaction margin defaults to **8294 seconds**, the **90th percentile of 31 completed validation runs** this fleet actually made on that provider between 2026-09-13 and 2026-09-22, so nine of ten validations that start at the moment of the warning still finish before the balance is gone; [`docs/verification/dispatch-auth.md`](verification/dispatch-auth.md) owns that measurement, its exact query, and its exact output, and is what re-measures it.
+The local, gitignored `config/balance-margin-secs` file overrides it with one whole number of seconds, and the `FM_BALANCE_MARGIN_SECS` environment variable overrides that file for a single run.
+A malformed value is reported and falls back to the default, exactly as the lane threshold does.
+
+**Overriding the default replaces a measurement with a choice**, and that measurement is the only reason this warning is worth believing: a threshold nobody measured is a false positive waiting its turn, and a warning that cries wolf is ignored by the third time.
+If the fleet's validations have got longer or shorter, re-run the query in the verification record and write down what it returned; do not type a number that feels about right.
+
+`0` in `config/balance-margin-secs` retires the balance arm alone and leaves the lane arm working, while `0` in `config/capacity-min-lanes` still retires the whole guard, both arms and both vendor calls.
+
+Because the margin is how long a validation takes, the warning starts exactly when less than **one validation's worth of spend** is left at the rate the fleet has actually been spending; a balance holding more than that cannot make the guard speak, and averaging over a longer window only ever moves the trigger lower.
+
+The drain rate is averaged over at least one whole margin of readings and at most two, because a prepaid balance is spent in bursts and a rate taken across the last few minutes would read as empty-by-lunchtime every time a validation started.
+Until that much history exists the guard says the runway is not measured rather than projecting from too little, and an unmeasured runway never fires on its own.
+What it counts as consumption is the sum of the downward moves across that window: the balance going up contributes nothing and resets nothing, so neither the provider's own rounding nor a recharge can erase a measurement or delay one.
+Once a warning has been raised, the drain that raised it is **remembered** and stays in evidence: the guard keeps projecting from whichever drain is the more urgent, the remembered one or whatever the current window measures.
+The warning is retired only when the balance the account holds now buys back more than one validation **against both**.
+So **nothing softens a standing warning** - not an idle night, not a further drain, not a poll the watcher missed, not the reading history ageing out, and not a cent of the provider's own rounding, whichever way it moves.
+A top-up too small to buy back a validation does not clear it either, because such a top-up leaves the account exactly as unable to finish a run as it was.
+A later measurement can still make a standing warning more urgent - if the fleet starts burning faster than it was when the alarm rang, the guard says so at once.
+
+An amount of zero is read as a spent balance only once the account has been seen holding something, because a field that has only ever reported zero is not a purse that ran out.
+Some providers report a permanent zero credits figure on a perfectly healthy account, and treating that as a spent balance would arm a warning that fired on every poll forever.
+Such an account gets one notice that this guard cannot warn it before it runs out, and then silence; the provider's own statement that it can no longer serve work still fires whatever the amount reads.
+The reading history keeps the most recent positive reading however old it is, so a balance that drained to zero overnight still reads as spent the next morning rather than as something the guard could not establish.
+A balance the guard could not read is reported as unknown at session start and stays silent on the watcher's cadence, on the same reasoning as an unreadable quota snapshot.
+A spent balance is reported even when the quota snapshot could not be read at all, so an unrelated vendor timeout cannot silence it.
+
+When a validation has already died on a spent balance, the run's own record says so - `bin/fm-crew-state.sh` names the balance as the cause instead of reporting the same "failed" every other cause reports - because that failure is not a verdict on the work and the only thing that clears it is a recharge.
+
 ## Update source (config/update-remote)
 
 `/updatefirstmate` pulls firstmate's own improvements from the git remote named in the local, gitignored `config/update-remote` file.
@@ -802,6 +845,8 @@ FM_SPAWN_ALLOW_LOW_DISK=  # non-empty dispatches one spawn despite the low-disk 
 FM_DISK_SPACE_MIN_GB=   # optional free-space threshold override in whole gigabytes, ahead of config/disk-space-min-gb; 0 retires the guard; see "Disk space guard"
 FM_DISK_SPACE_WARN_GB=  # optional advisory threshold override in whole gigabytes, ahead of config/disk-space-warn-gb; 0 retires only the warning tier
 FM_CAPACITY_MIN_LANES=  # optional provider-lane warning threshold override, ahead of config/capacity-min-lanes; 0 retires the guard; see "Fleet capacity guard"
+FM_BALANCE_MARGIN_SECS= # optional validation-provider balance margin override, ahead of config/balance-margin-secs; 0 retires the balance arm; see "The validation provider's balance"
+DEEPSEEK_API_KEY=       # optional credential for the balance reading, ahead of Pi's own credential file; never printed or stored
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_SUBMIT_POLLS=6  # herdr-only: agent-state samples spread across each submit attempt's budget when confirming a submit (docs/herdr-backend.md "Current transport behavior")
 FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-submit confirmation budget before polling agent-state after an idle baseline
