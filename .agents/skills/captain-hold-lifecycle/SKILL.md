@@ -35,7 +35,8 @@ A closed call is on no list the captain reads, whatever hold annotations survive
 When the close kept the hold annotations and the captain HAS since answered, `answer` is the lighter repair: it records his words on the closed row without disturbing the close.
 Never reach for `--reopen` to get past a gate on a call he already answered; reconciling a record is not deciding for him, and when the repair would have to pick a value, stop and ask him instead.
 It refuses a call that already records an answer, so the gate is never cleared by asking the captain a question he has already settled.
-Every close prints what it just did to the held work: without `--release` it ends the question AND the work item under it, so an answer meaning "get on with it" would leave the order in no queue at all - read that line before moving on, and re-dispatch the work when the close swallowed it.
+Every close names what it just did to the held work: without `--release` it ends the question AND the work item under it, so an answer meaning "get on with it" would leave the order in no queue at all.
+A close that ended the work also queues a durable wake record naming that task, because the channels the captain's answers actually arrive on discard what the command prints; when one reaches you, confirm the work is under way or queued and re-dispatch it when nothing carries it.
 Recording an answer is firstmate's act and no one else's: both `answer` and `answers` refuse any caller they cannot place on this home's firstmate side, so a crewmate that reaches for them is stopped and told to append `needs-decision:` instead (`bin/fm-captain-hold.sh` owns the proofs and the refusal).
 Resolved findings, recommendations that need no captain choice, and prose that merely sounds decision-like do not create held tasks.
 Bearings reads the resulting structured state and must never compensate by scraping historical reports, visual-review artifacts, terminal output, chat, or other prose.
@@ -43,7 +44,9 @@ Bearings reads the resulting structured state and must never compensate by scrap
 A captain call's state can move by several paths - the keyed status decision the fold reads, the backlog task held for the captain, a plain close, a plain reopen - and none of them checks that the result still agrees with what he said.
 `bin/fm-captain-hold.sh diverged` reports three such contradictions and the wake drain prints them as `RECORD DIVERGENCE`; it closes nothing, because a captain call closed wrongly leaves review entirely, which is worse than the noise.
 A status resolution standing over a still-open held task reconciles with what actually happened - `answer` when the captain's own words exist to record, and a fresh `needs-decision` line re-opening the status decision when that resolution was not the captain's word.
-A call closed with his question never answered reconciles with `--reopen` above; a live hold over a question the task's own record says he answered reconciles by lifting that hold, never by asking him again.
+A call closed with his question never answered reconciles with `--reopen` above.
+A live captain hold whose reason repeats one that task's own record says an answer annulled is reported as a possible contradiction to check, never as an established fact: hold reasons are free text and nothing records which came first, so a genuinely new question can carry a reason a past answer already settled.
+Read the record and the live question and reconcile from what actually happened, and never lift a captain hold on an inferred signal - asking him again costs a question, un-asking one loses it.
 Read any such line as "these records disagree", never as "the captain ruled and someone forgot to file it": a call can dissolve because its premise was false, or turn out to have been a question of fact rather than the captain's to answer.
 The absence of a routed work item is not a divergence and the guard never requires one: when the decision IS the deliverable there is nothing to route.
 

@@ -340,8 +340,8 @@ EOF
 # Print the RECORD DIVERGENCE section: every captain call whose records
 # contradict each other - a key resolved on the status side while the task held
 # for the captain is still open, a call filed as finished with his question
-# never answered, or a live hold asking what that task's own record says he
-# already answered. Nothing here closes anything; the section exists because
+# never answered, or a live hold repeating a reason that task's own record says
+# an answer annulled. Nothing here closes anything; the section exists because
 # each of those reads as settled from one side while the other still says
 # otherwise, with no warning at all. bin/fm-captain-hold.sh's `diverged` owns
 # which shapes count and why; this prints what it reports.
@@ -372,7 +372,7 @@ print_record_divergence_section() {
       closed-unanswered)
         line="$task was closed with the captain's question never answered, so it is on no list he reads" ;;
       hold-resurrected)
-        line="$task is held for the captain over a question its own record says he already answered" ;;
+        line="$task carries a live captain hold whose reason matches one its own record says an answer annulled - check whether that question is still open" ;;
       *)
         line="$task [key=$key] reads resolved in $origin's status log but is still held for the captain" ;;
     esac
@@ -398,11 +398,13 @@ EOF
   if [ "$omitted" -gt 0 ]; then
     printf 'RECORD DIVERGENCE: %d more omitted (byte cap)\n' "$omitted" || return 1
   fi
-  # Both directions, deliberately. The status resolution is not proof the
+  # Every direction, deliberately. The status resolution is not proof the
   # captain ruled: a call can dissolve, or turn out to have been a question of
   # fact. Reconcile with what actually happened - never by closing on the
-  # strength of this line.
+  # strength of this line, and never by lifting one of his holds on it either,
+  # since a repeated hold reason is a contradiction to check and not a proof.
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>; put a call he never answered back in front of him with bin/fm-captain-hold.sh hold <task> --reason <reason> --reopen; or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
+  printf 'RECORD DIVERGENCE: never lift a captain hold on the strength of a repeated hold reason - read the record, and ask him again when what he settled cannot be established.\n' || return 1
 }
 
 # Two failures live in this stage and they carry opposite costs, so they are

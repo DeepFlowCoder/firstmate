@@ -84,10 +84,12 @@
 # Every close names what it just did to the held WORK, because that is the one
 # choice a decision card can get wrong silently: without `--release` the close
 # ends the question AND the work item under it, so an answer meaning "get on
-# with it" leaves the order in no queue at all. The record also stores the hold
-# reason the answer consumed (`Hold annulled:`), which is what lets `diverged`
-# below tell a resurrected question from a genuinely new one without reading a
-# word of what the captain said.
+# with it" leaves the order in no queue at all. That is said twice - once on
+# stdout for a firstmate at a terminal, and once as a durable keyed wake record,
+# because the channel the captain's answers actually arrive on discards stdout.
+# The record also stores the hold reason the answer consumed (`Hold annulled:`),
+# which is what lets `diverged` below flag a hold that repeats an already
+# answered question without reading a word of what the captain said.
 #
 # ONE KEYED-ANSWER INTAKE, FED BY EVERY CHANNEL.
 # "A keyed answer closes its matching captain-held task" is a single
@@ -780,11 +782,28 @@ write_resolution_record() {  # <task-id> <mode> <shown-body> <annulled-hold-reas
   rm -f -- "$tmp"
 }
 
+# One durable, keyed wake record saying this close ended the held WORK ITEM as
+# well as the question. The stdout line below is free and still serves a
+# firstmate running `answer` at a terminal, but it cannot be the trace: every
+# production caller of the keyed intake discards stdout (bin/fm-procevent.sh and
+# bin/fm-send.sh both send it to /dev/null), and the board is the path the
+# captain's answers actually arrive on. Keyed per task so repeats collapse to the
+# one row fm_wake_print_deduped presents, and best effort exactly like
+# record_undecidable_refusal above: a wake queue that cannot be locked drops this
+# record rather than failing the close or losing the captain's recorded answer.
+# It states only what the close did and never reads a word of what he said.
+record_close_ended_work() {  # <task-id>
+  fm_wake_append check "captain-close-ended-work-$1" \
+    "check: closing the captain call $1 ended the captain-held work item along with the question, because the close was not a --release. If the captain's answer authorized work, nothing carries it now: confirm that work is under way or queued, or re-dispatch it." \
+    >/dev/null 2>&1 || return 1
+}
+
 close_answered() {  # <task-id> <release-0-or-1>
   if [ "$2" = 1 ]; then
     tasks_axi unhold "$1" >/dev/null || fail "could not release captain-held task $1"
   else
     tasks_axi "done" "$1" >/dev/null || fail "could not close answered captain-held task $1"
+    record_close_ended_work "$1" || true
   fi
 }
 
@@ -1233,8 +1252,10 @@ EOF
 #     DECISIONS fold already owns that one.
 #   closed-unanswered - a call filed as finished with no answer recorded, so it
 #     is on no list the captain reads. `--reopen` above is its repair.
-#   hold-resurrected  - a live captain hold asking the question this task's own
-#     resolution record says he already answered.
+#   hold-resurrected  - a live captain hold whose reason is the one a recorded
+#     answer on that same task annulled. Reported as a contradiction to check,
+#     never as a settled fact: see report_hold_resurrected for what the match
+#     can and cannot establish.
 #
 # The two added shapes exist because four separate losses were measured in one
 # day and not one of them emitted a signal: every one was found by hand, and the
@@ -1318,15 +1339,19 @@ $(task_ids_in_state "done")
 EOF
 }
 
-# A live captain hold asking the very question this task's own record says the
-# captain already answered. `answer` records the hold reason it consumed, so the
-# comparison is between two recorded strings and never a reading of what the
-# captain meant. The measured cause is a raw `tasks-axi reopen`, which restores
-# the whole pre-close state including the hold the answer had annulled; this
-# owner's `--reopen` refuses an answered call outright, so it cannot produce the
-# shape, only report it. A record written before `Hold annulled:` existed, and a
-# task re-held for a genuinely NEW question, both carry no match and stay
-# silent.
+# A live captain hold whose reason is the one a recorded answer on that same
+# task annulled. `answer` records the hold reason it consumed, so the comparison
+# is between two recorded strings and never a reading of what the captain meant.
+# The measured cause is a raw `tasks-axi reopen`, which restores the whole
+# pre-close state including the hold the answer had annulled; this owner's
+# `--reopen` refuses an answered call outright, so it cannot produce the shape,
+# only report it. A record written before `Hold annulled:` existed, and a task
+# re-held under a reason no record annulled, both carry no match and stay silent.
+# THE MATCH IS A CONTRADICTION TO CHECK, NOT A PROOF, and this report is
+# therefore read-only in the strongest sense: hold reasons are free text and
+# nothing tasks-axi records orders a hold against a close, so a task re-held
+# under a REPEATED reason after a non-release close cannot be told apart from
+# the restored one. Nothing may lift a captain hold on this signal.
 report_hold_resurrected() {
   local id show body annulled
   while IFS= read -r id; do
@@ -1336,6 +1361,12 @@ report_hold_resurrected() {
     [ "$(show_field_value "$show" hold_kind)" = captain ] || continue
     body=$(show_field "$show" body)
     body_has_resolution_record "$body" || continue
+    # A `released` close runs `tasks-axi unhold`, which clears `hold_reason` and
+    # `hold_kind` outright, so a captain hold live after one is necessarily a
+    # NEW placement and can never be the annulled hold restored - however
+    # exactly its reason repeats. The modes whose close leaves the annotations
+    # standing are the only ones this shape can arise from.
+    [ "$(recorded_resolution_mode "$body" || true)" != released ] || continue
     body=$(decode_shown_value "$body") || continue
     # An empty recorded value is a record that names no question - every one
     # written before `Hold annulled:` existed - and must never match, whatever

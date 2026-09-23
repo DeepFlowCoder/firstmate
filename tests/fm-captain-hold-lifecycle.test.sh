@@ -1771,8 +1771,24 @@ test_resurrected_hold_over_an_answered_call_is_signalled() {
   printf '%s\n' "$out" | grep -F 'hold-resurrected	sample-coop-call' >/dev/null \
     || fail "the resurrected hold was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the resurrected hold"
-  printf '%s\n' "$drain" | grep -F 'sample-coop-call is held for the captain over a question its own record says he already answered' >/dev/null \
+  printf '%s\n' "$drain" | grep -F 'sample-coop-call carries a live captain hold whose reason matches one its own record says an answer annulled' >/dev/null \
     || fail "the resurrected hold never reached the drain: $drain"
+  printf '%s\n' "$drain" | grep -F 'never lift a captain hold on the strength of a repeated hold reason' >/dev/null \
+    || fail "the drain prescribed acting on the signal instead of checking it: $drain"
+
+  # A call the captain answered with --release can never be resurrected: the
+  # release runs `tasks-axi unhold`, which clears the annotations outright, so a
+  # later hold is a NEW placement however exactly its reason repeats. This is
+  # the generic-reason collision the byte comparison alone cannot survive.
+  printf 'adelante\n' > "$home/release-decision.txt"
+  run_captain "$home" hold sample-released-call --title "Keep piloting or write it" \
+    --reason "captain decision pending" --repo sample >/dev/null \
+    || fail "could not register the released call"
+  run_captain "$home" answer sample-released-call \
+    --decision-file "$home/release-decision.txt" --release >/dev/null \
+    || fail "could not record the released answer"
+  tasks_in "$home" hold sample-released-call --reason "captain decision pending" --kind captain >/dev/null \
+    || fail "could not re-hold the released call under the same generic reason"
 
   # A task re-held for a genuinely NEW question is not a resurrection, and
   # neither is a record written before the annulled question was stored. Drive
@@ -1790,8 +1806,53 @@ whatever he said' >/dev/null || fail "could not write the legacy resolution reco
   tasks_in "$home" hold sample-legacy-call --reason "an old question" --kind captain >/dev/null \
     || fail "could not hold the legacy-record fixture"
   out=$(run_captain "$home" diverged) || fail "diverged failed on the non-resurrection shapes"
-  [ -z "$out" ] || fail "a new question or a legacy record was reported as a resurrection: $out"
-  pass "a hold resurrected over an answered question is signalled, and a new question is not"
+  [ -z "$out" ] || fail "a new question, a released call, or a legacy record was reported as a resurrection: $out"
+  pass "a hold repeating an annulled question is signalled as a contradiction, and a new question or a released close is not"
+}
+
+# Case 2's trace has to reach the path Case 2 was measured on. The captain
+# answers through the board, and every production caller of the keyed intake
+# discards its stdout, so the printed consequence alone leaves the order
+# evaporating exactly as before. The close therefore also writes a durable wake
+# record, which the drain presents at the top of the next wake-handling turn.
+test_close_that_ended_the_work_leaves_a_durable_record() {
+  local home payloads drain
+  home=$(make_home close-durable-record)
+  printf 'escribir-ya\n' > "$home/decision.txt"
+
+  run_captain "$home" hold sample-direct-call --title "Write it now or keep piloting" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the direct call"
+  run_captain "$home" answer sample-direct-call --decision-file "$home/decision.txt" >/dev/null \
+    || fail "the direct answer did not record"
+
+  # The board path, which is how all four measured decisions actually arrived.
+  run_captain "$home" hold sample-board-call --title "The same question, arriving from the board" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the board call"
+  printf 'sample-board-call\tescribir-ya\t\t\n' \
+    | run_captain "$home" answers --source "the board fixture" >/dev/null \
+    || fail "the keyed intake did not close the board call"
+
+  # A release leaves the held work running, so there is nothing to pick up.
+  run_captain "$home" hold sample-released-call --title "The same, composed with the release mode" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the released call"
+  run_captain "$home" answer sample-released-call --decision-file "$home/decision.txt" --release >/dev/null \
+    || fail "the release did not record"
+
+  payloads=$(wake_payloads_in "$home")
+  assert_contains "$payloads" "captain call sample-direct-call ended the captain-held work item" \
+    "a direct close that ended the held work left no durable record"
+  assert_contains "$payloads" "captain call sample-board-call ended the captain-held work item" \
+    "a close arriving through the keyed intake left no durable record"
+  assert_not_contains "$payloads" "sample-released-call" \
+    "a release queued work to pick up when the held work never stopped"
+
+  drain=$(run_drain "$home") || fail "the drain failed while presenting the close records"
+  printf '%s\n' "$drain" | grep -F 'captain call sample-board-call ended the captain-held work item' >/dev/null \
+    || fail "the durable close record never reached the drain: $drain"
+  pass "a close that ended the captain-held work leaves a durable record on the direct and the board path"
 }
 
 # Seed one origin investigation with the metadata, status log, and report the
@@ -1989,6 +2050,7 @@ test_status_resolution_over_an_open_hold_is_signalled
 test_legitimate_holds_produce_no_divergence_signal
 test_closed_call_with_its_mark_is_still_stranded
 test_close_names_what_it_did_to_the_held_work
+test_close_that_ended_the_work_leaves_a_durable_record
 test_resurrected_hold_over_an_answered_call_is_signalled
 test_pruned_answer_still_proves_the_captains_call
 test_pruned_inventory_still_blocks_an_unanswered_call
