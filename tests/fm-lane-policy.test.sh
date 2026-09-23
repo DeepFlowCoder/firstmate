@@ -348,6 +348,89 @@ EOF
   pass "lane: a documentation-only class reaches the cheap lane only when the diff demonstrates it"
 }
 
+# A directory is not a file type. docs/conf.py is the canonical Sphinx layout and
+# it executes arbitrary Python at build time, so accepting it by location sent
+# code to the cheap lane labelled as prose. docs/ now only widens the prose set
+# to the two shapes that cannot be source there.
+test_docs_directory_widens_the_prose_set_rather_than_replacing_it() {
+  local rec repo base home head out
+
+  rec=$(make_repo docsdir)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home docsdir)
+
+  printf 'import os\nif os.getenv("X"):\n    pass\n' > "$repo/docs/conf.py"
+  head=$(commit_all "$repo" sphinx-conf)
+  out=$(run_lane "$home" decide docsdir-a1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a Python file under docs/ demonstrated as documentation"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "code under docs/ was not reported as undemonstrated"
+
+  # The three shapes that must still demonstrate, so the narrowing did not take
+  # the class with it: prose markup anywhere, and under docs/ a .txt and a file
+  # with no extension at all.
+  printf 'more\n' >> "$repo/docs/guide.md"
+  printf 'release notes\n' > "$repo/docs/notes.txt"
+  printf 'v1\n' > "$repo/docs/CHANGELOG"
+  head=$(commit_all "$repo" real-docs)
+  out=$(run_lane "$home" decide docsdir-b1 --project proj --repo "$repo" \
+    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "prose under docs/ lost its cheap route"
+  assert_contains "$out" "reason=standard-class" \
+    "the documentation change was not routed on its class"
+
+  pass "lane: docs/ widens the prose set to .txt and extensionless, and no further"
+}
+
+# A signal that cannot be computed must never resolve to its most permissive
+# value. A diff driver whose textconv is missing fails the unified-diff read
+# with no output, which the old pipeline could not tell from "nothing matched",
+# so the complexity of the whole delivery read as zero.
+test_a_diff_the_policy_cannot_read_is_not_measured_as_zero() {
+  local rec repo base home head out
+
+  rec=$(make_repo unreadable)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home unreadable)
+
+  # A real git configuration, not a stub: the attribute names a diff driver
+  # whose textconv does not exist, which is what an uninstalled converter is.
+  printf '*.py diff=broken\n' > "$repo/.gitattributes"
+  git -C "$repo" config diff.broken.textconv /nonexistent/textconv-tool
+  base=$(commit_all "$repo" declare-broken-driver)
+
+  printf 'value = 2\nif value:\n    pass\n' > "$repo/src/thing.py"
+  head=$(commit_all "$repo" edit-through-broken-driver)
+  out=$(run_lane "$home" decide unread-a1 --project proj --repo "$repo" \
+    --range "$base..$head")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a diff the policy could not read was routed cheap"
+  assert_contains "$out" "reason=signals:unreadable-diff" \
+    "the expensive routing did not name the unreadable diff"
+  assert_contains "$out" "branch-points=-" \
+    "an unread complexity signal was recorded as a measured number"
+
+  # The control: the same repo with the driver removed measures normally, so the
+  # case above is the broken read and not the fixture.
+  rm "$repo/.gitattributes"
+  head=$(commit_all "$repo" drop-broken-driver)
+  out=$(run_lane "$home" decide unread-b1 --project proj --repo "$repo" \
+    --range "$(git -C "$repo" rev-parse HEAD~1)..$head")
+  assert_not_contains "$out" "unreadable-diff" \
+    "a readable diff was reported as unreadable"
+  assert_not_contains "$out" "branch-points=-" \
+    "a readable diff left the complexity signal unmeasured"
+
+  pass "lane: a diff the policy cannot read routes expensive instead of measuring zero"
+}
+
 test_a_revert_must_be_the_commit_it_claims_to_undo() {
   local rec repo base home docs_head code_head revert_head out
   local two_file_head partial_head
@@ -458,7 +541,7 @@ test_a_partial_revert_of_a_root_commit_is_not_demonstrated() {
 # when a defect turns up months later. The class column therefore carries the
 # demonstrating input as an identifier: the resolved sha, never free text.
 test_the_record_names_what_demonstrated_the_class() {
-  local rec repo base home a_head b_head revert_a revert_b out log
+  local rec repo base home a_head b_head revert_a revert_b out log status
 
   rec=$(make_repo classrecord)
   IFS='|' read -r repo base <<EOF
@@ -492,7 +575,8 @@ EOF
   # nobody can resolve.
   out=$(run_lane "$home" decide rec-a3 --project proj --repo "$repo" \
     --range "$b_head..$revert_b" --class clean-revert --revert-of no-such-ref)
-  [ "$?" -ne 0 ] || fail "an unresolvable --revert-of should exit non-zero"
+  status=$?
+  [ "$status" -ne 0 ] || fail "an unresolvable --revert-of should exit non-zero"
   assert_contains "$out" "does not resolve to a commit" \
     "the refusal did not say the revert target could not be resolved"
 
@@ -1210,6 +1294,8 @@ test_every_named_critical_surface_is_in_the_catalog
 test_firstmates_own_safety_surfaces_are_covered
 test_deleting_the_dispatch_gate_cannot_route_itself_cheap
 test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only
+test_docs_directory_widens_the_prose_set_rather_than_replacing_it
+test_a_diff_the_policy_cannot_read_is_not_measured_as_zero
 test_a_revert_must_be_the_commit_it_claims_to_undo
 test_a_partial_revert_of_a_root_commit_is_not_demonstrated
 test_the_record_names_what_demonstrated_the_class

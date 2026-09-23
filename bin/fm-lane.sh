@@ -39,7 +39,11 @@
 # not happen. A project that adds no surfaces simply has no such file.
 #
 # CLASSES, and how each one is demonstrated rather than alleged:
-#   docs-only     every changed path is documentation or plain text.
+#   docs-only     every changed path is a prose markup format (.md, .markdown,
+#                 .rst, .adoc) or the licence in a spelling that cannot be
+#                 source. Under docs/ that widens to .txt and to extensionless
+#                 files, and no further: a bare .txt elsewhere is deliberately
+#                 not documentation, and neither is a .py that lives in docs/.
 #   clean-revert  with --revert-of <sha>: every changed path's content at the
 #                 range's head equals its content at <sha>^, so the change is
 #                 exactly that commit undone.
@@ -144,15 +148,31 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 # documentation, which is normally licence-key validation code - a 300-line
 # rewrite of it demonstrated as docs-only and reached the cheap lane while the
 # same diff with no class claim routed expensive on complexity.
+#
+# A DIRECTORY IS NOT A FILE TYPE. "It lives in docs/" says where a path lives,
+# not that it is prose: docs/conf.py is code with an address in docs, and it
+# executes at documentation-build time. Accepting it by location sent code to
+# the cheap lane LABELLED AS PROSE, which also writes a false class into the
+# record this policy exists to measure. So docs/ only WIDENS the prose set to
+# the two shapes that cannot be source there - .txt and no extension at all.
 is_documentation_path() {
-  local p
+  local p base
   p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
   case "$p" in
-    *.md|*.markdown|*.rst|*.adoc|docs/*|*/docs/*) return 0 ;;
+    *.md|*.markdown|*.rst|*.adoc) return 0 ;;
     license|licence|*/license|*/licence) return 0 ;;
     license.txt|licence.txt|*/license.txt|*/licence.txt) return 0 ;;
   esac
-  return 1
+  case "$p" in
+    docs/*|*/docs/*) ;;
+    *) return 1 ;;
+  esac
+  base=${p##*/}
+  case "$base" in
+    *.txt) return 0 ;;
+    *.*) return 1 ;;
+  esac
+  return 0
 }
 
 demonstrate_docs_only() {
@@ -214,8 +234,8 @@ blob_at() {
 
 cmd_decide() {
   local evidence catalog hits critical lane reason signals note class_record
-  local base head names numstat p q d seen
-  local files dirs lines new_files branch_points binary
+  local base head names numstat added udiff p q d seen
+  local files dirs lines new_files branch_points binary unreadable
   local seen_dirs=()
   local signal_reasons=()
 
@@ -284,22 +304,43 @@ cmd_decide() {
   new_files=-
   branch_points=-
   binary=-
+  unreadable=0
+  # EVERY read here reports whether it succeeded, and a read that fails leaves
+  # its signal at "-" and routes the delivery expensive. A pipeline discards
+  # git's exit status and `|| true` cannot tell "git failed and produced
+  # nothing" from "nothing matched", so a broken diff driver on one path used to
+  # resolve the whole delivery's complexity to 0 - the cheapest value there is -
+  # and the record then claimed a measurement nobody took.
   if [ "$evidence" = demonstrated ]; then
-    new_files=0
-    while IFS= read -r -d '' p; do
-      [ -z "$p" ] || new_files=$((new_files + 1))
-    done < <(repo_git diff --diff-filter=A --name-only -z --no-renames "$base" "$head")
-    numstat=$(repo_git diff --numstat --no-renames "$base" "$head")
-    lines=$(printf '%s\n' "$numstat" | awk '{ a=$1; d=$2; if (a=="-") a=0; if (d=="-") d=0; s+=a+d } END { printf "%d", s+0 }')
+    added=$(mktemp "${TMPDIR:-/tmp}/fm-lane-added.XXXXXX")
+    TMPDIRS+=("$added")
+    if repo_git diff --diff-filter=A --name-only -z --no-renames "$base" "$head" >"$added" 2>/dev/null; then
+      new_files=0
+      while IFS= read -r -d '' p; do
+        [ -z "$p" ] || new_files=$((new_files + 1))
+      done <"$added"
+    else
+      unreadable=1
+    fi
     # git reports a binary path as "-" for both counts because there are no
     # lines to count. Tier 3 decides on size, novelty, diffusion and complexity,
     # and not one of them can be computed for a blob, so a binary path is
-    # UNMEASURABLE rather than small - the awk above resolves it to 0, which is
+    # UNMEASURABLE rather than small - the awk below resolves it to 0, which is
     # the number the record would otherwise claim it measured.
-    binary=$(printf '%s\n' "$numstat" | awk '$1=="-" && $2=="-" { n++ } END { printf "%d", n+0 }')
-    branch_points=$(repo_git diff --unified=0 --no-renames "$base" "$head" \
-      | grep '^+' | grep -v '^+++' \
-      | grep -cE '(^|[^[:alnum:]_])(if|elif|else|for|while|case|switch|catch|except|unless)([^[:alnum:]_]|$)|&&|\|\|' || true)
+    if numstat=$(repo_git diff --numstat --no-renames "$base" "$head" 2>/dev/null); then
+      lines=$(printf '%s\n' "$numstat" | awk '{ a=$1; d=$2; if (a=="-") a=0; if (d=="-") d=0; s+=a+d } END { printf "%d", s+0 }')
+      binary=$(printf '%s\n' "$numstat" | awk '$1=="-" && $2=="-" { n++ } END { printf "%d", n+0 }')
+    else
+      unreadable=1
+    fi
+    udiff=$(mktemp "${TMPDIR:-/tmp}/fm-lane-udiff.XXXXXX")
+    TMPDIRS+=("$udiff")
+    if repo_git diff --unified=0 --no-renames "$base" "$head" >"$udiff" 2>/dev/null; then
+      branch_points=$(grep '^+' "$udiff" | grep -v '^+++' \
+        | grep -cE '(^|[^[:alnum:]_])(if|elif|else|for|while|case|switch|catch|except|unless)([^[:alnum:]_]|$)|&&|\|\|' || true)
+    else
+      unreadable=1
+    fi
   fi
   signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points,binary=$binary"
 
@@ -330,11 +371,15 @@ cmd_decide() {
     note=$NOTE
   else
     note=$NOTE
-    [ "$binary" -eq 0 ] || signal_reasons+=(binary)
-    [ "$new_files" -eq 0 ] || signal_reasons+=(novelty)
-    [ "$dirs" -lt "$LANE_MAX_DIRS" ] || signal_reasons+=(diffusion)
-    [ "$branch_points" -lt "$LANE_MAX_BRANCH_POINTS" ] || signal_reasons+=(complexity)
-    [ "$lines" -lt "$LANE_MAX_LINES" ] || signal_reasons+=(size)
+    if [ "$unreadable" -eq 1 ]; then
+      signal_reasons+=(unreadable-diff)
+    else
+      [ "$binary" -eq 0 ] || signal_reasons+=(binary)
+      [ "$new_files" -eq 0 ] || signal_reasons+=(novelty)
+      [ "$dirs" -lt "$LANE_MAX_DIRS" ] || signal_reasons+=(diffusion)
+      [ "$branch_points" -lt "$LANE_MAX_BRANCH_POINTS" ] || signal_reasons+=(complexity)
+      [ "$lines" -lt "$LANE_MAX_LINES" ] || signal_reasons+=(size)
+    fi
     if [ "${#signal_reasons[@]}" -eq 0 ]; then
       lane=direct-PR
       reason=low-signal
