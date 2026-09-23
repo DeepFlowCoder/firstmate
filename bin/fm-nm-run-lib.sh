@@ -372,6 +372,65 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
   return 1
 }
 
+# WHICH run a reported terminal word belongs to - the question the newest-row
+# read above deliberately does not answer, and the one a reading that says more
+# than the bare word has to answer before it may be asserted.
+#
+# THE TWO SURFACES SHARE NO UNIQUE KEY, and that is the shape of the whole
+# problem. A `no-mistakes runs` row carries status, branch, short sha, date and
+# pull request and NO run id (v1.75.2 exposes only `--limit` on that command,
+# with no branch and no status filter); `axi status` carries the run id and no
+# timestamp. So a reported run and a listing row can never be MATCHED to one
+# identity, and no reading that has to match them may be asserted at all.
+# Tracked as `fm-listado-de-corridas-sin-id`.
+#
+# Two identities that look available are ruled out by measurement, not by taste:
+#   sha equality    head_sha equals last_pushed_sha for every run in the store,
+#                   and of the 10 branches carrying 2+ `failed` rows on
+#                   2026-09-23, FIVE carry two or more of them on the SAME head
+#                   sha. That proof would assert falsely in half the cases.
+#   a whole listing any proof that needs the list complete, or shorter than the
+#                   limit it was asked for, carries an expiry date: the listing
+#                   is repo-scoped and this registration gains runs daily, so a
+#                   fixed limit fills permanently and would retire the reading it
+#                   guards with no signal at all. A guarantee that expires
+#                   silently is worse than a limit that is stated.
+#
+# What is left is COUNTING, which matches nothing and therefore needs no key: if
+# <branch> carries exactly ONE row whose status is <word>, there is no second row
+# the reported run could be, so identity is established without ever asking which
+# row it is. More than one row of the word is the tie above, and nothing here can
+# break it.
+#
+# THAT SOUNDNESS HAS A CONDITION: the reported run's OWN row must fall inside the
+# listing this was handed. `axi status` can answer with a run that is not the
+# newest, so a reported run whose row has already fallen past the scanned window,
+# while a newer row of the same word is still inside it, counts as ONE and would
+# be called identified when it is not - asserting the stronger reading over the
+# newer run instead. Nothing here can detect that: with no key joining the two
+# surfaces, a reported run absent from the listing looks exactly like a reported
+# run present in it. So this is an unclosed residual of the SAME root cause,
+# recorded under `fm-listado-de-corridas-sin-id` rather than as a limit of its
+# own.
+#
+# 0 ONLY when identity is established. Every other answer - a missing argument, a
+# word that matches no row, a word that matches more than one - is "not
+# established", because a caller asks this to decide whether it may make a
+# STRONGER claim and silence must never read as permission.
+fm_nm_runs_row_identifies_run() {  # <runs-output> <branch> <word>
+  local out=${1:-} branch=${2:-} word=${3:-}
+  local row parsed st br hits=0
+  [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    IFS=$'\t' read -r st br _ <<< "$parsed"
+    if [ "$br" = "$branch" ] && [ "$st" = "$word" ]; then
+      hits=$((hits + 1))
+    fi
+  done <<< "$out"
+  [ "$hits" = 1 ]
+}
+
 # 0 when captured list output $1 carries EVIDENCE - at least one line that parses
 # as a run row AND whose status word this library models, active or terminal.
 # Non-empty stdout alone is not evidence: the real listing prints a trailer after
@@ -548,4 +607,132 @@ fm_nm_failure_cause_detail() {  # <run-error-text>
   if printf '%s' "$text" | grep -Eqi 'insufficient balance|(error|status|code)[^0-9]{0,3}402\b|402 payment required'; then
     printf 'the provider balance ran out, so no validation can run until it is recharged'
   fi
+}
+
+# --- the cap cut: a run that ENDED without ever judging the work -------------
+#
+# THE WORD `failed` SPENT ON TWO OPPOSITE THINGS. A run whose review or test
+# agent is killed by that step's own time cap is recorded `failed`, exactly like
+# a run whose reviewer read the code and rejected it. They are opposite states:
+# one says there is work to redo, the other says the work is still unjudged. The
+# reader of the bare word hears the first, so a cut reviewer is reported as bad
+# code and stays reported that way for as long as the record answers.
+#
+# MEASURED 2026-09-23 against the real store (~/.no-mistakes/state.sqlite), and
+# this is not a rare shape: of the 55 runs recorded `failed`, 14 carry a cap cut
+# in their own `error:` text - a quarter of every failure this fleet has ever
+# recorded. The two exact wordings, transcribed:
+#
+#   step test failed: agent run tests timed out after 30m0s: agent last produced
+#   output 13s ago (104 observed); agent reported: claude exited: signal: killed
+#
+#   step review failed: agent fix reached its absolute wall-clock limit after
+#   30m0s: agent last produced output 647ms ago (128 observed); agent reported:
+#   claude parse events: context deadline exceeded
+#
+# Both say the same thing twice over: the agent was producing output seconds
+# before it died, and what ended it was the clock. Nothing in either payload is
+# a statement about the code.
+#
+# THE HOUSE ALREADY DRAWS THIS LINE, and this follows it rather than opening a
+# seventh way of drawing it. fm_nm_verdict_state maps `cancelled` to `unknown`
+# because an abort produced no verdict; fm_nm_call_answered refuses to call an
+# unconfirmed request a failed one; bin/fm-capacity-policy.mjs reads an
+# unmeasurable lane as disclosed uncertainty rather than a lost one. Unmeasurable
+# evidence is uncertainty, never a fault. A cap cut is that same third state,
+# arrived at from the failure side.
+#
+# WHAT IT IS NOT IS BENIGN, and over-correcting here is the worse mistake. A cut
+# is not an abort a worker chose and has already moved past: nobody chose it, the
+# branch has never been reviewed, and the one action it demands is to validate
+# again. So the reading it produces still stands and still asks to be looked at -
+# what changes is WHICH action it asks for, redo the code or redo the validation,
+# not whether one is needed. bin/fm-crew-state.sh owns that consequence: a cap cut
+# reports `unknown` and is deliberately NOT routed to the verdictless fall-through
+# a cancellation takes, because falling through to a busy pane would report the
+# crew as working while its validation lies dead.
+#
+# WHETHER THE LABEL SHOULD OUTLIVE ITS RUN. It should, and giving it a clock
+# would be the wrong repair. Until a successor run exists, the last run IS the
+# newest thing known about the branch, and bin/fm-crew-state.sh's arbitration
+# already withdraws the reading the moment a newer run supersedes it. An expiry
+# would only swap a wrong reading for no reading at a time nobody chose. What
+# must not outlive the run is the CLAIM the word smuggles - and once the cut
+# reports as an absent verdict, what survives is true for as long as it stands:
+# nothing has judged this code, and it still needs validating.
+#
+# EVERY CLAUSE POINTS AT THE OBSERVATION THAT JUSTIFIES IT, and one that cannot
+# is a speculation sitting inside a detector:
+#   agent ... timed out after <dur>          the first payload above, verbatim
+#   agent ... reached its absolute
+#     wall-clock limit after <dur>           the second payload above, verbatim
+# The `agent` anchor and the trailing duration are both load-bearing. They keep
+# this disjoint from every other failure the store actually carries: a bare
+# `agent review: pi exited: signal: killed` is an agent that died without a cap
+# firing and stays an ordinary failure, and the client-side `get_run timed out`
+# that fm_nm_text_is_unconfirmed owns names no duration and no agent, so neither
+# can borrow this verdict.
+fm_nm_failure_is_cap_cut() {  # <run-error-text>
+  local text=${1:-}
+  [ -n "$text" ] || return 1
+  printf '%s' "$text" \
+    | grep -Eqi 'agent[^:]{0,40} (timed out|reached its absolute wall-clock limit) after [0-9]'
+}
+
+# The one clause every cap-cut phrase opens with, held as a literal because it is
+# written by fm_nm_cap_cut_detail and read back by fm_nm_state_line_is_cap_cut.
+# Two spellings of one phrase would drift the day either side is reworded, and
+# the reader that goes silent on a drift is the one that wakes the supervisor.
+FM_NM_CAP_CUT_MARK='validation was cut off by its own'
+
+# The phrase for a cap cut: what happened, what it did NOT establish, and the one
+# action it asks for. It replaces the failure phrase rather than qualifying it,
+# because the failure phrase is the thing that was wrong.
+#
+# PRECONDITION: fm_nm_failure_is_cap_cut has already matched this text. That
+# detector requires a trailing duration, so the cap this names is always there
+# and there is no duration-less spelling of the phrase to fall back to. The
+# duration is carried rather than flattened away because it is the one detail
+# that tells a reader whether the cap is the problem or the work outgrew it.
+fm_nm_cap_cut_detail() {  # <run-error-text>
+  local dur
+  dur=$(printf '%s' "${1:-}" \
+    | grep -oEi '(timed out|wall-clock limit) after [0-9][a-z0-9]*' \
+    | head -1)
+  printf '%s %s time cap' "$FM_NM_CAP_CUT_MARK" "${dur##* }"
+  printf ': no verdict was reached about the work, which still needs validating (the work is not lost)'
+}
+
+# 0 when a bin/fm-crew-state.sh current-state line IS the cap-cut reading above -
+# the reading's OWN current verdict, never a cut some wrapper is quoting.
+#
+# The state word alone cannot answer this: `unknown` is also what a crew with no
+# backend target, an unreachable remote endpoint, or an unarbitrated verdict
+# reports, and none of those says a validation died.
+#
+# WHY THIS PARSES FIELDS RATHER THAN SEARCHING TEXT. The line is a three-field
+# contract, `state: <s> · source: <src> · <detail>`, and the cut's phrase is what
+# bin/fm-crew-state.sh puts in the DETAIL field when the cut is what it is
+# reporting. Every reading that merely mentions a cut quotes it inside a clause
+# of its own - "a completed run on <branch> supersedes the reported terminal run
+# (<the cut>)", "the run verdict (<the cut>) could not be arbitrated" - so the
+# quote can never be the detail's opening clause. Searching the line for the
+# phrase found those quotations too and woke a supervisor to re-validate work a
+# successor run had already validated: the same false claim about a run that this
+# whole distinction exists to remove. Reading the field the producer writes, at
+# the position it writes it, is what makes a quotation unreachable from here.
+#
+# WHY A CONSUMER NEEDS THIS AT ALL. A cut is not terminal, so nothing about it
+# may be filed as a task's outcome; but it is not benign either, and a consumer
+# that gates BOTH consequences on the terminal words would let a dead validation
+# pass in silence on an unattended crew. bin/fm-inactive-reconcile.sh is that
+# consumer, and this is how it tells the two consequences apart.
+fm_nm_state_line_is_cap_cut() {  # <crew-state-line>
+  local detail=${1:-}
+  case "$detail" in 'state: unknown · source: '*) ;; *) return 1 ;; esac
+  detail=${detail#state: unknown · source: }
+  case "$detail" in *' · '*) ;; *) return 1 ;; esac
+  detail=${detail#* · }
+  case "$detail" in "$FM_NM_CAP_CUT_MARK"*) return 0 ;; esac
+  return 1
 }

@@ -271,7 +271,7 @@ The reading history keeps the most recent positive reading however old it is, so
 A balance the guard could not read is reported as unknown at session start and stays silent on the watcher's cadence, on the same reasoning as an unreadable quota snapshot.
 A spent balance is reported even when the quota snapshot could not be read at all, so an unrelated vendor timeout cannot silence it.
 
-When a validation has already died on a spent balance, the run's own record says so - `bin/fm-crew-state.sh` names the balance as the cause instead of reporting the same "failed" every other cause reports - because that failure is not a verdict on the work and the only thing that clears it is a recharge.
+When a validation has already died on a spent balance, the run's own record says so - `bin/fm-crew-state.sh` names the balance as the cause instead of reporting the plain "failed" an ordinary failure reports - because that failure is not a verdict on the work and the only thing that clears it is a recharge.
 
 ## Update source (config/update-remote)
 

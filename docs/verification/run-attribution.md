@@ -2,11 +2,12 @@
 
 Audience: maintainer verification.
 
-This record supports three active guarantees, each resting on a different measured fact:
+This record supports four active guarantees, each resting on a different measured fact:
 
 - A crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work - including when `axi status` answers for a different branch entirely. This one rests on the pipeline working in its own managed worktree and never in the crew's, and on the branch-scoped push binding that same output carries whichever run it renders.
-- A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
+- A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work - and the one failed run the fourth guarantee below reports as `unknown` instead still carries the work-is-not-lost fact. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
 - A request to the pipeline whose result was never established is reported as unestablished and never as a failed request. This one rests on the daemon's response time being load-dependent, so a bound that fires says nothing about what the request did.
+- On the full `axi status` read, and only there, a run a step's own time cap cut off is reported as a verdict that was never reached and never as a verdict against the code. This one rests on the run's own `error:` text distinguishing the two, and on the cut wordings being disjoint from every other failure the store carries. Its two bounds are stated with it below, because a guarantee stated without its limit is the defect it exists to fix.
 
 [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, the submitted-head binding, and the branch binding - and, for the second guarantee, why the `failed` phrase reads as it does.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns how an attributed run becomes a reported state.
@@ -370,3 +371,96 @@ So widening that particular probe belongs to the no-mistakes project; what this 
 `fm_nm_text_is_unconfirmed` matches the request-scoped and probe-scoped clauses of that payload and nothing broader, because a bare "timed out" is also the pipeline's own vocabulary for a real fact about a run.
 That wording is un-owned vendor text, so the classifier never rests on it alone: a bound that fires and an empty answer are classified as unestablished independently of any string.
 Refresh the clauses by re-reading the CLI's failure text after a no-mistakes upgrade; a reworded payload costs a clause, never the guarantee.
+
+## A time cap cuts a run off without judging the code
+
+The fourth guarantee separates two opposite things the store spells with one word.
+`fm_nm_failure_is_cap_cut` in [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh) owns the distinction and the reasoning; [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns the reading it produces.
+The portable regressions in `tests/fm-crew-state.test.sh` pin a code verdict, a cut, and a healthy run apart with a faked `no-mistakes`.
+What a fake cannot establish is that the real store actually carries the two shapes apart, which is what is recorded here.
+
+Recorded 2026-09-23 against `~/.no-mistakes/state.sqlite` on Darwin 24.6.0 (arm64) with no-mistakes v1.75.2.
+
+How much of this fleet's failure record is a cut rather than a verdict:
+
+```sh
+sqlite3 -readonly ~/.no-mistakes/state.sqlite \
+  "select count(*) from runs where status='failed';
+   select count(*) from runs where status='failed'
+     and (error like '%timed out after%' or error like '%absolute wall-clock limit%');"
+```
+
+```
+55
+14
+```
+
+A quarter of every failure this fleet has recorded is a run whose reviewer or tester was killed by the clock.
+The two wordings the pipeline uses, one of each, transcribed in full:
+
+```sh
+sqlite3 -readonly ~/.no-mistakes/state.sqlite \
+  "select error from runs where id in
+     ('01M35BZMYXMXMCA3WXF36RWW88','01M35BYB2XZ588JMX3S31JJFYJ');"
+```
+
+```
+step review failed: agent fix reached its absolute wall-clock limit after 30m0s: agent last produced output 647ms ago (128 observed); agent reported: claude parse events: context deadline exceeded
+step test failed: agent run tests timed out after 30m0s: agent last produced output 13s ago (104 observed); agent reported: claude exited: signal: killed
+```
+
+Both payloads say the same thing twice: the agent was still producing output seconds before it stopped, and what ended it was the clock.
+Neither carries a statement about the code, which is the fact the guarantee needs.
+
+The detector was run over every run in the store that carries an `error:` text at all - 55 failed and 32 cancelled - and answered on exactly the 14 rows the query above counts, with no cancelled row and no other failure among them.
+The nearest neighbour it must not take is `01M2G0NYSGBTZK6F3F2DGR1JMV` (2026-09-14), `step review failed: agent review: pi exited: signal: killed`: an agent that died with no cap involved, which stays an ordinary failure.
+It is also disjoint from the client-side wording `fm_nm_text_is_unconfirmed` owns, because `get_run timed out` names neither an agent nor a duration.
+
+### The two bounds of this guarantee
+
+The guarantee is scoped to the full `axi status` read, and it does NOT reach the coarse runs-list arm or the superseding-failed-row arm of [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh).
+On those two arms a cut still prints the old word `failed`, because both read the `no-mistakes runs` listing, whose rows carry status, branch, short sha, date and pull request and no error column at all - so the evidence the distinction is made from is not present there to read.
+That is a known, deliberate limit of the source rather than a second opinion about the word, it is tracked as `fm-corte-por-tope-fuera-del-brazo-de-lista`, and the full read reports the cut as soon as `axi status` answers for that branch again.
+
+The second bound applies on the full read itself: the cut reading is asserted only once the run it describes has been identified, and it degrades to the ordinary failure phrase when that identity cannot be proved.
+It does NOT reach any reading that would have to match the reported run to a listing row, and it never will, because the two surfaces share no unique key: a `no-mistakes runs` row carries status, branch, short sha, date and pull request and no run id (v1.75.2 exposes only `--limit` on that command, with no branch and no status filter), while `axi status` carries the run id and no timestamp.
+A branch carrying more than one run of the reported word therefore keeps the ordinary failure phrase, and so does a listing that did not answer at all or that carries no row for the branch; that is a permanent limit rather than one pending a better read, and it is tracked as `fm-listado-de-corridas-sin-id`.
+This is a different limit from the first one and neither stands in for the other: the first is about rows that carry no error column, this one is about rows that carry no identity.
+
+The identity that IS available counts rather than matches, which is why it needs no key: a branch carrying exactly ONE row of the reported word leaves no second row the reported run could be.
+Two identities that look available are ruled out by measurement rather than by taste.
+A reported head proves nothing, because `head_sha` equals `last_pushed_sha` for every run in the store (the submitted-head measurement above) and, read on 2026-09-23, five of the ten branches carrying two or more `failed` rows carry two or more of them on the same head sha.
+A proof resting on the listing being complete, or shorter than the limit it was asked for, is a proof with an expiry date: the listing is repo-scoped and this registration gains runs daily, so a fixed limit fills permanently and would retire the guarantee it guards with no signal at all, which is strictly worse than a limit that is stated.
+The counting proof avoids both, and it is sound when the reported run's own row falls inside the window this read scans: one row of the reported word on the branch leaves no second row the reported run could be.
+That condition is the residual this limit still carries, and it is stated rather than assumed away: `axi status` can answer with a run that is not the newest, so a reported run whose row has already fallen past the scanned window, while a newer row of the same word is still inside it, is counted as identified when it is not.
+Nothing in the read can detect that, because with no key joining the two surfaces a reported run absent from the listing looks exactly like one present in it, which is why this is one more consequence of `fm-listado-de-corridas-sin-id` and is recorded there rather than as a limit of its own.
+The branch in the table below with two `failed` rows is exactly the shape that keeps the old word, and it is not hypothetical - when `axi status` lags and answers with the older cut while the newer failed run is a real rejection of the code, the cut's phrase would tell a reader nobody looked at code that a reviewer really did reject.
+
+### How long the reading stands
+
+A cut's reading is not a moment, which is why the word it uses matters for hours rather than for one poll.
+The arbitration in [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) withdraws a terminal reading as soon as a newer run supersedes it on the branch, so the window is exactly the gap between a cut ending and its successor starting:
+
+```sh
+sqlite3 -readonly ~/.no-mistakes/state.sqlite \
+  "select branch, id, status, datetime(created_at,'unixepoch'), datetime(updated_at,'unixepoch')
+     from runs
+    where branch in ('fm/fm-tope-de-trabajo-no-acota-lo-que-dice-acotar',
+                     'fm/fm-chrome-devtools-axi-pageid-roto')
+    order by branch, created_at;"
+```
+
+```
+fm/fm-chrome-devtools-axi-pageid-roto|01M354M59S16BBBCEA7ZD8M61S|failed|2026-09-22 18:04:07|2026-09-22 20:12:17
+fm/fm-chrome-devtools-axi-pageid-roto|01M35BZMYXMXMCA3WXF36RWW88|failed|2026-09-22 20:12:44|2026-09-22 21:12:04
+fm/fm-chrome-devtools-axi-pageid-roto|01M35NBX59CM077WHFGXYXJ48J|completed|2026-09-22 22:56:43|2026-09-23 00:09:42
+fm/fm-tope-de-trabajo-no-acota-lo-que-dice-acotar|01M354454252RT5TJZ5T8KBKMM|failed|2026-09-22 17:55:23|2026-09-22 18:51:29
+fm/fm-tope-de-trabajo-no-acota-lo-que-dice-acotar|01M35C1K0NXTBVR7M5122WFHPK|completed|2026-09-22 20:13:47|2026-09-22 21:45:52
+```
+
+The cut on `fm-tope-de-trabajo-no-acota-lo-que-dice-acotar` ended at 18:51:29 and its successor started at 20:13:47: one hour and twenty-two minutes in which that cut was the newest thing known about the branch.
+The cut on `fm-chrome-devtools-axi-pageid-roto` ended at 21:12:04 against a successor at 22:56:43, one hour and forty-four minutes.
+That is the measured scope of the guarantee: for hours at a time the cut's reading is the only reading, so it has to be true on its own rather than merely short-lived.
+
+Refresh this by re-running all three queries after a no-mistakes upgrade.
+A reworded payload costs a wording, never the guarantee: the pipeline spells this cause two independent ways and either one carries the verdict.

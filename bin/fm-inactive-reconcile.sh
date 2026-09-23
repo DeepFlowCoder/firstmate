@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# fm-inactive-reconcile.sh - bounded reconciliation of suspicious inactive terminal outcomes.
+# fm-inactive-reconcile.sh - bounded reconciliation of suspicious inactive
+# crewmates: their terminal outcomes, and the wake owed for a validation a time
+# cap cut off, which reaches no outcome to reconcile.
 #
 # Usage:
 #   fm-inactive-reconcile.sh scan [--startup]
@@ -25,9 +27,28 @@
 # turn-ended mtime is older than that interval and whose last status is not
 # captain-held. It then uses fm-crew-state.sh as the sole current-state source.
 # Only a done or failed state is suspicious enough to create a durable terminal
-# outcome record or wake the supervisor.
-# Working, paused, parked, blocked, unknown, persistent secondmates, and
-# captain-held work retain their existing supervision semantics.
+# outcome record, and those two wake the supervisor along with it.
+# Working, paused, parked, blocked, persistent secondmates, and captain-held work
+# retain their existing supervision semantics, and so does every `unknown`
+# reading but one: no backend target, an unreachable remote endpoint and an
+# unarbitrated verdict all still neither record nor wake, because none of them
+# says a validation died.
+#
+# THOSE TWO CONSEQUENCES SPLIT FOR EXACTLY ONE READING: a validation its own
+# step's time cap cut off (fm_nm_state_line_is_cap_cut, owned with the whole
+# distinction by bin/fm-nm-run-lib.sh, which answers only for a cut that is the
+# reading's own current verdict and never for one a later run already replaced).
+# It files NO terminal outcome record, because the task reached no outcome - it
+# was never judged and still needs validating - but in a MAIN home it does wake
+# the supervisor, because an unattended crew whose validation died and whose pane
+# never reacted is precisely the unreviewed work passing in silence this scan
+# exists to catch. The wake names the cut and asks for the one action it wants,
+# re-validation, never a terminal verdict, and it is delivered once per reading
+# through the notices ledger below rather than through a record there is no
+# outcome to file. In a secondmate home a cut is deliberately reported NOWHERE
+# yet, because the parent channel the terminal outcomes take would retire the
+# mate's own declared wait; cut_notice_once owns that gap, and it is tracked as
+# `fm-aviso-de-corte-hacia-el-hogar-padre`.
 #
 # A terminal-outcomes/<fingerprint>.pending record remains until its upstream
 # receipt is durable.
@@ -56,6 +77,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 OUTCOME_DIR="$STATE/terminal-outcomes"
 SCAN_MARKER="$STATE/.inactive-outcome-reconcile"
 SCAN_LOCK="$STATE/.inactive-outcome-reconcile.lock"
+CUT_NOTICES="$STATE/.inactive-cut-notices"
 CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 
 # shellcheck source=bin/fm-wake-lib.sh
@@ -66,6 +88,8 @@ CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
 FM_INACTIVE_RECONCILE_SECS=${FM_INACTIVE_RECONCILE_SECS:-900}
 case "$FM_INACTIVE_RECONCILE_SECS" in
@@ -226,6 +250,52 @@ queue_presentation() { # <record> <fingerprint> <payload>
   return 0
 }
 
+# The cap cut's wake in a MAIN home, and the ledger that makes it once-per-reading.
+#
+# A SECONDMATE HOME REPORTS A CUT NOWHERE, DELIBERATELY, AND THAT GAP IS OPEN.
+# The obvious channel is the one the terminal outcomes take, the parent's
+# per-mate status stream - and it is wrong for this: that stream is
+# last-line-wins and is exactly where bin/fm-watch.sh reads whether the mate's
+# silence is a DECLARED wait, so any append retires the mate's `paused:` and
+# takes its pause tracking with it. The verb does not rescue it. `note` is
+# delivered (status_line_is_unread_surface accepts it) but is not
+# captain-relevant, so nothing escalates in the pause's place; a captain-relevant
+# verb would escalate but masks the declared wait just the same. What is missing
+# is a channel that notifies the parent WITHOUT erasing the pause, which is
+# design this delivery is not taking on. Tracked as
+# `fm-aviso-de-corte-hacia-el-hogar-padre`.
+#
+# WHAT THAT COSTS, recorded because a consequence chosen knowingly is only a
+# defect when nobody wrote it down: a cut in a secondmate home used to read
+# `failed`, so it filed a terminal outcome and reached the parent as
+# `failed [key=...]` with a durable receipt. That word was wrong - it said a
+# reviewer rejected code nothing had judged - but it WAS a signal, and the
+# delegated half of the fleet now has none for a dead validation. The ticket
+# above owns closing that.
+#
+# A local row is not the fallback either: in a secondmate home that row already
+# means "the upward report failed", and spending it on a delivery would cost that
+# diagnostic its meaning.
+#
+# The terminal path is deduplicated by its own record: a fingerprint that already
+# reached presented or reported never reports again. A cut files no record - it
+# reached no outcome - so the ledger is the receipt instead, holding the same
+# fingerprint the terminal path would have used, which binds the incarnation and
+# the last status line, so a crew that moves and stalls again is a new reading
+# and is woken for again. The queued-key check cannot stand in for that: a key
+# disappears the moment the wake is acknowledged, which is exactly when the
+# condition is still there and the supervisor has already been told.
+cut_notice_once() { # <self-or-empty> <fingerprint> <payload>
+  local self=$1 fingerprint=$2 payload=$3
+  [ -z "$self" ] || return 1
+  [ ! -L "$CUT_NOTICES" ] || return 1
+  grep -Fqx -- "$fingerprint" "$CUT_NOTICES" 2>/dev/null && return 1
+  fm_wake_append check "inactive-cut:$fingerprint" "$payload" || return 2
+  append_once "$CUT_NOTICES" "$fingerprint" || return 2
+  printf 'actionable: %s\n' "$payload"
+  return 0
+}
+
 last_activity_age() { # <meta> <status> <turn-ended>
   local meta=$1 status=$2 turn=$3 now m newest=0 file
   now=$(reconcile_now)
@@ -349,7 +419,22 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
   case "$state_line" in
     'state: done '*) state='done' ;;
     'state: failed '*) state='failed' ;;
-    *) return 0 ;;
+    *)
+      # Not terminal, so no outcome is filed - but a cut still has to be told,
+      # and the payload says what happened and what it asks for rather than
+      # borrowing the terminal vocabulary of the records above. In a secondmate
+      # home it is told to nobody yet; cut_notice_once owns that gap and why the
+      # parent's own channel cannot carry it.
+      if fm_nm_state_line_is_cap_cut "$state_line"; then
+        pr=$(pr_for_task "$meta" "$status")
+        incarnation=$(meta_incarnation "$meta")
+        fingerprint=$(sha256_text "$incarnation|$id|cap-cut|$pr|$(clean_field "$last")")
+        payload="inactive crew's validation was cut off by its own time cap and never redone: child=$id, which still needs validating"
+        [ -z "$pr" ] || payload="$payload pr=$pr"
+        cut_notice_once "$self" "$fingerprint" "$payload" || true
+      fi
+      return 0
+      ;;
   esac
   pr=$(pr_for_task "$meta" "$status")
   incarnation=$(meta_incarnation "$meta")

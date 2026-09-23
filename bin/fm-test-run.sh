@@ -1222,11 +1222,29 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     bin/fm-nm-run-lib.sh)
-      # Shared no-mistakes run-attribution primitives, sourced by both
-      # bin/fm-crew-state.sh (pure-contract-unit) and bin/fm-teardown.sh's
-      # pre-teardown run abort (pr-forge).
+      # Shared no-mistakes run-attribution primitives, sourced by three
+      # consumers: bin/fm-crew-state.sh (pure-contract-unit),
+      # bin/fm-teardown.sh's pre-teardown run abort (pr-forge), and
+      # bin/fm-inactive-reconcile.sh's cap-cut wake (watcher-wake-lock).
+      # The third family is selected for the same reason as the other two - the
+      # consumer depends on this library, so a change here has to run the suite
+      # that covers it - and that suite is the only coverage the wake has: a
+      # change to the cut predicate's field parsing, or to where the phrase sits
+      # in the detail it reads, leaves the supervisor unwoken with every
+      # crew-state assertion still green.
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
+      printf '%s\n' watcher-wake-lock
+      ;;
+    bin/fm-crew-state.sh)
+      # The current-state read's own contract coverage (pure-contract-unit),
+      # plus the family covering bin/fm-inactive-reconcile.sh's cap-cut wake
+      # (watcher-wake-lock): that consumer depends on this producer's DETAIL
+      # field - the cut phrase has to be its opening clause - and this is the
+      # file that decides what goes there, so a change here has to run the suite
+      # that covers the consumer.
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' watcher-wake-lock
       ;;
     bin/fm-composer-lib.sh)
       # The shared shape catalogue is vendor-rendered signal; a change to it
@@ -1292,7 +1310,7 @@ families_for_changed_path() {
       ;;
     bin/fm-lint.sh|bin/fm-lint-workflows.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-install-actionlint.sh|\
-    bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
+    bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|\
     bin/fm-captain-hold.sh|bin/fm-decision-hold.sh|bin/fm-tablero.sh|\
     bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
