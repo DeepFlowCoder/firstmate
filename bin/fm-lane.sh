@@ -170,11 +170,12 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 # Every name below is reachable. The AUTHORS spellings were not: the portable
 # *auth* glob claimed them first, so a contributors list never reached this
 # function and was recorded as an authentication surface instead. That glob now
-# passes AUTHORS through irrespective of extension, so nothing there has to be
-# kept in step with the list of prose extensions - which makes AUTHORS ordinary
-# documentation for any project that says nothing else about it, and expensive in
-# this one because this repository names it a governing document in
-# .fm-critical-surfaces.
+# passes AUTHORS through in the spellings this function accepts as prose, derived
+# from the same owner both rules read, which makes AUTHORS ordinary documentation
+# for any project that says nothing else about it, and expensive in this one
+# because this repository names it a governing document in .fm-critical-surfaces.
+# A spelling OUTSIDE that list - AUTHORS.org - keeps the authentication label as
+# an accepted residual; fm_lane_authors_spelling records why.
 # PROSE_FILE_NAMES is the single owner of the named prose files, and the ".txt
 # suffix" rule is applied to it rather than restated beside it: the .txt
 # spellings used to be a second copy of the same seven names, so adding a name

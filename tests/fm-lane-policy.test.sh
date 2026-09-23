@@ -1141,23 +1141,26 @@ test_authors_is_a_governing_document_not_an_authentication_surface() {
       "$name is still recorded as an authentication surface"
   done
 
-  # THERE IS NO SEAM LEFT, which is the point of naming AUTHORS irrespective of
-  # extension on BOTH sides. These spellings are not in the prose-extension list,
-  # and both properties still hold for them: held expensive by this house, and
-  # recorded under the one surface that is true of them. While only the code side
-  # derived from that list, these rows carried authentication AND governing-docs
-  # at once, one of the two false; while only the data side enumerated, a new
-  # prose extension would have dropped them onto the cheap lane.
+  # A spelling of AUTHORS OUTSIDE the accepted prose list is held expensive by
+  # this house whatever the prose list says, which is what the extension-agnostic
+  # governing-docs entry is for: no future edit to that list can drop it onto the
+  # cheap lane.
+  #
+  # It also still carries the authentication label beside governing-docs, and that
+  # imprecision is an ACCEPTED TRADEOFF rather than an oversight this loop failed
+  # to notice. Tidying it means excepting authors.<anything> from the portable
+  # glob, which measurably removed the authentication surface from src/authors.py
+  # in every project the fleet routes. fm_lane_authors_spelling records the
+  # reasoning; test_the_portable_authentication_surface_holds_without_a_project_file
+  # pins the cost of getting it wrong.
   for name in AUTHORS.org AUTHORS.textile docs/AUTHORS.tex; do
     n=$((n + 1))
     out=$(run_lane "$home" decide authors-a$n --project firstmate --repo "$ROOT" \
       --paths "$name" --class docs-only)
     assert_contains "$(first_line "$out")" "lane=no-mistakes" \
       "$name reached the cheap lane"
-    assert_contains "$out" "critical-surfaces: governing-docs" \
+    assert_contains "$out" "governing-docs" \
       "$name is not held expensive by this house independently of the prose list"
-    assert_not_contains "$out" "authentication" \
-      "$name is still recorded under a surface that is not true of it"
   done
 
   # The exception is one name and nothing wider: everything else the glob
@@ -1186,6 +1189,65 @@ EOF
     "AUTHORS is still unreachable as the named prose file the class lists"
 
   pass "lane: AUTHORS is a governing document, never an authentication surface"
+}
+
+# WEAKENING IS NEVER PORTABLE. The AUTHORS exception was once widened to
+# authors.<anything> to tidy a label in THIS repository's record, and that removed
+# the portable authentication surface from every project the fleet routes: the
+# governing-docs entry believed to hold those paths expensive exists only in this
+# house's own .fm-critical-surfaces, so everywhere else there was nothing behind
+# it. This case asks the question that catches it - what does the policy do in a
+# project that declares nothing of its own - so a future narrowing of a portable
+# surface fails a test instead of a fleet.
+test_the_portable_authentication_surface_holds_without_a_project_file() {
+  local repo home base head out name n=0
+
+  home=$(lane_home portableauth)
+  repo="$TMP_ROOT/portableauth/repo"
+  mkdir -p "$repo/src"
+  git -C "$repo" init --quiet 2>/dev/null || { git init --quiet "$repo"; }
+  [ ! -e "$repo/.fm-critical-surfaces" ] \
+    || fail "the fixture declares surfaces of its own, so it cannot prove what the portable catalog does"
+
+  printf 'CONTRIBUTORS = []\n' > "$repo/src/authors.py"
+  git -C "$repo" add -A
+  git -C "$repo" commit --quiet -m base
+  base=$(git -C "$repo" rev-parse HEAD)
+  printf 'CONTRIBUTORS = ["ada"]\n' > "$repo/src/authors.py"
+  head=$(commit_all "$repo" edit-authors-source)
+
+  out=$(run_lane "$home" decide portauth-a1 --project proj --repo "$repo" \
+    --range "$base..$head")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a source file named authors.py reached the cheap lane in a project with no surfaces file"
+  assert_contains "$out" "reason=critical-surface" \
+    "the routing was not attributed to the portable authentication surface"
+  assert_contains "$out" "critical-surfaces: authentication" \
+    "the portable authentication surface stopped covering a path named authors.py"
+
+  # The same for the spellings that sit inside an authentication directory, which
+  # the basename test cannot see on its own.
+  for name in lib/oauth/authors.py src/auth/authors.sh config/authors.json authors.yaml; do
+    n=$((n + 1))
+    out=$(run_lane "$home" decide portauth-b$n --project proj --repo "$repo" --paths "$name")
+    assert_contains "$out" "critical-surfaces: authentication" \
+      "$name lost the portable authentication surface"
+  done
+
+  # The control, which is the whole reason the exception exists: a prose spelling
+  # of AUTHORS is still NOT authentication, and in a project that declares nothing
+  # about it that leaves it ordinary documentation.
+  base=$head
+  printf 'Ada Lovelace\n' > "$repo/AUTHORS.md"
+  head=$(commit_all "$repo" credit)
+  out=$(run_lane "$home" decide portauth-c1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$out" "critical-surfaces: -" \
+    "a prose spelling of AUTHORS was recorded as an authentication surface again"
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a prose spelling of AUTHORS lost its cheap route in a project that declares nothing"
+
+  pass "lane: the portable authentication surface holds in a project that declares nothing"
 }
 
 # git C-quotes a path holding any non-ASCII byte, so the name arrives as the
@@ -2166,6 +2228,7 @@ test_a_prose_name_over_a_non_prose_object_is_not_documentation
 test_binary_content_under_a_prose_name_is_not_documentation
 test_documents_that_govern_an_agent_are_not_ordinary_documentation
 test_authors_is_a_governing_document_not_an_authentication_surface
+test_the_portable_authentication_surface_holds_without_a_project_file
 test_declared_evidence_never_reaches_the_cheap_lane
 test_an_invalid_class_claim_is_refused_on_declared_evidence
 test_size_routes_a_change_to_be_looked_at_and_never_refuses_it

@@ -76,6 +76,23 @@
 # AUTHORS irrespective of extension, so desynchronising costs one unnecessary
 # expensive review instead of one unreviewed governance change.
 #
+# WEAKENING IS NEVER PORTABLE. STRENGTHENING IS. A local file may raise ITS OWN
+# project's rigor; nothing local may lower it for anyone else. If a repair appears
+# to require relaxing something beyond this house, it is not a repair - it is a
+# FLEET DECISION, and a fleet decision is not made inside a delivery titled for
+# something else. This is the same boundary already stated for the built-in
+# catalog below, where a surface placed there is imposed silently on every
+# project, in its general form: it governs REMOVALS as much as additions, and a
+# removal is the direction no local file can undo.
+#
+# The instance that produced it: a LABEL problem in this repository's own record
+# was "fixed" by narrowing the portable authentication glob, and the
+# justification leaned on a backstop - the governing-docs entry - that exists only
+# here. src/authors.py went from critical-surface to direct-PR reason=low-signal
+# in every project the fleet routes. THE TEST THAT CATCHES THIS IS ASKING WHAT
+# THE CHANGE DOES IN A PROJECT THAT DECLARES NOTHING OF ITS OWN, which is why the
+# suite now pins that case directly rather than only this house's behaviour.
+#
 # THE RECORD. Every decision, every ship dispatch and every defect found after
 # landing appends one row to data/lane-log.tsv. Nobody has published the curve
 # "escaped defects vs time saved" for routing LLM review of agent-written
@@ -232,19 +249,23 @@ fm_lane_binding_decision() {
 
 # --- the accepted prose extensions ------------------------------------------
 
-# THE SINGLE OWNER of the extensions this policy accepts as prose markup. The
-# docs-only name test in bin/fm-lane.sh reads it, and nothing else does or
-# should: every other rule that once consulted it now names what it means
-# irrespective of extension, which is why none of them can fall behind this list.
-#
-# It stays a function rather than a case pattern inlined at its one reader
-# because the list is POLICY and this file owns the policy. Whoever extends it
-# extends the docs-only class and nothing else.
+# THE SINGLE OWNER of the extensions this policy accepts as prose markup. TWO
+# places read it and both DERIVE rather than restate: the docs-only name test in
+# bin/fm-lane.sh, and the AUTHORS exception to the *auth* glob below. Extending
+# this list therefore extends both at once, which is the point.
 #
 # EVERY TIME A LIST THAT ALREADY EXISTS SOMEWHERE IS WRITTEN OUT BY HAND, IT
 # CREATES A SECOND OWNER, AND THE SECOND OWNER FALLS BEHIND THE DAY SOMEONE
-# EXTENDS THE FIRST. If there is a list, DERIVE FROM IT; do not copy it - and
-# better still, write the rule so it needs no list at all.
+# EXTENDS THE FIRST. If there is a list, DERIVE FROM IT; do not copy it. The
+# exception below was once written as three hand-listed basenames while this list
+# accepted four extensions, and AUTHORS.rst was mislabelled for exactly that
+# reason.
+#
+# The third reader is DATA and cannot derive: this repository's own
+# .fm-critical-surfaces names AUTHORS irrespective of extension, deliberately, so
+# that it can never fall behind this list in the cheap direction. Widening a glob
+# in a LOCAL file is the safe way to be out of step; narrowing the portable rule
+# to match it is not, and that is the rule stated at the head of this file.
 fm_lane_prose_extensions() {
   printf '%s\n' md markdown rst adoc
 }
@@ -369,25 +390,35 @@ fm_lane_catalog() {
 # AUTHORS, so a contributors list was recorded as an AUTHENTICATION surface. It
 # leaked toward the safe side here - one unnecessary expensive review - but it
 # leaked, and a record that names the wrong surface does not measure, it
-# decorates. Exactly ONE NAME is excepted, irrespective of extension, and
-# nothing broader: oauth, authn, authz, auth/ and user_auth.py all still match,
-# so the security surface itself is unchanged.
+# decorates. Exactly ONE NAME is excepted, and only in the spellings this policy
+# accepts as PROSE - no extension, .txt, or one of the accepted prose extensions,
+# derived from their owner above rather than written out again. Nothing broader:
+# oauth, authn, authz, auth/ and user_auth.py all still match, and so does
+# src/authors.py, so the security surface itself is unchanged.
 #
-# The extension is not consulted because the alternative was a seam. While this
-# derived the accepted prose extensions and the catalog data named AUTHORS
-# without them, the two disagreed about every other spelling: AUTHORS.org was
-# recorded under authentication AND governing-docs at once, one of the two false,
-# and a row that refutes itself does not measure. Naming the same thing on both
-# sides leaves nothing to drift.
+# THE RESIDUAL IS ACCEPTED, and it is recorded here so the next reader does not
+# "fix" it the way it was once fixed. A spelling of AUTHORS outside the accepted
+# prose list - AUTHORS.org - is still recorded under authentication ALONGSIDE
+# governing-docs, and one of those two names is not true of it. That costs one
+# expensive review and an imprecise surface name in a rare row.
 #
-# AUTHORS.py escaping this glob is not a weakening. Nothing about that path was
-# ever authentication, and a project that means to hold it expensive does what
-# this repository does: names it, under governing-docs in .fm-critical-surfaces,
-# irrespective of extension - which is what it truthfully is.
+# The alternative was measured and cost more. Excepting authors.<anything> to
+# tidy that label removed the authentication surface from every path basenamed
+# authors.<ext> IN EVERY PROJECT THE FLEET ROUTES: src/authors.py went from
+# critical-surface to direct-PR reason=low-signal, and lib/oauth/authors.py with
+# it. The net believed to hold them - the governing-docs entry - exists only in
+# THIS house's .fm-critical-surfaces, so everywhere else there was nothing
+# behind it. A record that labels oddly is worth more than a fleet with one guard
+# fewer. FIX THE LABEL, NOT THE ROUTING - and if the label cannot be fixed
+# without touching portable routing, it stays as it is.
 fm_lane_authors_spelling() {
-  case "$1" in
-    authors|authors.*) return 0 ;;
+  local base=$1 ext
+  case "$base" in
+    authors|authors.txt) return 0 ;;
   esac
+  for ext in $(fm_lane_prose_extensions); do
+    [ "$base" != "authors.$ext" ] || return 0
+  done
   return 1
 }
 

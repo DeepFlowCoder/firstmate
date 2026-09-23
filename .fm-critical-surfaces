@@ -5,6 +5,16 @@
 # This file only ADDS to the built-in catalog in bin/fm-lane-lib.sh; it can
 # never remove a built-in surface, so nothing here can lower rigor.
 #
+# WEAKENING IS NEVER PORTABLE. STRENGTHENING IS. That is what the additive-only
+# contract above means in the direction that matters: this file may raise THIS
+# project's rigor as far as it likes, and nothing written here may lower anyone
+# else's. The corollary is the one that was learned the hard way - a gap here is
+# never grounds for narrowing the portable catalog to match. Widening an entry
+# below is free; relaxing a built-in surface so a local label reads better is a
+# FLEET DECISION, and a fleet decision is not made inside a delivery titled for
+# something else. Ask what the change does in a project that declares nothing of
+# its own: this file does not exist there.
+#
 # What belongs here: the paths whose names the portable built-in patterns do not
 # already catch, but whose failure mode is a safety boundary rather than a bug -
 # work discarded, a branch landed that should not have, a guard stepped around,
