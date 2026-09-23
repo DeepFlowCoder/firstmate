@@ -69,7 +69,9 @@
 #          signals column. Identifiers only, never free text, or the column
 #          becomes prose with a column heading.
 # critical comma-separated surface names, or -
-# signals  k=v,k=v, or -
+# signals  k=v,k=v, or -. It names the TREE that was measured in its repo=
+#          entry, resolved physically, so a decision made against the wrong
+#          clone is no longer byte-indistinguishable from a correct one.
 # Absent values are "-". Tabs, newlines and backslashes inside a value are
 # escaped (\t, \n, \\), so one row is always one physical line, and each field
 # is capped so the whole row stays one atomic append (FM_LANE_FIELD_MAX).
@@ -224,10 +226,25 @@ EOF
 # itself a built-in critical surface above. Widening the catalog stays free;
 # narrowing it is a change that takes the expensive lane like any other change
 # to how work is routed.
+#
+# NOT BEING ABLE TO READ THE FILE IS AN ERROR, NEVER AN EMPTINESS. It used to be
+# interpreted as absent, so a permissions problem, a directory left in its place
+# or a dangling symlink silently erased EVERY critical surface that project
+# declares at once, and the decision was made against the built-in catalog alone
+# while reading as "this project declares none". That guard did not degrade, it
+# switched off. Absent and unreadable are different answers and are now answered
+# differently: absent is the legitimate "declares no surfaces of its own".
 fm_lane_project_surfaces() {
   local repo=$1 file line glob name rest
   file="$repo/.fm-critical-surfaces"
-  [ -f "$file" ] || return 0
+  if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+    return 0
+  fi
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    echo "error: $file exists but is not a readable regular file, so this project's declared critical surfaces cannot be read." >&2
+    echo "       Refusing rather than reading it as absent: not being able to read the list is not the same answer as the list being empty." >&2
+    return 1
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     read -r glob name rest <<<"$line"
     case "$glob" in
@@ -238,7 +255,7 @@ fm_lane_project_surfaces() {
       return 1
     fi
     printf '%s\t%s\n' "$glob" "$name"
-  done <"$file"
+  done <"$file" || return 1
   return 0
 }
 

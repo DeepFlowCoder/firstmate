@@ -550,6 +550,149 @@ test_a_partial_revert_of_a_root_commit_is_not_demonstrated() {
   pass "lane: a partial revert of a root commit is not a clean revert"
 }
 
+# A blob id carries no file mode, so comparing content alone accepted a revert
+# that restored the bytes and left the commit's exec-bit flip applied. An
+# accidental chmod +x committed alongside an edit is the ordinary way that
+# arises, and the script stays executable while the record calls it a clean
+# revert.
+test_a_revert_that_leaves_a_mode_change_is_not_clean() {
+  local repo home parent s_head head out
+
+  repo="$TMP_ROOT/revertmode/repo"
+  mkdir -p "$repo/src" "$repo/scripts"
+  git -C "$repo" init --quiet 2>/dev/null || { git init --quiet "$repo"; }
+  home=$(lane_home revertmode)
+
+  printf 'value = 1\n' > "$repo/src/app.py"
+  printf 'echo deploy\n' > "$repo/scripts/deploy.sh"
+  chmod 644 "$repo/scripts/deploy.sh"
+  git -C "$repo" add -A
+  git -C "$repo" commit --quiet -m parent
+  parent=$(git -C "$repo" rev-parse HEAD)
+
+  printf 'value = 2\n' > "$repo/src/app.py"
+  chmod 755 "$repo/scripts/deploy.sh"
+  s_head=$(commit_all "$repo" edit-and-chmod)
+  [ "$(git -C "$repo" ls-tree "$s_head" -- scripts/deploy.sh | awk '{print $1}')" = 100755 ] \
+    || fail "the fixture did not record an exec-bit flip, so this case would prove nothing"
+
+  # Only the content half is undone; the exec bit stays flipped.
+  printf 'value = 1\n' > "$repo/src/app.py"
+  head=$(commit_all "$repo" restore-content-only)
+  out=$(run_lane "$home" decide mode-a1 --project proj --repo "$repo" \
+    --range "$s_head..$head" --class clean-revert --revert-of "$s_head")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a revert that left a mode change applied demonstrated as a clean revert"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the surviving mode change was not reported as undemonstrated"
+
+  # The control: undoing the mode too really is that commit undone.
+  chmod 644 "$repo/scripts/deploy.sh"
+  head=$(commit_all "$repo" restore-mode-too)
+  out=$(run_lane "$home" decide mode-a2 --project proj --repo "$repo" \
+    --range "$s_head..$head" --class clean-revert --revert-of "$s_head")
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a revert that restored content and mode did not demonstrate"
+  [ "$(git -C "$repo" ls-tree "$head" -- scripts/deploy.sh | awk '{print $1}')" = \
+    "$(git -C "$repo" ls-tree "$parent" -- scripts/deploy.sh | awk '{print $1}')" ] \
+    || fail "the control did not restore the parent's mode"
+
+  pass "lane: a revert that leaves a file's mode changed is not a clean revert"
+}
+
+# A surfaces file that cannot be read is an ERROR, never an emptiness. Read as
+# absent, a permissions problem erased every surface the project declares at
+# once and the decision proceeded on the built-in catalog alone.
+test_an_unreadable_surfaces_file_is_refused_rather_than_read_as_absent() {
+  local repo home out status
+
+  repo="$TMP_ROOT/unreadablecat/repo"
+  mkdir -p "$repo/billing"
+  git -C "$repo" init --quiet 2>/dev/null || { git init --quiet "$repo"; }
+  home=$(lane_home unreadablecat)
+
+  # Absent stays the legitimate "this project declares no surfaces of its own".
+  out=$(run_lane "$home" decide cat-none --project proj --repo "$repo" \
+    --paths billing/ledger.rb)
+  status=$?
+  expect_code 0 "$status" "an absent surfaces file should not refuse the decision"
+  assert_contains "$out" "critical-surfaces: -" \
+    "an absent surfaces file did not fall back to the built-in catalog"
+
+  printf 'billing/* money-movement\n' > "$repo/.fm-critical-surfaces"
+  out=$(run_lane "$home" decide cat-ok --project proj --repo "$repo" \
+    --paths billing/ledger.rb)
+  assert_contains "$out" "critical-surfaces: money-movement" \
+    "a readable surfaces file did not declare its surface"
+
+  # This suite runs as an ordinary user, for whom mode 000 is genuinely
+  # unreadable; as root it would not be, and the case would pass vacuously.
+  chmod 000 "$repo/.fm-critical-surfaces"
+  if [ -r "$repo/.fm-critical-surfaces" ]; then
+    fail "this case needs a user for whom mode 000 is unreadable; it is not reproducing"
+  fi
+  out=$(run_lane "$home" decide cat-unreadable --project proj --repo "$repo" \
+    --paths billing/ledger.rb)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an unreadable surfaces file was read as absent"
+  assert_contains "$out" "is not a readable regular file" \
+    "the refusal did not say why the surfaces file could not be read"
+  chmod 644 "$repo/.fm-critical-surfaces"
+
+  # A directory in its place, and a dangling symlink, are the same answer.
+  rm "$repo/.fm-critical-surfaces"
+  mkdir "$repo/.fm-critical-surfaces"
+  out=$(run_lane "$home" decide cat-dir --project proj --repo "$repo" \
+    --paths billing/ledger.rb)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a directory in place of the surfaces file was read as absent"
+  rmdir "$repo/.fm-critical-surfaces"
+
+  ln -s nowhere-at-all "$repo/.fm-critical-surfaces"
+  out=$(run_lane "$home" decide cat-dangling --project proj --repo "$repo" \
+    --paths billing/ledger.rb)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a dangling symlink in place of the surfaces file was read as absent"
+  rm "$repo/.fm-critical-surfaces"
+
+  pass "lane: a surfaces file that cannot be read refuses the decision rather than vanishing"
+}
+
+# --repo and --project are independent inputs, so a decision measured against
+# the wrong clone used to be byte-indistinguishable from a correct one. The
+# signals field now names the tree that was actually read.
+test_the_record_names_the_tree_it_measured() {
+  local rec repo_a repo_b base home head out log
+
+  rec=$(make_repo measuredtreea)
+  IFS='|' read -r repo_a base <<EOF
+$rec
+EOF
+  rec=$(make_repo measuredtreeb)
+  IFS='|' read -r repo_b base <<EOF
+$rec
+EOF
+  home=$(lane_home measuredtree)
+  log="$home/data/lane-log.tsv"
+
+  out=$(run_lane "$home" decide tree-a1 --project proj --repo "$repo_a" \
+    --paths src/thing.py)
+  assert_contains "$out" "repo=$(cd "$repo_a" && pwd -P)" \
+    "the decision did not name the tree it measured"
+
+  out=$(run_lane "$home" decide tree-b1 --project proj --repo "$repo_b" \
+    --paths src/thing.py)
+  assert_contains "$out" "repo=$(cd "$repo_b" && pwd -P)" \
+    "the second decision did not name its own tree"
+
+  # Two decides against DIFFERENT trees must be distinguishable in the record,
+  # which is the whole point: same project, same paths, same lane.
+  assert_grep "repo=$(cd "$repo_a" && pwd -P)" "$log" "the first tree did not reach the record"
+  assert_grep "repo=$(cd "$repo_b" && pwd -P)" "$log" "the second tree did not reach the record"
+
+  pass "lane: the record names the tree each decision was measured against"
+}
+
 # A record that cannot say WHICH commit a revert claimed cannot be re-checked
 # when a defect turns up months later. The class column therefore carries the
 # demonstrating input as an identifier: the resolved sha, never free text.
@@ -1369,6 +1512,9 @@ test_documentation_is_decided_by_extension_or_name_never_by_shape
 test_a_diff_the_policy_cannot_read_is_not_measured_as_zero
 test_a_revert_must_be_the_commit_it_claims_to_undo
 test_a_partial_revert_of_a_root_commit_is_not_demonstrated
+test_a_revert_that_leaves_a_mode_change_is_not_clean
+test_an_unreadable_surfaces_file_is_refused_rather_than_read_as_absent
+test_the_record_names_the_tree_it_measured
 test_the_record_names_what_demonstrated_the_class
 test_a_non_ascii_path_is_read_as_itself
 test_a_path_git_escapes_is_matched_as_itself

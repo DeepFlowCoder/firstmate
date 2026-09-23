@@ -328,6 +328,7 @@ A missing or unwritable record never stops an expensive or `local-only` dispatch
 Every lane decision, every ship dispatch and every defect found after a delivery landed is appended to the home's gitignored `data/lane-log.tsv`, tab-separated, one event per line.
 Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"`, and read the file back with `grep <task-id> "$FM_HOME/data/lane-log.tsv"` or any other text tool, which is what the tab-separated format is for.
 A class-routed decision carries what demonstrated the class in its class column, as `clean-revert:<commit sha>`, so a reviewer can re-check months later which commit was claimed.
+Every decision's signals field also names the tree it was measured against in its `repo=` entry, so a decision taken against the wrong clone can be told apart from a correct one rather than reading identically.
 A `dispatch` row records an authorised dispatch rather than a completed launch, because it is written before the worker starts, so a spawn that fails afterwards still leaves a row and a retry leaves a second one for the same delivery.
 Anyone computing an escape rate from this file must therefore not treat dispatch rows as deliveries.
 That record is the only measurement of rigor skipped against defects escaped, which nothing published covers for agent-written changes, so it is what makes the policy correctable rather than permanent.

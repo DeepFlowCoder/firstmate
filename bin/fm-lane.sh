@@ -182,7 +182,9 @@ demonstrate_docs_only() {
 
 # "This change is exactly <sha> undone", proved from the trees rather than from
 # a commit message, needs BOTH halves for every changed path: the base held
-# <sha>'s content, and the head holds <sha>^'s content. Checking only the second
+# <sha>'s tree entry, and the head holds <sha>^'s. Entry, not content: the mode
+# is compared too, so a revert that leaves a file's exec bit flipped is not one.
+# Checking only the second
 # half is not enough - it passes for any commit whose parent happened to hold
 # the same content, so a revert could be recorded against a commit it has
 # nothing to do with. Requiring both also makes "<sha> never touched this path"
@@ -214,17 +216,25 @@ demonstrate_clean_revert() {
   done <"$own"
   [ "$own_count" -gt 0 ] || return 1
   for p in ${paths[@]+"${paths[@]}"}; do
-    [ "$(blob_at "$base" "$p")" = "$(blob_at "$sha" "$p")" ] || return 1
-    [ "$(blob_at "$head" "$p")" = "$(blob_at "$sha^" "$p")" ] || return 1
+    [ "$(tree_entry_at "$base" "$p")" = "$(tree_entry_at "$sha" "$p")" ] || return 1
+    [ "$(tree_entry_at "$head" "$p")" = "$(tree_entry_at "$sha^" "$p")" ] || return 1
   done
   return 0
 }
 
-# blob_at <rev> <path> -> the blob id, or the empty string when the path is
-# absent at that revision. Two absent sides compare equal, which is what a
-# revert of an added file needs.
-blob_at() {
-  repo_git rev-parse --verify --quiet "$1:$2" 2>/dev/null || true
+# tree_entry_at <rev> <path> -> the tree entry's mode, type and object, or the
+# empty string when the path is absent at that revision. Two absent sides
+# compare equal, which is what a revert of an added file needs.
+#
+# THE MODE IS PART OF THE COMPARISON. Resolving the path to a blob id alone
+# compared content and nothing else, so a revert that restored the content and
+# left <sha>'s 100644-to-100755 flip applied still demonstrated as exactly <sha>
+# undone: the script stayed executable, shipped with no pipeline review, and the
+# record named it a clean revert. A symlink-for-regular-file swap over identical
+# content passed the same way. Comparing the ENTRY rather than the object closes
+# both without a special case for either.
+tree_entry_at() {
+  repo_git ls-tree --full-tree "$1" -- "$2" 2>/dev/null | awk '{ print $1, $2, $3; exit }'
 }
 
 # --- decide -----------------------------------------------------------------
@@ -232,7 +242,7 @@ blob_at() {
 cmd_decide() {
   local evidence catalog hits critical lane reason signals note class_record
   local base head names numstat added udiff p q d seen
-  local files dirs lines new_files branch_points binary unreadable
+  local files dirs lines new_files branch_points binary unreadable repo_measured
   local seen_dirs=()
   local signal_reasons=()
 
@@ -339,7 +349,16 @@ cmd_decide() {
       unreadable=1
     fi
   fi
-  signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points,binary=$binary"
+  # The tree that was actually read, resolved physically so two spellings of one
+  # tree record identically. --repo and --project are independent inputs, so a
+  # --repo pointing at the wrong clone produced a decision byte-indistinguishable
+  # from a correct one: critical-surfaces: - for a path that IS a surface in the
+  # project named. A disclaimer would only say the measurement might have been
+  # wrong; recording the tree says WHICH one it was, and turns a permanent doubt
+  # into a checkable fact. A record that cannot tell a good decision from a bad
+  # one does not measure, it decorates.
+  repo_measured=$(cd "$REPO" && pwd -P) || die "--repo cannot be resolved: $REPO"
+  signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points,binary=$binary,repo=$repo_measured"
 
   if [ -n "$OVERRIDE" ]; then
     lane=direct-PR
