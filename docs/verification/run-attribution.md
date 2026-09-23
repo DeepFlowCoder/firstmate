@@ -5,7 +5,7 @@ Audience: maintainer verification.
 This record supports four active guarantees, each resting on a different measured fact:
 
 - On the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work. This one rests on the pipeline working in its own managed worktree and never in the crew's.
-- A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
+- A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work - and the one failed run the fourth guarantee below reports as `unknown` instead still carries the work-is-not-lost fact. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
 - A request to the pipeline whose result was never established is reported as unestablished and never as a failed request. This one rests on the daemon's response time being load-dependent, so a bound that fires says nothing about what the request did.
 - A run a step's own time cap cut off is reported as a verdict that was never reached and never as a verdict against the code. This one rests on the run's own `error:` text distinguishing the two, and on the cut wordings being disjoint from every other failure the store carries.
 
