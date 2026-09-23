@@ -53,7 +53,7 @@
 #            is the noise the separation exists to prevent.
 #   arm      Write state/capacity.check.sh and bind its bytes with
 #            fm-check-register.sh, so the watcher dispatches it on its normal
-#            FM_CHECK_INTERVAL cadence and turns its one line into a `check:`
+#            FM_CHECK_INTERVAL cadence and turns its output into a `check:`
 #            wake. Idempotent; bin/fm-bootstrap.sh calls it at every locked
 #            session start.
 #   disarm   Remove the shim, its trust binding, the report record, the balance
