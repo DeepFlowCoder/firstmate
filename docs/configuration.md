@@ -222,9 +222,9 @@ Recovery and unchanged readings stay silent, while a later degradation becomes r
 The warning names an exhausted time window by its reset hour, an unusable credential, and an allowance spent with no reset reported, because those require waiting, sign-in, and investigating respectively.
 quota-axi exposes no verified signal that separates a spent prepaid balance from a spent window whose reset is missing, so the guard reports that shape as `exhausted` rather than guessing a recharge.
 
-A lane the snapshot could not establish anything about is named `not measured`, with the reason quoted, and it is never reported as spent or as a sign-out.
+A lane the snapshot could not prove lost is named `not measured`, with its reading quoted, and it is never reported as spent or as a sign-out.
 Such a lane also never takes the count below the threshold on its own: only a lane proven lost - a spent window, an examined and unusable credential, a spent allowance - lowers the count the warning is judged against.
-A credential store quota-axi could not open is one of those unmeasured readings rather than a credential fault, because this guard deliberately never opens an interactive credential prompt, so a store it cannot read is its ordinary reading.
+Two readings land there rather than as a credential fault: a credential store quota-axi could not open, because this guard deliberately never opens an interactive credential prompt so a store it cannot read is its ordinary reading, and an access-token expiry or rejected request the vendor renews by itself on next use, reported as `expired, renewed by the vendor on next use` and never as sign-in required.
 Headroom the vendor has already answered for is read as a working lane even when an authentication signal sits beside it, because a provider's credential sources are independent of one another.
 The guard reports only and never refuses a dispatch.
 [`bin/fm-capacity-check.sh`](../bin/fm-capacity-check.sh)'s header owns snapshot acquisition, threshold precedence, transition state, and watcher registration, while [`bin/fm-capacity-policy.mjs`](../bin/fm-capacity-policy.mjs)'s header owns classification and wording.
