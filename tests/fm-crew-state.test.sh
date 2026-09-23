@@ -33,6 +33,8 @@ set -u
 . "$ROOT/bin/fm-classify-lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-pr-lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-nm-run-lib.sh"
 
 CREW_STATE="$ROOT/bin/fm-crew-state.sh"
 TMP_ROOT=$(fm_test_tmproot fm-crew-state)
@@ -1510,6 +1512,48 @@ test_a_cap_cut_under_an_open_decision_is_not_absorbed_as_healthy_idle() {
   assert_contains "$bad" "state: failed" "a real code verdict still outranks the record"
   assert_absorb_class "$bad" none "a real code verdict still surfaces"
   pass "a cap cut under an open decision surfaces instead of reading as parked"
+}
+
+# ONCE A SUCCESSOR HAS RUN, THE CUT IS NO LONGER THIS READ'S VERDICT. The
+# supersession arm reports the LATER run and quotes the reading it replaced, so
+# the cut's phrase appears inside a clause that says it was replaced. That quote
+# must not be mistaken for a live cut by anything downstream - a consumer that
+# did would tell a supervisor to re-validate work the successor already
+# validated, which is the same false claim about a run this change exists to
+# remove.
+#
+# The shape is measured, not hypothetical: `docs/verification/run-attribution.md`
+# records `fm/fm-tope-de-trabajo-no-acota-lo-que-dice-acotar` with exactly one
+# `failed` row - the cut - and a later `completed` row, so identity IS
+# established and the cut reading does reach the wrapper.
+test_a_superseded_cut_is_quoted_but_no_longer_read_as_a_cut() {
+  reset_fakes
+  local d short out live; d=$(new_case cut-superseded)
+  make_repo_on_branch "$d/wt" fm/feat-sc
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/sc.meta" "window=fm:fm-sc" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-sc)"
+
+  # Newest first: a successor that COMPLETED, then the cut it replaced. One
+  # `failed` row, so the identity gate passes and the cut survives into the arm.
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-sc ${short}  2026-09-23 20:13
+  failed  fm/feat-sc ${short}  2026-09-23 18:51"
+  out=$(run_crew_state "$d" sc)
+
+  # The same cut with no successor, so the reading still stands.
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-sc ${short}  2026-09-23 18:51"
+  live=$(run_crew_state "$d" sc)
+
+  assert_contains "$out" "supersedes" "the successor is what the superseded arm reports"
+  fm_nm_state_line_is_cap_cut "$out" \
+    && fail "a cut quoted inside a supersession wrapper must not read as a live cut"$'\n'"--- output ---"$'\n'"$out"
+
+  # ...and the guard is the SUPERSESSION, not the reader going blind: the same
+  # cut with nothing after it is still recognized.
+  fm_nm_state_line_is_cap_cut "$live" \
+    || fail "a cut that is still the read's own verdict must read as a live cut"$'\n'"--- output ---"$'\n'"$live"
+  pass "a superseded cut is quoted without being read as a live cut"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -4545,5 +4589,6 @@ test_a_listing_that_filled_its_limit_still_identifies_one_row
 test_an_unarbitrated_cut_does_not_assert_the_cut_phrase
 test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path
 test_a_cap_cut_under_an_open_decision_is_not_absorbed_as_healthy_idle
+test_a_superseded_cut_is_quoted_but_no_longer_read_as_a_cut
 
 echo "all fm-crew-state tests passed"

@@ -1347,6 +1347,14 @@ if [ "$HAVE_RUN" = 1 ]; then
 
   case "$VERDICT_STANDING" in
     superseded)
+      # The cut stops being this read's verdict HERE. Every arm below reports a
+      # LATER run and quotes the superseded reading inside its own clause, so the
+      # cut is being described rather than asserted - and the flag means "this
+      # reading IS a live cut", which is what keeps a dead validation from being
+      # answered by the record and what a consumer acts on. A cut whose successor
+      # already ran needs none of that: it was replaced, which is exactly the
+      # withdrawal acceptance criterion 3 says the arbitration already performs.
+      RUN_CAP_CUT=0
       if nm_coarse_head_matches_worktree "$BRANCH_NEWEST_SHA"; then
         # A bound `running` successor is this crew validating right now.
         if [ "$BRANCH_NEWEST_STATUS" = running ]; then

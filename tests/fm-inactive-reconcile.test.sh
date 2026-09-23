@@ -135,6 +135,18 @@ cut_state_line() {
     'step test failed: agent run tests timed out after 30m0s: agent last produced output 13s ago (104 observed); agent reported: claude exited: signal: killed'
 }
 
+# The same cut AFTER a successor ran, in the shape bin/fm-crew-state.sh's
+# supersession arm emits: the later run is what is reported, and the reading it
+# replaced is quoted inside that arm's own clause.
+# tests/fm-crew-state.test.sh pins that the real script produces this shape.
+superseded_cut_state_line() {
+  bash -c '. "$1"
+    printf "state: unknown · source: run-step · a completed run on fm/feat-x supersedes the reported terminal run (%s)\n" \
+      "$(fm_nm_cap_cut_detail "$2")"' \
+    _ "$ROOT/bin/fm-nm-run-lib.sh" \
+    'step test failed: agent run tests timed out after 30m0s: agent last produced output 13s ago (104 observed); agent reported: claude exited: signal: killed'
+}
+
 prime_seen() { # <state> <status>
   FM_STATE_OVERRIDE="$1" bash -c '
     . "$1"
@@ -535,6 +547,66 @@ test_cap_cut_wakes_the_supervisor_and_files_no_outcome() {
   pass "a time-cap cut wakes the supervisor while filing no terminal outcome"
 }
 
+# A CUT A SUCCESSOR ALREADY REPLACED IS NOT A CUT TO ACT ON. The supersession
+# reading quotes the cut inside a clause that says a later run replaced it, so a
+# scan that went looking for the phrase anywhere in the line would wake the
+# supervisor to re-validate work the successor already validated - the same false
+# claim about a run that this whole distinction exists to remove.
+test_a_superseded_cut_does_not_wake_the_supervisor() {
+  make_world cap-cut-superseded; write_child "$MAIN" child 'working: validating the branch'
+  FM_FAKE_CREW_STATE_LINE="$(superseded_cut_state_line)" run_reconcile "$MAIN" --startup
+
+  [ "$(wake_count "$MAIN" 'inactive-cut:')" = 0 ] \
+    || fail "a cut a later run replaced was reported as a validation still owed"
+  [ "$(outcome_count "$MAIN" pending)" = 0 ] \
+    || fail "a superseded cut filed a terminal outcome"
+  [ ! -s "$MAIN/state/.inactive-cut-notices" ] \
+    || fail "a superseded cut consumed a notice receipt"
+  pass "a cut quoted inside a supersession reading is not acted on as a live cut"
+}
+
+# WHERE THE SUPERVISOR IS IN A DELEGATED HOME. Every other reconciled outcome in
+# a secondmate home goes UP the established parent route, and the local queue row
+# means one thing there already: the upward report failed. A cut notice queued
+# locally would be read by nobody and would imitate that diagnostic, so it takes
+# the same route the terminal outcomes take.
+test_secondmate_cut_notice_reaches_the_parent() {
+  local line
+  make_world cap-cut-mate; bind_secondmate local
+  write_child "$MATE" child 'working: validating the branch'
+  line=$(cut_state_line)
+  FM_FAKE_CREW_STATE_LINE="$line" run_reconcile "$MATE" --startup
+
+  grep -Fq 'had its validation cut off by its own time cap' "$MAIN/state/mate.status" \
+    || fail "the cut never reached the parent: $(cat "$MAIN/state/mate.status" 2>/dev/null)"
+  grep -Fq 'still needs validating' "$MAIN/state/mate.status" \
+    || fail "the parent report does not name the action it asks for"
+  grep -Eq '^(done|failed) ' "$MAIN/state/mate.status" \
+    && fail "the cut was reported to the parent as a terminal verdict"
+  [ "$(outcome_count "$MATE" pending)" = 0 ] || fail "a cut filed a terminal outcome record"
+  [ "$(outcome_count "$MATE" reported)" = 0 ] || fail "a cut filed a terminal outcome receipt"
+  [ "$(wake_count "$MATE" 'inactive-cut:')" = 0 ] \
+    || fail "a delegated cut was queued locally where nobody reads it"
+
+  # Once per reading, across restarts, exactly like the terminal path.
+  FM_FAKE_CREW_STATE_LINE="$line" run_reconcile "$MATE" --startup
+  [ "$(grep -c 'had its validation cut off' "$MAIN/state/mate.status")" = 1 ] \
+    || fail "the parent report was duplicated on the next scan"
+
+  # The local row keeps its own meaning: the upward route is broken.
+  make_world cap-cut-mate-unbound
+  printf 'mate\n' > "$MATE/.fm-secondmate-home"
+  write_child "$MATE" child 'working: validating the branch'
+  FM_FAKE_CREW_STATE_LINE="$line" run_reconcile "$MATE" --startup
+  grep -Fq 'inactive cap-cut notice needs parent report' "$MATE/state/.wake-queue" \
+    || fail "a broken upward route did not surface as the report failure it is"
+  grep -Fq '.fm-secondmate-parent' "$MATE/state/.wake-queue" \
+    || fail "the broken upward route did not name the missing binding"
+  [ ! -s "$MATE/state/.inactive-cut-notices" ] \
+    || fail "an undelivered cut was recorded as delivered"
+  pass "a delegated cut notice goes up the parent route, not onto the local queue"
+}
+
 # Forge command shims fail loudly. A successful scan proves this path never uses
 # them while reconciling a local terminal outcome.
 test_reconciliation_never_calls_forge() {
@@ -561,6 +633,8 @@ test_full_scan_budget_includes_wake_lock_wait
 test_notice_recovery_does_not_duplicate_wake
 test_missing_parent_binding_names_itself
 test_cap_cut_wakes_the_supervisor_and_files_no_outcome
+test_a_superseded_cut_does_not_wake_the_supervisor
+test_secondmate_cut_notice_reaches_the_parent
 test_reconciliation_never_calls_forge
 
 echo "all inactive reconciliation tests passed"

@@ -31,14 +31,17 @@
 #
 # THOSE TWO CONSEQUENCES SPLIT FOR EXACTLY ONE READING: a validation its own
 # step's time cap cut off (fm_nm_state_line_is_cap_cut, owned with the whole
-# distinction by bin/fm-nm-run-lib.sh). It files NO terminal outcome record,
-# because the task reached no outcome - it was never judged and still needs
-# validating - but it DOES wake the supervisor, because an unattended crew whose
-# validation died and whose pane never reacted is precisely the unreviewed work
-# passing in silence this scan exists to catch. Its wake names the cut and asks
-# for the one action it wants, re-validation, never a terminal verdict, and it is
-# emitted once per reading through the notices ledger below rather than through a
-# record there is no outcome to file.
+# distinction by bin/fm-nm-run-lib.sh, which answers only for a cut that is the
+# reading's own current verdict and never for one a later run already replaced).
+# It files NO terminal outcome record, because the task reached no outcome - it
+# was never judged and still needs validating - but it IS reported, because an
+# unattended crew whose validation died and whose pane never reacted is precisely
+# the unreviewed work passing in silence this scan exists to catch. The report
+# names the cut and asks for the one action it wants, re-validation, never a
+# terminal verdict, and it takes the same route as every other reconciled
+# outcome: up the parent channel from a secondmate home, the local wake queue
+# from a main one. It is delivered once per reading through the notices ledger
+# below rather than through a record there is no outcome to file.
 #
 # A terminal-outcomes/<fingerprint>.pending record remains until its upstream
 # receipt is durable.
@@ -240,26 +243,47 @@ queue_presentation() { # <record> <fingerprint> <payload>
   return 0
 }
 
-# The cap cut's wake, and the ledger that makes it once-per-reading.
+# The cap cut's notice, routed exactly where this home's supervisor is, and the
+# ledger that makes it once-per-reading.
+#
+# ROUTING FOLLOWS THE TERMINAL PATH, because the reason it splits there applies
+# unchanged here: in a delegated home the parent supervises, so the notice goes
+# up the established parent route, and the LOCAL queue keeps the one meaning it
+# already has in such a home - that the upward report failed. A main home has no
+# parent, so its own queue is the channel.
 #
 # The terminal path is deduplicated by its own record: a fingerprint that already
-# reached presented or reported never queues again. A cut files no record, so it
-# would otherwise re-wake on every scan for as long as the crew stays inactive -
-# and the reading persists until a successor run exists, which was measured in
-# hours. The queued-key check cannot stand in for that: a key disappears the
-# moment the wake is acknowledged, which is exactly when the condition is still
-# there and the supervisor has already been told.
+# reached presented or reported never reports again. A cut files no record - it
+# reached no outcome - so the ledger is the receipt instead, holding the same
+# fingerprint the terminal path would have used, which binds the incarnation and
+# the last status line, so a crew that moves and stalls again is a new reading
+# and is reported again. The queued-key check cannot stand in for that: a key
+# disappears the moment the wake is acknowledged, which is exactly when the
+# condition is still there and the supervisor has already been told.
 #
-# So the ledger is the receipt, and it holds the same fingerprint the terminal
-# path would have used - which binds the incarnation and the last status line, so
-# a crew that moves and stalls again is a new reading and is woken for again.
-cut_notice_once() { # <fingerprint> <payload>
-  local fingerprint=$1 payload=$2
+# A failed upward report does NOT mark the ledger, so the next scan retries it -
+# the same retry-until-delivered contract the pending record gives the terminal
+# path. Its local diagnostic row is the existing one, not a delivery.
+cut_notice_once() { # <self-or-empty> <task> <fingerprint> <payload> <pr>
+  local self=$1 task=$2 fingerprint=$3 payload=$4 pr=$5
   [ ! -L "$CUT_NOTICES" ] || return 1
   grep -Fqx -- "$fingerprint" "$CUT_NOTICES" 2>/dev/null && return 1
-  fm_wake_append check "inactive-cut:$fingerprint" "$payload" || return 2
+  if [ -n "$self" ]; then
+    if ! report_cut_to_parent "$self" "$task" "$fingerprint" "$pr"; then
+      payload="inactive cap-cut notice needs parent report: child=$task"
+      if ! fm_secondmate_parent_record_parse "$FM_HOME/.fm-secondmate-parent"; then
+        payload="$payload (missing or unreadable parent binding .fm-secondmate-parent)"
+      fi
+      queue_key_exists "inactive-cut:$fingerprint" && return 1
+      fm_wake_append check "inactive-cut:$fingerprint" "$payload" || return 2
+      printf 'actionable: %s\n' "$payload"
+      return 0
+    fi
+  else
+    fm_wake_append check "inactive-cut:$fingerprint" "$payload" || return 2
+    printf 'actionable: %s\n' "$payload"
+  fi
   append_once "$CUT_NOTICES" "$fingerprint" || return 2
-  printf 'actionable: %s\n' "$payload"
   return 0
 }
 
@@ -350,21 +374,42 @@ append_once() { # <path> <line>
   printf '%s\n' "$line" >> "$path"
 }
 
-report_to_parent() { # <self-id> <task> <state> <outcome-key> <fingerprint> <pr>
-  local self=$1 task=$2 state=$3 outcome_key=$4 fingerprint=$5 pr=$6 parent_record destination line
+parent_destination() { # <self-id>
+  local self=$1 parent_record
   parent_record="$FM_HOME/.fm-secondmate-parent"
   fm_secondmate_parent_record_parse "$parent_record" || return 1
   case "$FM_SECONDMATE_PARENT_ROUTE" in
     local)
       [ -n "$FM_SECONDMATE_PARENT_HOME" ] || return 1
-      destination="$FM_SECONDMATE_PARENT_HOME/state/$self.status"
+      printf '%s\n' "$FM_SECONDMATE_PARENT_HOME/state/$self.status"
       ;;
     remote)
-      destination="$STATE/parent-replies.status"
+      printf '%s\n' "$STATE/parent-replies.status"
       ;;
     *) return 1 ;;
   esac
+}
+
+report_to_parent() { # <self-id> <task> <state> <outcome-key> <fingerprint> <pr>
+  local self=$1 task=$2 state=$3 outcome_key=$4 fingerprint=$5 pr=$6 destination line
+  destination=$(parent_destination "$self") || return 1
   line="$state [key=$outcome_key]: inactive terminal child=$task fingerprint=$fingerprint"
+  [ -z "$pr" ] || line="$line pr=$pr"
+  append_once "$destination" "$line"
+}
+
+# The cut's report, up the SAME route every other reconciled outcome takes. A
+# delegated home's supervisor is the parent, so a notice queued locally is a
+# notice nobody reads - and it would also imitate the local row that already
+# means the upward route broke, costing that diagnostic its meaning.
+#
+# It carries no terminal state word and no outcome key, because there is no
+# outcome: `note` is this house's verb for a line that must be seen once and that
+# opens no decision to be closed, which is exactly what a cut owes the parent.
+report_cut_to_parent() { # <self-id> <task> <fingerprint> <pr>
+  local self=$1 task=$2 fingerprint=$3 pr=$4 destination line
+  destination=$(parent_destination "$self") || return 1
+  line="note: inactive child=$task had its validation cut off by its own time cap and never redone, so it still needs validating fingerprint=$fingerprint"
   [ -z "$pr" ] || line="$line pr=$pr"
   append_once "$destination" "$line"
 }
@@ -396,7 +441,7 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
         fingerprint=$(sha256_text "$incarnation|$id|cap-cut|$pr|$(clean_field "$last")")
         payload="inactive crew's validation was cut off by its own time cap and never redone: child=$id, which still needs validating"
         [ -z "$pr" ] || payload="$payload pr=$pr"
-        cut_notice_once "$fingerprint" "$payload" || true
+        cut_notice_once "$self" "$id" "$fingerprint" "$payload" "$pr" || true
       fi
       return 0
       ;;

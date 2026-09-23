@@ -694,12 +694,24 @@ fm_nm_cap_cut_detail() {  # <run-error-text>
   printf ': no verdict was reached about the work, which still needs validating (the work is not lost)'
 }
 
-# 0 when a bin/fm-crew-state.sh current-state line IS the cap-cut reading above.
+# 0 when a bin/fm-crew-state.sh current-state line IS the cap-cut reading above -
+# the reading's OWN current verdict, never a cut some wrapper is quoting.
 #
 # The state word alone cannot answer this: `unknown` is also what a crew with no
 # backend target, an unreachable remote endpoint, or an unarbitrated verdict
-# reports, and none of those says a validation died. Only the phrase does, so the
-# phrase is what is read - from the same literal that wrote it.
+# reports, and none of those says a validation died.
+#
+# WHY THIS PARSES FIELDS RATHER THAN SEARCHING TEXT. The line is a three-field
+# contract, `state: <s> · source: <src> · <detail>`, and the cut's phrase is what
+# bin/fm-crew-state.sh puts in the DETAIL field when the cut is what it is
+# reporting. Every reading that merely mentions a cut quotes it inside a clause
+# of its own - "a completed run on <branch> supersedes the reported terminal run
+# (<the cut>)", "the run verdict (<the cut>) could not be arbitrated" - so the
+# quote can never be the detail's opening clause. Searching the line for the
+# phrase found those quotations too and woke a supervisor to re-validate work a
+# successor run had already validated: the same false claim about a run that this
+# whole distinction exists to remove. Reading the field the producer writes, at
+# the position it writes it, is what makes a quotation unreachable from here.
 #
 # WHY A CONSUMER NEEDS THIS AT ALL. A cut is not terminal, so nothing about it
 # may be filed as a task's outcome; but it is not benign either, and a consumer
@@ -707,8 +719,11 @@ fm_nm_cap_cut_detail() {  # <run-error-text>
 # pass in silence on an unattended crew. bin/fm-inactive-reconcile.sh is that
 # consumer, and this is how it tells the two consequences apart.
 fm_nm_state_line_is_cap_cut() {  # <crew-state-line>
-  case "${1:-}" in
-    'state: unknown '*"$FM_NM_CAP_CUT_MARK"*) return 0 ;;
-  esac
+  local detail=${1:-}
+  case "$detail" in 'state: unknown · source: '*) ;; *) return 1 ;; esac
+  detail=${detail#state: unknown · source: }
+  case "$detail" in *' · '*) ;; *) return 1 ;; esac
+  detail=${detail#* · }
+  case "$detail" in "$FM_NM_CAP_CUT_MARK"*) return 0 ;; esac
   return 1
 }
