@@ -97,11 +97,7 @@ These are open readings, recorded as unresolved rather than smoothed into the re
 
 ## Gotcha: `codex exec` blocks on piped stdin
 
-A first probe run produced nothing for a full 10 minutes and was killed.
-The cause was not the lane.
-With stdin piped rather than closed, `codex exec` writes `Reading additional input from stdin...` to stderr and waits for stdin to close before starting a turn, so `events.jsonl` stayed empty and no quota was spent.
-
-Any non-interactive codex invocation must close stdin, as the command above does with `< /dev/null`.
+Close stdin with `< /dev/null`, as the probe command above does; the [`Non-interactive stdin` operating fact](../../.agents/skills/harness-adapters/references/harness/codex.md) owns the mechanism and why it is required.
 
 ## Refreshing this record
 
