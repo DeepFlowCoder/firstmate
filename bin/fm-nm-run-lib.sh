@@ -15,6 +15,9 @@
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards
 # stderr, while fm_nm_run keeps the fail-open query contract for read-only callers.
+# A caller that made a REQUEST rather than a read must classify what came back
+# with fm_nm_call_answered below before reporting anything: silence from a
+# bounded call is not a failed request.
 fm_nm_run_bounded() {  # <dir> <timeout_secs> <args...>
   local dir=$1 timeout_secs=$2 have_timeout=none
   shift 2
@@ -52,6 +55,79 @@ fm_nm_strip_quotes() {
     \"*\") s=${s#\"}; s=${s%\"} ;;
   esac
   fm_nm_trim "$s"
+}
+
+# --- did the daemon ANSWER? -------------------------------------------------
+#
+# THE THIRD STATE, and why a client without it is dangerous. A client that makes
+# a request has three possible results and not two: the request APPLIED, the
+# request FAILED, and the client NEVER FOUND OUT. Collapsing the third into the
+# second is not a cosmetic reporting fault. "It failed" invites doing it again,
+# and repeating an operation that already applied IS the damage the moment the
+# operation is not idempotent - a second abort, a second merge, a second
+# anything-that-moves-state. The gate answer below cost nothing only because the
+# worker asked before repeating; nothing about the report earned that.
+#
+# MEASURED 2026-09-22, and this is the incident that put the boundary here.
+# A worker reattaching to its own live validation was told, twice, on the same
+# gate:
+#
+#   drive run: reconcile run 01M354M59S16BBBCEA7ZD8M61S: get_run timed out and
+#   daemon health probe failed: read response: daemon health did not reply
+#   within 250ms
+#
+# Read at that instant, touching nothing: the daemon was `running` and that same
+# run was `status: running` on its branch. The service was healthy and the run
+# was live; a 250ms probe had simply run past its bound against a daemon that
+# under seven-lane load answers in about a second. The worker declared itself
+# blocked and stopped. When it was reattached its own words were "my gate
+# response had in fact landed - review is in fix round 1 right now", so THE
+# OPERATION REPORTED AS FAILED HAD ALREADY APPLIED.
+#
+# The house already draws this line everywhere else it matters, and always in
+# the same direction: bin/fm-tool-update-check.sh reports a probe that never
+# answered in its own words rather than as a broken tool, bin/fm-capacity-policy.mjs
+# reads an unmeasurable lane as disclosed uncertainty rather than a lost one, and
+# AGENTS.md section 4 says the same of a dispatch candidate. Unmeasurable
+# evidence is uncertainty, never a fault. This is that same line, drawn for the
+# one client that did not have it.
+#
+# The bound's own exit status. `timeout` and `gtimeout` report 124 when they fire
+# and the perl arm of fm_nm_run_bounded exits 124 deliberately to match, so one
+# number covers every arm.
+FM_NM_BOUND_EXIT=124
+
+# 0 when CLI text $1 says the CLIENT could not confirm its request's result -
+# never that the request failed. Both clauses come from the one measured payload
+# quoted above, and nothing broader is matched: a bare "timed out" is the
+# pipeline's own vocabulary too (a ci monitor timeout is a real fact about a
+# run), so only the request-scoped and probe-scoped wordings answer here. A
+# clause with no observation behind it is a speculation sitting inside a
+# detector, which is a false positive waiting its turn.
+fm_nm_text_is_unconfirmed() {  # <cli-output>
+  local text=${1:-}
+  [ -n "$text" ] || return 1
+  printf '%s' "$text" | grep -Eqi 'daemon health probe failed|daemon health did not reply|get_run timed out'
+}
+
+# 0 when a bounded call that exited $1 with output $2 produced an ANSWER about
+# the request it made. Everything else is the third state, and every one of them
+# is silence rather than a verdict:
+#   - the bound fired (FM_NM_BOUND_EXIT): a slow daemon and a dead one look
+#     identical from here, and only one of them is a fault
+#   - no output at all, whatever the exit status: nothing was said, including
+#     the case where fm_nm_run_bounded found no timeout tool and never ran
+#   - output that says the client could not reach or read the daemon
+# A NON-ZERO exit with real text is an answer: `axi status --run <id>` reports a
+# run it cannot find exactly that way, and that is evidence about the run.
+# Callers must still decide whether the answer is about the request they made -
+# an answer about another run says nothing about theirs.
+fm_nm_call_answered() {  # <exit-status> <output>
+  local st=${1:-1} out=${2:-}
+  [ "$st" = "$FM_NM_BOUND_EXIT" ] && return 1
+  [ -n "$(fm_nm_trim "$out")" ] || return 1
+  fm_nm_text_is_unconfirmed "$out" && return 1
+  return 0
 }
 
 # Scalar value of a TOON key in captured `axi status` output $1.

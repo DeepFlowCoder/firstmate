@@ -129,6 +129,11 @@
 #     that verified run instance. A run already terminal
 #     (an outcome is set) or not parked at a gate is left untouched. Idempotent:
 #     an already-aborted run reads back terminal and is skipped on retry.
+#     The read-back that confirms that abort answers in THREE states and not
+#     two - it stopped, it is proven still parked, or the result was never
+#     established - because reporting the third as the second invites sending
+#     an already-applied request again; nm_abort_confirmation below owns the
+#     classification and bin/fm-nm-run-lib.sh owns why that boundary exists.
 #     Branch and head identity alone CANNOT separate an aborted run from the live
 #     run that replaced it, because a run reports its last pushed sha and the
 #     crew worktree stays at that sha for the whole successor run (measured; see
@@ -1755,6 +1760,83 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
   [ "$actual" = "$expected" ]
 }
 
+# Read back what `axi abort --run $2` did, in worktree $1, and publish exactly
+# one of the THREE results a request can have - never two. bin/fm-nm-run-lib.sh's
+# "did the daemon ANSWER?" section owns why the third one exists and what it
+# cost the day it was missing; this is the caller that has to keep it.
+#
+# Published in NM_ABORT_CONFIRM_RESULT, and meaningful only after this ran:
+#
+#   concluded    the daemon answered ABOUT THIS RUN and it has stopped: a
+#                terminal run, or the CLI's exact run-not-found signal.
+#   parked       the daemon answered ABOUT THIS RUN and it is still live. This
+#                is the only PROVEN failure of the abort.
+#   unconfirmed  no answer about this run: the bound fired, the daemon could not
+#                be reached or read, nothing came back, or what came back is
+#                about a different run. Says nothing in either direction.
+#
+# NM_ABORT_CONFIRM_OUT carries the answering output, so the successor check
+# reads the same picture the verdict came from; it is empty for the run-not-found
+# signal, which carries no run record, and for every unconfirmed result. Both are
+# published as globals rather than echoed because a helper invoked as `$(...)`
+# assigns inside a subshell and its caller gets nothing back - the same reason
+# bin/fm-crew-state.sh's runs-list scan publishes from the parent shell.
+#
+# The read that decides gets a SECOND bounded attempt before it degrades, and
+# only when the first produced no answer at all. A daemon serving the whole
+# fleet answers in about a second and has been measured past that under load, so
+# one slow moment must not become a verdict; re-READING costs nothing that
+# matters, because a read moves no state and so carries none of the repeat
+# hazard that governs the request itself. An answer about another run is not
+# retried: the daemon demonstrably answered, and asking again cannot make its
+# answer be about a different run.
+NM_ABORT_CONFIRM_RESULT=
+NM_ABORT_CONFIRM_OUT=
+nm_abort_confirmation() {  # <worktree> <run-id>
+  local wt=$1 run_id=$2 attempt out st reported
+  NM_ABORT_CONFIRM_RESULT=unconfirmed
+  NM_ABORT_CONFIRM_OUT=
+  for attempt in 1 2; do
+    # `|| st=$?` is not decoration: this script runs under `set -e`, and a read
+    # that could not answer is exactly the case whose exit status is non-zero,
+    # so a bare assignment would kill the teardown before it could report
+    # anything - the loudest possible version of the fault this function exists
+    # to prevent.
+    st=0
+    out=$(fm_nm_run_bounded "$wt" "$NM_TEARDOWN_TIMEOUT" axi status --run "$run_id" 2>&1) || st=$?
+    fm_nm_call_answered "$st" "$out" || continue
+    if [ "$st" != 0 ]; then
+      task_status_is_run_not_found "$out" "$run_id" && NM_ABORT_CONFIRM_RESULT=concluded
+      return 0
+    fi
+    if task_status_is_terminal_run "$out" "$run_id"; then
+      NM_ABORT_CONFIRM_OUT=$out
+      NM_ABORT_CONFIRM_RESULT=concluded
+      return 0
+    fi
+    reported=$(fm_nm_strip_quotes "$(fm_nm_field "$out" id)")
+    if [ -n "$reported" ] && [ "$reported" = "$run_id" ]; then
+      NM_ABORT_CONFIRM_OUT=$out
+      NM_ABORT_CONFIRM_RESULT=parked
+    fi
+    return 0
+  done
+  return 0
+}
+
+# The refusal for an abort whose result was never established. It is a separate
+# refusal from the parked one on purpose: the two ask the operator for opposite
+# things - re-read against act again - and answering both with "still parked"
+# is what invites repeating an operation that already applied.
+refuse_over_unconfirmed_abort() {  # <worktree> <run-id>
+  local wt=$1 run_id=$2
+  echo "REFUSED: $ID could not establish whether the no-mistakes run $run_id stopped." >&2
+  echo "The abort was sent and the read-back never answered within ${NM_TEARDOWN_TIMEOUT}s, tried twice: from here a stopped run and a validation service too busy to answer look identical, and only one of them is a fault." >&2
+  echo "This is NOT a failed abort, and acting as if it were is the hazard: an operation whose result was never confirmed may already have applied, and repeating one that is not idempotent is the damage itself." >&2
+  echo "Read the run's own state first ('cd $wt && no-mistakes axi status --run $run_id'), send the abort again only if that read shows it still live, and retry teardown once it answers." >&2
+  echo "Do not restart the shared no-mistakes daemon to clear this: one daemon serves every lane, so restarting it kills other lanes' in-flight runs." >&2
+}
+
 # Abort THIS task's own parked no-mistakes run before the worker that would
 # have answered its gate is removed, so no run is left orphaned holding a
 # fleet slot. Only KIND=ship drives a no-mistakes validation of its own
@@ -1762,7 +1844,7 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
 # a run not attributed to this exact branch+head is never acted on - teardown
 # either proceeds past it or refuses, but never aborts what it cannot identify.
 conclude_task_no_mistakes_run() {  # <worktree>
-  local wt=$1 status_out out run_id concluded=0
+  local wt=$1 status_out run_id
   [ "$KIND" = ship ] || return 0
   [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
@@ -1785,22 +1867,23 @@ conclude_task_no_mistakes_run() {  # <worktree>
   # Accepted best-effort residual: abort supports run-id targeting but no atomic
   # live-state condition; fully closing the resume race needs upstream compare-and-cancel.
   fm_nm_run_checked "$wt" "$NM_TEARDOWN_TIMEOUT" axi abort --run "$run_id" >/dev/null 2>&1 || true
-  if out=$(fm_nm_run_bounded "$wt" "$NM_TEARDOWN_TIMEOUT" axi status --run "$run_id" 2>&1); then
-    if task_status_is_terminal_run "$out" "$run_id"; then concluded=1; fi
-  elif task_status_is_run_not_found "$out" "$run_id"; then
-    concluded=1
-    out=
-  fi
-  if [ "$concluded" = 1 ]; then
-    # Concluding the run teardown OWNS proves nothing about a successor: branch
-    # and head are shared by both, so the run just aborted may be the one this
-    # branch already moved past. The list is read only now, when it shows that
-    # run terminal and any run still live as still live.
-    task_branch_has_uninspected_live_run "$wt" "$out" 1 || return 0
-    refuse_over_uninspected_live_run "$wt"
-    return 1
-  fi
-  echo "REFUSED: no-mistakes run for $ID is still parked after axi abort; confirm it stopped (no-mistakes axi status) or abort it manually (no-mistakes axi abort --run <id>) before retrying teardown." >&2
+  nm_abort_confirmation "$wt" "$run_id"
+  case "$NM_ABORT_CONFIRM_RESULT" in
+    concluded)
+      # Concluding the run teardown OWNS proves nothing about a successor: branch
+      # and head are shared by both, so the run just aborted may be the one this
+      # branch already moved past. The list is read only now, when it shows that
+      # run terminal and any run still live as still live.
+      task_branch_has_uninspected_live_run "$wt" "$NM_ABORT_CONFIRM_OUT" 1 || return 0
+      refuse_over_uninspected_live_run "$wt"
+      return 1
+      ;;
+    parked)
+      echo "REFUSED: no-mistakes run for $ID is still parked after axi abort; confirm it stopped (no-mistakes axi status) or abort it manually (no-mistakes axi abort --run <id>) before retrying teardown." >&2
+      return 1
+      ;;
+  esac
+  refuse_over_unconfirmed_abort "$wt" "$run_id"
   return 1
 }
 

@@ -126,7 +126,12 @@ SH
   # `command -v no-mistakes` would fall through to whatever real binary
   # happens to be on the test runner's own PATH. Tests exercising the run-abort
   # path override FM_FAKE_AXI_STATUS, FM_FAKE_NM_RUNS, and FM_FAKE_NM_ABORT_LOG
-  # before run_teardown.
+  # before run_teardown. Two further knobs drive the post-abort read-back into
+  # the state where its result is never established, by the two routes the
+  # measured incident took: FM_FAKE_NM_UNREACHABLE_AFTER_ABORT answers with the
+  # CLI's own daemon-health failure, and FM_FAKE_NM_HANG_AFTER_ABORT never
+  # answers at all, so the caller's bound is what fires. FM_FAKE_NM_STATUS_LOG
+  # records each read-back either knob receives.
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -140,7 +145,19 @@ case "${1:-}" in
         if [ -n "${FM_FAKE_NM_ABORT_LOG:-}" ] \
            && grep -Fxq "abort --run $run_id" "$FM_FAKE_NM_ABORT_LOG" 2>/dev/null \
            && [ "${FM_FAKE_NM_ABORT_NOOP:-0}" != 1 ]; then
-          if [ "${FM_FAKE_NM_NOT_FOUND_AFTER_ABORT:-0}" = 1 ]; then
+          if [ -n "${FM_FAKE_NM_UNREACHABLE_AFTER_ABORT:-}" ]; then
+            # The measured 2026-09-22 shape: the daemon is alive and the run is
+            # live, but the CLI's own health probe ran past its bound, so the
+            # client never learned this request's result. Counted so a test can
+            # assert how many times the read-back was attempted.
+            [ -z "${FM_FAKE_NM_STATUS_LOG:-}" ] || printf 'status --run %s\n' "$run_id" >> "$FM_FAKE_NM_STATUS_LOG"
+            printf 'drive run: reconcile run %s: get_run timed out and daemon health probe failed: read response: daemon health did not reply within 250ms\n' "$run_id" >&2
+            exit 1
+          elif [ "${FM_FAKE_NM_HANG_AFTER_ABORT:-0}" = 1 ]; then
+            [ -z "${FM_FAKE_NM_STATUS_LOG:-}" ] || printf 'status --run %s\n' "$run_id" >> "$FM_FAKE_NM_STATUS_LOG"
+            sleep 30
+            exit 0
+          elif [ "${FM_FAKE_NM_NOT_FOUND_AFTER_ABORT:-0}" = 1 ]; then
             printf 'error: "run \\"%s\\" not found"\n' "$run_id" >&2
             exit 1
           elif [ "${FM_FAKE_NM_EMPTY_AFTER_ABORT:-0}" = 1 ]; then
@@ -2622,7 +2639,7 @@ test_not_found_status_after_abort_confirms_completion() {
   pass "the CLI's exact run-not-found signal confirms completion"
 }
 
-test_parked_own_run_refuses_when_abort_is_unconfirmed() {
+test_parked_own_run_refuses_when_the_run_is_proven_still_parked() {
   local case_dir rc head pid
   case_dir=$(make_case parked-run-abort-unconfirmed)
   write_meta "$case_dir" no-mistakes ship
@@ -2656,6 +2673,126 @@ EOF
   kill -0 "$pid" 2>/dev/null || fail "parked-run-abort-unconfirmed: process reap ran before refusal"
   kill -KILL "$pid" 2>/dev/null || true
   pass "teardown refuses before reap or removal when a task-owned run remains parked"
+}
+
+# THE THIRD STATE. A request has three results and not two: it applied, it
+# failed, or the client never found out. The third one used to be reported as
+# the second - "still parked after axi abort" - and that is an invitation to
+# send the request again. Measured 2026-09-22 on the live fleet: an operation a
+# client reported as failed had in fact APPLIED, and only the worker asking
+# before repeating kept it from being done twice. The two cases below drive the
+# client into that third state by the two routes the incident took, an
+# unreachable daemon and a bound that fires, and pin that neither is reported as
+# a failed abort.
+test_unreachable_daemon_after_abort_is_not_reported_as_a_failed_abort() {
+  local case_dir rc head
+  case_dir=$(make_case parked-run-abort-unreachable)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+  FM_FAKE_NM_UNREACHABLE_AFTER_ABORT=1 \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "parked-run-abort-unreachable: an unestablished result must refuse"
+  assert_grep "could not establish whether the no-mistakes run 01RUN stopped" "$case_dir/stderr" \
+    "parked-run-abort-unreachable: teardown did not report the result as unestablished"
+  assert_grep "NOT a failed abort" "$case_dir/stderr" \
+    "parked-run-abort-unreachable: teardown did not say the abort is not known to have failed"
+  assert_no_grep "still parked after axi abort" "$case_dir/stderr" \
+    "parked-run-abort-unreachable: an unconfirmed result was reported as a proven-parked run"
+  assert_present "$case_dir/wt" \
+    "parked-run-abort-unreachable: teardown removed the worktree on an unestablished result"
+  pass "a daemon that could not be read says nothing about the abort, and is never reported as a failed one"
+}
+
+# A SLOW ANSWER IS NOT A MISSING ANSWER, which is the other half of the same
+# incident: the probe that reported the healthy daemon as down had simply run
+# past its bound. Reading is idempotent, so the read that decides gets a second
+# bounded attempt before any verdict is reported - asserted here by counting the
+# attempts the daemon actually received - and what it reports after both is
+# uncertainty, never a failure.
+test_read_back_that_runs_past_its_bound_retries_and_reports_uncertainty() {
+  local case_dir rc head attempts
+  case_dir=$(make_case parked-run-abort-slow)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+  FM_FAKE_NM_HANG_AFTER_ABORT=1 \
+  FM_FAKE_NM_STATUS_LOG="$case_dir/nm-status.log" \
+  FM_TEARDOWN_NM_TIMEOUT=1 \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "parked-run-abort-slow: a read that never answered must refuse"
+  attempts=$(grep -c "status --run 01RUN" "$case_dir/nm-status.log" 2>/dev/null || true)
+  [ "$attempts" = 2 ] || fail "parked-run-abort-slow: the read-back was attempted $attempts times, not twice"
+  assert_grep "could not establish whether the no-mistakes run 01RUN stopped" "$case_dir/stderr" \
+    "parked-run-abort-slow: a read past its bound was not reported as unestablished"
+  assert_no_grep "still parked after axi abort" "$case_dir/stderr" \
+    "parked-run-abort-slow: a slow daemon was read as a failed abort"
+  assert_present "$case_dir/wt" \
+    "parked-run-abort-slow: teardown removed the worktree without an established result"
+  pass "a read-back past its bound is retried once and then reported as uncertain, never as a failure"
+}
+
+# The collapse guard itself: the three results must stay three. This fails the
+# moment any two of them are answered the same way, which is the regression the
+# 2026-09-22 incident is made of - and it compares the OUTCOMES rather than the
+# wording of any one of them, so it cannot be satisfied by rephrasing.
+test_applied_failed_and_unestablished_aborts_stay_three_distinct_outcomes() {
+  local applied_dir failed_dir unknown_dir rc head
+  local applied_rc failed_rc unknown_rc failed_msg unknown_msg
+
+  applied_dir=$(make_case abort-three-states-applied)
+  write_meta "$applied_dir" no-mistakes ship
+  land_shippable_commit "$applied_dir"
+  head=$(git -C "$applied_dir/wt" rev-parse HEAD)
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$applied_dir/nm-abort.log" \
+    run_teardown "$applied_dir" > "$applied_dir/stdout" 2> "$applied_dir/stderr" || rc=$?
+  applied_rc=$rc
+
+  failed_dir=$(make_case abort-three-states-failed)
+  write_meta "$failed_dir" no-mistakes ship
+  land_shippable_commit "$failed_dir"
+  head=$(git -C "$failed_dir/wt" rev-parse HEAD)
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$failed_dir/nm-abort.log" \
+  FM_FAKE_NM_ABORT_NOOP=1 \
+    run_teardown "$failed_dir" > "$failed_dir/stdout" 2> "$failed_dir/stderr" || rc=$?
+  failed_rc=$rc
+
+  unknown_dir=$(make_case abort-three-states-unknown)
+  write_meta "$unknown_dir" no-mistakes ship
+  land_shippable_commit "$unknown_dir"
+  head=$(git -C "$unknown_dir/wt" rev-parse HEAD)
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$unknown_dir/nm-abort.log" \
+  FM_FAKE_NM_UNREACHABLE_AFTER_ABORT=1 \
+    run_teardown "$unknown_dir" > "$unknown_dir/stdout" 2> "$unknown_dir/stderr" || rc=$?
+  unknown_rc=$rc
+
+  expect_code 0 "$applied_rc" "abort-three-states: a confirmed stop must let teardown proceed"
+  expect_code 1 "$failed_rc" "abort-three-states: a run proven still parked must refuse"
+  expect_code 1 "$unknown_rc" "abort-three-states: an unestablished result must refuse"
+
+  failed_msg=$(grep -E '^REFUSED' "$failed_dir/stderr" | head -1)
+  unknown_msg=$(grep -E '^REFUSED' "$unknown_dir/stderr" | head -1)
+  [ -n "$failed_msg" ] || fail "abort-three-states: the proven-parked case refused without saying why"
+  [ -n "$unknown_msg" ] || fail "abort-three-states: the unestablished case refused without saying why"
+  [ "$failed_msg" != "$unknown_msg" ] \
+    || fail "abort-three-states: 'still parked' and 'never established' collapsed into one answer: $failed_msg"
+  pass "an applied abort, a failed one, and one whose result was never established stay three distinct answers"
 }
 
 test_another_branchs_parked_run_is_never_touched() {
@@ -3526,7 +3663,10 @@ test_persistent_index_lock_exhausts_retries_and_refuses_loudly
 test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
 test_parked_own_run_is_aborted_before_teardown
-test_parked_own_run_refuses_when_abort_is_unconfirmed
+test_parked_own_run_refuses_when_the_run_is_proven_still_parked
+test_unreachable_daemon_after_abort_is_not_reported_as_a_failed_abort
+test_read_back_that_runs_past_its_bound_retries_and_reports_uncertainty
+test_applied_failed_and_unestablished_aborts_stay_three_distinct_outcomes
 test_mismatched_run_after_abort_refuses_unconfirmed
 test_empty_status_after_abort_refuses_unconfirmed
 test_not_found_status_after_abort_confirms_completion
