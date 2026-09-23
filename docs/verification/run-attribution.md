@@ -313,9 +313,9 @@ The guarantee is scoped to the full `axi status` read, and it does NOT reach the
 On those two arms a cut still prints the old word `failed`, because both read the `no-mistakes runs` listing, whose rows carry status, branch, short sha, date and pull request and no error column at all - so the evidence the distinction is made from is not present there to read.
 That is a known, deliberate limit of the source rather than a second opinion about the word, it is tracked as `fm-corte-por-tope-fuera-del-brazo-de-lista`, and the full read reports the cut as soon as `axi status` answers for that branch again.
 
-The second bound applies on the full read itself: the cut reading is asserted only once the run it describes has been identified, and it degrades to the ordinary failure word when that identity cannot be proved.
+The second bound applies on the full read itself: the cut reading is asserted only once the run it describes has been identified, and it degrades to the ordinary failure phrase when that identity cannot be proved.
 It does NOT reach any reading that would have to match the reported run to a listing row, and it never will, because the two surfaces share no unique key: a `no-mistakes runs` row carries status, branch, short sha, date and pull request and no run id (v1.75.2 exposes only `--limit` on that command, with no branch and no status filter), while `axi status` carries the run id and no timestamp.
-A branch carrying more than one run of the reported word therefore keeps the old word `failed`, that is a permanent limit rather than one pending a better read, and it is tracked as `fm-listado-de-corridas-sin-id`.
+A branch carrying more than one run of the reported word therefore keeps the ordinary failure phrase, and so does a listing that did not answer at all or that carries no row for the branch; that is a permanent limit rather than one pending a better read, and it is tracked as `fm-listado-de-corridas-sin-id`.
 This is a different limit from the first one and neither stands in for the other: the first is about rows that carry no error column, this one is about rows that carry no identity.
 
 The identity that IS available counts rather than matches, which is why it needs no key: a branch carrying exactly ONE row of the reported word leaves no second row the reported run could be.
