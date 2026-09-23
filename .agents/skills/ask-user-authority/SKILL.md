@@ -38,9 +38,10 @@ It stops at the finding, routes the decision to firstmate, and applies only the 
 
 ## Carrying a retired constraint
 
-When a decision turns on a constraint the persisted intent still states in its original form, require the same fix round to leave the current scope in the branch's own durable text - the header comment, doc sentence, or test name a reviewer re-derives that scope from - and not in the instructions alone.
-Instructions alone are measured insufficient, because branch-durable text is what the next round re-derives the scope from.
-Name which constraint is retired or narrowed and what replaces it, so the next reviewer reads the current scope rather than the original.
+When a decision turns on a constraint the persisted intent still states in its original form, choose the answer by whether the retraction is load-bearing: whether it will resurface in later rounds or changes what the work must do.
+When it is load-bearing, answer `fix` with instructions that leave the current scope in the branch's own durable text - the header comment, doc sentence, or test name a reviewer re-derives that scope from - because instructions alone are measured insufficient.
+When it is a one-off objection with no later consequence, answer `approve` and state in the response text that the constraint is retired, because spending a review, test and CI round on prose no later round will need costs more than the objection.
+Either way, name which constraint is retired or narrowed and what replaces it, so the next reviewer reads the current scope rather than the original.
 
 A reviewer objecting from a constraint firstmate already retired is reporting the frozen text, not a defect in the work, and is not evidence that the worker omitted anything.
 Decide it on the current contract and say so plainly, rather than accepting a fault the run's own mechanics made unavoidable.

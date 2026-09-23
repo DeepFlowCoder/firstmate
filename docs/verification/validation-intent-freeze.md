@@ -2,7 +2,7 @@
 
 Audience: maintainer verification.
 
-This record supports one active guarantee: a decision firstmate sends back to a validation gate carries a retired or narrowed constraint into the branch's own durable text, because the pipeline's persisted intent cannot be amended while the run is alive.
+This record supports one active guarantee: a decision firstmate sends back to a validation gate carries a load-bearing retired or narrowed constraint into the branch's own durable text, because the pipeline's persisted intent cannot be amended while the run is alive.
 [`.agents/skills/ask-user-authority/SKILL.md`](../../.agents/skills/ask-user-authority/SKILL.md) owns that decision policy and is the only place the rule is stated.
 This record holds the measurement the rule rests on, and is the evidence for the upstream request at the end.
 
@@ -42,7 +42,59 @@ Available Commands:
   update      Update no-mistakes and reset the daemon
 ```
 
-Two commands accept `--intent`: `axi run` and `rerun`.
+`axi` adds six more:
+
+```sh
+no-mistakes axi --help | sed -n '/Available Commands:/,/^$/p'
+```
+
+```
+Available Commands:
+  abort       Cancel the active pipeline run
+  logs        Show the log output of one pipeline step
+  respond     Answer the current approval gate and continue the run
+  run         Validate your code changes, blocking until a decision point or the outcome
+  status      Show a current-branch or explicitly selected run in detail
+  sync        Check or apply guarded current-branch synchronization
+```
+
+A listing of names says nothing about flags, so the sweep below asks every one of those commands for `--intent`:
+
+```sh
+for c in attach axi ci-workflow completion daemon doctor eject eval help init rerun runs stats status sync update; do
+  printf '%s %s\n' "$c" "$(no-mistakes help $c | grep -c -- '--intent')"
+done
+for c in abort logs respond run status sync; do
+  printf 'axi %s %s\n' "$c" "$(no-mistakes help axi $c | grep -c -- '--intent')"
+done
+```
+
+```
+attach 0
+axi 0
+ci-workflow 0
+completion 0
+daemon 0
+doctor 0
+eject 0
+eval 0
+help 0
+init 0
+rerun 2
+runs 0
+stats 0
+status 0
+sync 0
+update 0
+axi abort 0
+axi logs 0
+axi respond 0
+axi run 2
+axi status 0
+axi sync 0
+```
+
+`rerun` and `axi run` are the only non-zero entries, and both of them start a run.
 
 ```sh
 no-mistakes axi run --help | grep -- '--intent'
@@ -62,7 +114,6 @@ Rerun the pipeline for the current branch. By default, an explicit intent from t
       --intent string        explicit intent for this rerun (overrides inherited intent or fresh inference)
 ```
 
-Both of those start a run.
 `axi run` marks the intent required to start one, and `rerun` describes its own inheritance as coming from "the selected prior run", which is a successor run rather than an edit to the one in flight.
 The pipeline's own operator skill states that as an instruction and forbids reaching for `rerun` mid-run:
 
@@ -80,31 +131,7 @@ sed -n '/while a run is active do \*\*not\*\*/,/gate\.$/p' ~/.claude/skills/no-m
 ```
 
 No command amends the intent of a run already under way.
-`axi respond`, the only channel firstmate has into a live run, has no intent flag:
-
-```sh
-no-mistakes axi respond --help | grep -c -- '--intent'
-```
-
-```
-0
-```
-
-No other `axi` subcommand writes one either:
-
-```sh
-no-mistakes axi --help | sed -n '/Available Commands:/,/^$/p'
-```
-
-```
-Available Commands:
-  abort       Cancel the active pipeline run
-  logs        Show the log output of one pipeline step
-  respond     Answer the current approval gate and continue the run
-  run         Validate your code changes, blocking until a decision point or the outcome
-  status      Show a current-branch or explicitly selected run in detail
-  sync        Check or apply guarded current-branch synchronization
-```
+`axi respond`, the only channel firstmate has into a live run, is one of the zeros in the sweep.
 
 The frozen text cannot even be read back for comparison.
 `axi status` shows a run in detail and the persisted intent is not among the fields it prints:
@@ -180,7 +207,8 @@ Upstream states this directly in [issue 1132](https://github.com/kunchenguid/no-
 During run `01M36TPBWRJPXMQYCX7Z4G55N8` firstmate retired one of the intent's LIMITS mid-run, after the worker showed by measurement that it was wrong.
 The transcript corroborates the retirement from the reviewer's own side, in the second quotation below: firstmate's round-4 instruction had listed the very clause that limit forbids among the guarantees to preserve.
 The limit nevertheless stayed written in the persisted intent, and the reviewer went on citing it.
-Both quotations are from that run's `review.log`, readable with `no-mistakes axi logs`:
+Both quotations are lines of that run's own log file at `~/.no-mistakes/logs/01M36TPBWRJPXMQYCX7Z4G55N8/review.log`, which is where the line numbers below resolve and whose bytes the quotations match.
+`no-mistakes axi logs --run 01M36TPBWRJPXMQYCX7Z4G55N8 --step review --full` serves the same content, but behind a four-line header and JSON-escaped, so there the same lines are 133, 177 and 179 and are not byte-exact.
 
 Round 4, at `review.log:129`, quoting the frozen text verbatim:
 
@@ -213,6 +241,25 @@ The coarse-arm asymmetry, the unreadable-URL reason branch, and the terminal-rec
 Within one run, the constraints recorded on the branch were not re-raised and the one left only in instructions was raised twice.
 That contrast is what the decision policy rests on: after the intent freezes, the branch is the half of the reviewer's input firstmate can still write.
 
+## Only a fix round can write it down
+
+Writing to the branch is not available on every gate answer.
+The response takes one of three actions, and the instructions a fix round would carry apply to `fix` alone:
+
+```sh
+no-mistakes axi respond --help | grep -E -- '--action|--instructions'
+```
+
+```
+      --action string         approve | fix | skip (required)
+      --add-finding string    JSON finding object to add and fix (with --action fix)
+      --findings string       comma-separated finding IDs to fix (with --action fix)
+      --instructions string   guidance applied to the selected findings (with --action fix)
+```
+
+So an `approve` or `skip` answer retires the constraint only inside that one response, and nothing lands on the branch for the next round to re-derive.
+That is why the decision policy is conditional on whether the retraction is load-bearing: a fix round is the only vehicle that writes it down, and a round spends review, test and CI, so it is worth spending only when a later round would otherwise re-derive the original wording.
+
 ## Cost
 
 Two review rounds raised the same retired constraint, and each needed a firstmate decision before the run could move on.
@@ -238,7 +285,7 @@ That single mention is issue 1132 above, which omits the intent from the PR body
 A search of that repository for an existing amendment request returns nothing, so the request below is new:
 
 ```sh
-gh-axi search issues "repo:kunchenguid/no-mistakes amend intent in:title,body"
+gh-axi search issues "amend intent" --repo kunchenguid/no-mistakes
 ```
 
 ```
