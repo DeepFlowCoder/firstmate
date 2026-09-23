@@ -87,13 +87,20 @@
 #      there was the same optimistic half under a different caller.
 #      `checks-passed` is the one finished word that claims NO merge, so on the
 #      full path it owes no merge and is never degraded for the lack of one. It
-#      does owe the reader the difference between a landing and a delivery still
-#      waiting for one: with this home's merge record it reports `done` naming the
-#      record, and without it `done` saying on the line that the pull request is
-#      green and awaiting its merge. `done` is the right word for both - it is the
-#      absorb class for finished work whose next step belongs to a human, which is
-#      exactly what an open green pull request is - and neither line reads as a
-#      landing, which is the part that was missing.
+#      does owe the reader which of the two its `done` is, and it answers ONLY
+#      from this home's own record: with a merge recorded here it reports `done`
+#      naming that record, and without one `done` saying the run left the pull
+#      request green with its checks passed and that no merge of it is recorded
+#      here. What it never says is where the pull request now IS - a human can
+#      merge one on the web and leave no trace in this home, so "awaiting its
+#      merge" or "not landed" would be the same unchecked assertion pointing the
+#      other way. `done` is the right word for both: it is the absorb class for
+#      finished work whose next step belongs to a human.
+#      A run recording NO pull request is exempt from all of this, whichever word
+#      it carries: it names no delivery to verify, and a pull request that does
+#      not exist cannot have been closed without merging. Degrading it instead
+#      bought nothing and cost a terminal record, because no forge answer and no
+#      local record can ever exist for a URL that was never recorded.
 #      A DECLARED LIMIT, not a promise this read keeps everywhere: the coarse
 #      runs-list arm CANNOT make that distinction. fm_nm_runs_word_for_terminal
 #      collapses `passed`, `checks-passed` and `completed` into the single list
@@ -1325,19 +1332,26 @@ if [ "$HAVE_RUN" = 1 ]; then
   # the row has no run id and `no-mistakes runs` takes only --limit. So a row
   # naming a pull request with no local merge record is declined for the whole
   # bucket - a ready delivery reads `unknown` there alongside an abandoned one.
-  # That is less informative than the full path, and it is not false. A row naming
-  # NO pull request is a different case and keeps its verdict: there is no
-  # delivery on the line to decline, so the reading says nothing about one either
-  # way, exactly as it did before. Separating the bucket needs a local record of a
-  # pull request CLOSED without merging, which bin/fm-pr-poll.sh does not write -
-  # ticket `fm-sondeo-no-registra-cierre-sin-fusion`.
+  # That is less informative than the full path, and it is not false. Separating
+  # the bucket needs a local record of a pull request CLOSED without merging,
+  # which bin/fm-pr-poll.sh does not write - it prints one `merged` line and stays
+  # silent on every other outcome. Ticket `fm-sondeo-no-registra-cierre-sin-fusion`.
   #
   # `checks-passed` is the full path's third reading and claims no merge at all,
   # so it is never degraded for the lack of one and never spends a forge call:
   # what a run did not assert, the forge is not asked to refute. What it does owe
-  # the reader is that its `done` is not a landing, which is handled on its own
-  # below, off the resolution ladder. A `checks-passed` run with no recorded pull
-  # request names no delivery either, so it has nothing to add and keeps its word.
+  # the reader is which of the two its `done` is, and that is handled on its own
+  # below, off the resolution ladder.
+  #
+  # A RUN THAT NAMES NO PULL REQUEST IS EXEMPT, whichever of the two words it
+  # carries, and this is the one condition every arm answers the same way. There
+  # is no delivery on the line to verify or to decline, and a pull request that
+  # does not exist cannot have been closed without merging, so nothing about an
+  # abandoned delivery goes unsaid. Admitting it instead produced an `unknown`
+  # that NOTHING could ever settle - with no URL there is no forge answer even
+  # under the opt-in and no local record can ever exist - so the crew surfaced to
+  # the supervisor forever and bin/fm-inactive-reconcile.sh wrote no terminal
+  # record for it, which is a second way to lose a finished crew.
   #
   # A reading the arbitration could not stand behind has nothing to verify either:
   # its state is already `unknown` for a reason the forge cannot settle, so asking
@@ -1345,23 +1359,32 @@ if [ "$HAVE_RUN" = 1 ]; then
   # already discarded.
   RUN_CLAIMS_LANDED=0
   RUN_READY_DELIVERY=0
-  case "$RUN_SOURCE:$RUN_WORD" in
-    coarse:completed) [ -n "$RUN_PR" ] && RUN_CLAIMS_LANDED=1 ;;
-    *:passed)         RUN_CLAIMS_LANDED=1 ;;
-    *:checks-passed)  [ -n "$RUN_PR" ] && RUN_READY_DELIVERY=1 ;;
-  esac
+  if [ -n "$RUN_PR" ]; then
+    case "$RUN_SOURCE:$RUN_WORD" in
+      coarse:completed) RUN_CLAIMS_LANDED=1 ;;
+      *:passed)         RUN_CLAIMS_LANDED=1 ;;
+      *:checks-passed)  RUN_READY_DELIVERY=1 ;;
+    esac
+  fi
   if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_READY_DELIVERY" = 1 ]; then
-    # `done` with green checks used to end the line there, which left the one
-    # reading that is NOT a landing looking exactly like the one that is. The
-    # merge is a human's next step here, so the state stays `done` - the absorb
-    # class for finished work waiting on a person - and the line says which of the
-    # two it is. The local record is consulted, and only the local record: it is
-    # the same file read the merge-claiming path makes, and it is what tells a
-    # delivery that has since landed from one still waiting.
+    # EVERY CLAUSE HERE IS ABOUT THIS HOME'S LOCAL RECORD, NEVER ABOUT THE FORGE.
+    # Nothing on this path has asked github.com or a GitLab instance anything, so
+    # nothing on this path may say where the pull request now IS: a human who
+    # merges it on the web leaves no trace in this home, and the absence of a
+    # record is not evidence of a non-merge. Saying "awaiting its merge", "not
+    # landed", or "still open" would be the same unchecked assertion this read
+    # exists to remove, only pointing the pessimistic way. Improving these
+    # sentences into a claim about the pull request's state needs a forge answer
+    # first - and on the timer-driven path there is none to be had.
+    #
+    # `done` with green checks used to end the line at the verdict, which left the
+    # two readings indistinguishable. The merge is a human's next step here, so
+    # the state stays `done` - the absorb class for finished work waiting on a
+    # person - and the line adds what this home knows about the delivery.
     if pr_merge_recorded_locally "$RUN_PR"; then
       RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is merged, from this home's own record of that confirmed merge"
     else
-      RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is green and awaiting its merge${SEP}the delivery is ready, not landed"
+      RUN_DETAIL="$RUN_DETAIL${SEP}the run left $RUN_PR green with its checks passed${SEP}no merge of it is recorded in this home"
     fi
   elif [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_CLAIMS_LANDED" = 1 ]; then
     PR_STATE=""
@@ -1376,21 +1399,16 @@ if [ "$HAVE_RUN" = 1 ]; then
     # left to spend, past the bound bin/fm-fleet-snapshot.sh kills the read at,
     # folding a crew to a reasonless `unknown`.
     PR_BUDGET_LEFT=$(read_budget_left)
-    # EVERY REASON NAMES ITS OWN CAUSE, which is why the two that hold whether or
-    # not this read asks are tested FIRST. Ordered the other way, the default path
-    # answered a run with no usable pull request by naming the opt-in as what
-    # would resolve it - and the opt-in resolves nothing when there is no URL, or
-    # no URL this home can read: handed one, fm_pr_state_resolve answers with its
-    # own "no readable pull request URL to resolve" and asks no forge either. A
-    # reason that points at a switch which cannot help is worse than useless now
-    # that the reason is what the reader is left holding, and an unreadable URL is
-    # the same defect one branch further in - a recorded `pr:` on a host neither
-    # the GitHub nor the GitLab shape accepts is not an unasked question, it is a
-    # pull request identity this home cannot reconstruct at all, which is also
-    # exactly why the local merge record below cannot settle it.
-    if [ -z "$RUN_PR" ]; then
-      PR_REASON="the run recorded no pull request to ask about"
-    elif ! fm_pr_url_parse "$RUN_PR"; then
+    # EVERY REASON NAMES ITS OWN CAUSE, which is why the one that holds whether or
+    # not this read asks is tested FIRST. A recorded `pr:` on a host neither the
+    # GitHub nor the GitLab shape accepts is not an unasked question, it is a pull
+    # request identity this home cannot reconstruct at all: handed one,
+    # fm_pr_state_resolve answers with its own "no readable pull request URL to
+    # resolve" and asks no forge either, and the local merge record below cannot
+    # settle it for exactly the same reason. Naming the opt-in there would point
+    # the reader at a switch that cannot help, which is worse than useless now
+    # that the reason is what they are left holding.
+    if ! fm_pr_url_parse "$RUN_PR"; then
       PR_REASON="the recorded pull request URL cannot be read, so nothing can resolve it: $RUN_PR"
     elif [ "$RESOLVE_PR" != 1 ]; then
       PR_REASON="this read asks no forge (set FM_CREW_STATE_RESOLVE_PR=1 to resolve it)"

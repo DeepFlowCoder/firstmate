@@ -2867,29 +2867,34 @@ test_a_merge_record_for_another_pull_request_does_not_land_this_run() {
   pass "a merge record for another pull request does not land this run"
 }
 
-# A `passed` run that recorded no pull request at all. The reason has to name
-# THAT, because it is now what the reader is left holding: pointing at the
-# forge-resolving opt-in would name a switch that resolves nothing when there is
-# no URL to resolve.
-test_a_passed_run_with_no_pull_request_names_that_as_the_reason() {
+# A `passed` run that recorded no pull request at all - the normal terminal shape
+# for a push target configured without one. It names no delivery, and a pull
+# request that does not exist cannot have been closed without merging, so there
+# is nothing here to verify and the run keeps its own verdict. Degrading it was
+# the earlier reading and it bought nothing: with no URL, no forge answer is
+# possible even under the opt-in and no local merge record can ever exist, so the
+# `unknown` was one NOTHING could settle - the crew surfaced to the supervisor
+# forever and bin/fm-inactive-reconcile.sh wrote no terminal record for it.
+test_a_passed_run_with_no_pull_request_keeps_its_own_verdict() {
   reset_fakes
-  local d short out
+  local d short out calls
   d=$(new_case passed-no-pr-recorded)
   make_repo_on_branch "$d/wt" fm/feat-noprrecorded
   short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
   fm_write_meta "$d/state/noprrecorded.meta" "window=fm:fm-noprrecorded" "worktree=$d/wt" "kind=ship" "harness=claude"
   FM_FAKE_AXI_STATUS="$(run_passed_without_pr fm/feat-noprrecorded)"
   FM_FAKE_RUNS_LIST="  completed  fm/feat-noprrecorded ${short}  2026-08-30 07:45"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" noprrecorded
   out=$(run_crew_state "$d" noprrecorded)
-  assert_not_contains "$out" "state: done" "a merge claim with no pull request establishes nothing"
-  assert_contains "$out" "state: unknown" "so the reading is unknown"
-  assert_contains "$out" "no pull request to ask about" "and the reason names what is missing"
-  assert_not_contains "$out" "FM_CREW_STATE_RESOLVE_PR" \
-    "never a switch that could not have resolved it"
-  pass "a passed run with no pull request names that as the reason"
+  [ ! -s "$calls" ] || fail "a run naming no pull request still called gh: $(cat "$calls")"
+  assert_contains "$out" "state: done" "a run naming no delivery keeps its own verdict"
+  assert_contains "$out" "run passed" "the run's own words stay on the line"
+  assert_not_contains "$out" "pull request" "and nothing is said about one it never recorded"
+  pass "a passed run with no pull request keeps its own verdict"
 }
 
 # A `passed` run whose recorded `pr:` is on a host neither provider shape
@@ -3550,10 +3555,13 @@ test_open_forge_still_surfaces_a_contradicting_record() {
 # Only `passed` claims a merge, so only `passed` owes an answer about one, and a
 # run that finished its checks is never degraded for the lack of one and never
 # spends a forge call: what a run did not assert, the forge is not asked to
-# refute. What the line DOES owe the reader is that this `done` is not a landing.
-# It used to end at the verdict, which left a delivery still waiting for a human
-# to merge it looking exactly like one that had already landed.
-test_checks_passed_reports_a_ready_delivery_rather_than_a_landing() {
+# refute. What the line DOES owe the reader is what THIS HOME knows about the
+# delivery, stated as the local record and nothing more. The forge stub here
+# would answer MERGED, which is the point: a pull request a human merges on the
+# web leaves no trace in this home, so a line that said "awaiting its merge" or
+# "not landed" would be asserting a forge state nobody read - the same defect as
+# the optimistic `done`, pointing the other way.
+test_checks_passed_reports_what_the_local_record_holds() {
   reset_fakes
   local d short out calls
   d=$(new_case checks-passed-ready)
@@ -3575,16 +3583,20 @@ test_checks_passed_reports_a_ready_delivery_rather_than_a_landing() {
   # inactive-crew scan and the bearings snapshot for a crew that is healthy.
   assert_contains "$out" "state: done" "a finished checks run is done on its own word"
   assert_contains "$out" "source: run-step" "the verdict is still run-step sourced"
-  assert_contains "$out" "awaiting its merge" "and the line says the merge has not happened"
-  assert_contains "$out" "ready, not landed" "in terms that cannot be read as a landing"
+  assert_contains "$out" "green with its checks passed" "the line reports what the run left behind"
+  assert_contains "$out" "no merge of it is recorded in this home" \
+    "and what this home holds, which is the only thing it read"
+  assert_not_contains "$out" "awaiting" "never a claim about where the pull request now is"
+  assert_not_contains "$out" "not landed" "nor about whether it landed, which nobody asked the forge"
   assert_not_contains "$out" "on the forge" "a line that claims no merge gains no forge clause"
   assert_not_contains "$out" "not resolved" "nothing was left unresolved, because nothing was claimed"
-  pass "a checks-passed run reports a ready delivery rather than a landing"
+  pass "a checks-passed run reports what the local record holds"
 }
 
 # The same run after the merge this home performed and recorded. Nothing asked
 # the forge here either - the record is a local file - and the line now names the
-# landing instead of the wait, which is the difference the reader needs.
+# landing this home witnessed, which is the difference the reader needs and the
+# only one either wording is entitled to draw.
 test_checks_passed_names_the_record_once_the_merge_is_confirmed() {
   reset_fakes
   local d short out calls
@@ -3604,7 +3616,7 @@ test_checks_passed_names_the_record_once_the_merge_is_confirmed() {
   assert_contains "$out" "state: done" "a recorded merge is landed work"
   assert_contains "$out" "own record of that confirmed merge" \
     "and the line names the record as what established it"
-  assert_not_contains "$out" "awaiting its merge" "the wait is over and the line stops saying so"
+  assert_not_contains "$out" "no merge of it is recorded" "the record exists and the line says so instead"
   pass "a checks-passed run names the record once the merge is confirmed"
 }
 
@@ -3929,13 +3941,13 @@ test_default_read_asks_no_forge_and_never_claims_the_merge
 test_a_closed_unmerged_pull_request_is_never_done_on_the_unasked_path
 test_a_locally_recorded_merge_is_done_without_asking_the_forge
 test_a_merge_record_for_another_pull_request_does_not_land_this_run
-test_a_passed_run_with_no_pull_request_names_that_as_the_reason
+test_a_passed_run_with_no_pull_request_keeps_its_own_verdict
 test_an_unreadable_pull_request_url_names_itself_as_the_reason
 test_a_coarse_row_naming_a_pull_request_is_not_done_unverified
 test_a_coarse_row_reaches_done_from_the_local_merge_record
 test_a_coarse_row_without_a_pull_request_has_no_delivery_to_decline
 test_open_forge_still_surfaces_a_contradicting_record
-test_checks_passed_reports_a_ready_delivery_rather_than_a_landing
+test_checks_passed_reports_what_the_local_record_holds
 test_checks_passed_names_the_record_once_the_merge_is_confirmed
 test_active_reading_degrades_to_unknown_when_the_list_is_silent
 test_an_answered_list_with_no_row_names_the_row_limit_not_the_budget
