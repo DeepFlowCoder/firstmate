@@ -40,10 +40,10 @@
 #
 # CLASSES, and how each one is demonstrated rather than alleged:
 #   docs-only     every changed path is a prose markup format (.md, .markdown,
-#                 .rst, .adoc) or the licence in a spelling that cannot be
-#                 source. Under docs/ that widens to .txt and to extensionless
-#                 files, and no further: a bare .txt elsewhere is deliberately
-#                 not documentation, and neither is a .py that lives in docs/.
+#                 .rst, .adoc) or a NAMED prose file - CHANGELOG, README,
+#                 NOTICE, AUTHORS, CONTRIBUTORS, LICENCE - with or without a
+#                 .txt suffix. Nothing qualifies by where it lives: docs/ widens
+#                 nothing, and docs/requirements.txt is not documentation.
 #   clean-revert  with --revert-of <sha>: every changed path's content at the
 #                 range's head equals its content at <sha>^, so the change is
 #                 exactly that commit undone.
@@ -136,50 +136,38 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 
 # --- class demonstrations ---------------------------------------------------
 
-# Markup formats whose whole purpose is prose, plus a documentation directory,
-# plus the licence. A bare *.txt is deliberately NOT here: a .txt at an
-# arbitrary path is as likely to be a fixture, a data file or a pinned list as
-# it is to be documentation, and the class has to be demonstrable rather than
-# plausible. A .txt under docs/ is still covered by the directory rule.
+# A path is documentation by its PROSE EXTENSION or by its NAME, and by nothing
+# else. There is no location rule and no shape rule: being under docs/ widens
+# nothing, because a prose file there already qualifies on its own.
 #
-# The licence is matched only in the forms that CANNOT be source: the bare name,
-# or the bare name carrying a prose extension already in the set above. A
-# wildcard extension was the first version and it read src/license.py as
-# documentation, which is normally licence-key validation code - a 300-line
-# rewrite of it demonstrated as docs-only and reached the cheap lane while the
-# same diff with no class claim routed expensive on complexity.
+# NO FURTHER CLASSIFICATION BY SHAPE IS AUTHORIZED IN THIS POLICY. That is the
+# constraint on whoever edits this next, not a note about the past. Anything new
+# that has to be admitted gets NAMED.
 #
-# A DIRECTORY IS NOT A FILE TYPE. "It lives in docs/" says where a path lives,
-# not that it is prose: docs/conf.py is code with an address in docs, and it
-# executes at documentation-build time. Accepting it by location sent code to
-# the cheap lane LABELLED AS PROSE, which also writes a false class into the
-# record this policy exists to measure. So docs/ only WIDENS the prose set to
-# .txt and to a NAMED list of prose filenames.
-#
-# The list names rather than describes, and that is the point. "Extensionless"
-# was the first form of this widening and it looked narrow while being wide:
-# it was authorised with CHANGELOG, README and LICENSE in mind, and it also
-# admitted Makefile, Dockerfile and Jenkinsfile - files that are EXECUTABLE BY
-# CONVENTION and that nobody calls prose. A docs/Makefile piping curl into sh
-# reaching the cheap lane labelled as documentation is not a classification gap,
-# it is an execution path dressed as prose. Naming each entry forces it to be
-# thought about, which is what a shape-based rule never made anyone do.
+# The rule is written that way because shape was tried three times and the
+# repository produced a counter-example every time. A shape rule says "anything
+# that LOOKS like prose", and in a real repository something always looks like it
+# and is not:
+#   - docs/conf.py looked like prose BY LOCATION, and executes at build time.
+#   - docs/Makefile looked like prose BY HAVING NO EXTENSION, which on Unix is
+#     the ordinary spelling for an executable.
+#   - docs/requirements.txt looks like prose BY EXTENSION, and is the manifest
+#     Read the Docs INSTALLS at build time.
+# Each of those reached the cheap lane LABELLED AS PROSE, which is not only a
+# classification gap but a false class written into the record this policy
+# exists to measure. Naming does not infer: it forces someone to write the name
+# down, and writing it down forces them to look at it.
 is_documentation_path() {
   local p base
   p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
   case "$p" in
     *.md|*.markdown|*.rst|*.adoc) return 0 ;;
-    license|licence|*/license|*/licence) return 0 ;;
-    license.txt|licence.txt|*/license.txt|*/licence.txt) return 0 ;;
-  esac
-  case "$p" in
-    docs/*|*/docs/*) ;;
-    *) return 1 ;;
   esac
   base=${p##*/}
   case "$base" in
-    *.txt) return 0 ;;
-    changelog|readme|notice|authors|contributors) return 0 ;;
+    changelog|readme|notice|authors|contributors|license|licence) return 0 ;;
+    changelog.txt|readme.txt|notice.txt|authors.txt|contributors.txt) return 0 ;;
+    license.txt|licence.txt) return 0 ;;
   esac
   return 1
 }

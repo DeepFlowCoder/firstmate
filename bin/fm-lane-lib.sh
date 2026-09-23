@@ -175,6 +175,7 @@ fm_lane_binding_decision() {
     $2=="decide" && $3==t && $4==p {
       if ($7=="captain-override") { last="" }
       else if ($7=="critical-surface" || ($5=="no-mistakes" && $6=="demonstrated")) { last=$0 }
+      else if ($6=="demonstrated") { last="" }
     }
     END { if (last != "") print last }' "$log"
 }

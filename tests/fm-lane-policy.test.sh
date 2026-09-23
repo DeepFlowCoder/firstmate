@@ -348,63 +348,25 @@ EOF
   pass "lane: a documentation-only class reaches the cheap lane only when the diff demonstrates it"
 }
 
-# A directory is not a file type. docs/conf.py is the canonical Sphinx layout and
-# it executes arbitrary Python at build time, so accepting it by location sent
-# code to the cheap lane labelled as prose. docs/ now only widens the prose set
-# to the two shapes that cannot be source there.
-test_docs_directory_widens_the_prose_set_rather_than_replacing_it() {
-  local rec repo base home head out
-
-  rec=$(make_repo docsdir)
-  IFS='|' read -r repo base <<EOF
-$rec
-EOF
-  home=$(lane_home docsdir)
-
-  printf 'import os\nif os.getenv("X"):\n    pass\n' > "$repo/docs/conf.py"
-  head=$(commit_all "$repo" sphinx-conf)
-  out=$(run_lane "$home" decide docsdir-a1 --project proj --repo "$repo" \
-    --range "$base..$head" --class docs-only)
-  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
-    "a Python file under docs/ demonstrated as documentation"
-  assert_contains "$out" "reason=class-not-demonstrated" \
-    "code under docs/ was not reported as undemonstrated"
-
-  # The three shapes that must still demonstrate, so the narrowing did not take
-  # the class with it: prose markup anywhere, and under docs/ a .txt and a file
-  # with no extension at all.
-  printf 'more\n' >> "$repo/docs/guide.md"
-  printf 'release notes\n' > "$repo/docs/notes.txt"
-  printf 'v1\n' > "$repo/docs/CHANGELOG"
-  head=$(commit_all "$repo" real-docs)
-  out=$(run_lane "$home" decide docsdir-b1 --project proj --repo "$repo" \
-    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" --class docs-only)
-  assert_contains "$(first_line "$out")" "lane=direct-PR" \
-    "prose under docs/ lost its cheap route"
-  assert_contains "$out" "reason=standard-class" \
-    "the documentation change was not routed on its class"
-
-  pass "lane: docs/ widens the prose set to .txt and extensionless, and no further"
-}
-
-# A Makefile is extensionless, is canonical Sphinx layout, and runs arbitrary
-# shell at build time. Widening docs/ by SHAPE admitted it; widening by NAME
-# does not, which is the whole reason the list names each entry.
-test_docs_widening_is_a_named_list_rather_than_a_shape() {
+# Documentation is decided by a PROSE EXTENSION or by a NAME, never by shape and
+# never by location. Being under docs/ widens nothing: every specimen below is
+# build input or code that lives there, and each one reached the cheap lane
+# LABELLED AS PROSE under some earlier shape rule.
+test_documentation_is_decided_by_extension_or_name_never_by_shape() {
   local rec repo base home head out name n=0
 
-  rec=$(make_repo docsnames)
+  rec=$(make_repo docsrule)
   IFS='|' read -r repo base <<EOF
 $rec
 EOF
-  home=$(lane_home docsnames)
+  home=$(lane_home docsrule)
 
-  for name in Makefile Dockerfile CNAME; do
+  for name in requirements.txt notes.txt Makefile conf.py CNAME; do
     n=$((n + 1))
     base=$(git -C "$repo" rev-parse HEAD)
-    printf 'html:\n\tsphinx-build .\n' > "$repo/docs/$name"
+    printf 'sphinx==8.0.0\n' > "$repo/docs/$name"
     head=$(commit_all "$repo" "add-$name")
-    out=$(run_lane "$home" decide docsname-a$n --project proj --repo "$repo" \
+    out=$(run_lane "$home" decide docsrule-a$n --project proj --repo "$repo" \
       --range "$base..$head" --class docs-only)
     assert_contains "$(first_line "$out")" "lane=no-mistakes" \
       "docs/$name demonstrated as documentation"
@@ -412,18 +374,22 @@ EOF
       "docs/$name was not reported as undemonstrated"
   done
 
-  # The named prose keeps working, so the narrowing did not take the class.
+  # What still demonstrates: a prose extension anywhere, and a named prose file
+  # with or without a .txt suffix.
   base=$(git -C "$repo" rev-parse HEAD)
-  printf 'v1\n' > "$repo/docs/CHANGELOG"
-  printf 'notes\n' > "$repo/docs/notes.txt"
   printf 'more\n' >> "$repo/docs/guide.md"
-  head=$(commit_all "$repo" named-prose)
-  out=$(run_lane "$home" decide docsname-b1 --project proj --repo "$repo" \
+  printf '# project\n' > "$repo/README.md"
+  printf 'v1\n' > "$repo/CHANGELOG"
+  printf 'v1\n' > "$repo/CHANGELOG.txt"
+  head=$(commit_all "$repo" prose)
+  out=$(run_lane "$home" decide docsrule-b1 --project proj --repo "$repo" \
     --range "$base..$head" --class docs-only)
   assert_contains "$(first_line "$out")" "lane=direct-PR" \
-    "named prose under docs/ lost its cheap route"
+    "prose named or carrying a prose extension lost its cheap route"
+  assert_contains "$out" "reason=standard-class" \
+    "the documentation change was not routed on its class"
 
-  pass "lane: docs/ widens by named prose files, not by having no extension"
+  pass "lane: documentation is decided by prose extension or by name, never by shape or location"
 }
 
 # A signal that cannot be computed must never resolve to its most permissive
@@ -1151,18 +1117,26 @@ EOF
   assert_contains "$out" "A critical surface binds under every evidence grade" \
     "the refusal did not come from the binding decision"
 
-  # The mirror: a later DEMONSTRATED decision that no longer touches the surface
-  # does lift the binding, so the honest correction path stays open.
+  # The mirror, on THE SAME TASK: a later DEMONSTRATED decision that no longer
+  # touches the surface lifts the binding, so the honest correction path stays
+  # open. A different task id here would prove nothing - it would only re-prove
+  # that a fresh demonstrated decision dispatches.
   printf 'value = 2\n' > "$repo/src/thing.py"
   head=$(commit_all "$repo" ordinary-change)
-  write_brief "$home" bind-b1 direct-PR
-  run_lane "$home" decide bind-b1 --project proj --repo "$repo" \
+  run_lane "$home" decide bind-a1 --project proj --repo "$repo" \
     --range "$(git -C "$repo" rev-parse HEAD~1)..$head" >/dev/null
-  out=$(run_spawn "$home" "$fakebin" bind-b1 "$proj" claude --mode direct-PR --yolo off)
+  out=$(run_spawn "$home" "$fakebin" bind-a1 "$proj" claude --mode direct-PR --yolo off)
   assert_not_contains "$out" "not authorized" \
-    "a re-measured non-critical change could not reach the cheap lane"
+    "a re-measured non-critical change could not lift the binding on its own task"
 
-  pass "lane: only a real diff lifts a binding, and a declared decide never erases one"
+  # And the lift STAYS lifted: a later intake-shaped decide must not walk back
+  # past the correction and resurrect the surface the change no longer touches.
+  run_lane "$home" decide bind-a1 --project proj --repo "$repo" --paths docs/guide.md >/dev/null
+  out=$(run_spawn "$home" "$fakebin" bind-a1 "$proj" claude --mode direct-PR --yolo off)
+  assert_not_contains "$out" "not authorized" \
+    "a declared decide resurrected a binding a real diff had already lifted"
+
+  pass "lane: only a real diff lifts a binding, and a declared decide never erases or resurrects one"
 }
 
 test_promotion_carries_the_same_gate() {
@@ -1391,8 +1365,7 @@ test_every_named_critical_surface_is_in_the_catalog
 test_firstmates_own_safety_surfaces_are_covered
 test_deleting_the_dispatch_gate_cannot_route_itself_cheap
 test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only
-test_docs_directory_widens_the_prose_set_rather_than_replacing_it
-test_docs_widening_is_a_named_list_rather_than_a_shape
+test_documentation_is_decided_by_extension_or_name_never_by_shape
 test_a_diff_the_policy_cannot_read_is_not_measured_as_zero
 test_a_revert_must_be_the_commit_it_claims_to_undo
 test_a_partial_revert_of_a_root_commit_is_not_demonstrated
