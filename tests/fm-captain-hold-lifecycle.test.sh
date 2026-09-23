@@ -1926,12 +1926,55 @@ test_retroactive_repair_hands_the_report_over_to_the_trace() {
     "the repair did not name the consequence of recording on an already closed row: $out"
 
   assert_contains "$(wake_payloads_in "$home")" \
-    "captain call sample-repaired-call was closed outside this owner and its answer is now recorded" \
+    "captain call sample-repaired-call was closed outside this owner, and recording the captain's answer on that already closed row has been ordered" \
     "recording the answer left no durable trace on the one path that had neither"
   out=$(run_captain "$home" diverged) || fail "diverged failed after the repair"
   printf '%s\n' "$out" | grep -F 'sample-repaired-call' >/dev/null \
     && fail "the report and the trace both claim the same row: $out"
   pass "a retroactive repair raises the durable trace before the report it silences goes quiet"
+}
+
+# The trace is queued before the write whose outcome it describes, deliberately,
+# so that no window exists in which neither signal is up. That ordering is only
+# honest if the record stays true when the write FAILS, so this drives the
+# failure: the backlog is made unwritable, the command errors out with nothing
+# recorded, and the queued record must still read correctly for that state -
+# evidence that recording was ordered, not a claim that it landed.
+test_repair_trace_stays_true_when_the_record_write_fails() {
+  local home out
+  home=$(make_home repaired-close-write-fails)
+  printf 'escribir-ya\n' > "$home/decision.txt"
+  run_captain "$home" hold sample-unwritable-call --title "Write it now or keep piloting" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the call closed out of band"
+  tasks_in "$home" "done" sample-unwritable-call >/dev/null \
+    || fail "could not reproduce the out-of-band close"
+
+  chmod a-w "$home/data" || fail "could not drop write permission on the case backlog directory"
+  out=$(run_captain "$home" answer sample-unwritable-call \
+    --decision-file "$home/decision.txt" 2>&1) && {
+      chmod u+w "$home/data"
+      fail "the repair reported success while the backlog was unwritable: $out"
+    }
+  chmod u+w "$home/data" || fail "could not restore write permission on the case backlog directory"
+  assert_contains "$out" "could not record the captain decision on sample-unwritable-call" \
+    "the failed write did not name what it could not record: $out"
+
+  assert_not_contains "$(tasks_in "$home" show sample-unwritable-call --full)" \
+    "Resolution recorded by fm-captain-hold" \
+    "a resolution record survived a write the command reported as failed"
+  assert_contains "$(wake_payloads_in "$home")" \
+    "captain call sample-unwritable-call was closed outside this owner, and recording the captain's answer on that already closed row has been ordered" \
+    "the trace queued before the write vanished when the write failed"
+  assert_contains "$(wake_payloads_in "$home")" "confirm that record landed" \
+    "the trace claims an outcome it cannot know instead of asking for it to be confirmed"
+
+  # Nothing was recorded, so the passive report is still up as well: the two
+  # signals agree, which is what the evidence-shaped wording buys.
+  out=$(run_captain "$home" diverged) || fail "diverged failed after the failed write"
+  printf '%s\n' "$out" | grep -F 'closed-unanswered	sample-unwritable-call' >/dev/null \
+    || fail "the row stopped being reported though no answer was ever recorded: $out"
+  pass "a failed record write leaves the trace true and the report still up"
 }
 
 # Pad a slug or a sentence up to an exact character count, so the budget below
@@ -2201,6 +2244,7 @@ test_close_that_ended_the_work_leaves_a_durable_record
 test_resurrected_hold_over_an_answered_call_is_signalled
 test_expired_deferral_resurrection_is_signalled
 test_retroactive_repair_hands_the_report_over_to_the_trace
+test_repair_trace_stays_true_when_the_record_write_fails
 test_typical_id_and_title_survive_the_divergence_lines
 test_pruned_answer_still_proves_the_captains_call
 test_pruned_inventory_still_blocks_an_unanswered_call
