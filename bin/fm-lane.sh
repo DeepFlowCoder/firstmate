@@ -429,9 +429,11 @@ cmd_decide() {
   printf 'task: %s\nproject: %s\n' "$TASK" "$PROJECT"
   printf 'critical-surfaces: %s\n' "$critical"
   printf 'class: %s\n' "${class_record:--}"
-  printed_signals=${signals//\\,/$'\001'}
+  printed_signals=${signals//\\\\/$'\002'}
+  printed_signals=${printed_signals//\\,/$'\001'}
   printed_signals=${printed_signals//,/ }
-  printf 'signals: %s\n' "${printed_signals//$'\001'/,}"
+  printed_signals=${printed_signals//$'\001'/,}
+  printf 'signals: %s\n' "${printed_signals//$'\002'/\\}"
   printf 'record: %s\n' "$(fm_lane_log_path)"
   if [ "$lane" = no-mistakes ] && [ "$reason" = "critical-surface" ]; then
     printf 'note: a critical surface routes to the expensive lane whatever the other signals say.\n'

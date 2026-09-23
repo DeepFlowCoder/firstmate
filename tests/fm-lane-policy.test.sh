@@ -834,11 +834,15 @@ EOF
   printf 'value = 1\n' > "$bs_repo/src/thing.py"
   git -C "$bs_repo" add -A
   git -C "$bs_repo" commit --quiet -m base
-  run_lane "$home" decide tree-d1 --project proj --repo "$bs_repo" --paths src/thing.py >/dev/null
+  out=$(run_lane "$home" decide tree-d1 --project proj --repo "$bs_repo" --paths src/thing.py)
   recorded=$(recorded_repo_of "$log" tree-d1) \
     || fail "a signals entry did not parse as k=v for tree-d1"
   [ "$recorded" = "$(cd "$bs_repo" && pwd -P)" ] \
     || fail "a path with a backslash did not round-trip: got '$recorded'"
+  # The line the operator reads must show the tree that was measured, not its
+  # escaped form: a half-applied reversal prints a path that does not exist.
+  assert_contains "$out" "repo=$(cd "$bs_repo" && pwd -P)" \
+    "the printed signals line did not show the real path for a backslash"
 
   # And both separators at once, which is where a one-pass reversal is not
   # merely doubled but ambiguous.
@@ -848,11 +852,13 @@ EOF
   printf 'value = 1\n' > "$bs_comma_repo/src/thing.py"
   git -C "$bs_comma_repo" add -A
   git -C "$bs_comma_repo" commit --quiet -m base
-  run_lane "$home" decide tree-e1 --project proj --repo "$bs_comma_repo" --paths src/thing.py >/dev/null
+  out=$(run_lane "$home" decide tree-e1 --project proj --repo "$bs_comma_repo" --paths src/thing.py)
   recorded=$(recorded_repo_of "$log" tree-e1) \
     || fail "a signals entry did not parse as k=v for tree-e1"
   [ "$recorded" = "$(cd "$bs_comma_repo" && pwd -P)" ] \
     || fail "a path with a backslash and a comma did not round-trip: got '$recorded'"
+  assert_contains "$out" "repo=$(cd "$bs_comma_repo" && pwd -P)" \
+    "the printed signals line did not show the real path for a backslash and a comma"
 
   pass "lane: the record names the tree each decision was measured against"
 }
