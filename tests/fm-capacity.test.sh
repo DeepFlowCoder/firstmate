@@ -734,6 +734,50 @@ out=$(run_guard "$home" 2 "$home/snap.json" check)
 assert_contains "$out" "1 of 2 provider lanes dispatchable" "the watcher must re-report after a failed report cleared the record"
 pass "a failed report clears the record so the watcher re-reports"
 
+# === a record that cannot be written ========================================
+#
+# Suppression rests entirely on the record landing, so a write that fails and
+# says nothing leaves the guard amnesiac while reporting success: every later
+# poll re-reports an unchanged degraded fleet. That is the same symptom the
+# stand-in guards above close, reached by a different road, so it gets the same
+# two-directional treatment - it must be heard when the write fails, and it must
+# stay quiet when the write lands.
+#
+# The failure is staged by taking write permission off the state directory,
+# which is the ordinary shape of it (a bad mode, a full or read-only volume),
+# rather than by stubbing the guard's own internals. Permissions do not bind
+# root, so under root there is nothing to observe and the case would pass
+# vacuously; it is skipped by name instead.
+if [ "$(id -u)" -eq 0 ]; then
+  pass "SKIP (running as root: file modes cannot stage an unwritable record)"
+else
+  home=$(fresh_home record-unwritable)
+  snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+  chmod 0500 "$home/state"
+
+  out=$(run_guard "$home" 2 "$home/snap.json" check)
+  assert_contains "$out" "1 of 2 provider lanes dispatchable" "the verdict itself must still be reported"
+  assert_contains "$out" "could not record this warning" "a record write that failed must not pass for one that landed"
+  out=$(run_guard "$home" 2 "$home/snap.json" report)
+  assert_contains "$out" "could not record this warning" "session start must say it too, not only the watcher"
+
+  chmod 0700 "$home/state"
+  pass "a record write that cannot land is reported instead of swallowed"
+
+  # The other direction, so the case above cannot be satisfied by a guard that
+  # simply always complains: on the good path the record lands and the sentence
+  # must be absent. A write failure is exceptional and has to read as one.
+  home=$(fresh_home record-writable-quiet)
+  snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+  out=$(run_guard "$home" 2 "$home/snap.json" check)
+  assert_contains "$out" "1 of 2 provider lanes dispatchable" "the degraded fleet must still be reported"
+  assert_not_contains "$out" "could not record this warning" "a record that landed must not announce itself"
+  assert_present "$home/state/.capacity" "the record must actually be on disk when no failure was reported"
+  out=$(run_guard "$home" 2 "$home/snap.json" report)
+  assert_not_contains "$out" "could not record this warning" "session start must not announce a write that landed either"
+  pass "a record write that lands stays silent"
+fi
+
 # === the threshold ==========================================================
 
 home=$(fresh_home retired)

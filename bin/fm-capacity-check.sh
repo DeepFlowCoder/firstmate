@@ -46,7 +46,11 @@
 #            captain learns to scroll past. bin/fm-capacity-policy.mjs owns the
 #            digest that decides what "changed" means; it deliberately excludes
 #            the percentage and the projected-exhaustion stamp, which both move
-#            on every poll.
+#            on every poll. That suppression is only as good as the record it
+#            rests on, so a record that cannot be WRITTEN is said out loud on
+#            both surfaces: a silent write failure would leave the guard
+#            amnesiac and repeating an unchanged degraded fleet forever, which
+#            is the noise the separation exists to prevent.
 #   arm      Write state/capacity.check.sh and bind its bytes with
 #            fm-check-register.sh, so the watcher dispatches it on its normal
 #            FM_CHECK_INTERVAL cadence and turns its one line into a `check:`
@@ -720,7 +724,7 @@ action_report() {
     # Session start has now reported this shape, so the watcher must not
     # immediately repeat it; recording here is what makes the two surfaces one
     # guard rather than two that both shout.
-    record_write "$VERDICT_DIGEST"
+    record_write "$VERDICT_DIGEST" || record_write_problem
   else
     # Only a poll that actually READ the lanes may retract a lane shape. The
     # stand-in establishes nothing about them, so letting it clear the record
@@ -757,7 +761,7 @@ action_check() {
   fi
   [ "$VERDICT_DIGEST" = "$(record_read)" ] && return 0
   printf '%s\n' "$VERDICT_LINE"
-  record_write "$VERDICT_DIGEST"
+  record_write "$VERDICT_DIGEST" || record_write_problem
 }
 
 record_read() {
@@ -765,16 +769,34 @@ record_read() {
   head -n 1 "$RECORD" 2>/dev/null
 }
 
+# The record IS this guard's memory of what it has already said, so a write that
+# does not land is not the same as nothing to write. Swallowing the failure
+# leaves the guard amnesiac while reporting success, and the next poll then
+# repeats an unchanged degraded fleet at the captain - the same symptom the
+# LANES_UNREADABLE guards above close, reached by a different road. So every
+# failing step returns non-zero and the callers say it; the good path stays
+# silent, because a write that landed is not news.
 record_write() {
   local tmp
-  mkdir -p "$STATE" 2>/dev/null || return 0
-  tmp=$(umask 077; mktemp "$STATE/.fm-capacity.XXXXXX" 2>/dev/null) || return 0
-  if printf '%s\n' "$1" >"$tmp" 2>/dev/null; then
-    mv -f -- "$tmp" "$RECORD" 2>/dev/null || rm -f -- "$tmp"
-  else
+  mkdir -p "$STATE" 2>/dev/null || return 1
+  tmp=$(umask 077; mktemp "$STATE/.fm-capacity.XXXXXX" 2>/dev/null) || return 1
+  if ! printf '%s\n' "$1" >"$tmp" 2>/dev/null; then
     rm -f -- "$tmp"
+    return 1
   fi
+  mv -f -- "$tmp" "$RECORD" 2>/dev/null || {
+    rm -f -- "$tmp"
+    return 1
+  }
   return 0
+}
+
+# One sentence for both surfaces, so a write failure reads the same whether
+# session start or the watcher hit it. It names the consequence rather than the
+# syscall, because what the reader has to act on is the repetition, not the mv.
+record_write_problem() {
+  printf 'capacity guard could not record this warning at %s - it will repeat until that write succeeds\n' \
+    "$RECORD"
 }
 
 record_clear() {
