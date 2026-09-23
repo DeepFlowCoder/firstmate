@@ -32,6 +32,10 @@ make_tools() { # <world>
   mkdir -p "$fake"
   cat > "$fake/fm-crew-state.sh" <<'SH'
 #!/usr/bin/env bash
+if [ -n "${FM_FAKE_CREW_STATE_LINE:-}" ]; then
+  printf '%s\n' "$FM_FAKE_CREW_STATE_LINE"
+  exit 0
+fi
 printf 'state: %s · source: fake\n' "${FM_FAKE_CREW_STATE:-unknown}"
 SH
   cat > "$fake/tmux" <<'SH'
@@ -105,11 +109,30 @@ run_reconcile() { # <home> [--startup]
 }
 
 wake_count() { # <home> <key prefix>
-  grep -c "$2" "$1/state/.wake-queue" 2>/dev/null || true
+  # A home that queued nothing has no queue file at all, and that is zero wakes
+  # rather than an unanswerable count - otherwise "queued none of these" reads
+  # the same as "could not tell", and a missing wake is reported as whichever
+  # assertion happened to be checked first.
+  local n
+  n=$(grep -c "$2" "$1/state/.wake-queue" 2>/dev/null || true)
+  printf '%s\n' "${n:-0}"
 }
 
 outcome_count() { # <home> <suffix>
   find "$1/state/terminal-outcomes" -type f -name "*.$2" 2>/dev/null | wc -l | tr -d ' '
+}
+
+# The cap-cut reading as bin/fm-crew-state.sh actually emits it, built from the
+# library that owns the phrase rather than from a copy of it here - a reworded
+# phrase must break this the same way it would break the real scan. The error
+# text is transcribed from the real store (run 01M35BZMYXMXMCA3WXF36RWW88,
+# 2026-09-22 20:12:44); tests/fm-crew-state.test.sh pins that this text is what
+# produces this reading end to end.
+cut_state_line() {
+  bash -c '. "$1"
+    printf "state: unknown · source: run-step · %s\n" "$(fm_nm_cap_cut_detail "$2")"' \
+    _ "$ROOT/bin/fm-nm-run-lib.sh" \
+    'step test failed: agent run tests timed out after 30m0s: agent last produced output 13s ago (104 observed); agent reported: claude exited: signal: killed'
 }
 
 prime_seen() { # <state> <status>
@@ -455,6 +478,63 @@ test_notice_recovery_does_not_duplicate_wake() {
   pass "notice recovery remains idempotent across queue acknowledgement"
 }
 
+# THE TWO CONSEQUENCES THIS GATE DRIVES, SPLIT FOR THE ONE READING THAT NEEDS
+# THEM APART. An unattended crew whose validation its own step's time cap killed,
+# and whose pane never reacted, is the unreviewed-work-passing-in-silence case
+# this scan exists to catch. It reached no outcome, so filing one would claim a
+# task was judged when nothing judged it - but staying silent would make a dead
+# validation LESS visible than the failure word it replaced, which is the whole
+# defect inverted. It gets the wake and no record; done and failed keep getting
+# both.
+test_cap_cut_wakes_the_supervisor_and_files_no_outcome() {
+  local line cut_wake
+  make_world cap-cut; write_child "$MAIN" child 'working: validating the branch'
+  line=$(cut_state_line)
+  FM_FAKE_CREW_STATE_LINE="$line" run_reconcile "$MAIN" --startup
+
+  [ "$(wake_count "$MAIN" 'inactive-cut:')" = 1 ] \
+    || fail "a dead validation on an unattended crew never reached the supervisor"
+  [ "$(outcome_count "$MAIN" pending)" = 0 ] \
+    || fail "a cut was filed as a terminal outcome for a task nothing judged"
+  [ "$(outcome_count "$MAIN" presented)" = 0 ] || fail "a cut produced a presented receipt"
+  [ "$(outcome_count "$MAIN" reported)" = 0 ] || fail "a cut produced a reported receipt"
+  [ "$(wake_count "$MAIN" 'inactive-outcome:')" = 0 ] \
+    || fail "a cut queued a terminal-outcome presentation"
+
+  cut_wake=$(grep -F 'inactive-cut:' "$MAIN/state/.wake-queue")
+  case "$cut_wake" in
+    *'child=child'*) ;;
+    *) fail "the cut wake does not name the crew: $cut_wake" ;;
+  esac
+  case "$cut_wake" in
+    *'cut off by its own time cap'*) ;;
+    *) fail "the cut wake does not name what happened: $cut_wake" ;;
+  esac
+  case "$cut_wake" in
+    *'still needs validating'*) ;;
+    *) fail "the cut wake does not name the action it asks for: $cut_wake" ;;
+  esac
+  case "$cut_wake" in
+    *'terminal'*) fail "the cut wake carries a terminal verdict: $cut_wake" ;;
+  esac
+
+  # One reading, one wake: the cut has no record to deduplicate it, and it
+  # persists for as long as the crew stays inactive.
+  FM_FAKE_CREW_STATE_LINE="$line" run_reconcile "$MAIN" --startup
+  [ "$(wake_count "$MAIN" 'inactive-cut:')" = 1 ] \
+    || fail "a persisting cut woke the supervisor twice for one reading"
+
+  # The terminal words are untouched and still do both.
+  make_world cap-cut-failed; write_child "$MAIN" child 'failed: the reviewer rejected it'
+  FM_FAKE_CREW_STATE='failed' run_reconcile "$MAIN" --startup
+  [ "$(outcome_count "$MAIN" pending)" = 1 ] || fail "a failed crew stopped filing its outcome"
+  [ "$(wake_count "$MAIN" 'inactive-outcome:')" = 1 ] \
+    || fail "a failed crew stopped waking the supervisor"
+  [ "$(wake_count "$MAIN" 'inactive-cut:')" = 0 ] \
+    || fail "a real failure borrowed the cut's wake"
+  pass "a time-cap cut wakes the supervisor while filing no terminal outcome"
+}
+
 # Forge command shims fail loudly. A successful scan proves this path never uses
 # them while reconciling a local terminal outcome.
 test_reconciliation_never_calls_forge() {
@@ -480,6 +560,7 @@ test_stalled_state_read_is_bounded_and_scan_progresses
 test_full_scan_budget_includes_wake_lock_wait
 test_notice_recovery_does_not_duplicate_wake
 test_missing_parent_binding_names_itself
+test_cap_cut_wakes_the_supervisor_and_files_no_outcome
 test_reconciliation_never_calls_forge
 
 echo "all inactive reconciliation tests passed"

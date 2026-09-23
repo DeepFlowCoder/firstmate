@@ -670,6 +670,12 @@ fm_nm_failure_is_cap_cut() {  # <run-error-text>
     | grep -Eqi 'agent[^:]{0,40} (timed out|reached its absolute wall-clock limit) after [0-9]'
 }
 
+# The one clause every cap-cut phrase opens with, held as a literal because it is
+# written by fm_nm_cap_cut_detail and read back by fm_nm_state_line_is_cap_cut.
+# Two spellings of one phrase would drift the day either side is reworded, and
+# the reader that goes silent on a drift is the one that wakes the supervisor.
+FM_NM_CAP_CUT_MARK='validation was cut off by its own'
+
 # The phrase for a cap cut: what happened, what it did NOT establish, and the one
 # action it asks for. It replaces the failure phrase rather than qualifying it,
 # because the failure phrase is the thing that was wrong.
@@ -684,6 +690,25 @@ fm_nm_cap_cut_detail() {  # <run-error-text>
   dur=$(printf '%s' "${1:-}" \
     | grep -oEi '(timed out|wall-clock limit) after [0-9][a-z0-9]*' \
     | head -1)
-  printf 'validation was cut off by its own %s time cap' "${dur##* }"
+  printf '%s %s time cap' "$FM_NM_CAP_CUT_MARK" "${dur##* }"
   printf ': no verdict was reached about the work, which still needs validating (the work is not lost)'
+}
+
+# 0 when a bin/fm-crew-state.sh current-state line IS the cap-cut reading above.
+#
+# The state word alone cannot answer this: `unknown` is also what a crew with no
+# backend target, an unreachable remote endpoint, or an unarbitrated verdict
+# reports, and none of those says a validation died. Only the phrase does, so the
+# phrase is what is read - from the same literal that wrote it.
+#
+# WHY A CONSUMER NEEDS THIS AT ALL. A cut is not terminal, so nothing about it
+# may be filed as a task's outcome; but it is not benign either, and a consumer
+# that gates BOTH consequences on the terminal words would let a dead validation
+# pass in silence on an unattended crew. bin/fm-inactive-reconcile.sh is that
+# consumer, and this is how it tells the two consequences apart.
+fm_nm_state_line_is_cap_cut() {  # <crew-state-line>
+  case "${1:-}" in
+    'state: unknown '*"$FM_NM_CAP_CUT_MARK"*) return 0 ;;
+  esac
+  return 1
 }

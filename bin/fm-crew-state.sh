@@ -395,6 +395,15 @@ LOG_VERB=$(status_line_verb "$LOG_LINE")
 # gate, not the word `parked`: the same reading now reports `blocked` when its
 # agent is gone, and appending "an unresolved needs-decision is still on the
 # record" to a line that just said exactly that would only repeat it.
+#
+# A CAP CUT IS THE ONE `unknown` THE RECORD MAY NOT ANSWER FOR. "The run
+# established nothing, so let the record speak" is right for an abort, which
+# claims nothing and leaves no live problem behind. A cut leaves a validation
+# dead, and letting the record answer would replace that fact with the record's
+# own word - `parked` for an unresolved needs-decision, which reads as an
+# authoritative healthy-idle state and is absorbed rather than surfaced. So the
+# cut keeps its own reading and the record is SHOWN beside it, which is the third
+# answer below and already the shape every other live problem takes here.
 reconcile_run_verdict() {  # <state> <source> <detail>
   local state=$1 src=$2 detail=$3 note
   case "$LOG_VERB" in
@@ -410,7 +419,7 @@ reconcile_run_verdict() {  # <state> <source> <detail>
       state=$(map_log_state "$LOG_LINE")
       src='status-log'
       detail="$note${SEP}still unresolved on the record, which the run's own verdict ($detail) contradicts"
-    elif [ "$RUN_IS_TERMINAL" = 1 ] && [ "$state" = unknown ]; then
+    elif [ "$RUN_IS_TERMINAL" = 1 ] && [ "$state" = unknown ] && [ "$RUN_CAP_CUT" != 1 ]; then
       state=$(map_log_state "$LOG_LINE")
       src='status-log'
       detail="$note${SEP}still unresolved on the record, and $detail"

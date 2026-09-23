@@ -1463,6 +1463,55 @@ test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path() {
   pass "a cut no longer outranks a declared pause the way a false verdict did"
 }
 
+# THE OTHER DIRECTION THE SAME OVER-CORRECTION COMES FROM: the durable record
+# instead of the pane. A terminal reading that established nothing normally hands
+# the line to an unresolved decision on the record, which is right for an abort -
+# it claims nothing and leaves no live problem behind. A cut leaves a validation
+# dead, and letting the record answer would report `parked`, which the watcher's
+# own classifier reads as an authoritative healthy-idle state and ABSORBS. The
+# dead validation would then survive only inside the detail text of a line nobody
+# is shown.
+#
+# So both facts stay on the line: the cut's own reading, and the decision still
+# open beside it. A real failure is asserted alongside it, because the record
+# never outranked a failure either and this must not have quietly changed that.
+test_a_cap_cut_under_an_open_decision_is_not_absorbed_as_healthy_idle() {
+  reset_fakes
+  local d short cut bad; d=$(new_case cut-open-decision)
+  make_repo_on_branch "$d/wt" fm/feat-cod
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cod.meta" "window=fm:fm-cod" "worktree=$d/wt" "kind=ship"
+  printf 'working: started\nneeds-decision [key=q1]: pick the migration order\n' \
+    > "$d/state/cod.status"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-cod ${short}  2026-09-22 20:12"
+
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-cod)"
+  cut=$(run_crew_state "$d" cod)
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-cod)"
+  bad=$(run_crew_state "$d" cod)
+
+  assert_not_contains "$cut" "state: parked" \
+    "a cut must not be converted into the record's healthy-idle word"
+  assert_contains "$cut" "state: unknown" "the cut keeps its own reading"
+  assert_contains "$cut" "source: run-step" \
+    "the run's own account of the cut is still what answered"
+  assert_contains "$cut" "cut off by its own 30m0s time cap" \
+    "the dead validation must stay on the line, not only in a state word"
+  assert_absorb_class "$cut" none \
+    "a crew whose validation is dead must surface, never be absorbed as healthy idle"
+
+  # The decision is not lost to the cut either - both facts are stated.
+  assert_contains "$cut" "an unresolved needs-decision is still on the record" \
+    "the open decision must be named beside the cut"
+  assert_contains "$cut" "pick the migration order" "the open decision keeps its own words"
+
+  # The failure this replaced never yielded to the record, and still does not.
+  assert_contains "$bad" "state: failed" "a real code verdict still outranks the record"
+  assert_absorb_class "$bad" none "a real code verdict still surfaces"
+  pass "a cap cut under an open decision surfaces instead of reading as parked"
+}
+
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
 # routine case once more than one crew validates the same underlying repo
 # concurrently - they share ONE no-mistakes repo registration), so the helper
@@ -4495,5 +4544,6 @@ test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word
 test_a_listing_that_filled_its_limit_still_identifies_one_row
 test_an_unarbitrated_cut_does_not_assert_the_cut_phrase
 test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path
+test_a_cap_cut_under_an_open_decision_is_not_absorbed_as_healthy_idle
 
 echo "all fm-crew-state tests passed"

@@ -29,6 +29,17 @@
 # Working, paused, parked, blocked, unknown, persistent secondmates, and
 # captain-held work retain their existing supervision semantics.
 #
+# THOSE TWO CONSEQUENCES SPLIT FOR EXACTLY ONE READING: a validation its own
+# step's time cap cut off (fm_nm_state_line_is_cap_cut, owned with the whole
+# distinction by bin/fm-nm-run-lib.sh). It files NO terminal outcome record,
+# because the task reached no outcome - it was never judged and still needs
+# validating - but it DOES wake the supervisor, because an unattended crew whose
+# validation died and whose pane never reacted is precisely the unreviewed work
+# passing in silence this scan exists to catch. Its wake names the cut and asks
+# for the one action it wants, re-validation, never a terminal verdict, and it is
+# emitted once per reading through the notices ledger below rather than through a
+# record there is no outcome to file.
+#
 # A terminal-outcomes/<fingerprint>.pending record remains until its upstream
 # receipt is durable.
 # In a secondmate home, that receipt is an idempotent parent-channel status
@@ -56,6 +67,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 OUTCOME_DIR="$STATE/terminal-outcomes"
 SCAN_MARKER="$STATE/.inactive-outcome-reconcile"
 SCAN_LOCK="$STATE/.inactive-outcome-reconcile.lock"
+CUT_NOTICES="$STATE/.inactive-cut-notices"
 CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 
 # shellcheck source=bin/fm-wake-lib.sh
@@ -66,6 +78,8 @@ CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
 FM_INACTIVE_RECONCILE_SECS=${FM_INACTIVE_RECONCILE_SECS:-900}
 case "$FM_INACTIVE_RECONCILE_SECS" in
@@ -226,6 +240,29 @@ queue_presentation() { # <record> <fingerprint> <payload>
   return 0
 }
 
+# The cap cut's wake, and the ledger that makes it once-per-reading.
+#
+# The terminal path is deduplicated by its own record: a fingerprint that already
+# reached presented or reported never queues again. A cut files no record, so it
+# would otherwise re-wake on every scan for as long as the crew stays inactive -
+# and the reading persists until a successor run exists, which was measured in
+# hours. The queued-key check cannot stand in for that: a key disappears the
+# moment the wake is acknowledged, which is exactly when the condition is still
+# there and the supervisor has already been told.
+#
+# So the ledger is the receipt, and it holds the same fingerprint the terminal
+# path would have used - which binds the incarnation and the last status line, so
+# a crew that moves and stalls again is a new reading and is woken for again.
+cut_notice_once() { # <fingerprint> <payload>
+  local fingerprint=$1 payload=$2
+  [ ! -L "$CUT_NOTICES" ] || return 1
+  grep -Fqx -- "$fingerprint" "$CUT_NOTICES" 2>/dev/null && return 1
+  fm_wake_append check "inactive-cut:$fingerprint" "$payload" || return 2
+  append_once "$CUT_NOTICES" "$fingerprint" || return 2
+  printf 'actionable: %s\n' "$payload"
+  return 0
+}
+
 last_activity_age() { # <meta> <status> <turn-ended>
   local meta=$1 status=$2 turn=$3 now m newest=0 file
   now=$(reconcile_now)
@@ -349,7 +386,20 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
   case "$state_line" in
     'state: done '*) state='done' ;;
     'state: failed '*) state='failed' ;;
-    *) return 0 ;;
+    *)
+      # Not terminal, so no outcome is filed - but a cut still has to be told,
+      # and the payload says what happened and what it asks for rather than
+      # borrowing the terminal vocabulary of the records above.
+      if fm_nm_state_line_is_cap_cut "$state_line"; then
+        pr=$(pr_for_task "$meta" "$status")
+        incarnation=$(meta_incarnation "$meta")
+        fingerprint=$(sha256_text "$incarnation|$id|cap-cut|$pr|$(clean_field "$last")")
+        payload="inactive crew's validation was cut off by its own time cap and never redone: child=$id, which still needs validating"
+        [ -z "$pr" ] || payload="$payload pr=$pr"
+        cut_notice_once "$fingerprint" "$payload" || true
+      fi
+      return 0
+      ;;
   esac
   pr=$(pr_for_task "$meta" "$status")
   incarnation=$(meta_incarnation "$meta")
