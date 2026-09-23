@@ -72,6 +72,10 @@
 # signals  k=v,k=v, or -. It names the TREE that was measured in its repo=
 #          entry, resolved physically, so a decision made against the wrong
 #          clone is no longer byte-indistinguishable from a correct one.
+#          A comma inside a value is escaped \, and a backslash \\, so the k=v
+#          split survives a path that contains the separator. Reverse it by
+#          un-escaping the whole field first, then splitting on commas that are
+#          not preceded by a backslash.
 # Absent values are "-". Tabs, newlines and backslashes inside a value are
 # escaped (\t, \n, \\), so one row is always one physical line, and each field
 # is capped so the whole row stays one atomic append (FM_LANE_FIELD_MAX).
@@ -234,9 +238,23 @@ EOF
 # while reading as "this project declares none". That guard did not degrade, it
 # switched off. Absent and unreadable are different answers and are now answered
 # differently: absent is the legitimate "declares no surfaces of its own".
+#
+# BEING UNABLE TO DETERMINE SOMETHING IS NOT THE SAME AS DETERMINING IT IS NOT
+# THERE. That is the general rule, written here because this invariant has now
+# leaked one level up twice: stating it for the FILE left it false for the
+# DIRECTORY, where a root that is present and stat-able but not searchable made
+# every existence test answer no and every declared surface vanish just the same.
+# Only a positively established absence - the directory could be searched and
+# the file is genuinely not there - may take the "declares none" path. An
+# existence test that could not run is not evidence of non-existence.
 fm_lane_project_surfaces() {
   local repo=$1 file line glob name rest
   file="$repo/.fm-critical-surfaces"
+  if [ ! -d "$repo" ] || [ ! -r "$repo" ] || [ ! -x "$repo" ]; then
+    echo "error: $repo cannot be searched, so whether it declares critical surfaces cannot be determined." >&2
+    echo "       Refusing rather than answering absent: an existence test that cannot run is not an answer of no." >&2
+    return 1
+  fi
   if [ ! -e "$file" ] && [ ! -L "$file" ]; then
     return 0
   fi

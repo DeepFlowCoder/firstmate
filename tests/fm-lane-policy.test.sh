@@ -600,6 +600,58 @@ test_a_revert_that_leaves_a_mode_change_is_not_clean() {
   pass "lane: a revert that leaves a file's mode changed is not a clean revert"
 }
 
+# ls-tree takes a PATHSPEC, not a path, and the revert proof assumes a literal
+# lookup. A leading colon was eaten as a magic signature, so the entry resolved
+# to nothing on every side and both halves compared empty to empty - a revert
+# that undid nothing, demonstrated.
+test_the_revert_proof_looks_up_a_literal_path() {
+  local repo home base s_head head out name n=0
+
+  repo="$TMP_ROOT/literalpath/repo"
+  mkdir -p "$repo/src"
+  git -C "$repo" init --quiet 2>/dev/null || { git init --quiet "$repo"; }
+  home=$(lane_home literalpath)
+
+  # The leading colon is only eaten as a magic signature when it starts the
+  # pathspec, so that spelling has to sit at the repository root; the others
+  # exercise the wildcard characters at any depth.
+  printf 'value = 1\n' > "$repo/:colon.rb"
+  for name in 'back\slash.rb' 'st*ar.rb' 'br[a]cket.rb' 'q?mark.rb'; do
+    printf 'value = 1\n' > "$repo/src/$name"
+  done
+  git -C "$repo" add -A
+  git -C "$repo" commit --quiet -m seed
+  base=$(git -C "$repo" rev-parse HEAD)
+
+  for name in ':colon.rb' 'src/back\slash.rb' 'src/st*ar.rb' 'src/br[a]cket.rb' 'src/q?mark.rb'; do
+    n=$((n + 1))
+    printf 'value = 2\n' > "$repo/$name"
+    s_head=$(commit_all "$repo" "change-$n")
+
+    # A real revert of that path demonstrates.
+    printf 'value = 1\n' > "$repo/$name"
+    head=$(commit_all "$repo" "revert-$n")
+    out=$(run_lane "$home" decide lit-a$n --project proj --repo "$repo" \
+      --range "$s_head..$head" --class clean-revert --revert-of "$s_head")
+    assert_contains "$(first_line "$out")" "lane=direct-PR" \
+      "a real revert of $name did not demonstrate"
+
+    # And a range that undoes NOTHING must not, which is what an entry resolving
+    # to the empty string on every side would have allowed.
+    printf 'value = 3\n' > "$repo/$name"
+    head=$(commit_all "$repo" "unrelated-$n")
+    out=$(run_lane "$home" decide lit-b$n --project proj --repo "$repo" \
+      --range "$(git -C "$repo" rev-parse HEAD~1)..$head" \
+      --class clean-revert --revert-of "$s_head")
+    assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+      "a range that undid nothing demonstrated as a clean revert of $name"
+    assert_contains "$out" "reason=class-not-demonstrated" \
+      "the non-revert over $name was not reported as undemonstrated"
+  done
+
+  pass "lane: the revert proof resolves a literal path, not a pathspec"
+}
+
 # A surfaces file that cannot be read is an ERROR, never an emptiness. Read as
 # absent, a permissions problem erased every surface the project declares at
 # once and the decision proceeded on the built-in catalog alone.
@@ -655,6 +707,23 @@ test_an_unreadable_surfaces_file_is_refused_rather_than_read_as_absent() {
   [ "$status" -ne 0 ] || fail "a dangling symlink in place of the surfaces file was read as absent"
   rm "$repo/.fm-critical-surfaces"
 
+  # One level up: a root that is present and stat-able but NOT SEARCHABLE made
+  # every existence test for the file answer no, so the surfaces vanished just
+  # the same. An existence test that could not run is not an answer of no.
+  printf 'billing/* money-movement\n' > "$repo/.fm-critical-surfaces"
+  chmod 600 "$repo"
+  if [ -x "$repo" ]; then
+    chmod 755 "$repo"
+    fail "this case needs a user for whom mode 600 makes a directory unsearchable; it is not reproducing"
+  fi
+  out=$(run_lane "$home" decide cat-unsearchable --project proj --repo "$repo" \
+    --paths billing/ledger.rb)
+  status=$?
+  chmod 755 "$repo"
+  [ "$status" -ne 0 ] || fail "an unsearchable repo root erased every declared surface"
+  assert_contains "$out" "cannot be searched" \
+    "the refusal did not say the directory could not be searched"
+
   pass "lane: a surfaces file that cannot be read refuses the decision rather than vanishing"
 }
 
@@ -689,6 +758,40 @@ EOF
   # which is the whole point: same project, same paths, same lane.
   assert_grep "repo=$(cd "$repo_a" && pwd -P)" "$log" "the first tree did not reach the record"
   assert_grep "repo=$(cd "$repo_b" && pwd -P)" "$log" "the second tree did not reach the record"
+
+  # A comma is legal in a directory name, and the signals field is declared k=v,
+  # so the separator is escaped inside the value. The recorded path has to
+  # round-trip back to the real one after un-escaping.
+  local comma_repo recorded
+  comma_repo="$TMP_ROOT/measuredtree/acme,inc/repo"
+  mkdir -p "$comma_repo/src"
+  git -C "$comma_repo" init --quiet 2>/dev/null || { git init --quiet "$comma_repo"; }
+  printf 'value = 1\n' > "$comma_repo/src/thing.py"
+  git -C "$comma_repo" add -A
+  git -C "$comma_repo" commit --quiet -m base
+  run_lane "$home" decide tree-c1 --project proj --repo "$comma_repo" --paths src/thing.py >/dev/null
+
+  # Read it back exactly the way the header says to reverse it: un-escape the
+  # record field, then split on commas that are not preceded by a backslash.
+  local field protected kv kvs
+  field=$(awk -F'\t' '$3=="tree-c1" { print $10 }' "$log")
+  field=${field//\\\\/\\}
+  protected=${field//\\,/$'\001'}
+  recorded=
+  kvs=()
+  IFS=',' read -r -a kvs <<<"$protected"
+  for kv in ${kvs[@]+"${kvs[@]}"}; do
+    case "$kv" in
+      *=*) ;;
+      *) fail "a signals entry did not parse as k=v: '${kv//$'\001'/,}'" ;;
+    esac
+    case "$kv" in
+      repo=*) recorded=${kv#repo=} ;;
+    esac
+  done
+  recorded=${recorded//$'\001'/,}
+  [ "$recorded" = "$(cd "$comma_repo" && pwd -P)" ] \
+    || fail "the recorded tree did not round-trip to the real path: got '$recorded'"
 
   pass "lane: the record names the tree each decision was measured against"
 }
@@ -1513,6 +1616,7 @@ test_a_diff_the_policy_cannot_read_is_not_measured_as_zero
 test_a_revert_must_be_the_commit_it_claims_to_undo
 test_a_partial_revert_of_a_root_commit_is_not_demonstrated
 test_a_revert_that_leaves_a_mode_change_is_not_clean
+test_the_revert_proof_looks_up_a_literal_path
 test_an_unreadable_surfaces_file_is_refused_rather_than_read_as_absent
 test_the_record_names_the_tree_it_measured
 test_the_record_names_what_demonstrated_the_class

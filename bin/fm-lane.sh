@@ -233,8 +233,16 @@ demonstrate_clean_revert() {
 # record named it a clean revert. A symlink-for-regular-file swap over identical
 # content passed the same way. Comparing the ENTRY rather than the object closes
 # both without a special case for either.
+#
+# --literal-pathspecs because ls-tree takes a PATHSPEC, not a path, and the
+# surrounding proof assumes a literal lookup. A file named ":colon.rb" had its
+# leading colon eaten as a short-form magic signature, so the entry resolved to
+# nothing at base, head, <sha> AND <sha>^ - and both halves then compared empty
+# to empty and demonstrated a revert that undid nothing, which is the exact
+# failure -z was adopted to remove, in a narrower spelling.
 tree_entry_at() {
-  repo_git ls-tree --full-tree "$1" -- "$2" 2>/dev/null | awk '{ print $1, $2, $3; exit }'
+  repo_git --literal-pathspecs ls-tree --full-tree "$1" -- "$2" 2>/dev/null \
+    | awk '{ print $1, $2, $3; exit }'
 }
 
 # --- decide -----------------------------------------------------------------
@@ -357,7 +365,15 @@ cmd_decide() {
   # wrong; recording the tree says WHICH one it was, and turns a permanent doubt
   # into a checkable fact. A record that cannot tell a good decision from a bad
   # one does not measure, it decorates.
+  #
+  # It is the only free-text value in a field the format declares to be k=v, and
+  # a comma is legal in a directory name, so the separator is escaped inside the
+  # value: a comma becomes \, and a backslash \\. Without that, a project under
+  # /x/acme,inc/repo split into a bare token with no = and the recorded tree
+  # stopped being recoverable, which is the one thing recording it was for.
   repo_measured=$(cd "$REPO" && pwd -P) || die "--repo cannot be resolved: $REPO"
+  repo_measured=${repo_measured//\\/\\\\}
+  repo_measured=${repo_measured//,/\\,}
   signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points,binary=$binary,repo=$repo_measured"
 
   if [ -n "$OVERRIDE" ]; then
