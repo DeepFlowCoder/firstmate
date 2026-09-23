@@ -142,6 +142,9 @@ test_direct_pr_and_scout_refresh_before_launch() {
     if [ "$contract" = scout ]; then
       out=$(run_spawn "$id" --scout)
     else
+      # A direct-PR dispatch needs its lane decision on record first; that
+      # contract has its own suite (tests/fm-lane-policy.test.sh).
+      fm_authorize_cheap_lane "$HOME_DIR" "$id" "$(basename "$PROJECT_DIR")"
       out=$(run_spawn "$id" --mode direct-PR --yolo off)
     fi
     status=$?

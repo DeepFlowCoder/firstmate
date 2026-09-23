@@ -1,0 +1,35 @@
+# Firstmate's own critical surfaces, for bin/fm-lane-lib.sh.
+#
+# Format: "<glob> <surface-name>", one per line. Globs are matched
+# case-insensitively against the repo-relative path of every changed file.
+# This file only ADDS to the built-in catalog in bin/fm-lane-lib.sh; it can
+# never remove a built-in surface, so nothing here can lower rigor.
+#
+# What belongs here: the paths whose names the portable built-in patterns do not
+# already catch, but whose failure mode is a safety boundary rather than a bug -
+# work discarded, a branch landed that should not have, a guard stepped around,
+# a lock or lease that stops protecting what it names. Add a path here when it
+# joins that set; never remove one to make a delivery cheaper.
+
+bin/fm-gate-refuse-lib.sh security-guards
+bin/fm-arm-pretool-check.sh security-guards
+bin/fm-arm-command-policy.mjs security-guards
+bin/fm-cd-pretool-check.sh security-guards
+bin/fm-cd-command-policy.mjs security-guards
+bin/fm-subagent-pretool-check.sh security-guards
+bin/fm-check-lib.sh security-guards
+bin/fm-check-register.sh security-guards
+bin/fm-lock.sh security-guards
+bin/fm-lock-lib.sh security-guards
+bin/fm-session-lock-lib.sh security-guards
+bin/fm-afk-daemon-lock-lib.sh security-guards
+bin/fm-lease.sh security-guards
+bin/fm-lease-lib.sh security-guards
+
+bin/fm-ff-lib.sh merge-routes
+bin/fm-pr-check.sh merge-routes
+bin/fm-pr-fitness-lib.sh merge-routes
+bin/fm-pr-lib.sh merge-routes
+
+bin/fm-landed-lib.sh teardown-and-discard
+bin/fm-stash-guard.sh teardown-and-discard

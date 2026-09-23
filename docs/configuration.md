@@ -310,6 +310,19 @@ It pins `commands.test` to the targeted fleet-status-view suites rather than a c
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the firstmate-specific local test policy and entry points.
 Portable shard evidence and coverage rules are in [fm-test-portable-shards.md](fm-test-portable-shards.md); [herdr-backend.md](herdr-backend.md#destructive-lab-safety) owns the real-Herdr lane's isolation boundary, and [runtime-backends.md](verification/runtime-backends.md#herdr) owns active evidence.
 
+## Review lanes (.fm-critical-surfaces / data/lane-log.tsv)
+
+Firstmate routes each delivery to the expensive review lane (`no-mistakes`) or the cheap one (`direct-PR`) through `bin/fm-lane.sh decide`, whose header owns the decision tiers, the evidence grades, and the flags.
+There are two things an operator sets or reads.
+
+A project may carry a tracked `.fm-critical-surfaces` file at its root naming paths that always take the expensive lane, one `<glob> <surface-name>` per line with `#` comments.
+It only adds to the built-in catalog in `bin/fm-lane-lib.sh`, so it can widen what is treated as a safety surface and can never narrow it; a malformed line is refused rather than skipped, because a silently dropped pattern is a silently lost surface.
+This repo carries its own for the safety boundaries the built-in name patterns do not all catch.
+
+Every lane decision, every ship dispatch and every defect found after a delivery landed is appended to the home's gitignored `data/lane-log.tsv`, tab-separated, one event per line.
+Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"` and read the file back with `bin/fm-lane.sh log`.
+That record is the only measurement of rigor skipped against defects escaped, which nothing published covers for agent-written changes, so it is what makes the policy correctable rather than permanent.
+
 ## Captain Preferences (data/captain.md / data/captain-shared.md)
 
 Domain-local preferences for one captain's fleet live locally in each home's `data/captain.md`; it is gitignored and printed in the session-start context digest after `data/projects.md` and optional `data/secondmates.md`.

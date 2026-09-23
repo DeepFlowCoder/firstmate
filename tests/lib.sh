@@ -405,6 +405,23 @@ fm_git_worktree() {
   git -C "$repo" worktree add --quiet -b "$branch" "$worktree"
 }
 
+# --- lane routing -----------------------------------------------------------
+
+# fm_authorize_cheap_lane <home> <task-id> <project-name>
+# Record a lane decision authorizing the cheap lane (direct-PR) for that task.
+# bin/fm-spawn.sh and bin/fm-promote.sh refuse a direct-PR dispatch without one
+# (bin/fm-lane-lib.sh), so any suite that drives a cheap-lane dispatch for some
+# OTHER reason calls this first. It goes through the real decide command rather
+# than writing the record by hand, so those suites never pin the record's
+# format; the captain-override route is used because it is the one path to the
+# cheap lane that needs no git range to demonstrate.
+fm_authorize_cheap_lane() {
+  local home=$1 id=$2 project=$3
+  FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+    "$ROOT/bin/fm-lane.sh" decide "$id" --project "$project" \
+    --paths lane-authorization-fixture --captain-override "test fixture authorization" >/dev/null
+}
+
 # --- state/<id>.meta writers ------------------------------------------------
 
 # fm_write_meta <file> <key=val> ...: write the given key=val lines to a meta

@@ -30,6 +30,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-lane-lib.sh
+. "$SCRIPT_DIR/fm-lane-lib.sh"
 
 MODE=
 YOLO=
@@ -113,6 +115,16 @@ fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
+
+# Lane routing (bin/fm-lane-lib.sh). Promotion is the other place a delivery's
+# review lane is decided, so it carries the same gate as a fresh ship spawn: the
+# cheap lane needs a recorded decision that authorizes it, and the dispatch is
+# recorded either way. Gated BEFORE the meta flip, so a refusal leaves the task
+# exactly as it was.
+PROMOTE_PROJ=$(grep '^project=' "$META" | tail -1 | cut -d= -f2- || true)
+PROMOTE_PROJ_NAME=-
+[ -z "$PROMOTE_PROJ" ] || PROMOTE_PROJ_NAME=$(basename "$PROMOTE_PROJ")
+fm_lane_gate_dispatch "$ID" "$PROMOTE_PROJ_NAME" "$MODE" "$YOLO" || exit 1
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"

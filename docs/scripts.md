@@ -105,6 +105,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-remote-inherit.sh`   | Apply one primary-authoritative inherited item inside the selected remote home       |
 | `fm-remote-inherit-push.sh` | Push the declared inherited-material allowlist to one remote secondmate route        |
 | `fm-project-mode.sh`     | Resolve a project's registered delivery posture from `data/projects.md` for fleet sync and home seeding |
+| `fm-lane.sh`             | Decide a delivery's review lane from the critical-surface catalog, a demonstrated standard class, or the diff's signals, and record it |
+| `fm-lane-lib.sh`         | Own the lane catalog, decision tiers, evidence grades, append-only record, and the gate that refuses an unauthorized cheap dispatch |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval, then print the captain's paste-ready pull command |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |
 | `fm-marker-lib.sh`       | Compatibility entry point for the from-firstmate carrier owned by `fm-operational-input.sh` |
