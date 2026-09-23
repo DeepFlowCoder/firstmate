@@ -357,6 +357,13 @@ test_nonterminal_and_captain_held_states_do_not_report() {
     make_world "nonterminal-$state"; write_child "$MAIN" child 'working: still active'
     FM_FAKE_CREW_STATE="$state" run_reconcile "$MAIN" --startup
     [ "$(outcome_count "$MAIN" pending)" = 0 ] || fail "$state produced a terminal outcome"
+    # `unknown` is also what a crew with no backend target, an unreachable remote
+    # endpoint, or an unarbitrated verdict reports, and none of those says a
+    # validation died. Widening the cut branch to every `unknown` is the exact
+    # direction the cap-cut reading exists to prevent, so pin it here rather than
+    # only pinning the two shapes that should match.
+    [ "$(wake_count "$MAIN" 'inactive-cut:')" = 0 ] \
+      || fail "$state was reported as a validation cut off by its own time cap"
   done
   make_world captain-held; write_child "$MAIN" child 'captain-held: awaiting captain'
   FM_FAKE_CREW_STATE='done' run_reconcile "$MAIN" --startup
@@ -565,46 +572,42 @@ test_a_superseded_cut_does_not_wake_the_supervisor() {
   pass "a cut quoted inside a supersession reading is not acted on as a live cut"
 }
 
-# WHERE THE SUPERVISOR IS IN A DELEGATED HOME. Every other reconciled outcome in
-# a secondmate home goes UP the established parent route, and the local queue row
-# means one thing there already: the upward report failed. A cut notice queued
-# locally would be read by nobody and would imitate that diagnostic, so it takes
-# the same route the terminal outcomes take.
-test_secondmate_cut_notice_reaches_the_parent() {
-  local line
+# A DELEGATED HOME REPORTS A CUT NOWHERE, AND THAT IS THE DECISION, NOT AN
+# OVERSIGHT. The parent's per-mate status stream is the channel the terminal
+# outcomes take, and it is last-line-wins: it is where bin/fm-watch.sh reads
+# whether the mate's own silence is a DECLARED wait, so any append there retires
+# the mate's `paused:` and its pause tracking with it. A local queue row is not
+# the fallback either, because in a secondmate home that row already means the
+# upward report failed. Until a channel exists that notifies without erasing the
+# pause (`fm-aviso-de-corte-hacia-el-hogar-padre`), the cut is deliberately
+# silent here - so this pins the silence, and pins that the mate's declared wait
+# survives it.
+test_secondmate_cut_reports_nowhere_and_leaves_the_pause_intact() {
+  local line declared
   make_world cap-cut-mate; bind_secondmate local
   write_child "$MATE" child 'working: validating the branch'
+  declared='paused: waiting on the upstream release'
+  printf '%s\n' "$declared" > "$MAIN/state/mate.status"
   line=$(cut_state_line)
   FM_FAKE_CREW_STATE_LINE="$line" run_reconcile "$MATE" --startup
 
-  grep -Fq 'had its validation cut off by its own time cap' "$MAIN/state/mate.status" \
-    || fail "the cut never reached the parent: $(cat "$MAIN/state/mate.status" 2>/dev/null)"
-  grep -Fq 'still needs validating' "$MAIN/state/mate.status" \
-    || fail "the parent report does not name the action it asks for"
-  grep -Eq '^(done|failed) ' "$MAIN/state/mate.status" \
-    && fail "the cut was reported to the parent as a terminal verdict"
+  # The parent reads a mate's declared wait from the LAST line of this stream, so
+  # the assertion is that the pause is still what that last line says.
+  [ "$(tail -1 "$MAIN/state/mate.status")" = "$declared" ] \
+    || fail "the cut retired the mate's declared wait: $(cat "$MAIN/state/mate.status")"
+  [ "$(wake_count "$MATE" 'inactive-cut:')" = 0 ] \
+    || fail "a delegated cut was queued locally, imitating the broken-route signal"
   [ "$(outcome_count "$MATE" pending)" = 0 ] || fail "a cut filed a terminal outcome record"
   [ "$(outcome_count "$MATE" reported)" = 0 ] || fail "a cut filed a terminal outcome receipt"
-  [ "$(wake_count "$MATE" 'inactive-cut:')" = 0 ] \
-    || fail "a delegated cut was queued locally where nobody reads it"
-
-  # Once per reading, across restarts, exactly like the terminal path.
-  FM_FAKE_CREW_STATE_LINE="$line" run_reconcile "$MATE" --startup
-  [ "$(grep -c 'had its validation cut off' "$MAIN/state/mate.status")" = 1 ] \
-    || fail "the parent report was duplicated on the next scan"
-
-  # The local row keeps its own meaning: the upward route is broken.
-  make_world cap-cut-mate-unbound
-  printf 'mate\n' > "$MATE/.fm-secondmate-home"
-  write_child "$MATE" child 'working: validating the branch'
-  FM_FAKE_CREW_STATE_LINE="$line" run_reconcile "$MATE" --startup
-  grep -Fq 'inactive cap-cut notice needs parent report' "$MATE/state/.wake-queue" \
-    || fail "a broken upward route did not surface as the report failure it is"
-  grep -Fq '.fm-secondmate-parent' "$MATE/state/.wake-queue" \
-    || fail "the broken upward route did not name the missing binding"
   [ ! -s "$MATE/state/.inactive-cut-notices" ] \
-    || fail "an undelivered cut was recorded as delivered"
-  pass "a delegated cut notice goes up the parent route, not onto the local queue"
+    || fail "an unreported cut consumed a notice receipt"
+
+  # The terminal words still take the parent route from the very same home, so
+  # the silence is the CUT's and not a delegated home reporting nothing at all.
+  FM_FAKE_CREW_STATE='failed' run_reconcile "$MATE" --startup
+  grep -Fq 'failed [key=inactive-outcome-mate-child-failed]:' "$MAIN/state/mate.status" \
+    || fail "a delegated terminal outcome stopped reaching the parent"
+  pass "a delegated cap cut reports nowhere and leaves the mate's declared wait standing"
 }
 
 # Forge command shims fail loudly. A successful scan proves this path never uses
@@ -634,7 +637,7 @@ test_notice_recovery_does_not_duplicate_wake
 test_missing_parent_binding_names_itself
 test_cap_cut_wakes_the_supervisor_and_files_no_outcome
 test_a_superseded_cut_does_not_wake_the_supervisor
-test_secondmate_cut_notice_reaches_the_parent
+test_secondmate_cut_reports_nowhere_and_leaves_the_pause_intact
 test_reconciliation_never_calls_forge
 
 echo "all inactive reconciliation tests passed"
