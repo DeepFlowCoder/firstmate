@@ -50,7 +50,7 @@
 #      that replaced it (both report the submitted head for the whole successor
 #      run - measured, see bin/fm-nm-run-lib.sh's runs-list primitives), so the
 #      runs list arbitrates. ONE predicate owns that whole question -
-#      nm_verdict_standing, below - and every verdict except a parked gate
+#      nm_verdict_standing, below - and every verdict except a gate
 #      reaches the captain only through it; the rule lives THERE, and this
 #      paragraph only describes it. Its three answers: `current` asserts the
 #      verdict as read, `superseded` reports a bound running successor as
@@ -1044,7 +1044,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   # later task, a rewritten tip), the honest answer is `unknown`: what is certain
   # is only that the reported verdict is NOT current.
   #
-  # A run parked at a gate is the one reading this arbitration never touches. A
+  # A gate is the one reading this arbitration never touches. A
   # gate is a live step a human has to answer, and hiding one orphans it with
   # nothing left to answer it, while showing a gate that has just closed costs a
   # single poll and self-corrects. That asymmetry, not convenience, is why the
