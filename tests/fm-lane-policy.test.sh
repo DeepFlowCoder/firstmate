@@ -412,6 +412,48 @@ EOF
   pass "lane: a clean-revert class must be the commit it names, undone"
 }
 
+# A root commit has no parent, so enumerating its paths by diffing against one
+# failed - and the error, discarded, left the union empty and the proof back to
+# the range's own paths, which is the partial revert the union exists to catch.
+# Reverting a root commit is rare and a young project is exactly where it happens.
+test_a_partial_revert_of_a_root_commit_is_not_demonstrated() {
+  local repo home root head out
+
+  repo="$TMP_ROOT/rootrevert/repo"
+  mkdir -p "$repo"
+  git -C "$repo" init --quiet 2>/dev/null || { git init --quiet "$repo"; }
+  home=$(lane_home rootrevert)
+
+  printf 'doc\n' > "$repo/a.md"
+  printf 'code\n' > "$repo/b.py"
+  git -C "$repo" add -A
+  git -C "$repo" commit --quiet -m root
+  root=$(git -C "$repo" rev-parse HEAD)
+  [ -z "$(git -C "$repo" rev-parse --verify --quiet "$root^" 2>/dev/null)" ] \
+    || fail "the fixture's claimed root commit has a parent"
+
+  rm "$repo/a.md"
+  head=$(commit_all "$repo" remove-only-one)
+  out=$(run_lane "$home" decide root-a1 --project proj --repo "$repo" \
+    --range "$root..$head" --class clean-revert --revert-of "$root")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "half of a root commit left applied demonstrated as that commit undone"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the partial revert of a root commit was not reported as undemonstrated"
+  [ -f "$repo/b.py" ] || fail "the fixture removed both files, so nothing was left applied"
+
+  # The control: removing everything the root commit added really is that commit
+  # undone, so the case above is the leftover file and not the root commit itself.
+  rm "$repo/b.py"
+  head=$(commit_all "$repo" remove-the-rest)
+  out=$(run_lane "$home" decide root-a2 --project proj --repo "$repo" \
+    --range "$root..$head" --class clean-revert --revert-of "$root")
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a complete revert of a root commit did not demonstrate"
+
+  pass "lane: a partial revert of a root commit is not a clean revert"
+}
+
 # A record that cannot say WHICH commit a revert claimed cannot be re-checked
 # when a defect turns up months later. The class column therefore carries the
 # demonstrating input as an identifier: the resolved sha, never free text.
@@ -1169,6 +1211,7 @@ test_firstmates_own_safety_surfaces_are_covered
 test_deleting_the_dispatch_gate_cannot_route_itself_cheap
 test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only
 test_a_revert_must_be_the_commit_it_claims_to_undo
+test_a_partial_revert_of_a_root_commit_is_not_demonstrated
 test_the_record_names_what_demonstrated_the_class
 test_a_non_ascii_path_is_read_as_itself
 test_a_path_git_escapes_is_matched_as_itself

@@ -13,7 +13,6 @@
 #                     [--captain-override <the captain's own words>]
 #                     [--note <text>]
 #   fm-lane.sh escape <task-id> --note <text> [--project <name>]
-#   fm-lane.sh log [--task <id>] [--event decide|dispatch|escape]
 #
 # decide prints one machine-readable first line:
 #   lane=<no-mistakes|direct-PR> evidence=<demonstrated|declared> reason=<slug>
@@ -127,8 +126,6 @@ CLASS=
 REVERT_OF=
 OVERRIDE=
 NOTE=
-FILTER_TASK=
-FILTER_EVENT=
 PATHS=()
 
 need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
@@ -180,12 +177,25 @@ demonstrate_docs_only() {
 # modified never examined the other, so half of <sha> left applied demonstrated
 # as "exactly <sha> undone" and reached the cheap lane. A path <sha> touched and
 # the range left alone fails the second half, which is that partial revert.
+#
+# The enumeration must never fail into a weaker check. diff-tree --root reads a
+# root commit's paths as the additions they are, where a diff against <sha>^ only
+# errored - and that error, discarded, left the union empty and the check back to
+# the range's paths alone, silently. It is read through a file so the command's
+# exit status survives, and an enumeration that fails or yields nothing REFUSES
+# the demonstration: a merge commit or an empty one has no first-parent paths to
+# compare, and a claim nobody can read is not a claim that was demonstrated.
 demonstrate_clean_revert() {
-  local base=$1 head=$2 sha=$3 p
+  local base=$1 head=$2 sha=$3 p own own_count=0
   local paths=("${@:4}")
+  own=$(mktemp "${TMPDIR:-/tmp}/fm-lane-revert.XXXXXX") || return 1
+  TMPDIRS+=("$own")
+  repo_git diff-tree -r --root --no-commit-id --name-only -z --no-renames "$sha" >"$own" \
+    || return 1
   while IFS= read -r -d '' p; do
-    [ -z "$p" ] || paths+=("$p")
-  done < <(repo_git diff --name-only -z --no-renames "$sha^" "$sha" 2>/dev/null)
+    [ -z "$p" ] || { paths+=("$p"); own_count=$((own_count + 1)); }
+  done <"$own"
+  [ "$own_count" -gt 0 ] || return 1
   for p in ${paths[@]+"${paths[@]}"}; do
     [ "$(blob_at "$base" "$p")" = "$(blob_at "$sha" "$p")" ] || return 1
     [ "$(blob_at "$head" "$p")" = "$(blob_at "$sha^" "$p")" ] || return 1
@@ -405,16 +415,6 @@ cmd_escape() {
   printf 'recorded escape for %s in %s\n' "$TASK" "$(fm_lane_log_path)"
 }
 
-# --- log / catalog ----------------------------------------------------------
-
-cmd_log() {
-  local log
-  log=$(fm_lane_log_path)
-  [ -f "$log" ] || { echo "no lane record yet at $log" >&2; return 0; }
-  awk -F'\t' -v t="$FILTER_TASK" -v e="$FILTER_EVENT" \
-    '(t=="" || $3==t) && (e=="" || $2==e)' "$log"
-}
-
 # --- dispatch ---------------------------------------------------------------
 
 [ "$#" -gt 0 ] || { usage; exit 1; }
@@ -422,7 +422,7 @@ SUB=$1
 shift
 case "$SUB" in
   -h|--help|help) usage; exit 0 ;;
-  decide|escape|log) ;;
+  decide|escape) ;;
   *) die "unknown subcommand: $SUB (try --help)" ;;
 esac
 
@@ -442,10 +442,6 @@ while [ "$#" -gt 0 ]; do
     --captain-override=*) OVERRIDE=${1#--captain-override=}; shift ;;
     --note) need_value "$@"; NOTE=$2; shift 2 ;;
     --note=*) NOTE=${1#--note=}; shift ;;
-    --task) need_value "$@"; FILTER_TASK=$2; shift 2 ;;
-    --task=*) FILTER_TASK=${1#--task=}; shift ;;
-    --event) need_value "$@"; FILTER_EVENT=$2; shift 2 ;;
-    --event=*) FILTER_EVENT=${1#--event=}; shift ;;
     --paths)
       shift
       [ "$#" -gt 0 ] || die "--paths requires at least one path"
@@ -470,5 +466,4 @@ done
 case "$SUB" in
   decide) cmd_decide ;;
   escape) cmd_escape ;;
-  log) cmd_log ;;
 esac

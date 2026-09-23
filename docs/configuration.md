@@ -326,7 +326,7 @@ It refuses a cheap dispatch in four cases: the decision names a critical surface
 A missing or unwritable record never stops an expensive or `local-only` dispatch, which warns and proceeds, because there it costs one delivery's measurement rather than any rigor.
 
 Every lane decision, every ship dispatch and every defect found after a delivery landed is appended to the home's gitignored `data/lane-log.tsv`, tab-separated, one event per line.
-Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"` and read the file back with `bin/fm-lane.sh log`.
+Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"`, and read the file back with `grep <task-id> "$FM_HOME/data/lane-log.tsv"` or any other text tool, which is what the tab-separated format is for.
 A class-routed decision carries what demonstrated the class in its class column, as `clean-revert:<commit sha>`, so a reviewer can re-check months later which commit was claimed.
 A `dispatch` row records an authorised dispatch rather than a completed launch, because it is written before the worker starts, so a spawn that fails afterwards still leaves a row and a retry leaves a second one for the same delivery.
 Anyone computing an escape rate from this file must therefore not treat dispatch rows as deliveries.
