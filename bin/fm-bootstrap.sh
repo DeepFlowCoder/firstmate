@@ -18,6 +18,7 @@
 #                 "CAPACITY: capacity unknown - <reason>",
 #                 "CAPACITY: balance unknown - <reason>" or
 #                 "CAPACITY: invalid <config/capacity-min-lanes|FM_CAPACITY_MIN_LANES|config/balance-margin-secs|FM_BALANCE_MARGIN_SECS> - <reason>; guarding at the default <n>",
+#                 "CAPACITY: capacity guard could not record this warning at <path> - it will repeat until that write succeeds",
 #                 "GH_BASE_REPO: could not write <key> in <repo>; unnamed gh and
 #                 gh-axi queries there can answer for a different repository -
 #                 make .git/config writable ... and rerun session start",
@@ -95,6 +96,10 @@
 #          its own reset, or the prepaid balance every validation runs on is
 #          projected to reach zero sooner than a validation takes to finish;
 #          above those thresholds the check is silent.
+#          A `capacity guard could not record this warning` CAPACITY line is the
+#          one that names no capacity condition: the guard could not write the
+#          report record that would stop the warning it just printed from
+#          repeating, so that warning repeats until the write succeeds.
 #          bin/fm-capacity-check.sh owns the threshold, its
 #          config/capacity-min-lanes and FM_CAPACITY_MIN_LANES overrides, and the
 #          wording, and bin/fm-capacity-policy.mjs owns the classification behind

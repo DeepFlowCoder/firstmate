@@ -217,7 +217,7 @@ A malformed configured value is reported and falls back to 2 rather than silentl
 
 At session start, the deferred network stage reads one `quota-axi --json` snapshot and prints a `CAPACITY:` line only when fewer lanes remain than the threshold, when every remaining lane is projected to exhaust before its own reset, or when the snapshot cannot be classified.
 Every locked session start also keeps `state/capacity.check.sh` registered with the watcher, which repeats the same check on its normal check cadence and wakes firstmate only when the degraded capacity shape changes.
-Recovery and unchanged readings stay silent, while a later degradation becomes reportable again.
+Recovery and unchanged readings stay silent, while a later degradation becomes reportable again; the exception is a warning whose record the guard could not write, which it says out loud and repeats until that write succeeds.
 
 The warning names an exhausted time window by its reset hour, an unusable credential, and an allowance spent with no reset reported, because those require waiting, sign-in, and investigating respectively.
 quota-axi exposes no verified signal that separates a spent prepaid balance from a spent window whose reset is missing, so the guard reports that shape as `exhausted` rather than guessing a recharge.
