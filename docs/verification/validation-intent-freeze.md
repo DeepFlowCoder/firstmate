@@ -6,29 +6,91 @@ This record supports one active guarantee: a decision firstmate sends back to a 
 [`.agents/skills/ask-user-authority/SKILL.md`](../../.agents/skills/ask-user-authority/SKILL.md) owns that decision policy and is the only place the rule is stated.
 This record holds the measurement the rule rests on, and is the evidence for the upstream request at the end.
 
-The fact is not testable from firstmate's side: the intent lives in the pipeline's own store, and the only observable surfaces are the installed binary's flags and the review transcripts it produces.
-Both are recorded below and are refreshed by re-running the commands.
+The fact is not testable from firstmate's side: the intent lives in the pipeline's own store, and the only observable surfaces are the installed binary's help and status output, the operator skill it ships, and the review transcripts it produces.
+All three are recorded below and are refreshed by re-running the commands.
 
 ## Environment
 
 Recorded 2026-09-23 on Darwin 24.6.0 (arm64) with no-mistakes v1.75.2 (4debd42, built 2026-09-14).
 The measured run is `01M36TPBWRJPXMQYCX7Z4G55N8` on branch `fm/fm-barrido-pr-cerrado-sin-fusionar`, which shipped [pull request 101](https://github.com/DeepFlowCoder/firstmate/pull/101); both identifiers are permanent.
 
-## The intent is accepted only when a run starts
+## Every command that writes an intent starts a run
+
+The measured surface is the whole binary, not only `axi`.
+
+```sh
+no-mistakes --help | sed -n '/Available Commands:/,/^$/p'
+```
+
+```
+Available Commands:
+  attach      Attach to the active pipeline run
+  axi         Agent interface: drive no-mistakes from an autonomous agent
+  ci-workflow Generate .github/workflows/ci.yml from .no-mistakes.yaml commands
+  completion  Generate the autocompletion script for the specified shell
+  daemon      Manage the no-mistakes daemon
+  doctor      Check system health and dependencies
+  eject       Remove no-mistakes gate from the current repository
+  eval        Inspect and locally replay review evaluation cases
+  help        Help about any command
+  init        Initialize no-mistakes gate for the current repository
+  rerun       Rerun the pipeline for the current branch
+  runs        List pipeline runs for the current repository
+  stats       Show historical no-mistakes usage stats
+  status      Show status of the current repository
+  sync        Safely move the current branch to an exact pipeline-pushed head
+  update      Update no-mistakes and reset the daemon
+```
+
+Two commands accept `--intent`: `axi run` and `rerun`.
 
 ```sh
 no-mistakes axi run --help | grep -- '--intent'
-no-mistakes axi respond --help | grep -c -- '--intent'
 ```
 
 ```
 --intent is required when starting a new run: pass what the user set out
       --intent string                  what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)
+```
+
+```sh
+no-mistakes rerun --help | grep -- '--intent'
+```
+
+```
+Rerun the pipeline for the current branch. By default, an explicit intent from the selected prior run is inherited; otherwise intent is inferred afresh. Use --intent to replace either with a new explicit intent. A per-run PR base branch is inherited from the selected prior run unless --base-branch is set. The selected run's pull-request URL is inherited when that PR is not already merged or closed, so retarget can prove identity.
+      --intent string        explicit intent for this rerun (overrides inherited intent or fresh inference)
+```
+
+Both of those start a run.
+`axi run` marks the intent required to start one, and `rerun` describes its own inheritance as coming from "the selected prior run", which is a successor run rather than an edit to the one in flight.
+The pipeline's own operator skill states that as an instruction and forbids reaching for `rerun` mid-run:
+
+```sh
+sed -n '/while a run is active do \*\*not\*\*/,/gate\.$/p' ~/.claude/skills/no-mistakes/SKILL.md
+```
+
+```
+   re-review the result. For the same reason, while a run is active do **not**
+   `abort` or `rerun` to go fix a finding yourself - even a real bug in
+   your own code - because that discards the pipeline's in-flight work and
+   forces a full re-validation. `abort` and `rerun` are for *between*
+   runs (after a `failed` or `cancelled` outcome), never to circumvent a
+   gate.
+```
+
+No command amends the intent of a run already under way.
+`axi respond`, the only channel firstmate has into a live run, has no intent flag:
+
+```sh
+no-mistakes axi respond --help | grep -c -- '--intent'
+```
+
+```
 0
 ```
 
-`run` accepts the intent and marks it required to start; `respond` has no intent flag.
-`axi` exposes no other subcommand that writes one:
+No other `axi` subcommand writes one either:
 
 ```sh
 no-mistakes axi --help | sed -n '/Available Commands:/,/^$/p'
@@ -44,14 +106,69 @@ Available Commands:
   sync        Check or apply guarded current-branch synchronization
 ```
 
-`status` does not print the persisted intent either, so the frozen text cannot even be read back for comparison; under proof mode `run` emits only a digest of it, never the text.
-The one remaining exit is `abort`, since a fresh run is the only thing that persists different text, and the binary's own help forbids reaching it that way:
+The frozen text cannot even be read back for comparison.
+`axi status` shows a run in detail and the persisted intent is not among the fields it prints:
+
+```sh
+no-mistakes axi status --run 01M36TPBWRJPXMQYCX7Z4G55N8
+```
+
+```
+run:
+  id: "01M36TPBWRJPXMQYCX7Z4G55N8"
+  branch: fm/fm-barrido-pr-cerrado-sin-fusionar
+  status: completed
+  head: 890cc2bd
+  head_sha: 890cc2bd0b8540630049816f5eb2b5938a7a101f
+  pr: "https://github.com/DeepFlowCoder/firstmate/pull/101"
+  findings: "1 awaiting, 1 info"
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,44
+    rebase,completed,0,2133
+    review,completed,1,3914412
+    test,completed,0,1505333
+    document,completed,1,148186
+    lint,completed,0,10992
+    push,completed,0,5567
+    pr,completed,0,55159
+    ci,completed,0,1412338
+outcome: passed
+```
+
+Proof mode emits a digest of the intent and never the raw text, which `axi run --help` states itself:
+
+```sh
+no-mistakes axi run --help | sed -n '/strict proof mode/,/raw intent is never included/p'
+```
+
+```
+--launch-nonce with --validation-generation enables strict proof mode.
+Before driving, AXI emits a receipt with the durable run ID, created or
+reused disposition, full submitted head, and a digest of the exact
+persisted intent; raw intent is never included.
+```
+
+## Correction: a fresh run does not cost the fix commits
+
+An earlier version of this record said the only available correction "costs the fix commits the live run has already made", and the ticket it came from said the same.
+That is false, and both stated it without measuring it.
+The commits stay on the branch: `rerun` operates on the current branch and inherits the prior run's pull-request URL, and `axi run --help` instructs the caller to keep every pipeline fix commit present.
+
+```sh
+no-mistakes axi run --help | grep 'Never abort-and-restart'
+```
 
 ```
 Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.
 ```
 
-So the only correction the tool offers costs the fix commits the live run has already made, which is more than the defect.
+The real cost is a complete re-validation: review, test and CI again from scratch, which is what the operator skill quoted above calls "a full re-validation".
+Against a two-round dispute that is still more than the defect is worth, but it is not the cost that was claimed.
+This record exists to stop claims that outlive their evidence and it committed that same fault, so the correction is stated here rather than folded into the sentences it replaces.
+
+The defect itself is unchanged by the correction.
+A live run cannot correct its persisted intent, and the second command that writes one starts a new run instead of amending the live one.
+Only the price of the unavailable exit was wrong.
 
 ## Every round receives the original text unchanged
 
@@ -133,6 +250,6 @@ The request, in the order upstream would need it:
 
 1. Let the caller correct the persisted intent of a live run without aborting it, so a supervisor's mid-run correction reaches the rounds that follow.
 2. Failing that, let a gate response mark a named constraint as retired, and present it to later steps as retired rather than leaving them to re-derive it from the original text.
-3. Either form must preserve the run's existing fix commits, since the cost measured here comes entirely from the only current exit being an abort.
+3. Either form must act on the run already under way, since the only current exit is a fresh run and its cost is re-validating from scratch work the live run has already validated.
 
 Filing this upstream is outward-facing and waits on the captain.
