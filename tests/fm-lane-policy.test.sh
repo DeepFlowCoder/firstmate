@@ -1117,10 +1117,13 @@ EOF
   pass "lane: a document that governs an agent is a critical surface, one that describes is not"
 }
 
-# The portable *auth* glob used to swallow AUTHORS, so a contributors list was
-# recorded as an AUTHENTICATION surface: the right lane for the wrong reason,
-# and a wrong fact in the record the policy exists to build. AUTHORS stays
-# expensive in this house, under the label that is true of it.
+# The portable *auth* glob used to swallow AUTHORS in every spelling, so a
+# contributors list was recorded as an AUTHENTICATION surface: the right lane for
+# the wrong reason, and a wrong fact in the record the policy exists to build.
+# The glob now lets the PROSE spellings through, which is what these cases pin,
+# and still claims the rest - so AUTHORS.org carries both labels as the accepted
+# residual fm_lane_authors_spelling records. Either way AUTHORS stays expensive
+# in this house, through its extension-agnostic governing-docs entries.
 test_authors_is_a_governing_document_not_an_authentication_surface() {
   local rec repo base home head out name n=0
 

@@ -119,29 +119,33 @@ skills/*/references/* governing-docs
 skills/*/agents/* governing-docs
 */skills/*/agents/* governing-docs
 
-# AUTHORS is here under its truthful label. It used to reach the expensive lane
-# by accident, through the portable *auth* glob, which recorded a contributors
-# list as an AUTHENTICATION surface; that glob no longer claims AUTHORS in any
-# spelling, so the routing is now stated rather than inherited from a coincidence
-# of letters. AUTHORS is project governance and attribution: who speaks for this
-# house, and to whom the work is credited.
+# AUTHORS, because this house holds it expensive on purpose rather than by
+# accident. It is project governance and attribution: who speaks for this house,
+# and to whom the work is credited.
 #
-# These entries and the exception in fm_lane_critical_hits both name AUTHORS
-# irrespective of extension, so THERE IS NO SEAM BETWEEN THEM LEFT TO DRIFT.
-# Both once derived from the accepted prose extensions, which meant the two could
-# disagree about a spelling: while the data side enumerated one line per
-# extension, adding a single extension in code made AUTHORS.<ext> escape the
-# *auth* glob automatically with no line here to hold it expensive, and a
-# governance document landed on the CHEAP lane. While only the code side derived,
-# AUTHORS.org was routed correctly but recorded under BOTH surfaces, one of them
-# false.
+# These four entries name AUTHORS IRRESPECTIVE OF EXTENSION, and that is the
+# whole reason they are written this way: the prose-extension list in
+# bin/fm-lane-lib.sh may gain a spelling at any time, and a local entry that
+# enumerated spellings would fall behind it in the CHEAP direction. Widening here
+# is free, so this side is deliberately the wider of the two.
 #
 # WHEN TWO THINGS MUST BE COUPLED AND THE COUPLING CANNOT BE AVOIDED, IT MUST
 # FAIL CLOSED. If they fall out of sync, the result must be MORE expensive, never
 # cheaper. A coupling that cheapens when it breaks is a trap with a date on it:
 # it will be sprung by someone doing something perfectly reasonable in another
-# file, and it will lower rigor silently when it is. The strongest form of that
-# rule is the one used here: not having the seam at all.
+# file, and it will lower rigor silently when it is. Here desynchronising costs
+# one unnecessary expensive review, which is the safe side.
+#
+# THE PORTABLE *auth* GLOB STILL CLAIMS AUTHORS IN SPELLINGS OUTSIDE THE ACCEPTED
+# PROSE LIST, deliberately, so AUTHORS.org records authentication ALONGSIDE
+# governing-docs here and one of those two names is not true of it. That residual
+# is an ACCEPTED TRADEOFF and fm_lane_authors_spelling in bin/fm-lane-lib.sh owns
+# the reasoning - read it there before touching either side, because tidying the
+# label once meant narrowing a portable surface and that measurably removed the
+# authentication surface from src/authors.py in EVERY project the fleet routes.
+# FIX THE LABEL, NOT THE ROUTING. These entries are not redundant with that glob:
+# they are what holds AUTHORS expensive in the prose spellings the glob correctly
+# lets through, and nothing anywhere else does that.
 AUTHORS governing-docs
 */AUTHORS governing-docs
 AUTHORS.* governing-docs
