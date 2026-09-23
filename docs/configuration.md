@@ -320,6 +320,11 @@ It only adds to the built-in catalog in `bin/fm-lane-lib.sh`, so it can widen wh
 This repo carries its own for the safety boundaries the built-in name patterns do not all catch, for the two files that run the dispatch gate, and for its CI configuration.
 It also lists the shared tracked material AGENTS.md section 1 already requires ship through the no-mistakes pipeline and PR path, so the lane policy enforces that rule instead of offering a cheap route around it.
 
+The gate in front of each dispatch is advisory for fresh intake and binding on a measured change.
+At intake there is no diff, so a decision there rests on a declared path list; the gate then records the lane it computed, says on stderr that the project's registered posture was followed instead, and marks the row `advisory=<lane>:<reason>` so every disagreement between the policy and the posture is countable.
+It refuses a cheap dispatch in three cases: the decision names a critical surface, under either evidence grade; the decision came from a real diff and says the expensive lane; or no decision was recorded at all, which means the critical-surface check never ran.
+A missing or unwritable record never stops an expensive or `local-only` dispatch, which warns and proceeds, because there it costs one delivery's measurement rather than any rigor.
+
 Every lane decision, every ship dispatch and every defect found after a delivery landed is appended to the home's gitignored `data/lane-log.tsv`, tab-separated, one event per line.
 Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"` and read the file back with `bin/fm-lane.sh log`.
 A `dispatch` row records an authorised dispatch rather than a completed launch, because it is written before the worker starts, so a spawn that fails afterwards still leaves a row and a retry leaves a second one for the same delivery.

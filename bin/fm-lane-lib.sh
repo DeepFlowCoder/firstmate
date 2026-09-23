@@ -256,23 +256,44 @@ fm_lane_critical_hits() {
 
 # fm_lane_gate_dispatch <task-id> <project> <mode> <yolo>
 # Called by every fresh ship dispatch (bin/fm-spawn.sh, bin/fm-promote.sh).
-# Refuses the cheap lane without a recorded decision that authorizes it, then
-# records the dispatch. Returns non-zero on refusal; the caller must not launch.
+# Records the dispatch, and refuses the ones the policy binds. Returns non-zero
+# on refusal; the caller must not launch.
+#
+# THE GATE IS ADVISORY FOR FRESH INTAKE, AND BINDING ON A MEASURED CHANGE. At
+# intake there is no diff yet, so the only evidence a decision can carry is
+# DECLARED - a path list nobody has produced a change for. Refusing the cheap
+# lane there would abolish direct-PR dispatch of fresh work and so move the
+# delivery posture the captain registered per project, which is a decision of
+# its own and not this policy's to take. So on declared evidence the gate
+# computes, explains and RECORDS the disagreement, then follows the registered
+# posture. Every disagreement is one row, which is exactly the measurement that
+# can later say whether the gate should become binding.
+#
+# It binds in exactly two cases, and the evidence grade of the recorded decision
+# is what tells them apart:
+#   - a critical surface, under BOTH evidence grades, because that is the tier
+#     the captain kept absolute;
+#   - any expensive decision made from DEMONSTRATED evidence, because there the
+#     policy looked at a real diff and said expensive; that is not fresh intake.
+#
+# A MISSING RECORD IS ASYMMETRIC. On the cheap lane it means the critical-surface
+# check never happened, so rigor is at stake and the dispatch is refused; the fix
+# is one decide command, after which the dispatch proceeds on whatever mode the
+# registered posture says. On the expensive lane and local-only it costs the
+# signals half of one delivery's measurement and no rigor at all, so it warns and
+# proceeds: a guard that stops the fleet over a lost datum costs more than it
+# protects. A failed record write splits the same way.
 #
 # local-only carve-out: a local-only project has no remote, so the expensive
 # lane does not exist for it and demanding a cheap-lane authorization would be
 # a demand that can never be met. Its review rigor is the captain's standing
-# registry posture, unchanged by this policy. The dispatch is still recorded.
+# registry posture, unchanged by this policy. It is recorded and never gated.
 fm_lane_gate_dispatch() {
   local task=$1 project=$2 mode=$3 yolo=$4
-  local log row lane reason decided_project
+  local log row lane evidence reason decided_project dispatch_reason
 
   case "$mode" in
-    no-mistakes|local-only)
-      fm_lane_append dispatch "$task" "$project" "$mode" - "yolo=$yolo" - - - -
-      return $?
-      ;;
-    direct-PR) ;;
+    no-mistakes|direct-PR|local-only) ;;
     *)
       echo "error: fm_lane_gate_dispatch got an unknown delivery mode: $mode" >&2
       return 1
@@ -281,22 +302,56 @@ fm_lane_gate_dispatch() {
 
   log=$(fm_lane_log_path)
   row=$(fm_lane_last_decision "$log" "$task")
+  decided_project=
+  [ -z "$row" ] || decided_project=$(printf '%s\n' "$row" | cut -f4)
+
+  if [ -n "$row" ] && [ "$decided_project" != "$project" ]; then
+    if [ "$mode" = direct-PR ]; then
+      echo "error: the recorded lane decision for $task is for project $decided_project, not $project; a decision never authorizes another project's change." >&2
+      return 1
+    fi
+    echo "warning: the recorded lane decision for $task is for project $decided_project, not $project, so it says nothing about this delivery." >&2
+    row=
+  fi
+
   if [ -z "$row" ]; then
-    echo "error: $task has no recorded lane decision, so the cheap lane (direct-PR) is not authorized." >&2
-    echo "       Run bin/fm-lane.sh decide $task --project $project ... first; a change that cannot be shown benign ships no-mistakes." >&2
-    return 1
+    if [ "$mode" = direct-PR ]; then
+      echo "error: $task has no recorded lane decision, so the cheap lane (direct-PR) is not authorized." >&2
+      echo "       Run bin/fm-lane.sh decide $task --project $project --repo <dir> --paths <path>... first; with no record the critical-surface check never happened." >&2
+      return 1
+    fi
+    echo "warning: $task has no recorded lane decision, so this $mode delivery is measured without the signals that would have decided its lane." >&2
+    echo "         Run bin/fm-lane.sh decide $task --project $project --repo <dir> --paths <path>... before the dispatch to complete the record." >&2
+    fm_lane_append dispatch "$task" "$project" "$mode" - "yolo=$yolo" - - - - \
+      || echo "warning: the dispatch for $task could not be recorded, so this delivery is missing from the measurement." >&2
+    return 0
   fi
-  decided_project=$(printf '%s\n' "$row" | cut -f4)
+
   lane=$(printf '%s\n' "$row" | cut -f5)
+  evidence=$(printf '%s\n' "$row" | cut -f6)
   reason=$(printf '%s\n' "$row" | cut -f7)
-  if [ "$decided_project" != "$project" ]; then
-    echo "error: the recorded lane decision for $task is for project $decided_project, not $project; a decision never authorizes another project's change." >&2
-    return 1
+  dispatch_reason="yolo=$yolo"
+
+  if [ "$mode" = direct-PR ]; then
+    if [ "$lane" = direct-PR ]; then
+      dispatch_reason="$dispatch_reason;authorized-by=$reason"
+    elif [ "$reason" = critical-surface ]; then
+      echo "error: the recorded lane decision for $task is $lane ($reason), so direct-PR is not authorized." >&2
+      echo "       A critical surface binds under every evidence grade; ship $lane, or carry the captain's own words in --captain-override." >&2
+      return 1
+    elif [ "$evidence" = demonstrated ]; then
+      echo "error: the recorded lane decision for $task is $lane ($reason), measured from a real diff, so direct-PR is not authorized." >&2
+      echo "       Ship $lane, or record a new decision once the change can be shown benign." >&2
+      return 1
+    else
+      echo "advisory: the lane policy computed $lane ($reason) for $task from declared evidence, and this project's registered posture is $mode." >&2
+      echo "          There is no diff to measure at intake, so the posture is followed and the disagreement is recorded." >&2
+      dispatch_reason="$dispatch_reason;advisory=$lane:$reason"
+    fi
   fi
-  if [ "$lane" != direct-PR ]; then
-    echo "error: the recorded lane decision for $task is $lane ($reason), so direct-PR is not authorized." >&2
-    echo "       Ship $lane, or record a new decision once the change can be shown benign." >&2
-    return 1
-  fi
-  fm_lane_append dispatch "$task" "$project" "$mode" - "yolo=$yolo;authorized-by=$reason" - - - -
+
+  fm_lane_append dispatch "$task" "$project" "$mode" - "$dispatch_reason" - - - - && return 0
+  [ "$mode" != direct-PR ] || return 1
+  echo "warning: the dispatch for $task could not be recorded, so this delivery is missing from the measurement." >&2
+  return 0
 }

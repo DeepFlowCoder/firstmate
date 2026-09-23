@@ -131,10 +131,18 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 # arbitrary path is as likely to be a fixture, a data file or a pinned list as
 # it is to be documentation, and the class has to be demonstrable rather than
 # plausible. A .txt under docs/ is still covered by the directory rule.
+#
+# The licence is matched only in the forms that CANNOT be source: the bare name,
+# or the bare name carrying a prose extension already in the set above. A
+# wildcard extension was the first version and it read src/license.py as
+# documentation, which is normally licence-key validation code - a 300-line
+# rewrite of it demonstrated as docs-only and reached the cheap lane while the
+# same diff with no class claim routed expensive on complexity.
 is_documentation_path() {
   case "${1,,}" in
-    *.md|*.markdown|*.rst|*.adoc|docs/*|*/docs/*|license|license.*|*/license|*/license.*)
-      return 0 ;;
+    *.md|*.markdown|*.rst|*.adoc|docs/*|*/docs/*) return 0 ;;
+    license|licence|*/license|*/licence) return 0 ;;
+    license.txt|licence.txt|*/license.txt|*/licence.txt) return 0 ;;
   esac
   return 1
 }
@@ -269,7 +277,8 @@ cmd_decide() {
   if [ -n "$OVERRIDE" ]; then
     lane=direct-PR
     reason=captain-override
-    note=$OVERRIDE
+    note="captain: $OVERRIDE"
+    [ -z "$NOTE" ] || note="$note | firstmate: $NOTE"
   elif [ "$critical" != - ]; then
     lane=no-mistakes
     reason="critical-surface"

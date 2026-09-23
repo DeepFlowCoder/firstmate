@@ -315,7 +315,7 @@ test_deleting_the_dispatch_gate_cannot_route_itself_cheap() {
 # --- 2. a standard class must be demonstrated, never alleged ----------------
 
 test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only() {
-  local rec repo base home docs_head mixed_head out
+  local rec repo base home docs_head mixed_head license_head licence_head out
 
   rec=$(make_repo docsclass)
   IFS='|' read -r repo base <<EOF
@@ -343,6 +343,28 @@ EOF
     "a documentation-only claim over a code change reached the cheap lane"
   assert_contains "$out" "reason=class-not-demonstrated" \
     "a false class claim was not reported as undemonstrated"
+
+  # A file named license.<ext> is normally licence-key validation code, and a
+  # class has to be demonstrable rather than plausible: without this, a 300-line
+  # rewrite of src/license.py reached the cheap lane as documentation.
+  mkdir -p "$repo/src"
+  printf 'def check(key):\n    if key:\n        return True\n' > "$repo/src/license.py"
+  license_head=$(commit_all "$repo" license-code)
+  out=$(run_lane "$home" decide class-license --project proj \
+    --repo "$repo" --range "$mixed_head..$license_head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a source file named license.py demonstrated as documentation"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the licence-named source file was not reported as undemonstrated"
+
+  # The control: a real licence still demonstrates, so the fix tightened the
+  # spelling rather than dropping the licence from the class.
+  printf 'MIT\n' > "$repo/LICENSE"
+  licence_head=$(commit_all "$repo" licence-text)
+  out=$(run_lane "$home" decide class-licence --project proj \
+    --repo "$repo" --range "$license_head..$licence_head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a bare LICENSE no longer demonstrates as documentation"
 
   # Claimed with nothing to demonstrate it against: a path list is an allegation.
   out=$(run_lane "$home" decide class-declared --project proj --repo "$repo" \
@@ -605,6 +627,98 @@ EOF
   pass "lane: a cheap dispatch is refused without a recorded decision that authorizes that project"
 }
 
+# At fresh intake nobody has written a diff, so the only evidence a decision can
+# carry is declared. Refusing the cheap lane there would abolish direct-PR
+# dispatch of fresh work and move the delivery posture the captain registered,
+# so the gate records the disagreement and follows the posture instead. It still
+# binds on a critical surface, and on an expensive lane measured from a real diff.
+test_the_gate_is_advisory_at_intake_and_binding_on_a_measured_change() {
+  local rec home proj fakebin log repo base big_head crit_head out status
+
+  rec=$(make_home advisory)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  log="$home/data/lane-log.tsv"
+
+  # Advisory: declared evidence, computed expensive for a reason that is not a
+  # critical surface. The registered posture stands and the gap is recorded.
+  write_brief "$home" adv-a1 direct-PR
+  run_lane "$home" decide adv-a1 --project proj --repo "$proj" --paths src/feature.rb >/dev/null
+  out=$(run_spawn "$home" "$fakebin" adv-a1 "$proj" claude --mode direct-PR --yolo off)
+  assert_not_contains "$out" "not authorized" \
+    "an advisory disagreement refused a dispatch whose posture is already registered"
+  assert_contains "$out" "advisory: the lane policy computed no-mistakes (evidence-not-demonstrated)" \
+    "the advisory did not name the lane the policy computed and why"
+  assert_grep 'advisory=no-mistakes:evidence-not-demonstrated' "$log" \
+    "the disagreement between the policy and the posture did not reach the record"
+
+  rec=$(make_repo advisorydiff)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+
+  # Binding: the same expensive lane, but measured from a real diff. That is not
+  # fresh intake, so the advisory carve-out does not cover it.
+  seq 1 900 >> "$repo/src/thing.py"
+  big_head=$(commit_all "$repo" big)
+  write_brief "$home" adv-b1 direct-PR
+  run_lane "$home" decide adv-b1 --project proj --repo "$repo" --range "$base..$big_head" >/dev/null
+  out=$(run_spawn "$home" "$fakebin" adv-b1 "$proj" claude --mode direct-PR --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a cheap dispatch against a measured expensive decision should exit non-zero"
+  assert_contains "$out" "measured from a real diff, so direct-PR is not authorized" \
+    "the refusal did not say the decision came from a real diff"
+  assert_absent "$home/state/adv-b1.meta" "a refused cheap dispatch wrote task metadata"
+
+  # Binding: a critical surface, on demonstrated evidence as well as declared.
+  mkdir -p "$repo/scripts"
+  printf 'merge it\n' > "$repo/scripts/merge_release.sh"
+  crit_head=$(commit_all "$repo" crit)
+  write_brief "$home" adv-c1 direct-PR
+  run_lane "$home" decide adv-c1 --project proj --repo "$repo" --range "$big_head..$crit_head" >/dev/null
+  out=$(run_spawn "$home" "$fakebin" adv-c1 "$proj" claude --mode direct-PR --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a cheap dispatch against a critical surface should exit non-zero"
+  assert_contains "$out" "A critical surface binds under every evidence grade" \
+    "the critical-surface refusal did not say it binds under every grade"
+
+  pass "lane: the gate is advisory at intake, binding on a critical surface and on a measured change"
+}
+
+# A missing decision costs different things on the two lanes. On the cheap lane
+# it means the critical-surface check never ran, so rigor is at stake. On the
+# expensive lane it costs one delivery's signals and no rigor, and a guard that
+# stopped the fleet over a lost datum would cost more than it protects.
+test_a_missing_decision_stops_the_cheap_lane_and_only_warns_the_expensive_one() {
+  local rec home proj fakebin log out status
+
+  rec=$(make_home missingrec)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  log="$home/data/lane-log.tsv"
+
+  write_brief "$home" miss-a1 direct-PR
+  out=$(run_spawn "$home" "$fakebin" miss-a1 "$proj" claude --mode direct-PR --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a cheap dispatch with no lane decision should exit non-zero"
+  assert_contains "$out" "the critical-surface check never happened" \
+    "the cheap refusal did not say what the missing record costs"
+  assert_absent "$log" "a refused cheap dispatch still recorded a dispatch"
+
+  write_brief "$home" miss-b1 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" miss-b1 "$proj" claude --mode no-mistakes --yolo off)
+  assert_contains "$out" "measured without the signals" \
+    "the expensive dispatch did not warn that the record is incomplete"
+  assert_not_contains "$out" "not authorized" \
+    "a missing decision refused an expensive dispatch instead of warning"
+  assert_grep 'dispatch	miss-b1	proj	no-mistakes' "$log" \
+    "the expensive dispatch proceeded without being recorded"
+
+  pass "lane: a missing decision refuses the cheap lane and only warns the expensive one"
+}
+
 test_promotion_carries_the_same_gate() {
   local home meta out status
 
@@ -700,6 +814,20 @@ test_only_the_captain_reaches_the_cheap_lane_past_a_critical_surface() {
     "the override did not record the surface it overrode"
   assert_grep 'ship it direct, my call' "$home/data/lane-log.tsv" \
     "the override did not record the captain's own words"
+
+  # The row that bypasses the always-expensive tier is where the surrounding
+  # circumstances matter most, so a note passed beside the override is kept too,
+  # labelled so it stays unambiguous whose words are whose.
+  out=$(run_lane "$home" decide override-a2 --project proj --repo "$repo" \
+    --paths bin/fm-pr-merge.sh --captain-override "my call, ship it" \
+    --note "the merge helper only gained a log line")
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "the captain's explicit instruction did not reach the cheap lane"
+  assert_grep 'captain: my call, ship it' "$home/data/lane-log.tsv" \
+    "the record lost the captain's own words"
+  assert_grep 'firstmate: the merge helper only gained a log line' "$home/data/lane-log.tsv" \
+    "the record dropped firstmate's context beside the override"
+
   pass "lane: the captain's explicit instruction overrides a critical surface, on the record"
 }
 
@@ -862,6 +990,8 @@ test_an_invalid_class_claim_is_refused_on_declared_evidence
 test_size_routes_a_change_to_be_looked_at_and_never_refuses_it
 test_every_decision_dispatch_and_escape_reaches_the_record
 test_a_cheap_dispatch_needs_a_decision_that_authorizes_it
+test_the_gate_is_advisory_at_intake_and_binding_on_a_measured_change
+test_a_missing_decision_stops_the_cheap_lane_and_only_warns_the_expensive_one
 test_promotion_carries_the_same_gate
 test_a_project_can_widen_the_catalog_but_never_narrow_it
 test_only_the_captain_reaches_the_cheap_lane_past_a_critical_surface

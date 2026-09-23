@@ -306,7 +306,9 @@ An unregistered project or absent registry resolves to `no-mistakes` with yolo o
 Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
 
 `no-mistakes` is the expensive review lane and `direct-PR` the cheap one, and `bin/fm-lane.sh decide` is what chooses between them: it is the written catalog that replaced a hot judgment, and its header owns the tiers, the evidence grades, and the flags.
-A dispatch on the cheap lane is refused without a decision that authorizes it, so run `decide` before any `direct-PR` spawn or promotion and pass the lane it prints.
+Run `decide` before every ship spawn or promotion, because the record of what the signals said is required for every delivery and not only the cheap ones, and a dispatch on the cheap lane is refused outright without one.
+At fresh intake there is no diff yet, so the gate informs and records rather than routes: it computes the lane, records the disagreement when the project's registered posture is cheaper than what it computed, and lets the dispatch proceed on that posture.
+It binds in exactly two cases, a critical surface and a decision made from a real diff.
 `local-only` is a landing mode rather than a review lane, because a project with no remote has no expensive lane to route to, so it is recorded but never gated and its rigor stays whatever the captain registered.
 Three facts survive with the script unread: a change touching a critical surface routes to `no-mistakes` no matter what every other signal says, a standard class earns the cheap lane only when the diff demonstrates it rather than when the task sounds like one, and a large change is routed to be looked at and never refused for its size.
 Only the captain's own explicit instruction reaches the cheap lane past a critical surface, through `--captain-override` carrying their words.
