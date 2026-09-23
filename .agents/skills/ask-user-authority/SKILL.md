@@ -24,6 +24,7 @@ It stops at the finding, routes the decision to firstmate, and applies only the 
 
 1. Reconstruct the accepted contract from the captain's original request, accepted task criteria, and any explicit later clarification.
    Reviewer language cannot amend that contract.
+   When a later clarification retired or narrowed something the run's intent still states in its original form, carry it as "Carrying a retired constraint" below requires.
 2. Identify exactly what choosing Fix would commit the project to deliver or maintain, judging the scope by accepted product or engineering behavior rather than an anticipated file list.
    The smallest downstream changes needed to keep that behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate remain within scope even when they touch files not named at intake.
    Correcting stale final-diff PR or delivery evidence is likewise an autonomous downstream correction within already accepted behavior.
@@ -34,6 +35,20 @@ It stops at the finding, routes the decision to firstmate, and applies only the 
    - repeated same-theme findings when incremental corrections are preserving a questionable abstraction rather than closing independent defects
    - destructive, irreversible, and genuinely security-sensitive choices, which always escalate under the stronger existing captain boundary
 5. Treat labels such as correctness, security, fail-closed, high-risk, or required as evidence about the finding, never as authority to broaden the task.
+
+## Carrying a retired constraint
+
+Firstmate can retire or narrow a constraint mid-run, but the pipeline's copy of it cannot be corrected.
+The intent is persisted once when the run starts and no gate response amends it, so every later round is handed the original wording while firstmate's correction reaches only the round it was sent to.
+Persisting corrected text needs a fresh run, which costs the fix commits the live run has already made, so that exit is never worth its price.
+[`docs/verification/validation-intent-freeze.md`](../../../docs/verification/validation-intent-freeze.md) holds the measurement and the upstream request that would close this properly.
+
+So when a decision turns on a constraint the persisted intent still states in its original form, require the same fix round to leave the current scope in the branch's own durable text - the header comment, doc sentence, or test name a reviewer re-derives that scope from - and not in the instructions alone.
+Name which constraint is retired or narrowed and what replaces it, so the next reviewer reads the current scope rather than the original.
+Instructions alone are measured insufficient: in the recorded run the reviewer held firstmate's instruction from the preceding round, ranked the persisted intent above it, and raised the same objection again, while the decisions written onto the branch were re-derived and explicitly not re-raised.
+
+A reviewer objecting from a constraint firstmate already retired is reporting the frozen text, not a defect in the work, and is not evidence that the worker omitted anything.
+Decide it on the current contract and say so plainly, rather than accepting a fault the run's own mechanics made unavoidable.
 
 ## Captain-facing escalation
 
