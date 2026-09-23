@@ -102,7 +102,7 @@ fm_dialog_title() {  # <harness> <class>
 fm_dialog_provenance() {  # <harness> <class>
   case "${1-}:${2-}" in
     codex:directory-trust) printf 'captured live from a real codex 0.147.0 pane; every answer exercised end to end' ;;
-    codex:rate-limit-switch) printf 'inferred from codex-cli 0.147.0 binary strings and codex-rs/tui/src/chatwidget/rate_limits.rs; this shape has never been seen on screen' ;;
+    codex:rate-limit-switch) printf 'captured live from a real codex pane on 2026-09-19; its answers are registered from that rendering and have not been exercised end to end, because the dialog fires on a server-side signal' ;;
     codex:update-available) printf 'captured live from a real codex 0.147.0 pane' ;;
     *) return 1 ;;
   esac
@@ -126,7 +126,7 @@ EOF
       cat <<'EOF'
 Approaching rate limits
 for lower credit usage?
-Uses fewer credits for upcoming turns.
+Fast and affordable agentic coding model.
 Keep current model
 Hide future rate limit reminders about switching models.
 EOF

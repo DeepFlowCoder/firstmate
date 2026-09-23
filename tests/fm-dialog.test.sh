@@ -56,20 +56,22 @@ WORK_SCREEN='╭─────────────────────�
 
   gpt-5.6-sol default · /tmp/untrusted'
 
-# The approaching-rate-limit dialog, composed from the vendor strings shipped
-# in the codex binary and the row format its shared selection view renders.
+# The approaching-rate-limit dialog, captured verbatim from a real codex pane
+# on 2026-09-19, where it parked a worker that then stopped collecting its
+# instructions. The registry was written from the binary's strings before that
+# capture existed, and one of its declared signals ("Uses fewer credits for
+# upcoming turns.") turned out never to be printed: the vendor puts the offered
+# model's own description in that position instead.
 RATE_SCREEN='> You are in /tmp/repo
 
   Approaching rate limits
   Switch to gpt-5.6-luna for lower credit usage?
 
-› 1. Switch to gpt-5.6-luna
-     Uses fewer credits for upcoming turns.
+› 1. Switch to gpt-5.6-luna     Fast and affordable agentic coding model.
   2. Keep current model
-  3. Keep current model (never show again)
-     Hide future rate limit reminders about switching models.
+  3. Keep current model (never show again)  Hide future rate limit reminders about switching models.
 
-  Press enter to continue'
+  Press enter to confirm or esc to go back'
 
 # The update-available dialog, captured verbatim from a real codex 0.147.0
 # launch. Its first option runs a package-manager upgrade, which is why the
@@ -157,6 +159,44 @@ EOF
   pass "removing any one declared signal breaks recognition, for every registered class"
 }
 
+# The defect this class carried until the 2026-09-19 capture: it was registered
+# by reading the codex binary rather than a screen, and one of its five signals
+# ("Uses fewer credits for upcoming turns.") is a plausible sentence the dialog
+# never prints - the vendor renders the offered model's own description there.
+# Recognition requires every signal, so that one invented string was enough to
+# make the whole class unrecognizable on the real dialog, and a stuck worker
+# stayed unanswerable.
+#
+# This test discriminates: it fails with the invented signal registered and
+# passes with the measured one. The first half proves the registry no longer
+# demands a string the vendor never printed; the second proves the real screen
+# is recognized. Neither would fail if the comparator had simply been relaxed,
+# which is what test_every_declared_signal_is_load_bearing keeps honest.
+test_the_live_capture_recognizes_and_no_unprinted_string_is_demanded() {
+  local signals got
+  signals=$(fm_dialog_signals codex rate-limit-switch) \
+    || fail "rate-limit-switch has no registered signals"
+  case "$signals" in
+    *"Uses fewer credits for upcoming turns."*)
+      fail "rate-limit-switch still demands a string the real 2026-09-19 dialog never printed" ;;
+  esac
+  case "$signals" in
+    *"Fast and affordable agentic coding model."*) : ;;
+    *) fail "rate-limit-switch must carry the description the real dialog prints against option 1" ;;
+  esac
+  got=$(fm_dialog_recognize codex "$RATE_SCREEN") \
+    || fail "the real 2026-09-19 rate-limit dialog is still not recognized"
+  [ "$got" = rate-limit-switch ] \
+    || fail "the real rate-limit dialog recognized as '$got'"
+  fm_dialog_menu_shape_ok codex rate-limit-switch "$RATE_SCREEN" \
+    || fail "the real rate-limit dialog's three-option shape must pass the shape check"
+  for got in switch-cheaper keep-model keep-model-never-ask; do
+    fm_dialog_answer_proven codex rate-limit-switch "$got" "$RATE_SCREEN" \
+      || fail "answer '$got' is not provable against the real 2026-09-19 rendering"
+  done
+  pass "the live rate-limit capture is recognized and answerable, and no unprinted string is demanded"
+}
+
 test_answers_are_pinned_to_their_ordinal_by_vendor_text() {
   local answer ordinal
   for answer in trust decline-and-quit; do
@@ -216,13 +256,11 @@ test_a_changed_menu_refuses_every_answer() {
   Switch to gpt-5.6-luna for lower credit usage?
 
 › 1. Tell me more
-  2. Switch to gpt-5.6-luna
-     Uses fewer credits for upcoming turns.
+  2. Switch to gpt-5.6-luna     Fast and affordable agentic coding model.
   3. Keep current model
-  4. Keep current model (never show again)
-     Hide future rate limit reminders about switching models.
+  4. Keep current model (never show again)  Hide future rate limit reminders about switching models.
 
-  Press enter to continue'
+  Press enter to confirm or esc to go back'
   fm_dialog_class_present codex rate-limit-switch "$shifted" \
     || fail "the shifted screen no longer matches the class at all, so this proves nothing about the shape check"
   if fm_dialog_menu_shape_ok codex rate-limit-switch "$shifted"; then
@@ -249,13 +287,11 @@ test_a_swapped_menu_refuses_the_shifted_answer() {
   Approaching rate limits
   Switch to gpt-5.6-luna for lower credit usage?
 
-› 1. Switch to gpt-5.6-luna
-     Uses fewer credits for upcoming turns.
-  2. Keep current model (never show again)
-     Hide future rate limit reminders about switching models.
+› 1. Switch to gpt-5.6-luna     Fast and affordable agentic coding model.
+  2. Keep current model (never show again)  Hide future rate limit reminders about switching models.
   3. Keep current model
 
-  Press enter to continue'
+  Press enter to confirm or esc to go back'
   fm_dialog_class_present codex rate-limit-switch "$swapped" \
     || fail "the swapped rate-limit screen still carries every signal, so this proves nothing about the ordinal proof"
   fm_dialog_menu_shape_ok codex rate-limit-switch "$swapped" \
@@ -316,9 +352,17 @@ test_every_registered_class_has_a_provenance_line() {
     [ -n "$line" ] \
       || fail "class '$class' provenance line is empty"
   done
-  case "$(fm_dialog_provenance codex rate-limit-switch)" in
-    *inferred*) : ;;
-    *) fail "rate-limit-switch's provenance must say its shape was inferred, not measured" ;;
+  # This class was registered from the binary's strings, and the live capture
+  # proved one of those strings wrong. Its provenance line must now say the
+  # shape came from a screen, with the date of that screen: a line still
+  # claiming it was never seen would keep discrediting a measured registry.
+  line=$(fm_dialog_provenance codex rate-limit-switch)
+  case "$line" in
+    *inferred*|*"never been seen"*) fail "rate-limit-switch's provenance still claims an inferred, unseen shape after it was captured live: $line" ;;
+  esac
+  case "$line" in
+    *"captured live"*2026-09-19*) : ;;
+    *) fail "rate-limit-switch's provenance must name the live capture and its date, got: $line" ;;
   esac
   if fm_dialog_provenance codex not-a-class >/dev/null 2>&1; then
     fail "an unregistered class must not have a provenance line"
@@ -676,6 +720,7 @@ test_registered_classes_are_recognized_from_their_real_rendering
 test_a_working_screen_recognizes_nothing
 test_each_class_is_recognized_only_by_its_own_screen
 test_every_declared_signal_is_load_bearing
+test_the_live_capture_recognizes_and_no_unprinted_string_is_demanded
 test_answers_are_pinned_to_their_ordinal_by_vendor_text
 test_a_changed_menu_refuses_every_answer
 test_a_swapped_menu_refuses_the_shifted_answer
