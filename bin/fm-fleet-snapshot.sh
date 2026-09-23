@@ -345,10 +345,9 @@ first_pr_url_in_file() {  # <file>
 # waiting. An id archived more than once is done only when every copy is, so an
 # already computed false has to stick: `//` would treat it as absent and let the
 # last archived copy win, which releases a dependent whose blocker was archived
-# still pending and then archived again as done. That every-copy rule is this
-# archive map's own; how the backlog map below treats an id repeated inside
-# data/backlog.md is pre-existing behavior this change does not touch, and is
-# tracked separately.
+# still pending and then archived again as done. The backlog map below reads an
+# id repeated inside data/backlog.md under this same every-copy rule, so the two
+# halves of one notebook read cannot disagree about what "done" means.
 archive_states_json() {  # [<archive-path>] - defaults to this home's $BACKLOG_ARCHIVE
   local archive=${1:-$BACKLOG_ARCHIVE}
   [ -f "$archive" ] || { printf '{}\n'; return 0; }
@@ -484,8 +483,30 @@ backlog_json() {  # [<backlog-path>] [<archive-path>] - default to this home's f
           .body_excerpt = ((.body_lines | join(" "))[:240])
         else . end)
     | .records as $records
+    # Every backlog id mapped to whether the backlog records it as completed,
+    # under the every-copy rule archive_states_json above owns and for the reason
+    # stated there: `//` falls back on false as readily as on null, so it threw
+    # away an already computed false and let the LAST row under a repeated id
+    # decide. Sections are written In flight, Queued, Done in that order, so that
+    # last row was the Done one and a duplicated id always resolved as done -
+    # silently, because nothing about a duplicate id is otherwise visible, and
+    # deletingly, because a blocker read as done releases dependents still
+    # genuinely waiting on live work. It takes no mistake worth the name to
+    # duplicate an id: a half-finished prune, a copied row, a hand edit.
+    # Resolved by evidence rather than by refusing to read the file at all,
+    # though a duplicated id IS notebook corruption and refusing was the other
+    # honest option. This snapshot is the one read the fleet view and the session
+    # digest are built from, so aborting on a single malformed pair would trade a
+    # wrong answer about one id for no answer about any of them, which is the
+    # worse failure for a view whose entire job is finding live work. The
+    # every-copy rule needs no such trade: it cannot be decided by order (`and`
+    # over every copy), it is defensible without consulting the file layout at
+    # all - an id is done only when no copy anywhere still has it pending - and
+    # it errs toward pending, the direction that keeps work visible rather than
+    # erasing it. Sharing one rule with the archive map is the point: one
+    # notebook read two ways eventually disagrees about what done means.
     | (reduce ($records[] | select(.structured)) as $record ({};
-         .[$record.id] = ((.[$record.id] // true) and ($record.state == "done")))) as $backlog_ids
+         .[$record.id] = ((.[$record.id] != false) and ($record.state == "done")))) as $backlog_ids
     # The backlog wins wherever both files carry an id: a row still present here
     # is live work, whatever an older archived copy of the same id says.
     | ($archived_ids * $backlog_ids) as $resolved_ids
