@@ -27,7 +27,7 @@
 #      it back out. Only the captain can, by stating that concrete change
 #      explicitly (AGENTS.md "Captain instruction precedence"), and that
 #      override is recorded rather than silent.
-#   2. Standard class. docs-only, clean-revert and mechanical-pattern reach the
+#   2. Standard class. docs-only and clean-revert reach the
 #      cheap lane only when membership is DEMONSTRATED from a real diff. A class
 #      that is claimed and cannot be demonstrated is not that class: it routes to
 #      no-mistakes with reason class-not-demonstrated. Alleging a class never
@@ -64,12 +64,10 @@
 # lane     no-mistakes | direct-PR | local-only | -
 # evidence demonstrated | declared | -
 # class    <class>, or <class>:<identifier> naming what demonstrated it:
-#          clean-revert:<resolved commit sha>, mechanical-pattern:<hash of the
-#          --reproduce command>, docs-only alone because the changed path set
-#          already demonstrates it and is already in the signals column. The
-#          reproduce command itself is deliberately NOT stored: a hash still
-#          distinguishes two commands and still proves the same one was used
-#          again, while keeping the column to identifiers instead of prose.
+#          clean-revert:<resolved commit sha>, and docs-only alone because the
+#          changed path set already demonstrates it and is already in the
+#          signals column. Identifiers only, never free text, or the column
+#          becomes prose with a column heading.
 # critical comma-separated surface names, or -
 # signals  k=v,k=v, or -
 # Absent values are "-". Tabs, newlines and backslashes inside a value are
@@ -160,16 +158,6 @@ fm_lane_last_decision() {
 # policy code. Patterns are shell globs matched case-insensitively against the
 # repo-relative path. They are deliberately broad: a false match costs one
 # expensive review, a false miss costs an unreviewed change on a safety surface.
-#
-# governing-docs is the one surface that is prose. The principle that bounds it,
-# and that keeps it from growing into a second copy of any project's shared-file
-# list: a document that INSTRUCTS an agent or a contributor is never "pure
-# documentation" for routing, because changing it changes behaviour, and the
-# docs-only class would otherwise carry it to the cheap lane. A document that
-# merely DESCRIBES - README.md, anything under docs/ - stays ordinary
-# documentation and keeps its cheap route. It lists FILENAMES rather than any
-# directory tree, and it is built-in rather than per-repo because these names
-# govern whatever project happens to carry them.
 fm_lane_builtin_surfaces() {
   cat <<'EOF'
 *merge*	merge-routes
@@ -192,12 +180,6 @@ bin/fm-lane.sh	routing-policy
 bin/fm-lane-lib.sh	routing-policy
 .fm-critical-surfaces	routing-policy
 */.fm-critical-surfaces	routing-policy
-CONTRIBUTING.md	governing-docs
-*/CONTRIBUTING.md	governing-docs
-CLAUDE.md	governing-docs
-*/CLAUDE.md	governing-docs
-SKILL.md	governing-docs
-*/SKILL.md	governing-docs
 EOF
 }
 
@@ -249,8 +231,12 @@ fm_lane_catalog() {
 # otherwise collapse into the glob field - and vanish - if anything ever
 # de-tabbed them.
 fm_lane_critical_hits() {
-  local catalog=$1 path glob name lglob lpath hits=""
+  local catalog=$1 path glob name lglob hits=""
+  local lpaths=()
   shift
+  for path in "$@"; do
+    lpaths+=("$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')")
+  done
   while IFS=$'\t' read -r glob name; do
     [ -n "$glob" ] || continue
     if [ -z "$name" ]; then
@@ -260,11 +246,10 @@ fm_lane_critical_hits() {
     case ",$hits," in
       *",$name,"*) continue ;;
     esac
-    lglob=${glob,,}
-    for path in "$@"; do
-      lpath=${path,,}
+    lglob=$(printf '%s' "$glob" | tr '[:upper:]' '[:lower:]')
+    for path in ${lpaths[@]+"${lpaths[@]}"}; do
       # shellcheck disable=SC2254  # lglob is catalog data and must expand as a pattern
-      case "$lpath" in
+      case "$path" in
         $lglob)
           hits="${hits:+$hits,}$name"
           printf '%s\n' "$name"

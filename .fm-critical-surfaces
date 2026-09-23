@@ -54,3 +54,19 @@ bin/fm-spawn.sh routing-policy
 bin/fm-promote.sh routing-policy
 
 .github/workflows/* ci-configuration
+
+# The documents that govern THIS HOUSE. A document that INSTRUCTS an agent or a
+# contributor is never "pure documentation" for routing, because changing it
+# changes behaviour, and the docs-only class would otherwise carry it to the
+# cheap lane. A document that merely DESCRIBES - README.md, anything under
+# docs/ - stays ordinary documentation and keeps its cheap route.
+# These live here rather than in the portable catalog because a surface put
+# there is imposed silently on every project, while declaring it here raises
+# this house's rigor, stays visible, and decides for nobody else.
+# AGENTS.md is already a built-in routing-policy surface; do not repeat it.
+CONTRIBUTING.md governing-docs
+*/CONTRIBUTING.md governing-docs
+CLAUDE.md governing-docs
+*/CLAUDE.md governing-docs
+SKILL.md governing-docs
+*/SKILL.md governing-docs

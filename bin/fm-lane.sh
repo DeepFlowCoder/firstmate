@@ -9,8 +9,7 @@
 # Usage:
 #   fm-lane.sh decide <task-id> --project <name> --repo <dir>
 #                     ( --range <base>..<head> | --paths <p> [<p>...] )
-#                     [--class docs-only|clean-revert|mechanical-pattern]
-#                     [--revert-of <sha>] [--reproduce <command>]
+#                     [--class docs-only|clean-revert] [--revert-of <sha>]
 #                     [--captain-override <the captain's own words>]
 #                     [--note <text>]
 #   fm-lane.sh escape <task-id> --note <text> [--project <name>]
@@ -41,30 +40,31 @@
 # not happen. A project that adds no surfaces simply has no such file.
 #
 # CLASSES, and how each one is demonstrated rather than alleged:
-#   docs-only          every changed path is documentation or plain text.
-#   clean-revert       with --revert-of <sha>: every changed path's content at
-#                      the range's head equals its content at <sha>^, so the
-#                      change is exactly that commit undone.
-#   mechanical-pattern with --reproduce <command>: running that command on a
-#                      throwaway clone of the range's base reproduces the head
-#                      tree byte for byte, so the change is a re-derivable
-#                      pattern and not hand-written logic.
+#   docs-only     every changed path is documentation or plain text.
+#   clean-revert  with --revert-of <sha>: every changed path's content at the
+#                 range's head equals its content at <sha>^, so the change is
+#                 exactly that commit undone.
 # A class that is claimed and fails its demonstration is not that class: the
 # decision is the expensive lane with reason class-not-demonstrated.
+#
+# THE THIRD CLASS THE CAPTAIN NAMED, mechanical-pattern, WAS REMOVED, and this
+# policy is narrower than the one he approved because of it. His own condition
+# decided it: si no se puede demostrar, no es de esa clase y va al caro. The
+# demonstration ran a caller-supplied --reproduce command and compared the tree
+# it produced against head's, and two rounds MEASURED that the command can reach
+# the range's head whatever the copy it runs in - by the source repository's own
+# absolute path, which the same caller supplied. Real isolation is the only
+# thing that would close it, and that is machinery this delivery does not have.
+# Keeping the class would have meant a footnote saying the demonstration runs on
+# the honour system, which is not rigor. Both surviving classes are decided from
+# git objects WITHOUT EXECUTING ANYTHING, so neither is forgeable that way.
+# The cost, which is the safe direction: a mechanical sweep now routes expensive.
 #
 # --captain-override is the captain's explicit instruction, not a signal. It is
 # the only thing that reaches the cheap lane past a critical surface (AGENTS.md
 # "Captain instruction precedence"), it requires the captain's own words, and it
 # records both the words and the surfaces it overrode. Never use it to carry
 # firstmate's own judgment.
-#
-# --reproduce runs the given command in a throwaway clone under TMPDIR. The
-# clone is read-only on the source repository: nothing is written into the
-# project. A constant 120-second bound applies, and like the tier-3 thresholds
-# it is not tunable. The bound needs timeout or gtimeout on PATH; on a machine
-# with neither, the command is NOT run unbounded - the demonstration fails for
-# want of a bound and the change routes to the expensive lane with reason
-# class-not-demonstrated, which refuses a demonstration and never a change.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,12 +85,6 @@ LANE_MAX_DIRS=4
 LANE_MAX_LINES=400
 LANE_MAX_BRANCH_POINTS=10
 
-# How long a --reproduce command gets to re-derive the head tree. A constant for
-# the same reason: a value that decides how hard a mechanical claim is
-# re-derived is a rigor dial too, and turning it down turns "not demonstrable"
-# into "demonstrable" without anyone saying so.
-LANE_REPRODUCE_TIMEOUT=120
-
 TMPDIRS=()
 cleanup() {
   local d
@@ -106,6 +100,17 @@ usage() {
 
 die() { echo "error: $*" >&2; exit 1; }
 
+# Every read of the routed repository goes through here, so nothing can reach it
+# without core.quotePath=false. With git's default, a path holding any non-ASCII
+# byte comes back C-quoted - "src/billing/facturaci\303\263n.rb", surrounding
+# quotes included - and the leading quote stops an anchored critical-surface glob
+# from matching, so a change on a declared safety surface was routed cheap and
+# said so silently. The same quoted name made every blob_at read fail, which made
+# both halves of the clean-revert proof compare empty to empty and succeed for a
+# revert that undid nothing. One wrapper rather than a flag per call site,
+# because the next call site added is the one that would be forgotten.
+repo_git() { git -C "$REPO" -c core.quotePath=false "$@"; }
+
 # --- shared argument state --------------------------------------------------
 
 TASK=
@@ -114,7 +119,6 @@ REPO=
 RANGE=
 CLASS=
 REVERT_OF=
-REPRODUCE=
 OVERRIDE=
 NOTE=
 FILTER_TASK=
@@ -138,7 +142,9 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 # rewrite of it demonstrated as docs-only and reached the cheap lane while the
 # same diff with no class claim routed expensive on complexity.
 is_documentation_path() {
-  case "${1,,}" in
+  local p
+  p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$p" in
     *.md|*.markdown|*.rst|*.adoc|docs/*|*/docs/*) return 0 ;;
     license|licence|*/license|*/licence) return 0 ;;
     license.txt|licence.txt|*/license.txt|*/licence.txt) return 0 ;;
@@ -176,52 +182,7 @@ demonstrate_clean_revert() {
 # absent at that revision. Two absent sides compare equal, which is what a
 # revert of an added file needs.
 blob_at() {
-  git -C "$REPO" rev-parse --verify --quiet "$1:$2" 2>/dev/null || true
-}
-
-# Re-derive the change: run the declared command on a throwaway copy of the base
-# and require the resulting tree to equal head's tree exactly.
-#
-# THE HEAD MUST BE UNREACHABLE FROM INSIDE THAT COPY, which is why the base is
-# materialised as a plain archive into a fresh directory with its own empty
-# index rather than as a clone. A clone carries every ref and the whole object
-# store, so `--reproduce "git checkout <head> -- ."` re-derived nothing and
-# demonstrated everything: a door that opens when you say the password out loud.
-# Computing head's tree is now the only way to match it.
-#
-# Nothing is written into the routed project: the archive is read-only on it, and
-# the source repository's HEAD and working tree are untouched, which is the
-# property the clone was originally chosen for and a test still pins.
-#
-# The accepted cost: a --reproduce command that legitimately needs git history
-# can no longer demonstrate, so that change routes expensive. Not being able to
-# demonstrate has to cost rigor in excess, never in deficit.
-#
-# An unbounded run is not one of the outcomes either: without a bound the command
-# is never started, so a looping --reproduce cannot hang an intake the operator
-# is waiting on.
-demonstrate_mechanical_pattern() {
-  local base=$1 head=$2 cmd=$3 tmp wc produced expected runner
-  if command -v timeout >/dev/null 2>&1; then
-    runner=timeout
-  elif command -v gtimeout >/dev/null 2>&1; then
-    runner=gtimeout
-  else
-    echo "error: --reproduce needs timeout or gtimeout on PATH to bound the command, and neither is installed, so the mechanical-pattern class cannot be demonstrated here." >&2
-    return 1
-  fi
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-lane-repro.XXXXXX") || return 1
-  TMPDIRS+=("$tmp")
-  wc="$tmp/wc"
-  mkdir -p "$wc" || return 1
-  git -C "$REPO" archive --format=tar "$base" >"$tmp/base.tar" 2>/dev/null || return 1
-  tar -xf "$tmp/base.tar" -C "$wc" || return 1
-  git -C "$wc" init --quiet >/dev/null 2>&1 || return 1
-  ( cd "$wc" && "$runner" "$LANE_REPRODUCE_TIMEOUT" bash -c "$cmd" ) >/dev/null 2>&1 || return 1
-  git -C "$wc" add -A >/dev/null 2>&1 || return 1
-  produced=$(git -C "$wc" write-tree 2>/dev/null) || return 1
-  expected=$(git -C "$REPO" rev-parse --verify --quiet "$head^{tree}" 2>/dev/null) || return 1
-  [ -n "$produced" ] && [ "$produced" = "$expected" ]
+  repo_git rev-parse --verify --quiet "$1:$2" 2>/dev/null || true
 }
 
 # --- decide -----------------------------------------------------------------
@@ -241,7 +202,7 @@ cmd_decide() {
 
   if [ -n "$RANGE" ]; then
     [ "${#PATHS[@]}" -eq 0 ] || die "--paths is declared evidence and cannot be combined with --range"
-    git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
+    repo_git rev-parse --git-dir >/dev/null 2>&1 \
       || die "--repo is not a git repository: $REPO"
     case "$RANGE" in
       *...*) die "--range must be the two-dot <base>..<head> form; '$RANGE' asks for merge-base semantics this policy does not implement" ;;
@@ -260,7 +221,7 @@ cmd_decide() {
   fi
 
   if [ "$evidence" = demonstrated ]; then
-    names=$(git -C "$REPO" diff --name-only --no-renames "$base" "$head") \
+    names=$(repo_git diff --name-only --no-renames "$base" "$head") \
       || die "cannot read the diff $RANGE in $REPO"
     [ -n "$names" ] || die "$RANGE changes nothing in $REPO; there is no delivery to route"
     while IFS= read -r p; do
@@ -283,11 +244,11 @@ cmd_decide() {
   new_files=-
   branch_points=-
   if [ "$evidence" = demonstrated ]; then
-    statuses=$(git -C "$REPO" diff --name-status --no-renames "$base" "$head")
+    statuses=$(repo_git diff --name-status --no-renames "$base" "$head")
     new_files=$(printf '%s\n' "$statuses" | grep -c '^A' || true)
-    numstat=$(git -C "$REPO" diff --numstat --no-renames "$base" "$head")
+    numstat=$(repo_git diff --numstat --no-renames "$base" "$head")
     lines=$(printf '%s\n' "$numstat" | awk '{ a=$1; d=$2; if (a=="-") a=0; if (d=="-") d=0; s+=a+d } END { printf "%d", s+0 }')
-    branch_points=$(git -C "$REPO" diff --unified=0 --no-renames "$base" "$head" \
+    branch_points=$(repo_git diff --unified=0 --no-renames "$base" "$head" \
       | grep '^+' | grep -v '^+++' \
       | grep -cE '(^|[^[:alnum:]_])(if|elif|else|for|while|case|switch|catch|except|unless)([^[:alnum:]_]|$)|&&|\|\|' || true)
   fi
@@ -357,17 +318,13 @@ cmd_decide() {
 validate_class_claim() {
   case "$CLASS" in
     docs-only)
-      [ -z "$REVERT_OF" ] && [ -z "$REPRODUCE" ] \
-        || die "--class docs-only takes no --revert-of or --reproduce"
+      [ -z "$REVERT_OF" ] || die "--class docs-only takes no --revert-of"
       ;;
     clean-revert)
       [ -n "$REVERT_OF" ] || die "--class clean-revert requires --revert-of <sha>"
       ;;
-    mechanical-pattern)
-      [ -n "$REPRODUCE" ] || die "--class mechanical-pattern requires --reproduce <command>"
-      ;;
     *)
-      die "--class must be one of docs-only, clean-revert, mechanical-pattern (got '$CLASS')"
+      die "--class must be one of docs-only, clean-revert (got '$CLASS')"
       ;;
   esac
 }
@@ -376,20 +333,15 @@ validate_class_claim() {
 # clean reverts of different commits were otherwise byte-identical rows, and the
 # demonstrating input is exactly what a reviewer re-checks when a defect turns up
 # months later. IDENTIFIERS ONLY, never free text, or the column becomes prose
-# again. The --reproduce command is therefore stored as a content hash rather
-# than verbatim: a hash still distinguishes two commands and still proves the
-# same one was used again, while carrying no prose.
+# again.
 class_record_value() {
   local resolved
   case "$CLASS" in
     '') printf '%s' - ;;
     clean-revert)
-      resolved=$(git -C "$REPO" rev-parse --verify --quiet "$REVERT_OF^{commit}" 2>/dev/null) \
+      resolved=$(repo_git rev-parse --verify --quiet "$REVERT_OF^{commit}" 2>/dev/null) \
         || die "--revert-of does not resolve to a commit in $REPO: $REVERT_OF"
       printf 'clean-revert:%s' "$resolved"
-      ;;
-    mechanical-pattern)
-      printf 'mechanical-pattern:%s' "$(printf '%s' "$REPRODUCE" | git hash-object --stdin)"
       ;;
     *) printf '%s' "$CLASS" ;;
   esac
@@ -398,10 +350,9 @@ class_record_value() {
 demonstrate_class() {
   local base=$1 head=$2
   case "$CLASS" in
-    docs-only)          demonstrate_docs_only "${PATHS[@]}" ;;
-    clean-revert)       demonstrate_clean_revert "$base" "$head" "$REVERT_OF" "${PATHS[@]}" ;;
-    mechanical-pattern) demonstrate_mechanical_pattern "$base" "$head" "$REPRODUCE" ;;
-    *)                  return 1 ;;
+    docs-only)    demonstrate_docs_only "${PATHS[@]}" ;;
+    clean-revert) demonstrate_clean_revert "$base" "$head" "$REVERT_OF" "${PATHS[@]}" ;;
+    *)            return 1 ;;
   esac
 }
 
@@ -447,8 +398,6 @@ while [ "$#" -gt 0 ]; do
     --class=*) CLASS=${1#--class=}; shift ;;
     --revert-of) need_value "$@"; REVERT_OF=$2; shift 2 ;;
     --revert-of=*) REVERT_OF=${1#--revert-of=}; shift ;;
-    --reproduce) need_value "$@"; REPRODUCE=$2; shift 2 ;;
-    --reproduce=*) REPRODUCE=${1#--reproduce=}; shift ;;
     --captain-override) need_value "$@"; OVERRIDE=$2; shift 2 ;;
     --captain-override=*) OVERRIDE=${1#--captain-override=}; shift ;;
     --note) need_value "$@"; NOTE=$2; shift 2 ;;

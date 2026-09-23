@@ -110,33 +110,6 @@ commit_all() {  # <repo> <message> -> the new sha
 
 first_line() { printf '%s\n' "$1" | head -n 1; }
 
-# A --reproduce command is never run without a bound, and the coreutils
-# `timeout` is not installed everywhere - this fleet's macOS hosts ship neither
-# it nor gtimeout. A case about the DEMONSTRATION rather than about the bound
-# puts this stand-in first on PATH so it runs anywhere; it drops the seconds
-# argument and execs the command, which is all a demonstration expected to
-# finish needs. The missing-bound behaviour has its own case.
-path_with_a_timeout_binary() {  # <dir> -> "<dir>:$PATH"
-  local dir=$1
-  mkdir -p "$dir"
-  printf '#!/bin/sh\nshift\nexec "$@"\n' > "$dir/timeout"
-  chmod +x "$dir/timeout"
-  printf '%s\n' "$dir:$PATH"
-}
-
-# The mirror image: a PATH holding exactly the commands fm-lane.sh needs and
-# deliberately neither `timeout` nor `gtimeout`, so a case can put the decision
-# on a machine where a --reproduce command cannot be bounded at all.
-path_without_a_timeout_binary() {  # <dir> -> the dir
-  local dir=$1 cmd src
-  mkdir -p "$dir"
-  for cmd in env bash git awk grep sed sort tr wc cut paste head date dirname mkdir rm mktemp cat; do
-    src=$(command -v "$cmd") || fail "this fixture needs $cmd on PATH and cannot find it"
-    ln -sf "$src" "$dir/$cmd"
-  done
-  printf '%s\n' "$dir"
-}
-
 # --- 1. a critical surface beats every cheap signal -------------------------
 
 # The control matters as much as the case: the same shape of diff WITHOUT the
@@ -412,65 +385,11 @@ EOF
   pass "lane: a clean-revert class must be the commit it names, undone"
 }
 
-test_a_mechanical_change_must_be_re_derivable() {
-  local rec repo base home head bounded out
-
-  rec=$(make_repo mechclass)
-  IFS='|' read -r repo base <<EOF
-$rec
-EOF
-  home=$(lane_home mechclass)
-  bounded=$(path_with_a_timeout_binary "$TMP_ROOT/mechclass/bin")
-
-  printf 'value = 1\nvalue2 = 1\n' > "$repo/src/thing.py"
-  head=$(commit_all "$repo" mechanical)
-
-  out=$(PATH="$bounded" run_lane "$home" decide mech-real --project proj \
-    --repo "$repo" --range "$base..$head" --class mechanical-pattern \
-    --reproduce "printf 'value = 1\nvalue2 = 1\n' > src/thing.py")
-  assert_contains "$(first_line "$out")" "lane=direct-PR" \
-    "a re-derivable mechanical change did not reach the cheap lane"
-
-  out=$(PATH="$bounded" run_lane "$home" decide mech-false --project proj \
-    --repo "$repo" --range "$base..$head" --class mechanical-pattern \
-    --reproduce "true")
-  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
-    "a mechanical claim whose command reproduces nothing reached the cheap lane"
-  assert_contains "$out" "reason=class-not-demonstrated" \
-    "an unreproducible mechanical claim was not reported as undemonstrated"
-
-  # A command that COPIES the answer re-derives nothing. The head must be
-  # unreachable from inside the re-derivation, or the demonstration is a door
-  # that opens when you say the password out loud.
-  out=$(PATH="$bounded" run_lane "$home" decide mech-forged --project proj \
-    --repo "$repo" --range "$base..$head" --class mechanical-pattern \
-    --reproduce "git checkout $head -- .")
-  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
-    "a reproduce command that copied head's content still demonstrated the class"
-  assert_contains "$out" "reason=class-not-demonstrated" \
-    "the forged demonstration was not reported as undemonstrated"
-
-  out=$(PATH="$bounded" run_lane "$home" decide mech-forged2 --project proj \
-    --repo "$repo" --range "$base..$head" --class mechanical-pattern \
-    --reproduce "git read-tree -u --reset $head")
-  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
-    "a reproduce command that read head's tree still demonstrated the class"
-
-  # The re-derivation must never touch the project it reads from.
-  [ "$(git -C "$repo" rev-parse HEAD)" = "$head" ] \
-    || fail "the re-derivation moved the source repository's HEAD"
-  [ -z "$(git -C "$repo" status --porcelain)" ] \
-    || fail "the re-derivation left changes in the source repository"
-
-  pass "lane: a mechanical-pattern class must re-derive the change, and never writes to the project"
-}
-
-# A record that cannot say WHICH commit a revert claimed, or whether the same
-# reproduce command was used twice, cannot be re-checked when a defect turns up
-# months later. The class column therefore carries the demonstrating input as an
-# identifier: a resolved sha, or a hash of the command rather than its text.
+# A record that cannot say WHICH commit a revert claimed cannot be re-checked
+# when a defect turns up months later. The class column therefore carries the
+# demonstrating input as an identifier: the resolved sha, never free text.
 test_the_record_names_what_demonstrated_the_class() {
-  local rec repo base home a_head b_head revert_a revert_b bounded out log
+  local rec repo base home a_head b_head revert_a revert_b out log
 
   rec=$(make_repo classrecord)
   IFS='|' read -r repo base <<EOF
@@ -478,7 +397,6 @@ $rec
 EOF
   home=$(lane_home classrecord)
   log="$home/data/lane-log.tsv"
-  bounded=$(path_with_a_timeout_binary "$TMP_ROOT/classrecord/bin")
 
   printf 'value = 2\n' > "$repo/src/thing.py"
   a_head=$(commit_all "$repo" change-a)
@@ -509,34 +427,24 @@ EOF
   assert_contains "$out" "does not resolve to a commit" \
     "the refusal did not say the revert target could not be resolved"
 
-  # The reproduce command is stored as a fixed-length identifier, never as text.
-  out=$(PATH="$bounded" run_lane "$home" decide rec-b1 --project proj --repo "$repo" \
-    --range "$b_head..$revert_b" --class mechanical-pattern \
-    --reproduce "printf 'value = 1\n' > src/thing.py")
-  assert_contains "$out" "class: mechanical-pattern:" \
-    "the decision did not identify the command that re-derived the change"
-  assert_no_grep "printf 'value = 1" "$log" \
-    "the reproduce command was stored verbatim instead of as an identifier"
-
   pass "lane: the record names what demonstrated the class, as an identifier"
 }
 
 # A document that INSTRUCTS an agent or a contributor is not pure documentation
 # for routing, because changing it changes behaviour. One that merely DESCRIBES
 # keeps its cheap route, and this pins the line in both directions.
+#
+# These are THIS repository's own surfaces rather than built-in ones, so the
+# cases decide against this repository, while the control uses a throwaway repo
+# that declares none of them - which is also what proves they are not imposed on
+# every project.
 test_documents_that_govern_an_agent_are_not_ordinary_documentation() {
   local rec repo base home head out
 
-  rec=$(make_repo governing)
-  IFS='|' read -r repo base <<EOF
-$rec
-EOF
   home=$(lane_home governing)
 
-  printf '# how to contribute\n\nrun the tests\n' > "$repo/CONTRIBUTING.md"
-  head=$(commit_all "$repo" contributing)
-  out=$(run_lane "$home" decide gov-a1 --project proj --repo "$repo" \
-    --range "$base..$head" --class docs-only)
+  out=$(run_lane "$home" decide gov-a1 --project firstmate --repo "$ROOT" \
+    --paths CONTRIBUTING.md --class docs-only)
   assert_contains "$(first_line "$out")" "lane=no-mistakes" \
     "a CONTRIBUTING.md change reached the cheap lane as documentation"
   assert_contains "$out" "reason=critical-surface" \
@@ -544,29 +452,102 @@ EOF
   assert_contains "$out" "critical-surfaces: governing-docs" \
     "the decision did not name the governing-docs surface"
 
-  mkdir -p "$repo/.agents/skills/stow"
-  printf '# stow\n\ndo the thing\n' > "$repo/.agents/skills/stow/SKILL.md"
-  head=$(commit_all "$repo" skill)
-  out=$(run_lane "$home" decide gov-a2 --project proj --repo "$repo" \
-    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" --class docs-only)
-  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
-    "a SKILL.md change reached the cheap lane as documentation"
+  out=$(run_lane "$home" decide gov-a2 --project firstmate --repo "$ROOT" \
+    --paths .agents/skills/stow/SKILL.md --class docs-only)
+  assert_contains "$out" "reason=critical-surface" \
+    "a nested SKILL.md was not routed as a critical surface"
   assert_contains "$out" "critical-surfaces: governing-docs" \
     "a nested SKILL.md was not caught as a governing document"
 
   # The control, which is what keeps the surface narrow: a document that only
-  # describes still reaches the cheap lane.
+  # describes still reaches the cheap lane, in a project that declares no
+  # governing documents of its own.
+  rec=$(make_repo governing)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
   printf '# project\n\nit does things\n' > "$repo/README.md"
   printf 'more\n' >> "$repo/docs/guide.md"
   head=$(commit_all "$repo" describing-docs)
   out=$(run_lane "$home" decide gov-b1 --project proj --repo "$repo" \
-    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" --class docs-only)
+    --range "$base..$head" --class docs-only)
   assert_contains "$(first_line "$out")" "lane=direct-PR" \
     "an ordinary README and docs change lost its cheap route"
   assert_contains "$out" "reason=standard-class" \
     "the descriptive documentation was not routed on its class"
 
+  # And a project that declares none of them is not given them: the same
+  # CONTRIBUTING.md is ordinary documentation there.
+  printf '# how to contribute\n\nrun the tests\n' > "$repo/CONTRIBUTING.md"
+  head=$(commit_all "$repo" contributing)
+  out=$(run_lane "$home" decide gov-b2 --project proj --repo "$repo" \
+    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" --class docs-only)
+  assert_contains "$out" "critical-surfaces: -" \
+    "governing-docs was imposed on a project that never declared it"
+
   pass "lane: a document that governs an agent is a critical surface, one that describes is not"
+}
+
+# git C-quotes a path holding any non-ASCII byte, so the name arrives as the
+# literal string "src/billing/facturaci\303\263n.rb" - surrounding quotes and
+# all. An anchored critical-surface glob then stops matching it, and every blob
+# lookup for the revert proof fails, which made both halves of that proof
+# compare empty to empty and succeed. A safety surface that silently stops
+# matching because of how a byte is escaped is the exact failure this policy
+# exists to remove, so both directions are pinned here.
+test_a_non_ascii_path_is_read_as_itself() {
+  local repo home base surf_head a_head revert_head later_head out
+
+  repo="$TMP_ROOT/nonascii/repo"
+  mkdir -p "$repo/src/billing"
+  git -C "$repo" init --quiet 2>/dev/null || { git init --quiet "$repo"; }
+  home=$(lane_home nonascii)
+
+  printf 'src/billing/* money-movement\n' > "$repo/.fm-critical-surfaces"
+  printf 'total = 1\n' > "$repo/src/billing/facturación.rb"
+  printf 'value = 1\n' > "$repo/src/cálculo.rb"
+  git -C "$repo" add -A
+  git -C "$repo" commit --quiet -m base
+  base=$(git -C "$repo" rev-parse HEAD)
+
+  # The surface must be HIT, not merely survived: the whole defect was that the
+  # decision came back cheap and said it had checked.
+  printf 'total = 2\n' > "$repo/src/billing/facturación.rb"
+  surf_head=$(commit_all "$repo" billing-change)
+  out=$(run_lane "$home" decide utf8-a1 --project proj --repo "$repo" --range "$base..$surf_head")
+  assert_contains "$out" "critical-surfaces: money-movement" \
+    "a critical surface stopped matching because the path carried a non-ASCII byte"
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a change on a declared critical surface was routed cheap"
+  assert_contains "$out" "reason=critical-surface" \
+    "the expensive routing was not attributed to the surface"
+
+  # The revert proof, on a non-ASCII path that is NOT on a surface so tier 2 is
+  # actually reached. A real revert demonstrates, which proves the blobs resolve.
+  printf 'value = 2\n' > "$repo/src/cálculo.rb"
+  a_head=$(commit_all "$repo" calc-change)
+  printf 'value = 1\n' > "$repo/src/cálculo.rb"
+  revert_head=$(commit_all "$repo" calc-revert)
+  out=$(run_lane "$home" decide utf8-a2 --project proj --repo "$repo" \
+    --range "$a_head..$revert_head" --class clean-revert --revert-of "$a_head")
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a real revert of a non-ASCII path did not demonstrate"
+  assert_contains "$out" "class: clean-revert:$a_head" \
+    "the revert proof did not record the commit it resolved for a non-ASCII path"
+
+  # And the direction that the quoted name broke: every blob read failed, so
+  # both halves compared nothing to nothing and a range that undoes NOTHING
+  # demonstrated as a clean revert.
+  printf 'value = 3\n' > "$repo/src/cálculo.rb"
+  later_head=$(commit_all "$repo" calc-unrelated)
+  out=$(run_lane "$home" decide utf8-a3 --project proj --repo "$repo" \
+    --range "$revert_head..$later_head" --class clean-revert --revert-of "$a_head")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a revert claim over a non-ASCII path that undid nothing reached the cheap lane"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "a revert claim over a non-ASCII path demonstrated against blobs nobody read"
+
+  pass "lane: a non-ASCII path is matched and proved as itself, not as its escaped form"
 }
 
 # --- 3. declared evidence can only ever cost more ---------------------------
@@ -602,7 +583,7 @@ test_an_invalid_class_claim_is_refused_on_declared_evidence() {
     --class not-a-real-class)
   status=$?
   [ "$status" -ne 0 ] || fail "an unknown class on declared evidence should exit non-zero"
-  assert_contains "$out" "--class must be one of docs-only, clean-revert, mechanical-pattern" \
+  assert_contains "$out" "--class must be one of docs-only, clean-revert" \
     "the refusal did not name the classes that exist"
 
   out=$(run_lane "$home" decide claim-a2 --project proj --repo "$repo" --paths src/thing.py \
@@ -611,11 +592,21 @@ test_an_invalid_class_claim_is_refused_on_declared_evidence() {
   [ "$status" -ne 0 ] || fail "a revert claim naming no commit should exit non-zero"
   assert_contains "$out" "requires --revert-of" "the refusal did not name the missing flag"
 
+  # The class the captain removed is no longer a class, so claiming it is an
+  # unknown-class refusal rather than a request for a flag that no longer exists.
   out=$(run_lane "$home" decide claim-a3 --project proj --repo "$repo" --paths src/thing.py \
     --class mechanical-pattern)
   status=$?
-  [ "$status" -ne 0 ] || fail "a mechanical claim with no command to re-derive it should exit non-zero"
-  assert_contains "$out" "requires --reproduce" "the refusal did not name the missing flag"
+  [ "$status" -ne 0 ] || fail "a removed class should exit non-zero"
+  assert_contains "$out" "--class must be one of docs-only, clean-revert" \
+    "the removed class was not refused as an unknown one"
+
+  out=$(run_lane "$home" decide claim-a4 --project proj --repo "$repo" --paths src/thing.py \
+    --reproduce "true")
+  status=$?
+  [ "$status" -ne 0 ] || fail "the removed --reproduce flag should exit non-zero"
+  assert_contains "$out" "unknown option: --reproduce" \
+    "the removed flag was still accepted"
 
   assert_absent "$log" "a refused class claim still reached the record"
 
@@ -1059,55 +1050,14 @@ test_a_catalog_entry_with_no_surface_name_is_refused() {
   pass "lane: a catalog entry that names no surface is refused, never skipped"
 }
 
-# A --reproduce command that loops would hang intake, which the operator is
-# waiting on, with no output and no timer. Without a bound the command is not
-# run at all: the class simply stays undemonstrated, which is where the policy
-# already sends anything it cannot prove benign. It refuses a demonstration,
-# never a change, so the exit code stays 0.
-test_a_mechanical_claim_needs_a_bound_and_never_runs_unbounded() {
-  local rec repo base home head unbounded bounded out status
-
-  rec=$(make_repo nobound)
-  IFS='|' read -r repo base <<EOF
-$rec
-EOF
-  home=$(lane_home nobound)
-  unbounded=$(path_without_a_timeout_binary "$TMP_ROOT/nobound/bare")
-  bounded=$(path_with_a_timeout_binary "$TMP_ROOT/nobound/bin")
-
-  printf 'value = 1\nvalue = 1\n' > "$repo/src/thing.py"
-  head=$(commit_all "$repo" duplicated)
-
-  out=$(PATH="$unbounded" run_lane "$home" decide bound-a1 --project proj --repo "$repo" \
-    --range "$base..$head" --class mechanical-pattern \
-    --reproduce 'printf "value = 1\nvalue = 1\n" > src/thing.py')
-  status=$?
-  expect_code 0 "$status" "an unbounded machine refused the change instead of the demonstration"
-  assert_contains "$out" "lane=no-mistakes evidence=demonstrated" \
-    "a class that could not be bounded still reached the cheap lane"
-  assert_contains "$out" "reason=class-not-demonstrated" \
-    "the routing was not attributed to the undemonstrated class"
-  assert_contains "$out" "needs timeout or gtimeout" \
-    "the missing bound was not named as the reason the class could not be demonstrated"
-
-  # The control: with a bound available the same claim demonstrates and is cheap.
-  out=$(PATH="$bounded" run_lane "$home" decide bound-a2 --project proj --repo "$repo" \
-    --range "$base..$head" --class mechanical-pattern \
-    --reproduce 'printf "value = 1\nvalue = 1\n" > src/thing.py')
-  assert_contains "$(first_line "$out")" "lane=direct-PR" \
-    "the same claim did not demonstrate on a machine that can bound it"
-
-  pass "lane: a mechanical claim with no way to bound its command stays undemonstrated"
-}
-
 test_a_critical_surface_outranks_every_cheap_signal
 test_every_named_critical_surface_is_in_the_catalog
 test_firstmates_own_safety_surfaces_are_covered
 test_deleting_the_dispatch_gate_cannot_route_itself_cheap
 test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only
 test_a_revert_must_be_the_commit_it_claims_to_undo
-test_a_mechanical_change_must_be_re_derivable
 test_the_record_names_what_demonstrated_the_class
+test_a_non_ascii_path_is_read_as_itself
 test_documents_that_govern_an_agent_are_not_ordinary_documentation
 test_declared_evidence_never_reaches_the_cheap_lane
 test_an_invalid_class_claim_is_refused_on_declared_evidence
@@ -1122,6 +1072,5 @@ test_only_the_captain_reaches_the_cheap_lane_past_a_critical_surface
 test_an_override_records_a_surface_only_this_project_declares
 test_a_three_dot_range_is_refused_rather_than_guessed_at
 test_a_catalog_entry_with_no_surface_name_is_refused
-test_a_mechanical_claim_needs_a_bound_and_never_runs_unbounded
 
 echo "# all fm-lane-policy tests passed"
