@@ -34,8 +34,9 @@
 #      earns the cheap lane, which is the whole difference between a catalog and
 #      a hot judgment.
 #   3. Diff signals. Novelty (a file added), diffusion (distinct directories),
-#      complexity (added control-flow branch points) and size each route to
-#      no-mistakes. Everything left goes to direct-PR.
+#      complexity (added control-flow branch points), size, and a mode change
+#      (an exec bit or a file type flipped, which leaves no lines to measure at
+#      all) each route to no-mistakes. Everything left goes to direct-PR.
 #
 # EVIDENCE GRADES. Declared evidence - a list of paths the caller asserts the
 # change will touch - reaches tier 1 and stops; it never reaches tier 2 or 3.
@@ -70,10 +71,15 @@
 #          The reason column says what the evaluation concluded: standard-class
 #          when the claim was demonstrated, class-not-demonstrated when it was
 #          not. The value is <class>, or <class>:<identifier> naming what
-#          demonstrated it: clean-revert:<resolved commit sha>, and docs-only
-#          alone because the changed path set already demonstrates it and is
-#          already in the signals column. Identifiers only, never free text, or
-#          the column becomes prose with a column heading.
+#          demonstrated it: clean-revert:<resolved commit sha>. docs-only
+#          carries no identifier because what demonstrates it is the changed
+#          path set AS A WHOLE rather than a single input like a commit id, so
+#          there is no identifier to name. The paths themselves are not in the
+#          record: the signals column holds counts plus the measured tree and
+#          range, so on DEMONSTRATED evidence the path set is recoverable from
+#          repo= and range=, and a DECLARED row records neither and does not
+#          name the paths the claim was made about at all. Identifiers only,
+#          never free text, or the column becomes prose with a column heading.
 # critical comma-separated surface names, or -
 # signals  k=v,k=v, or -. It names the TREE that was measured in its repo=
 #          entry, resolved physically, so a decision made against the wrong
@@ -314,6 +320,18 @@ fm_lane_catalog() {
 # reaches the built-in catalog too, whose entries are tab-separated and would
 # otherwise collapse into the glob field - and vanish - if anything ever
 # de-tabbed them.
+#
+# ONE NAMED EXCEPTION, and it is an exception to a GLOB, not to a surface.
+# *auth* is a rule BY SHAPE, and shape leaks: it also swallows the prose file
+# AUTHORS, so a contributors list was recorded as an AUTHENTICATION surface. It
+# leaked toward the safe side here - one unnecessary expensive review - but it
+# leaked, and a record that names the wrong surface does not measure, it
+# decorates. The three exact basenames AUTHORS, AUTHORS.txt and AUTHORS.md are
+# therefore not authentication, case-insensitively and nothing broader: oauth,
+# authn, authz, auth/ and user_auth.py all still match, so the security surface
+# itself is unchanged. Keeping AUTHORS on the expensive lane is a separate
+# statement, made by NAME where it belongs: this repository declares it under
+# governing-docs in .fm-critical-surfaces, which is what it truthfully is.
 fm_lane_critical_hits() {
   local catalog=$1 path glob name lglob hits=""
   local lpaths=()
@@ -335,6 +353,11 @@ fm_lane_critical_hits() {
       # shellcheck disable=SC2254  # lglob is catalog data and must expand as a pattern
       case "$path" in
         $lglob)
+          if [ "$lglob" = '*auth*' ]; then
+            case "${path##*/}" in
+              authors|authors.txt|authors.md) continue ;;
+            esac
+          fi
           hits="${hits:+$hits,}$name"
           printf '%s\n' "$name"
           break

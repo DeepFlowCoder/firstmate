@@ -1059,6 +1059,55 @@ EOF
   pass "lane: a document that governs an agent is a critical surface, one that describes is not"
 }
 
+# The portable *auth* glob used to swallow AUTHORS, so a contributors list was
+# recorded as an AUTHENTICATION surface: the right lane for the wrong reason,
+# and a wrong fact in the record the policy exists to build. AUTHORS stays
+# expensive in this house, under the label that is true of it.
+test_authors_is_a_governing_document_not_an_authentication_surface() {
+  local rec repo base home head out name n=0
+
+  home=$(lane_home authorsname)
+
+  for name in AUTHORS AUTHORS.txt AUTHORS.md; do
+    n=$((n + 1))
+    out=$(run_lane "$home" decide authors-a$n --project firstmate --repo "$ROOT" \
+      --paths "$name" --class docs-only)
+    assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+      "$name reached the cheap lane"
+    assert_contains "$out" "critical-surfaces: governing-docs" \
+      "$name was not attributed to the surface this house declares for it"
+    assert_not_contains "$out" "authentication" \
+      "$name is still recorded as an authentication surface"
+  done
+
+  # The exception is three names and nothing wider: everything else the glob
+  # catches is still authentication.
+  for name in src/oauth.rb app/authn.go lib/authz/policy.py auth/session.ts user_auth.py; do
+    n=$((n + 1))
+    out=$(run_lane "$home" decide authors-a$n --project firstmate --repo "$ROOT" --paths "$name")
+    assert_contains "$out" "critical-surfaces: authentication" \
+      "$name stopped matching the authentication surface"
+  done
+
+  # And with the glob no longer shadowing it, AUTHORS is reachable as the named
+  # prose file it is, in a project that declares nothing about it.
+  rec=$(make_repo authorsname)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  printf 'Ada Lovelace\n' > "$repo/AUTHORS"
+  printf 'Ada Lovelace\n' > "$repo/AUTHORS.txt"
+  head=$(commit_all "$repo" credit)
+  out=$(run_lane "$home" decide authors-b1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$out" "critical-surfaces: -" \
+    "a project that declares nothing about AUTHORS was given a surface for it"
+  assert_contains "$out" "reason=standard-class" \
+    "AUTHORS is still unreachable as the named prose file the class lists"
+
+  pass "lane: AUTHORS is a governing document, never an authentication surface"
+}
+
 # git C-quotes a path holding any non-ASCII byte, so the name arrives as the
 # literal string "src/billing/facturaci\303\263n.rb" - surrounding quotes and
 # all. An anchored critical-surface glob then stops matching it, and every blob
@@ -1205,6 +1254,69 @@ EOF
   assert_contains "$out" "binary=0" "the record did not report zero unmeasurable paths"
 
   pass "lane: a binary change is unmeasurable rather than small, and routes expensive"
+}
+
+# `chmod +x` makes a file executable and leaves not one line of diff, so every
+# tier-3 signal reports its cheapest value honestly and the change used to reach
+# the cheap lane with the record saying zero of everything. Absence of signal is
+# not signal of absence.
+test_a_mode_change_never_reaches_the_cheap_lane() {
+  local rec repo base home head out
+
+  rec=$(make_repo modesig)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home modesig)
+
+  mkdir -p "$repo/scripts"
+  printf 'echo shipping\n' > "$repo/scripts/deploy.sh"
+  base=$(commit_all "$repo" seed-script)
+
+  chmod +x "$repo/scripts/deploy.sh"
+  head=$(commit_all "$repo" make-executable)
+  out=$(run_lane "$home" decide mode-a1 --project proj --repo "$repo" --range "$base..$head")
+  assert_contains "$out" "lines=0 new-files=0 branch-points=0 binary=0" \
+    "the fixture is not the all-zero diff this case has to be built on"
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a file was made executable with no pipeline review"
+  assert_contains "$out" "reason=signals:mode" \
+    "the expensive routing did not name the mode change as the cause"
+  assert_contains "$out" "mode=1" \
+    "the record reported zeros that are true but say nothing about the mode"
+
+  # A regular file swapped for a symlink over short content leaves the same
+  # nothing behind, and is the same answer.
+  base=$head
+  rm "$repo/scripts/deploy.sh"
+  ln -s ../src/thing.py "$repo/scripts/deploy.sh"
+  head=$(commit_all "$repo" swap-for-symlink)
+  out=$(run_lane "$home" decide mode-a2 --project proj --repo "$repo" --range "$base..$head")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a regular file became a symlink on the cheap lane"
+  assert_contains "$out" "reason=signals:mode" \
+    "the file-type swap was not attributed to the mode change"
+
+  # The controls. A small text edit still reaches the cheap lane, so the cases
+  # above are the mode and not the fixture; and adding a file is novelty rather
+  # than a mode change, so the count stays a count of changes.
+  base=$head
+  printf 'value = 2\n' > "$repo/src/thing.py"
+  head=$(commit_all "$repo" text-edit)
+  out=$(run_lane "$home" decide mode-b1 --project proj --repo "$repo" --range "$base..$head")
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a small text edit lost its cheap route"
+  assert_contains "$out" "mode=0" "the record claimed a mode change nothing made"
+
+  base=$head
+  printf 'value = 3\n' > "$repo/src/other.py"
+  head=$(commit_all "$repo" add-file)
+  out=$(run_lane "$home" decide mode-b2 --project proj --repo "$repo" --range "$base..$head")
+  assert_contains "$out" "reason=signals:novelty" \
+    "an added file was counted as a mode change rather than as novelty"
+  assert_contains "$out" "mode=0" "an addition was counted as a mode change"
+
+  pass "lane: a mode change never reaches the cheap lane"
 }
 
 # --- 3. declared evidence can only ever cost more ---------------------------
@@ -1784,7 +1896,9 @@ test_the_record_names_what_demonstrated_the_class
 test_a_non_ascii_path_is_read_as_itself
 test_a_path_git_escapes_is_matched_as_itself
 test_a_binary_change_is_unmeasurable_rather_than_small
+test_a_mode_change_never_reaches_the_cheap_lane
 test_documents_that_govern_an_agent_are_not_ordinary_documentation
+test_authors_is_a_governing_document_not_an_authentication_surface
 test_declared_evidence_never_reaches_the_cheap_lane
 test_an_invalid_class_claim_is_refused_on_declared_evidence
 test_size_routes_a_change_to_be_looked_at_and_never_refuses_it

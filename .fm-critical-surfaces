@@ -70,3 +70,16 @@ CLAUDE.md governing-docs
 */CLAUDE.md governing-docs
 SKILL.md governing-docs
 */SKILL.md governing-docs
+
+# AUTHORS is here under its truthful label. It used to reach the expensive lane
+# by accident, through the portable *auth* glob, which recorded a contributors
+# list as an AUTHENTICATION surface; that glob no longer claims these three
+# exact names, so the routing is now stated rather than inherited from a
+# coincidence of letters. AUTHORS is project governance and attribution: who
+# speaks for this house, and to whom the work is credited.
+AUTHORS governing-docs
+*/AUTHORS governing-docs
+AUTHORS.txt governing-docs
+*/AUTHORS.txt governing-docs
+AUTHORS.md governing-docs
+*/AUTHORS.md governing-docs

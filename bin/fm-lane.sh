@@ -157,6 +157,15 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 # classification gap but a false class written into the record this policy
 # exists to measure. Naming does not infer: it forces someone to write the name
 # down, and writing it down forces them to look at it.
+#
+# Every name below is reachable. authors and authors.txt were not: the portable
+# *auth* glob claimed them first, so a contributors list never reached this
+# function and was recorded as an authentication surface instead. That glob now
+# passes those three exact basenames through (see fm_lane_critical_hits), so
+# AUTHORS is ordinary documentation for any project that says nothing else about
+# it, and expensive in this one because this repository names it a governing
+# document in .fm-critical-surfaces. authors.md needs no entry here: .md already
+# qualifies it above.
 is_documentation_path() {
   local p base
   p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
@@ -249,8 +258,9 @@ tree_entry_at() {
 
 cmd_decide() {
   local evidence catalog hits critical lane reason signals note class_record
-  local base head names numstat added udiff p q d seen
+  local base head names numstat added udiff raw meta p q d seen
   local files dirs lines new_files branch_points binary unreadable repo_measured
+  local mode_changes src_mode dst_mode
   local printed_signals class_evaluated base_measured head_measured
   local seen_dirs=()
   local signal_reasons=()
@@ -320,6 +330,7 @@ cmd_decide() {
   new_files=-
   branch_points=-
   binary=-
+  mode_changes=-
   unreadable=0
   # EVERY read here reports whether it succeeded, and a read that fails leaves
   # its signal at "-" and routes the delivery expensive. A pipeline discards
@@ -357,6 +368,41 @@ cmd_decide() {
     else
       unreadable=1
     fi
+    # A MODE CHANGE LEAVES TIER 3 NOTHING TO MEASURE. `chmod +x` makes a file
+    # EXECUTABLE and writes not one line of diff: numstat reports 0 0, the
+    # unified diff carries no added line, and size, novelty, complexity and
+    # binary all come out at their cheapest value honestly, so the change took
+    # the cheap lane with every signal reporting zero.
+    #
+    # This is the sixth member of the family tracked as
+    # fm-guardas-que-degradan-a-una-comprobacion-mas-debil, and the purest
+    # specimen of it: the guard does not measure wrongly, there is NOTHING to
+    # measure, and it treats that emptiness as harmless. ABSENCE OF SIGNAL IS
+    # NOT SIGNAL OF ABSENCE. A mode change never reaches the cheap lane.
+    #
+    # The raw diff carries the modes the numstat line cannot, one
+    # ":<src> <dst> <srcsha> <dstsha> <status>" record per path. A side that
+    # does not exist is 000000, so an addition and a deletion are not mode
+    # CHANGES and are not counted; what is counted is an entry both revisions
+    # hold whose mode moved, which is the exec-bit flip and the
+    # regular-file-to-symlink swap alike.
+    raw=$(mktemp "${TMPDIR:-/tmp}/fm-lane-raw.XXXXXX")
+    TMPDIRS+=("$raw")
+    if repo_git diff --raw -z --no-renames "$base" "$head" >"$raw" 2>/dev/null; then
+      mode_changes=0
+      while IFS= read -r -d '' meta && IFS= read -r -d '' p; do
+        [ -n "$p" ] || continue
+        src_mode=${meta%% *}
+        src_mode=${src_mode#:}
+        dst_mode=${meta#* }
+        dst_mode=${dst_mode%% *}
+        [ "$src_mode" != "$dst_mode" ] || continue
+        [ "$src_mode" != 000000 ] && [ "$dst_mode" != 000000 ] || continue
+        mode_changes=$((mode_changes + 1))
+      done <"$raw"
+    else
+      unreadable=1
+    fi
   fi
   # The tree that was actually read, resolved physically so two spellings of one
   # tree record identically. --repo and --project are independent inputs, so a
@@ -375,7 +421,7 @@ cmd_decide() {
   repo_measured=$(cd "$REPO" && pwd -P) || die "--repo cannot be resolved: $REPO"
   repo_measured=${repo_measured//\\/\\\\}
   repo_measured=${repo_measured//,/\\,}
-  signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points,binary=$binary,repo=$repo_measured"
+  signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points,binary=$binary,mode=$mode_changes,repo=$repo_measured"
   # The same argument as repo=, one level over: --range is the other independent
   # input, so a decision measured against the WRONG range was byte-identical to
   # a correct one. That costs something real on the one path the record lifts a
@@ -427,6 +473,7 @@ cmd_decide() {
       signal_reasons+=(unreadable-diff)
     else
       [ "$binary" -eq 0 ] || signal_reasons+=(binary)
+      [ "$mode_changes" -eq 0 ] || signal_reasons+=(mode)
       [ "$new_files" -eq 0 ] || signal_reasons+=(novelty)
       [ "$dirs" -lt "$LANE_MAX_DIRS" ] || signal_reasons+=(diffusion)
       [ "$branch_points" -lt "$LANE_MAX_BRANCH_POINTS" ] || signal_reasons+=(complexity)
