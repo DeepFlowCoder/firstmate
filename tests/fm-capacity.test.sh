@@ -1153,6 +1153,42 @@ out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at
 assert_contains "$out" "balance runs out in" "a burst shorter than one margin must still be projected once the readings reach one"
 pass "a hard burst followed by idle is warned about rather than left unmeasurable"
 
+# AND THE IDLE THAT COMES BEFORE A BURST MUST NOT BE THROWN AWAY EITHER.
+#
+# This is the shape the fleet is actually in since the captain moved this
+# provider to last resort: the balance sits untouched for a day, then a run
+# picks it and drains it hard. The readings taken while it sat still are the
+# only history that burn can be measured against.
+#
+# Retention and the policy's rate window now count back from the same row - the
+# newest reading - so every reading that window can reach is still on disk by
+# construction. While this prune counted from the last reading where the balance
+# MOVED instead, a flat stretch was collapsed and then swept away the instant the
+# balance moved again, so the span restarted from zero and the entire drain ran
+# in silence.
+home=$(fresh_home balance-flat-then-drained)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+at=1000000
+balance_body "$home/bal-step.json" 50.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+at=$((at + 300))
+balance_body "$home/bal-step.json" 49.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+# Five hours of an untouched balance, far past the four margins retention keeps,
+# with the watcher polling throughout.
+for _ in $(seq 1 60); do
+  at=$((at + 300))
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+done
+# Then the morning dispatch burns it down over forty minutes.
+for amount in 43.25 37.50 31.75 26.00 20.25 14.50 8.75 3.00; do
+  at=$((at + 300))
+  balance_body "$home/bal-step.json" "$amount" true
+  out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" report)
+done
+assert_contains "$out" "balance runs out in" "a balance flat for hours and then drained must be warned about, not measured from scratch"
+pass "the readings taken while a balance sat still are what its drain is measured against"
+
 # THE BALANCE GOING UP MUST NOT BE ABLE TO KEEP THE GUARD FROM EVER SPEAKING.
 #
 # The case above protects a warning already raised. This one protects the first

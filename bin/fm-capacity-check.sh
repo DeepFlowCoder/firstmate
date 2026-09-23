@@ -499,24 +499,22 @@ acquire_balance() {
 
 # The reading history, newest last, as the JSON array the policy consumes.
 #
-# RETENTION IS ANCHORED ON THE LAST TIME THE BALANCE MOVED, never on the clock.
-# Readings from more than four margins before that movement are dropped - four,
-# because the policy averages its drain rate over at most two and needs a window
-# at least one margin long before it will project at all, so a second rate
-# window of slack keeps that available across a poll the watcher missed.
+# RETENTION AND THE POLICY'S RATE WINDOW SHARE ONE ANCHOR: THE NEWEST READING.
+# That is the whole rule, and it is what makes the two sides safe to reason about
+# separately. Retention reaches back four margins; the rate window reaches back
+# two (bin/fm-capacity-policy.mjs). Both count from the same row, and four is
+# deeper than two, so EVERY reading that window can reach is still on disk. The
+# guarantee is structural - it does not rest on two expressions being kept in
+# step by hand - and the extra two margins of depth are the slack that survives a
+# poll the watcher missed.
 #
-# Anchoring on the clock instead is what made an already-warned balance go quiet
-# overnight: the fleet stops spending, the readings go flat, and by morning the
-# drain that produced the warning has aged out of the file, so the guard reads
-# "runway not measured" at exactly the session that has to decide whether to
-# recharge before dispatching. An idle stretch is the absence of a measurement,
-# never a measurement that the drain stopped, so it must not erase one.
-#
-# The flat tail that stretch produces keeps only its newest row. Every row in it
-# carries the same amount, so none of them adds any consumption, and the span the
-# policy measures runs from the oldest row to the newest - both of which survive
-# this prune. Dropping the rows between them changes no measurement, and it is
-# what stops an idle fleet growing this file forever.
+# A SECOND ANCHOR HERE IS WHAT KEPT BREAKING THIS. While this prune counted from
+# the last reading where the balance MOVED, the two sides disagreed, and the
+# disagreement destroyed precisely the rows the first warning is measured from: a
+# balance flat for more than four margins had its history collapsed, and then the
+# moment it started draining the cutoff jumped forward and took the rest, so the
+# span restarted from zero and the whole drain ran in silence. Anchor both sides
+# on the same row and that class of defect has nowhere left to live.
 #
 # THE MOST RECENT POSITIVE READING IS NEVER DROPPED, whatever its age. It is not
 # there for the rate - the policy bounds its own rate window by time, so an old
@@ -543,12 +541,10 @@ history_append() {  # <balance> <available>
   kept=$(awk -F'\t' -v span="$retain" '
     { rows[NR] = $0; stamp[NR] = $1 + 0; amount[NR] = $2 + 0 }
     amount[NR] > 0 { last_positive = NR }
-    NR > 1 && amount[NR] != amount[NR - 1] { last_move = NR }
     END {
-      if (last_move == 0) last_move = NR
-      cutoff = stamp[last_move] - span
+      cutoff = stamp[NR] - span
       for (i = 1; i <= NR; i++)
-        if (i == NR || i == last_positive || (i <= last_move && stamp[i] >= cutoff))
+        if (i == last_positive || stamp[i] >= cutoff)
           print rows[i]
     }' "$HISTORY" 2>/dev/null) || return 0
   [ -n "$kept" ] || return 0
