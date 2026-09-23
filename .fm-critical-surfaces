@@ -21,12 +21,20 @@
 # a lock or lease that stops protecting what it names. Add a path here when it
 # joins that set; never remove one to make a delivery cheaper.
 #
-# It also carries one boundary this house raises for itself rather than imposing
-# it on every project through the portable catalog: this repo's CI configuration.
+# It also carries TWO boundaries this house raises for itself rather than imposing
+# them on every project through the portable catalog. The first is this repo's CI
+# configuration.
 # The reason is not a prediction that CI would catch a bad change - that
 # reasoning is rejected outright and belongs nowhere in this policy. It is that
 # THE CHEAP LANE'S SAFETY NET CANNOT BE MODIFIABLE BY THE CHEAP LANE: cutting the
 # net is not something a delivery gets to do without review.
+#
+# The second is the documents that govern this house and the instruction material
+# a skill loads, which is the largest group below.
+#
+# Every group states its own reasoning AT THE GROUP, so this header deliberately
+# does not enumerate them: an index here would be one more copy to fall behind,
+# and the entries themselves are the only complete list. Read down.
 
 bin/fm-gate-refuse-lib.sh security-guards
 bin/fm-arm-pretool-check.sh security-guards

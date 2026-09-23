@@ -318,8 +318,12 @@ There are two things an operator sets or reads.
 A project may carry a tracked `.fm-critical-surfaces` file at its root naming paths that always take the expensive lane, one `<glob> <surface-name>` per line with `#` comments.
 It only adds to the built-in catalog in `bin/fm-lane-lib.sh`, so it can widen what is treated as a safety surface and can never narrow it; a malformed line is refused rather than skipped, because a silently dropped pattern is a silently lost surface.
 A surface name may not contain a comma, which is what separates names in the record's `critical` column, and a line that carries one is refused for the same reason.
-This repo carries its own for the safety boundaries the built-in name patterns do not all catch, for the two files that run the dispatch gate, and for its CI configuration.
+This repo carries its own for the safety boundaries the built-in name patterns do not all catch, for the two files that run the dispatch gate, for its CI configuration, and for the documents that govern this house.
 The CI entry is not there because CI is expected to catch a bad change, which is reasoning this policy rejects outright; it is there because the cheap lane's safety net must not be modifiable by the cheap lane.
+The governing documents are the largest group and the one an operator meets most often: `CONTRIBUTING`, `CLAUDE`, `SKILL` and `AUTHORS` in any extension, plus the instruction material a skill loads, meaning everything under a skill's `references/` and any agent definition it ships.
+Editing any of them in this repo takes the expensive lane, because a document that instructs an agent or a contributor is never pure documentation for routing: changing it changes behaviour, and a skill's reference files are the fleet's behaviour rather than one delivery's.
+They are named by role rather than by spelling, so a reference file added tomorrow is covered the day it lands; `README.md` and anything under `docs/` only describe, and keep their cheap route.
+The file itself states each group's reasoning beside that group, so read it there rather than expecting this page to list the entries.
 
 The gate in front of each dispatch is advisory for fresh intake and binding on a measured change.
 At intake there is no diff, so a decision there rests on a declared path list; the gate then records the lane it computed, says on stderr that the project's registered posture was followed instead, and marks the row `advisory=<lane>:<reason>` so every disagreement between the policy and the posture is countable.
