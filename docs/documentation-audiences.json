@@ -453,6 +453,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/openai-lane.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/pr-merge-fitness.md",
       "audience": "maintainer-verification"
     },
