@@ -409,6 +409,64 @@ error: "step review failed: agent review: pi reported error: 402: {\\"message\\"
 EOF
 }
 
+# A run a step's own TIME CAP cut off. Both error texts are transcribed
+# verbatim from the real store (~/.no-mistakes/state.sqlite, read 2026-09-23),
+# where 14 of the 55 runs recorded `failed` carry one of these two wordings and
+# not one of them is a statement about the code. Both payloads say so twice: the
+# agent was producing output seconds before it died, and what ended it was the
+# clock.
+#
+# run 01M35BZMYXMXMCA3WXF36RWW88, 2026-09-22 20:12:44.
+run_failed_cap_cut() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+outcome: failed
+error: "step test failed: agent run tests timed out after 30m0s: agent last produced output 13s ago (104 observed); agent reported: claude exited: signal: killed"
+EOF
+}
+
+# run 01M35BYB2XZ588JMX3S31JJFYJ, 2026-09-22 20:12:01 - the same cut, worded the
+# other way the pipeline words it. Two independent wordings for one cause, so a
+# release rewording one cannot quietly take the distinction away.
+run_failed_wall_clock_cut() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+outcome: failed
+error: "step review failed: agent fix reached its absolute wall-clock limit after 30m0s: agent last produced output 647ms ago (128 observed); agent reported: claude parse events: context deadline exceeded"
+EOF
+}
+
+# An agent that DIED without any cap firing - run 01M2G0NYSGBTZK6F3F2DGR1JMV,
+# 2026-09-14 13:11:09, from the same store. It is the nearest neighbour of a cap
+# cut and it is not
+# one: nothing timed out, so the run stays an ordinary failure. Without this the
+# cut detector could widen to "the agent stopped" and nothing would notice.
+run_failed_agent_killed() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+outcome: failed
+error: "step review failed: agent review: pi exited: signal: killed"
+EOF
+}
+
 # A run whose ci step the worker deliberately aborted, so the run ends
 # `cancelled` while the work itself is finished. Transcribed from the record of
 # baby-menu-widget-cuota (2026-08-30): that repository runs no CI at all, so the
@@ -1061,6 +1119,175 @@ test_terminal_failed_balance() {
     "a balance failure must be distinguishable from every other failure"
   assert_contains "$out" "recharged" "the record must name the one action that clears it"
   pass "a run killed by the provider balance says so instead of reading as a plain failure"
+}
+
+# THE THREE READINGS THIS FILE'S ONE WORD USED TO COLLAPSE INTO TWO. A reviewer
+# that read the code and rejected it, a reviewer a time cap killed mid-read, and
+# a run going fine are three different states, and the middle one used to be
+# reported with the first one's word - so a branch nothing had ever judged was
+# reported as a branch with work to redo, and stayed reported that way.
+#
+# They are asserted in one case, side by side, because what matters is not any
+# single line but that no two of them read alike.
+test_cap_cut_bad_code_and_healthy_run_read_differently() {
+  local d short bad cut healthy
+  d=$(new_case three-readings)
+  make_repo_on_branch "$d/wt" fm/feat-three
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/three.meta" "window=fm:fm-three" "worktree=$d/wt" "kind=ship"
+
+  # 1. A real verdict about the code.
+  reset_fakes
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-three)"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-three ${short}  2026-09-22 20:12"
+  bad=$(run_crew_state "$d" three)
+
+  # 2. The same word, spent on a reviewer the clock killed.
+  reset_fakes
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-three)"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-three ${short}  2026-09-22 20:12"
+  cut=$(run_crew_state "$d" three)
+
+  # 3. A run that is simply getting on with it.
+  reset_fakes
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-three)"
+  FM_FAKE_RUNS_LIST="$(corroborating_active_row "$d" fm/feat-three)"
+  healthy=$(run_crew_state "$d" three)
+
+  assert_contains "$bad" "state: failed" "a real verdict about the code still reports failed"
+  assert_contains "$healthy" "state: working" "a healthy run still reports working"
+
+  # The whole point: the cut does not borrow the verdict's word.
+  assert_not_contains "$cut" "state: failed" \
+    "a run a time cap cut off must not report the word a code verdict reports"
+  assert_contains "$cut" "state: unknown" \
+    "a cut reports the house's word for a state nothing established"
+  assert_contains "$cut" "cut off by its own 30m0s time cap" \
+    "the cut must name what ended the run, and the cap it ran into"
+  assert_contains "$cut" "no verdict was reached about the work" \
+    "the cut must say the code was never judged"
+
+  # ...and does not overshoot into reading as fine, either. A cut is still a
+  # result that demands action; what changed is WHICH action.
+  assert_not_contains "$cut" "state: done" "a cut is not a finished run"
+  assert_not_contains "$cut" "state: working" "a cut is not a run still going"
+  assert_contains "$cut" "still needs validating" \
+    "the cut must name the action it asks for, which is to validate again"
+  assert_contains "$cut" "source: run-step" \
+    "the cut is the run's own account of itself, so the run-step is what said so"
+
+  pass "a code verdict, a time-cap cut, and a healthy run are three different readings"
+}
+
+# The cut's own wording is not load-bearing: the pipeline words the same cause
+# two ways, so a release rewording one must not silently return the cut to the
+# failure word.
+test_wall_clock_cut_reads_the_same_as_a_timeout_cut() {
+  reset_fakes
+  local d short out; d=$(new_case wall-clock-cut)
+  make_repo_on_branch "$d/wt" fm/feat-wc
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/wc.meta" "window=fm:fm-wc" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_wall_clock_cut fm/feat-wc)"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-wc ${short}  2026-09-22 20:12"
+  out=$(run_crew_state "$d" wc)
+  assert_not_contains "$out" "state: failed" "the wall-clock wording is the same cut"
+  assert_contains "$out" "state: unknown" "the wall-clock wording reports the same state"
+  assert_contains "$out" "cut off by its own 30m0s time cap" \
+    "the wall-clock wording names the same cap"
+  pass "both wordings the pipeline uses for a time cap read as the same cut"
+}
+
+# The nearest neighbour, and the direction this must NOT widen in. An agent that
+# died with no cap involved is an ordinary failure, and softening it would let
+# real failures hide behind the cut's reassurance.
+test_a_killed_agent_without_a_cap_stays_an_ordinary_failure() {
+  reset_fakes
+  local d short out; d=$(new_case killed-not-cut)
+  make_repo_on_branch "$d/wt" fm/feat-kill
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/kill.meta" "window=fm:fm-kill" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_agent_killed fm/feat-kill)"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-kill ${short}  2026-09-14 13:11"
+  out=$(run_crew_state "$d" kill)
+  assert_contains "$out" "state: failed" \
+    "an agent that died with no cap firing is still an ordinary failure"
+  assert_not_contains "$out" "time cap" \
+    "a failure no cap caused must not be dressed up as a cut"
+  pass "a killed agent with no cap involved keeps the failure word"
+}
+
+# THE OVER-CORRECTION THIS GUARDS. An abort is allowed to hand the question on to
+# whatever is happening now, because the worker chose it and has already moved
+# past it. Nobody chooses a cut: the validation died mid-review and the crew's
+# pane is typically busy at that very moment reacting to it, so handing over
+# would report a healthy-looking `working` over a branch nothing is validating.
+test_a_cap_cut_is_not_handed_over_to_a_busy_pane() {
+  reset_fakes
+  local d short cut aborted; d=$(new_case cut-vs-abort)
+  make_repo_on_branch "$d/wt" fm/feat-cb
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cb.meta" "window=fm:fm-cb" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_BUSY=1
+  export FM_FAKE_BUSY
+
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-cb)"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-cb ${short}  2026-09-22 20:12"
+  cut=$(run_crew_state "$d" cb)
+
+  # The abort beside it, proving the difference is the cut and not the pane.
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cb)"
+  FM_FAKE_RUNS_LIST="  cancelled  fm/feat-cb ${short}  2026-09-22 20:12"
+  aborted=$(run_crew_state "$d" cb)
+
+  assert_contains "$aborted" "source: pane" \
+    "an abort still hands the question to the evidence that can answer it"
+  assert_not_contains "$cut" "source: pane" \
+    "a cut must not let a busy pane answer for a validation that is dead"
+  assert_contains "$cut" "state: unknown" "the cut stands on its own reading"
+  pass "a cut stands on its own reading while an abort still hands the question on"
+}
+
+# THE THIRD PARTY THE FALSE WORD COST. A task idling on a correctly declared
+# external wait was read as a possible wedge, because the old run's `failed`
+# outranked its pause and the watcher's absorb classifier saw an answered
+# non-healthy verdict: short cadence, no label, straight down the stuck path.
+#
+# The repair is the word alone, and it reaches that classifier for free. This
+# asserts through fm-classify-lib.sh's OWN predicates over a REAL fm-crew-state
+# read, because the classifier is what actually decided the task's fate.
+test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path() {
+  reset_fakes
+  local d short cut bad; d=$(new_case cut-vs-pause)
+  make_repo_on_branch "$d/wt" fm/feat-pz
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/pz.meta" "window=fm:fm-pz" "worktree=$d/wt" "kind=ship"
+  echo "paused: waiting on the upstream release" >> "$d/state/pz.status"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-pz ${short}  2026-09-22 20:12"
+
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-pz)"
+  cut=$(run_crew_state "$d" pz)
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-pz)"
+  bad=$(run_crew_state "$d" pz)
+
+  # A real verdict is an ANSWER and must keep outranking the pause: a genuine
+  # failure a stale-looking record could mask is worse than a contradiction left
+  # visible. Nothing here softens that.
+  state_line_is_unanswered "$bad" \
+    && fail "a real code verdict must stay an answer that surfaces"
+  [ "$(absorb_class_of_state_line "$bad")" = none ] \
+    || fail "a real code verdict must still surface rather than be absorbed"
+
+  # The cut is not an answer about the work, so the classifier keeps the healthy
+  # class it already had for this task instead of reclassifying it as stuck.
+  state_line_is_unanswered "$cut" \
+    || fail "a cut must read as a non-answer, so an earlier healthy verdict can stand"
+  pass "a cut no longer outranks a declared pause the way a false verdict did"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -3613,5 +3840,10 @@ test_a_failed_successor_still_names_the_open_blocker
 test_an_unnameable_successor_lets_the_blocker_answer
 test_the_whole_read_lands_inside_its_bound_with_its_reason
 test_the_forge_is_asked_for_the_seconds_the_guard_approved
+test_cap_cut_bad_code_and_healthy_run_read_differently
+test_wall_clock_cut_reads_the_same_as_a_timeout_cut
+test_a_killed_agent_without_a_cap_stays_an_ordinary_failure
+test_a_cap_cut_is_not_handed_over_to_a_busy_pane
+test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path
 
 echo "all fm-crew-state tests passed"

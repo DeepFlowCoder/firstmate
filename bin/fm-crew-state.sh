@@ -40,6 +40,13 @@
 #      validation and reports `blocked` (see gate_agent_presence). That adds a
 #      question the run step never answered; it does not demote the run step,
 #      which stays authoritative about the RUN everywhere, here included.
+#      A `failed` run whose own account says a step's TIME CAP cut its agent off
+#      is not a verdict about the code and does not report as one: it reports
+#      `unknown` naming the cut and the validation still owed, and unlike an
+#      abort it does NOT hand the question on to the pane or the record, because
+#      nobody chose it and a busy pane would read as healthy work over a dead
+#      validation. bin/fm-nm-run-lib.sh owns that whole distinction, including
+#      why the reading is right to outlive its run.
 #      EXCEPT: while the active step is ci, `axi status` alone cannot tell "still
 #      waiting on checks" from "checks green, waiting on merge" (see
 #      nm_ci_checks_state) - a ci-step log-tail check overrides working -> done
@@ -874,6 +881,10 @@ if [ "$HAVE_RUN" = 1 ]; then
   # terminal while reporting nothing. Every verdict is arbitrated below; this
   # flag decides how much a silent arbitrator is allowed to license.
   RUN_IS_TERMINAL=0
+  # Whether this reading is a run the step's own time cap cut off. It reports
+  # `unknown` like an abort does and is terminal like one, and it is neither of
+  # the things that combination otherwise means, so it has to say so by name.
+  RUN_CAP_CUT=0
   # The exact run word handed to the ONE translation owner, and the pull request
   # the run reports, kept for the arbitration and the forge resolution below.
   RUN_WORD=""
@@ -901,6 +912,16 @@ if [ "$HAVE_RUN" = 1 ]; then
     # surfaced by each supervisor's span classification (fm-classify-lib.sh's
     # status_span_first_actionable) regardless of this coarse-vs-full
     # distinction, so a real gate is never silently missed.
+    #
+    # A bare word is also all the evidence a CAP CUT could be told from an
+    # ordinary failure by, and the runs list carries no `error:` column at all
+    # (its rows are status, branch, sha, date, pull request). So a cut read on
+    # this arm - and on the superseding-failed-row arm below, which reads the
+    # same list - still reports `failed`. That is a bound of the SOURCE and not a
+    # second opinion about the word: the moment `axi status` answers for this
+    # branch again the full arm reads the run's own account and reports the cut.
+    # Buying the distinction here would cost a second bounded call per row, out
+    # of the one deadline the verdict itself is already competing for.
     RUN_WORD=$COARSE_STATUS
     RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
     RUN_DETAIL="$(fm_nm_verdict_detail "$RUN_WORD") (background run)"
@@ -911,6 +932,9 @@ if [ "$HAVE_RUN" = 1 ]; then
     outcome=$(strip_quotes "$(nm_field outcome)")
     RUN_PR=$(strip_quotes "$(nm_field pr)")
     awaiting=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
+    # The run's own account of why it ended, read ONCE for the two readers that
+    # need it below: the balance qualifier and the cap-cut reading.
+    run_error=$(strip_quotes "$(nm_field error)")
     gate_status=$(nm_gate_status)
     has_gate=0
     nm_has_gate && has_gate=1
@@ -923,7 +947,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       # is appended here rather than asked of the one-phrase-per-word owner -
       # the same split the coarse arm's `(background run)` qualifier follows.
       # It names the one failure that is not a verdict on the work at all.
-      failure_cause=$(fm_nm_failure_cause_detail "$(strip_quotes "$(nm_field error)")")
+      failure_cause=$(fm_nm_failure_cause_detail "$run_error")
       [ -z "$failure_cause" ] || RUN_DETAIL="$RUN_DETAIL: $failure_cause"
       fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
     elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
@@ -988,6 +1012,26 @@ if [ "$HAVE_RUN" = 1 ]; then
       fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
       CI_LOG_MAY_REFINE=1
     fi
+
+    # A failure whose cause was the step's OWN TIME CAP is not a verdict about
+    # the code - the reviewer never finished reading it - and reporting it with
+    # the same word as a reviewer's rejection tells the reader to redo work that
+    # nothing has ever judged. bin/fm-nm-run-lib.sh owns the whole distinction,
+    # including why this is `unknown` rather than a new word and why the label is
+    # right to outlive its run. Applied here, after both word arms, so a cut
+    # cannot mean one thing on the `outcome:` reading and another on the
+    # `status:` one; it runs on the same `error:` text the balance qualifier
+    # above reads, and the two causes are disjoint on every payload the store
+    # carries.
+    #
+    # RUN_WORD is deliberately left as `failed`: it is the word the runs list
+    # carries for this run, and the arbitration below has to match it there to
+    # decide whether this reading still stands.
+    if [ "$RUN_STATE" = failed ] && fm_nm_failure_is_cap_cut "$run_error"; then
+      RUN_STATE=unknown
+      RUN_DETAIL=$(fm_nm_cap_cut_detail "$run_error")
+      RUN_CAP_CUT=1
+    fi
   fi
 
   # Whether the run WORD carried a verdict about the work at all - the one
@@ -1012,9 +1056,19 @@ if [ "$HAVE_RUN" = 1 ]; then
   #
   # The two are told apart by terminality, which the owner already answers: an
   # abort is terminal, an unmodelled word is not.
+  #
+  # A CAP CUT is the third terminal `unknown`, and it is the one that must NOT
+  # hand the question on. An abort may, because the worker chose it and has
+  # already moved past it, so whatever is happening now is better evidence than
+  # the run. Nobody chose a cut: the validation died mid-review and the crew's
+  # own pane is typically busy at that exact moment reacting to it, so falling
+  # through would report the crew as working and bury the fact that nothing is
+  # validating its branch any more. It stands on its own reading instead, which
+  # is what keeps a cut a result that still demands action rather than a benign
+  # one.
   RUN_VERDICTLESS=0
   case "$RUN_STATE" in
-    unknown) [ "$RUN_IS_TERMINAL" = 1 ] && RUN_VERDICTLESS=1 ;;
+    unknown) [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_CAP_CUT" != 1 ] && RUN_VERDICTLESS=1 ;;
   esac
 
   # A verdict is only trustworthy when this branch's NEWEST run is the one it

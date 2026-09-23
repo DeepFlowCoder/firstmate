@@ -2,11 +2,12 @@
 
 Audience: maintainer verification.
 
-This record supports three active guarantees, each resting on a different measured fact:
+This record supports four active guarantees, each resting on a different measured fact:
 
 - On the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work. This one rests on the pipeline working in its own managed worktree and never in the crew's.
 - A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
 - A request to the pipeline whose result was never established is reported as unestablished and never as a failed request. This one rests on the daemon's response time being load-dependent, so a bound that fires says nothing about what the request did.
+- A run a step's own time cap cut off is reported as a verdict that was never reached and never as a verdict against the code. This one rests on the run's own `error:` text distinguishing the two, and on the cut wordings being disjoint from every other failure the store carries.
 
 [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, and the submitted-head binding - and, for the second guarantee, why the `failed` phrase reads as it does.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns how an attributed run becomes a reported state.
@@ -261,3 +262,76 @@ So widening that particular probe belongs to the no-mistakes project; what this 
 `fm_nm_text_is_unconfirmed` matches the request-scoped and probe-scoped clauses of that payload and nothing broader, because a bare "timed out" is also the pipeline's own vocabulary for a real fact about a run.
 That wording is un-owned vendor text, so the classifier never rests on it alone: a bound that fires and an empty answer are classified as unestablished independently of any string.
 Refresh the clauses by re-reading the CLI's failure text after a no-mistakes upgrade; a reworded payload costs a clause, never the guarantee.
+
+## A time cap cuts a run off without judging the code
+
+The fourth guarantee separates two opposite things the store spells with one word.
+`fm_nm_failure_is_cap_cut` in [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh) owns the distinction and the reasoning; [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns the reading it produces.
+The portable regressions in `tests/fm-crew-state.test.sh` pin a code verdict, a cut, and a healthy run apart with a faked `no-mistakes`.
+What a fake cannot establish is that the real store actually carries the two shapes apart, which is what is recorded here.
+
+Recorded 2026-09-23 against `~/.no-mistakes/state.sqlite` on Darwin 24.6.0 (arm64) with no-mistakes v1.75.2.
+
+How much of this fleet's failure record is a cut rather than a verdict:
+
+```sh
+sqlite3 -readonly ~/.no-mistakes/state.sqlite \
+  "select count(*) from runs where status='failed';
+   select count(*) from runs where status='failed'
+     and (error like '%timed out after%' or error like '%absolute wall-clock limit%');"
+```
+
+```
+55
+14
+```
+
+A quarter of every failure this fleet has recorded is a run whose reviewer or tester was killed by the clock.
+The two wordings the pipeline uses, one of each, transcribed in full:
+
+```sh
+sqlite3 -readonly ~/.no-mistakes/state.sqlite \
+  "select error from runs where id in
+     ('01M35BZMYXMXMCA3WXF36RWW88','01M35BYB2XZ588JMX3S31JJFYJ');"
+```
+
+```
+step review failed: agent fix reached its absolute wall-clock limit after 30m0s: agent last produced output 647ms ago (128 observed); agent reported: claude parse events: context deadline exceeded
+step test failed: agent run tests timed out after 30m0s: agent last produced output 13s ago (104 observed); agent reported: claude exited: signal: killed
+```
+
+Both payloads say the same thing twice: the agent was still producing output seconds before it stopped, and what ended it was the clock.
+Neither carries a statement about the code, which is the fact the guarantee needs.
+
+The detector was run over every run in the store that carries an `error:` text at all - 55 failed and 32 cancelled - and answered on exactly the 14 rows the query above counts, with no cancelled row and no other failure among them.
+The nearest neighbour it must not take is `01M2G0NYSGBTZK6F3F2DGR1JMV` (2026-09-14), `step review failed: agent review: pi exited: signal: killed`: an agent that died with no cap involved, which stays an ordinary failure.
+It is also disjoint from the client-side wording `fm_nm_text_is_unconfirmed` owns, because `get_run timed out` names neither an agent nor a duration.
+
+### How long the reading stands
+
+A cut's reading is not a moment, which is why the word it uses matters for hours rather than for one poll.
+The arbitration in [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) withdraws a terminal reading as soon as a newer run supersedes it on the branch, so the window is exactly the gap between a cut ending and its successor starting:
+
+```sh
+sqlite3 -readonly ~/.no-mistakes/state.sqlite \
+  "select branch, id, status, datetime(created_at,'unixepoch'), datetime(updated_at,'unixepoch')
+     from runs
+    where branch in ('fm/fm-tope-de-trabajo-no-acota-lo-que-dice-acotar',
+                     'fm/fm-chrome-devtools-axi-pageid-roto')
+    order by branch, created_at;"
+```
+
+```
+fm/fm-chrome-devtools-axi-pageid-roto|01M354M59S16BBBCEA7ZD8M61S|failed|2026-09-22 18:04:07|2026-09-22 20:12:17
+fm/fm-chrome-devtools-axi-pageid-roto|01M35BZMYXMXMCA3WXF36RWW88|failed|2026-09-22 20:12:44|2026-09-22 21:12:04
+fm/fm-chrome-devtools-axi-pageid-roto|01M35NBX59CM077WHFGXYXJ48J|completed|2026-09-22 22:56:43|2026-09-23 00:09:42
+fm/fm-tope-de-trabajo-no-acota-lo-que-dice-acotar|01M354454252RT5TJZ5T8KBKMM|failed|2026-09-22 17:55:23|2026-09-22 18:51:29
+fm/fm-tope-de-trabajo-no-acota-lo-que-dice-acotar|01M35C1K0NXTBVR7M5122WFHPK|completed|2026-09-22 20:13:47|2026-09-22 21:45:52
+```
+
+The cut on `fm-tope-de-trabajo-no-acota-lo-que-dice-acotar` ended at 18:51:29 and its successor started at 20:13:47: one hour and twenty-two minutes in which that cut was the newest thing known about the branch.
+The cut on `fm-chrome-devtools-axi-pageid-roto` ended at 21:12:04 against a successor at 22:56:43, one hour and forty-four minutes.
+That is the measured scope of the guarantee: for hours at a time the cut's reading is the only reading, so it has to be true on its own rather than merely short-lived.
+
+Refresh this by re-running all three queries after a no-mistakes upgrade.
+A reworded payload costs a wording, never the guarantee: the pipeline spells this cause two independent ways and either one carries the verdict.
