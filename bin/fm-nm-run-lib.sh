@@ -325,7 +325,7 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
   [ -n "$out" ] && [ -n "$branch" ] || return 1
   while IFS= read -r row; do
     parsed=$(fm_nm_runs_parse_row "$row") || continue
-    IFS=$'\t' read -r st br sha <<< "$parsed"
+    IFS=$'\t' read -r st br sha _ <<< "$parsed"
     [ "$br" = "$branch" ] || continue
     printf '%s\t%s' "$st" "$sha"
     return 0
@@ -355,12 +355,21 @@ fm_nm_runs_listing_is_answered() {  # <runs-output>
   return 1
 }
 
-# Split one `no-mistakes runs` row into "<status><TAB><branch><TAB><sha>".
-# Rows are plain, unquoted, column-padded text -
-# "<status> <branch> <short-sha> <date> [<pr-url>]" - so splitting on the first
-# two whitespace runs is exact. Echoes nothing for a blank row.
+# Split one `no-mistakes runs` row into
+# "<status><TAB><branch><TAB><sha><TAB><pr-url>". Rows are plain, unquoted,
+# column-padded text - "<status> <branch> <short-sha> <date> [<pr-url>]" - so
+# splitting on the first two whitespace runs is exact. Echoes nothing for a
+# blank row.
+#
+# The pull request column is optional and is the row's LAST field, so it is read
+# from the end rather than by counting past the date - the date column spends two
+# whitespace-separated tokens, and a reader that counted them would break on any
+# row whose date is formatted differently. An absolute URL is the only thing that
+# column can hold, which is what makes reading from the end exact; a row with no
+# pull request leaves the field empty. Callers need it because that URL is the
+# only evidence a coarse row carries about whether the run's work landed.
 fm_nm_runs_parse_row() {  # <row>
-  local row status rest branch sha
+  local row status rest branch sha pr
   row=$(fm_nm_trim "${1:-}")
   [ -n "$row" ] || return 1
   status=${row%% *}
@@ -369,7 +378,9 @@ fm_nm_runs_parse_row() {  # <row>
   rest=$(fm_nm_trim "${rest#* }")
   sha=${rest%% *}
   [ -n "$status" ] && [ -n "$branch" ] || return 1
-  printf '%s\t%s\t%s' "$status" "$branch" "$sha"
+  pr=${row##* }
+  case "$pr" in https://*) ;; *) pr="" ;; esac
+  printf '%s\t%s\t%s\t%s' "$status" "$branch" "$sha" "$pr"
 }
 
 # --- run-word translation ---------------------------------------------------

@@ -377,6 +377,22 @@ outcome: passed
 EOF
 }
 
+# The same merge-claiming outcome whose recorded `pr:` is on a host neither the
+# GitHub nor the GitLab shape accepts, so the pull request's identity cannot be
+# reconstructed by anything - forge read or local record alike.
+run_passed_with_unreadable_pr() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://ghe.example.com/o/r/pull/5"
+  findings: none
+outcome: passed
+EOF
+}
+
 # The same merge-claiming outcome with no `pr:` recorded at all, which is what a
 # run that never reached the pull request step leaves behind.
 run_passed_without_pr() {  # <branch>
@@ -2874,6 +2890,126 @@ test_a_passed_run_with_no_pull_request_names_that_as_the_reason() {
   pass "a passed run with no pull request names that as the reason"
 }
 
+# A `passed` run whose recorded `pr:` is on a host neither provider shape
+# accepts. Nothing can reconstruct that pull request's identity, so neither the
+# forge read nor the local merge record can settle it - and a reason naming the
+# opt-in would send the reader after a switch that would answer "no readable
+# pull request URL to resolve" and ask no forge either.
+test_an_unreadable_pull_request_url_names_itself_as_the_reason() {
+  reset_fakes
+  local d short out
+  d=$(new_case passed-unreadable-pr)
+  make_repo_on_branch "$d/wt" fm/feat-unreadablepr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/unreadablepr.meta" "window=fm:fm-unreadablepr" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed_with_unreadable_pr fm/feat-unreadablepr)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-unreadablepr ${short}  2026-08-30 07:45"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" unreadablepr
+  out=$(run_crew_state "$d" unreadablepr)
+  assert_not_contains "$out" "state: done" "an unreadable pull request establishes no landing"
+  assert_contains "$out" "state: unknown" "so the reading is unknown"
+  assert_contains "$out" "cannot be read" "and the reason names the URL it could not read"
+  assert_not_contains "$out" "FM_CREW_STATE_RESOLVE_PR" \
+    "never a switch that could not have resolved it"
+  pass "an unreadable pull request URL names itself as the reason"
+}
+
+# THE COARSE ARM, which is the one a multi-crew fleet routinely takes: `axi
+# status` answers for whichever run was most recently touched, so while another
+# crew validates, this crew misses direct attribution and the runs list answers
+# for it. The list's one terminal green word is `completed`, which is what a
+# `passed` run looks like there - and the row names the pull request. Before
+# this, that row carried `done` through untouched, so the same abandoned pull
+# request read `unknown` when attribution hit and `done` when it missed.
+test_a_coarse_row_naming_a_pull_request_is_not_done_unverified() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case coarse-pr-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-coarseclosed
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/coarseclosed.meta" "window=fm:fm-coarseclosed" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-30 08:00
+  completed  fm/feat-coarseclosed ${short}  2026-08-30 07:45  https://github.com/o/r/pull/5
+EOF
+)"
+  # The pull request was closed WITHOUT merging, which the stub would say - and
+  # which this path must reach the honest reading without asking.
+  FM_FAKE_GH_PR_STATE=CLOSED
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" coarseclosed
+  out=$(run_crew_state "$d" coarseclosed)
+  [ ! -s "$calls" ] || fail "the coarse read called gh: $(cat "$calls")"
+  assert_not_contains "$out" "state: done" "an unverified merge is not landed work on this arm either"
+  assert_contains "$out" "state: unknown" "the unestablished merge is reported as unknown"
+  assert_contains "$out" "background run" "and the coarse reading still says where it was read"
+  assert_contains "$out" "pull request state not resolved" "with the reason it could not be settled"
+  pass "a coarse row naming a pull request is not done unverified"
+}
+
+# The other half on the same arm: work this home confirmed and recorded still
+# reaches `done` from the coarse row, with no forge call, so the fleet snapshot
+# and the inactive-crew scan keep a landed crew that missed attribution.
+test_a_coarse_row_reaches_done_from_the_local_merge_record() {
+  reset_fakes
+  local d short out calls
+  d=$(new_case coarse-pr-recorded)
+  make_repo_on_branch "$d/wt" fm/feat-coarsemerged
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  calls="$d/gh.calls"; : > "$calls"
+  FM_FAKE_GH_CALLS="$calls"
+  fm_write_meta "$d/state/coarsemerged.meta" "window=fm:fm-coarsemerged" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-30 08:00
+  completed  fm/feat-coarsemerged ${short}  2026-08-30 07:45  https://github.com/o/r/pull/5
+EOF
+)"
+  record_confirmed_merge "$d/state" coarsemerged https://github.com/o/r/pull/5
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" coarsemerged
+  out=$(run_crew_state "$d" coarsemerged)
+  [ ! -s "$calls" ] || fail "the coarse read called gh: $(cat "$calls")"
+  assert_contains "$out" "state: done" "a merge this home confirmed is landed work here too"
+  assert_contains "$out" "own record of that confirmed merge" \
+    "and the line names the record as what established it"
+  pass "a coarse row reaches done from the local merge record"
+}
+
+# The narrowness of it: a coarse row that names NO pull request claims no merge -
+# it is what a `checks-passed` run looks like on that surface - so it has nothing
+# to verify and its `done` is untouched. Without this the fix would degrade every
+# green background run to `unknown` over a delivery none of them claimed.
+test_a_coarse_row_without_a_pull_request_stays_done() {
+  reset_fakes
+  local d short out
+  d=$(new_case coarse-no-pr)
+  make_repo_on_branch "$d/wt" fm/feat-coarsenopr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/coarsenopr.meta" "window=fm:fm-coarsenopr" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-30 08:00
+  completed  fm/feat-coarsenopr ${short}  2026-08-30 07:45
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" coarsenopr
+  out=$(run_crew_state "$d" coarsenopr)
+  assert_contains "$out" "state: done" "a coarse row claiming no delivery keeps its verdict"
+  assert_not_contains "$out" "pull request state not resolved" \
+    "and says nothing about a pull request it never named"
+  pass "a coarse row without a pull request stays done"
+}
+
 # Instance 3, closed. The measured 2026-09-09 reading: `axi status` keeps
 # answering `running` while this branch's own newest run has been failed for
 # hours, and the heavy list query that would refute it is the one likeliest to
@@ -3752,6 +3888,10 @@ test_a_closed_unmerged_pull_request_is_never_done_on_the_unasked_path
 test_a_locally_recorded_merge_is_done_without_asking_the_forge
 test_a_merge_record_for_another_pull_request_does_not_land_this_run
 test_a_passed_run_with_no_pull_request_names_that_as_the_reason
+test_an_unreadable_pull_request_url_names_itself_as_the_reason
+test_a_coarse_row_naming_a_pull_request_is_not_done_unverified
+test_a_coarse_row_reaches_done_from_the_local_merge_record
+test_a_coarse_row_without_a_pull_request_stays_done
 test_open_forge_still_surfaces_a_contradicting_record
 test_checks_passed_reports_done_without_a_pull_request_claim
 test_active_reading_degrades_to_unknown_when_the_list_is_silent

@@ -70,9 +70,7 @@
 #      invoked deliberately - a merged pull request reports `done` and one closed
 #      WITHOUT merging reports `failed`, each naming the forge as what said so,
 #      because `done` means the work landed rather than that the task is over. A
-#      merge is never inferred from the pipeline outcome in any of those cases. No
-#      other run word claims a merge: `checks-passed` and a coarse `completed`
-#      report `done` and say nothing about a pull request either way.
+#      merge is never inferred from the pipeline outcome in any of those cases.
 #      WITHOUT the opt-in this read asks no forge, and `done` is then available
 #      only where something OTHER than the pipeline's claim establishes the merge:
 #      this home's own durable record of a merge it already confirmed, which is a
@@ -81,6 +79,16 @@
 #      unestablished - so the reading is `unknown` carrying its reason, never the
 #      optimistic half. That is the whole of the periodic path's honesty: it may
 #      say the work landed, or say it does not know, and nothing in between.
+#      ONE RULE, NOT ONE PER SURFACE AND NOT ONE PER CALLER. The same evidence may
+#      not yield two verdicts depending on who asked, so the unresolved answer is
+#      resolved the same way wherever it arises. That is why it also covers the
+#      opt-in path whose forge did NOT answer - an opt-in read that could not
+#      reach the forge has established no more than an unasked one, and `done`
+#      there was the same optimistic half under a different caller. And it is why
+#      the coarse runs-list arm is verified too: `checks-passed` and a coarse
+#      `completed` row that names no pull request claim no merge and stay `done`
+#      untouched, but a coarse row that DOES name one is a delivery nobody
+#      checked, exactly like the full path's, and reads the same.
 #   4. Reconcile the status log: a needs-decision/blocked line under an ACTIVE
 #      run is deterministically stale (the gate resolved and the run resumed) and
 #      is flagged superseded. Under a finished run it is not stale - a finished
@@ -681,6 +689,11 @@ nm_ci_checks_state() {
 #                        successor.
 #   COARSE_STATUS        the newest row for this branch whose short-sha DOES
 #                        bind here - the coarse attribution verdict - or empty.
+#   COARSE_PR            that same row's pull request URL, empty when the row
+#                        carries none. It is the only thing a coarse row says
+#                        about whether the run's work LANDED, and the merge
+#                        verification below needs it for exactly the reason the
+#                        full path needs the run's own `pr:` field.
 #   COARSE_ROW_IS_NEWEST whether that answering row IS the branch's newest row.
 #                        When it is not, a strictly newer run exists, so the
 #                        coarse verdict belongs to a run already replaced.
@@ -702,12 +715,13 @@ BRANCH_NEWEST_FOUND=0
 BRANCH_NEWEST_STATUS=""
 BRANCH_NEWEST_SHA=""
 COARSE_STATUS=""
+COARSE_PR=""
 COARSE_ROW_IS_NEWEST=0
 RUNS_UNKNOWN_ATTRIBUTION=0
 # Idempotent: a crew has exactly one branch per invocation, so the second caller
 # reuses the first caller's scan instead of re-reading the list.
 nm_scan_runs_for_branch() {  # <branch>
-  local branch=$1 out row parsed st br sha seen=0
+  local branch=$1 out row parsed st br sha pr seen=0
   [ "$RUNS_SCANNED" = 1 ] && return 0
   RUNS_SCANNED=1
   out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
@@ -715,7 +729,7 @@ nm_scan_runs_for_branch() {  # <branch>
   RUNS_ANSWERED=1
   while IFS= read -r row; do
     parsed=$(fm_nm_runs_parse_row "$row") || continue
-    IFS=$'\t' read -r st br sha <<< "$parsed"
+    IFS=$'\t' read -r st br sha pr <<< "$parsed"
     [ "$br" = "$branch" ] || continue
     seen=$((seen + 1))
     if [ "$seen" = 1 ]; then
@@ -728,6 +742,7 @@ nm_scan_runs_for_branch() {  # <branch>
     if [ -z "$COARSE_STATUS" ]; then
       if nm_coarse_head_matches_worktree "$sha"; then
         COARSE_STATUS=$st
+        COARSE_PR=$pr
         [ "$seen" = 1 ] && COARSE_ROW_IS_NEWEST=1
       elif ! fm_nm_head_resolvable "$WT" "$sha"; then
         RUNS_UNKNOWN_ATTRIBUTION=1
@@ -927,6 +942,11 @@ if [ "$HAVE_RUN" = 1 ]; then
     RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
     RUN_DETAIL="$(fm_nm_verdict_detail "$RUN_WORD") (background run)"
     fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
+    # The one detail the row DOES carry beyond its status word: the pull request
+    # the run is delivering through. It feeds the same merge verification the
+    # full path's `pr:` field feeds, because the question it answers - did this
+    # work land? - is not a question about which surface was read.
+    RUN_PR=$COARSE_PR
   else
     status=$(strip_quotes "$(nm_field status)")
     RUN_STATUS=$status
@@ -1270,14 +1290,33 @@ if [ "$HAVE_RUN" = 1 ]; then
   # The forge REFUTING the claim is the other thing entirely: there the merge is
   # established, as not having happened, and the run's own `done` does not stand.
   #
-  # `passed` is the only word that reaches here, because it is the only one that
-  # claims a merge. `checks-passed` and a coarse `completed` report `done` and
-  # say nothing about a pull request either way, so they have nothing to verify.
+  # WHAT REACHES HERE is every reading that would report a finished run's work as
+  # LANDED, on whichever surface it was read. The full path's `passed` is one:
+  # it is the only `axi status` word that claims a merge, and `checks-passed`
+  # claims none, so it has nothing to verify. The coarse runs-list arm is the
+  # other, and it was the hole this gate left open: the list has ONE terminal
+  # green word, `completed`, which fm_nm_runs_word_for_terminal produces for
+  # `passed` and `checks-passed` alike, so a `passed` run that missed attribution
+  # arrived here under a word this gate did not recognise and carried `done`
+  # through untouched - the same unverified merge, reported the optimistic way,
+  # reached by nothing more than which surface answered first. A coarse row does
+  # carry the one fact that matters: the pull request the run is delivering
+  # through. When it names one, that delivery is exactly as unestablished as the
+  # full path's, and the SAME evidence may not yield two verdicts depending on who
+  # asked - so it is verified the same way. When the row names no pull request
+  # there is no delivery to check, which is the `checks-passed` reading and stays
+  # `done` untouched.
+  #
   # A reading the arbitration could not stand behind has nothing to verify either:
   # its state is already `unknown` for a reason the forge cannot settle, so asking
   # would spend a bounded call to append a fact about a verdict this read has
   # already discarded.
-  if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_WORD" = passed ]; then
+  RUN_CLAIMS_LANDED=0
+  case "$RUN_SOURCE:$RUN_WORD" in
+    coarse:completed) [ -n "$RUN_PR" ] && RUN_CLAIMS_LANDED=1 ;;
+    *:passed)         RUN_CLAIMS_LANDED=1 ;;
+  esac
+  if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_CLAIMS_LANDED" = 1 ]; then
     PR_STATE=""
     PR_REASON=""
     # ONE reading of the budget for the guard AND for the bound the guard
@@ -1290,14 +1329,22 @@ if [ "$HAVE_RUN" = 1 ]; then
     # left to spend, past the bound bin/fm-fleet-snapshot.sh kills the read at,
     # folding a crew to a reasonless `unknown`.
     PR_BUDGET_LEFT=$(read_budget_left)
-    # "There is no pull request to ask about" is true whether or not this read
-    # asks, so it is tested FIRST. Ordered the other way, the default path
-    # answered a run with no recorded pull request by naming the opt-in as what
-    # would resolve it - and the opt-in resolves nothing when there is no URL to
-    # resolve. A reason that points at a switch which cannot help is worse than
-    # useless now that the reason is what the reader is left holding.
+    # EVERY REASON NAMES ITS OWN CAUSE, which is why the two that hold whether or
+    # not this read asks are tested FIRST. Ordered the other way, the default path
+    # answered a run with no usable pull request by naming the opt-in as what
+    # would resolve it - and the opt-in resolves nothing when there is no URL, or
+    # no URL this home can read: handed one, fm_pr_state_resolve answers with its
+    # own "no readable pull request URL to resolve" and asks no forge either. A
+    # reason that points at a switch which cannot help is worse than useless now
+    # that the reason is what the reader is left holding, and an unreadable URL is
+    # the same defect one branch further in - a recorded `pr:` on a host neither
+    # the GitHub nor the GitLab shape accepts is not an unasked question, it is a
+    # pull request identity this home cannot reconstruct at all, which is also
+    # exactly why the local merge record below cannot settle it.
     if [ -z "$RUN_PR" ]; then
       PR_REASON="the run recorded no pull request to ask about"
+    elif ! fm_pr_url_parse "$RUN_PR"; then
+      PR_REASON="the recorded pull request URL cannot be read, so nothing can resolve it: $RUN_PR"
     elif [ "$RESOLVE_PR" != 1 ]; then
       PR_REASON="this read asks no forge (set FM_CREW_STATE_RESOLVE_PR=1 to resolve it)"
     elif [ "$PR_BUDGET_LEFT" = 0 ]; then
