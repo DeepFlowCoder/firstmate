@@ -4,17 +4,18 @@ Audience: maintainer verification.
 
 This record supports four active guarantees, each resting on a different measured fact:
 
-- On the `axi status` path, a crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work. This one rests on the pipeline working in its own managed worktree and never in the crew's.
+- A crew's current-state read still attributes its own no-mistakes run after the pipeline has moved the branch head, and still refuses a run that belongs to other work - including when `axi status` answers for a different branch entirely. This one rests on the pipeline working in its own managed worktree and never in the crew's, and on the branch-scoped push binding that same output carries whichever run it renders.
 - A failed run's discarded worktree costs no commit, so a failed run is reported as a failed run and never as lost work - and the one failed run the fourth guarantee below reports as `unknown` instead still carries the work-is-not-lost fact. This one rests on that managed worktree being a checkout of the same parent repository, sharing its object store and its refs, so deleting the checkout deletes neither.
 - A request to the pipeline whose result was never established is reported as unestablished and never as a failed request. This one rests on the daemon's response time being load-dependent, so a bound that fires says nothing about what the request did.
 - On the full `axi status` read, and only there, a run a step's own time cap cut off is reported as a verdict that was never reached and never as a verdict against the code. This one rests on the run's own `error:` text distinguishing the two, and on the cut wordings being disjoint from every other failure the store carries. Its two bounds are stated with it below, because a guarantee stated without its limit is the defect it exists to fix.
 
-[`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, and the submitted-head binding - and, for the second guarantee, why the `failed` phrase reads as it does.
+[`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, the submitted-head binding, and the branch binding - and, for the second guarantee, why the `failed` phrase reads as it does.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns how an attributed run becomes a reported state.
 
-The first guarantee is scoped to that path deliberately, because the submitted head is only carried by the `axi status` output.
-`axi status` is repo-scoped, so when it answers for another branch the read falls through to the coarse `no-mistakes runs` list, whose rows carry the pipeline-advanced head and no submitted head, and that path still reports unknown attribution after a head move.
-Work to close that second door is tracked as `fm-atribucion-segunda-puerta-repo-scoped`.
+The first guarantee rests on the `axi status` output either way, because the submitted head is only carried there.
+Which run that one call answers with is the vendor's choice and has changed across versions, so the guarantee is held under both measured behaviors rather than under the current one: "Which branch `axi status` answers for" below records them.
+When it answers for another branch the read falls through to the coarse `no-mistakes runs` list, whose rows carry the pipeline-advanced head and no submitted head; the branch-scoped `branch_sync` block of the same output is what binds this branch's own newest row there, at no additional call.
+"What the branch binding costs" below records the measurement that chose that shape over the one call which renders the block on its own.
 
 The portable regressions in `tests/fm-crew-state.test.sh` pin both directions with a faked `no-mistakes`, because CI has neither the binary nor its run store.
 What a fake cannot prove is that `axi status` still emits the fields those rules read, so the live measurement is recorded here and is refreshed by re-running the commands below against a branch that carries a pipeline push binding.
@@ -39,7 +40,9 @@ sqlite3 -readonly ~/.no-mistakes/state.sqlite \
 
 The same row's `worktree_dir` is the pipeline's own managed worktree, `~/.no-mistakes/worktrees/<repo-id>/<run-id>`, not the crew worktree.
 The crew worktree was at `44115a8750`, which is what the crew submitted; the run reports `8acc107b97`, which the pipeline's own `rebase` and fix commits produced in that managed worktree and pushed to the remote.
-Nothing fetches that sha back into the crew worktree, so while the run is in flight it is not a git object there at all - which is why the head rule's ancestry clause, written for exactly these pipeline commits, cannot be evaluated and `fm_nm_head_resolvable` reads the run as unknown attribution.
+That advanced sha is not this worktree's commit, and after the pipeline's `rebase` it is not a descendant of it either, so the head rule cannot bind it however well the object store is stocked.
+Whether it is even a git object in the crew worktree is incidental and must not be relied on in either direction: nothing in the run fetches it back, but the crew worktree shares its object store with every other worktree of the same checkout, so an unrelated fetch of the remote makes the pushed head resolvable there.
+Both readings were measured on 2026-09-23 against the live run of pull request 98, recorded under "Which branch `axi status` answers for" below, and they take the head rule to the same dead end: unknown attribution when the sha does not resolve, a proven mismatch when it does.
 
 ## `axi status` carries the submitted head that does bind
 
@@ -106,6 +109,112 @@ Three facts the attribution rules depend on are present in that one output:
 - `branch_sync.state` is not `pipeline_owned` here, so the lane exemption does not cover this case and the submitted-head binding is what reaches the run.
 
 `no-mistakes axi sync --check` renders the same `branch_sync` block and is the read-only way to inspect it without asking for the run.
+
+## Which branch `axi status` answers for
+
+Recorded 2026-09-23 on Darwin 24.6.0 (arm64) with no-mistakes v1.75.2 (4debd42, 2026-09-14) and git 2.54.0, against the fleet's own live state: seven runs that night, 167 in the store, and five worktrees of `DeepFlowCoder/firstmate` checked out at once.
+The live run is `01M36MS35MN4TWW4VA3MK2792C` on branch `fm/fm-corrida-aparcada-con-agente-muerto-se-lee-sana`, which delivered pull request 98, measured while its `ci` step was running with the pull request open - the exact shape the attribution rules exist for.
+
+`axi status` takes no branch selector, so nothing can ask it for a given branch (`axi status --help` in v1.75.2 exposes only `--run`), and which run it answers with is the vendor's choice.
+That choice has changed, and both behaviors are recorded because a home may run either version:
+
+- Measured 2026-08-29, from a worktree whose branch had no run: it answered with a different branch's run.
+- Measured 2026-09-23 on v1.75.2: it is branch-scoped in both directions, as the two readings below show.
+
+From the crew worktree of the live run, with a strictly newer run live on another branch at that moment, it answered for the checked-out branch and not for the newest run:
+
+```sh
+git rev-parse --abbrev-ref HEAD && git rev-parse --short HEAD
+no-mistakes axi status | head -3
+```
+
+```
+fm/fm-corrida-aparcada-con-agente-muerto-se-lee-sana
+9787b0e4
+run:
+  id: "01M36MS35MN4TWW4VA3MK2792C"
+  branch: fm/fm-corrida-aparcada-con-agente-muerto-se-lee-sana
+```
+
+From a worktree whose branch had no run at all, it said so in its own words instead of handing over a foreign run, and rendered a repo-wide table with no `branch:` key of its own - which is what makes it read as no attribution rather than as another branch's:
+
+```sh
+no-mistakes axi status | head -5
+```
+
+```
+current_branch: fm/fm-atribucion-segunda-puerta-repo-scoped
+runs_on_current_branch: 0
+count: 10 of 167 total
+runs[10]{id,branch,status,head,pr}:
+  "01M36PQVJ2XKT0GN6BSAY4ESE3",fm/fm-un-solo-veredicto-para-codigo-malo-y-revisor-cortado,running,c5ac8de4,""
+```
+
+Asked explicitly for a run belonging to another branch, it labels it as one rather than rendering it as `run:`:
+
+```sh
+no-mistakes axi status --run 01M36MS35MN4TWW4VA3MK2792C | head -3
+```
+
+```
+current_branch: fm/fm-atribucion-segunda-puerta-repo-scoped
+other_branch_run:
+  id: "01M36MS35MN4TWW4VA3MK2792C"
+```
+
+The same reading settles what the runs list can do about a run the pipeline has rebased, which is the question the branch binding exists to answer.
+Taken inside the crew worktree, at its submitted head `9787b0e4`, against the head that run reports and every row of the list carries:
+
+```sh
+git cat-file -t cc8bb75d^{commit}
+git merge-base --is-ancestor HEAD cc8bb75d && echo ancestor || echo "not an ancestor"
+git rev-parse --git-common-dir
+```
+
+```
+commit
+not an ancestor
+/Users/ramongarcia/github/dotfiles/firstmate/.git
+```
+
+The pushed head resolves here - the worktree shares one object store with the whole checkout, and the remote had been fetched since the push - and it is still not bindable, because the pipeline's rebase left this worktree's commit off its ancestry.
+So the list is a dead end for such a run under either reading, and the run's own reported `head` is too.
+Refresh this section by re-running the three readings above from a crew worktree whose pipeline has pushed a rebased head, while another branch holds a newer run.
+
+## What the branch binding costs
+
+Same environment as the section above.
+Closing the cross-branch path needed a branch-scoped source for the push binding, and the cost of each candidate is what chose between them, measured from a worktree of this repository with the update check disabled:
+
+Each command is spelled out literally rather than expanded from a variable: `no-mistakes $cmd` measures three failed one-argument invocations under `zsh`, which does not word-split an unquoted expansion, and they all come back in about 25ms.
+
+```sh
+export NO_MISTAKES_NO_UPDATE_CHECK=1
+ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
+for i in 1 2 3; do s=$(ms); no-mistakes axi status       >/dev/null 2>&1; e=$(ms); echo "axi status $i: $((e-s))ms"; done
+for i in 1 2 3; do s=$(ms); no-mistakes axi sync --check >/dev/null 2>&1; e=$(ms); echo "axi sync --check $i: $((e-s))ms"; done
+for i in 1 2 3; do s=$(ms); no-mistakes runs --limit 200 >/dev/null 2>&1; e=$(ms); echo "runs --limit 200 $i: $((e-s))ms"; done
+```
+
+```
+axi status 1: 76ms
+axi status 2: 55ms
+axi status 3: 53ms
+axi sync --check 1: 887ms
+axi sync --check 2: 875ms
+axi sync --check 3: 880ms
+runs --limit 200 1: 49ms
+runs --limit 200 2: 47ms
+runs --limit 200 3: 46ms
+```
+
+`axi sync --check` is the one call that renders the binding for the current branch without asking for a run, and it costs about seventeen times what either call this read already makes costs, on a quiet fleet.
+Two facts make that the wrong shape rather than merely the dearer one.
+`bin/fm-crew-state.sh` bounds its WHOLE read with one deadline shared by every call it makes, so the spend lands on whichever call comes last rather than on this one.
+And `axi sync --help` describes the check as verifying "live remote equality", which its output confirms with an `observed_head` and an `observed_at` for the remote, while the read's periodic callers are local-only by construction and its single forge call is opt-in and default off.
+
+The shape taken instead needs no call at all: the `branch_sync` block quoted earlier in this record is already in the `axi status` output the read has in hand, it is branch-scoped, and `fm_nm_branch_binding_is_this_worktree` refuses every block that answers for a branch other than the crew's.
+Refresh this section by re-running the loop above after a no-mistakes upgrade; a `axi sync --check` that becomes as cheap as `axi status` and stops reading the remote would make the direct call affordable, and nothing else would.
 
 ## A failed run discards its worktree and no commit with it
 

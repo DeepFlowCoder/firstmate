@@ -137,12 +137,16 @@
 #     Branch and head identity alone CANNOT separate an aborted run from the live
 #     run that replaced it, because a run reports its last pushed sha and the
 #     crew worktree stays at that sha for the whole successor run (measured; see
-#     the runs-list primitives in bin/fm-nm-run-lib.sh). The repo-scoped `axi
-#     status` also answers with exactly one run for the whole repository, which
-#     under multi-crew load is routinely another branch's. So "no run to abort"
-#     and "the run I could see is not this branch's live one" look identical
-#     here, and acting on the second orphans exactly the run Fix 1 exists to
-#     conclude. task_branch_has_uninspected_live_run corroborates against the
+#     the runs-list primitives in bin/fm-nm-run-lib.sh). The bare `axi status`
+#     also answers with exactly one run for the whole repository, and WHICH
+#     branch that run belongs to is the vendor's choice rather than something
+#     this caller can ask for: measured answering for a foreign branch on one
+#     version and branch-scoped on a later one, so under multi-crew load it may
+#     still be another branch's (docs/verification/run-attribution.md owns both
+#     readings). So "no run to abort" and "the run I could see is not this
+#     branch's live one" look identical here, and acting on the second orphans
+#     exactly the run Fix 1 exists to conclude.
+#     task_branch_has_uninspected_live_run corroborates against the
 #     runs list on BOTH paths out of this fix - before teardown proceeds without
 #     having concluded anything, AND after it concludes a run of its own - and
 #     REFUSES when that list shows this branch's most recent run still active.

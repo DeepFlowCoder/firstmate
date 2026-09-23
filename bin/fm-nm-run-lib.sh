@@ -5,12 +5,19 @@
 # fm-crew-state.sh (read-only current-state reporting) and fm-teardown.sh
 # (pre-teardown run abort, see its "Fix 1" header comment). Teardown uses only
 # strict branch-and-head identity; crew-state additionally permits the active
-# pipeline-owned exemption and the submitted-head binding defined below. Getting
-# this wrong in either direction is unsafe: a false negative hides a genuinely
-# parked run - or, in crew-state, leaves a crew with work in flight unreadable -
-# and a false positive lets teardown act on a run it does not own. Every binding
-# here keeps the branch gate as a precondition, so a run on another branch can
-# never answer for a crew however well its other fields line up.
+# pipeline-owned exemption, the submitted-head binding, and the branch binding
+# defined below. Getting this wrong in either direction is unsafe: a false
+# negative hides a genuinely parked run - or, in crew-state, leaves a crew with
+# work in flight unreadable - and a false positive lets teardown act on a run it
+# does not own.
+#
+# EVERY binding here is gated on a branch, so nothing belonging to another
+# branch can answer for a crew however well its other fields line up. The first
+# three gate on the RUN's own reported branch, which is their caller's
+# precondition. The branch binding is the one that exists for the output where
+# that field already refused - it reads a block that describes the checked-out
+# branch rather than the rendered run - so it carries its own branch gate
+# internally and takes the branch to match as an argument.
 #
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards
@@ -269,6 +276,38 @@ fm_nm_run_submitted_head_binds_worktree() {  # <worktree> <toon-output>
   [ "$submitted_full" = "$local_full" ]
 }
 
+# branch_sync.local.branch from captured `axi status` TOON $1: the branch the
+# push binding in that block is ABOUT. `local.branch` is the only `branch:` key
+# inside the block (measured output in docs/verification/run-attribution.md:
+# state, changed, local, pipeline, target, remote, relation, safety, pr_state),
+# so the block-scoped first-match reader answers for it and for nothing else.
+# Empty when the block is absent.
+fm_nm_branch_sync_local_branch() {  # <toon-output>
+  fm_nm_branch_sync_field "$1" branch
+}
+
+# The SAME submitted-head binding as above, made safe to read off an output
+# whose `run:` block answered for some OTHER branch.
+#
+# The block is branch-scoped, so it keeps describing the checked-out branch's own
+# push binding whatever run the `run:` block renders - which is exactly what a
+# caller needs when the branch gate has just refused that run. Reading the
+# binding without also reading WHICH branch it is about would hand a foreign
+# branch's binding to a crew, so this asks for the branch by name and refuses
+# every block that answers for another one. That refusal is what keeps the branch
+# gate ahead of this signal rather than beside it.
+#
+# 0 if captured `axi status` TOON $2 carries a push binding for branch $3 whose
+# recorded submitted head is exactly worktree $1's current commit. What that
+# establishes is bounded and worth stating: THIS BRANCH's currently bound work
+# came out of THIS worktree. It names no run, so a caller may only apply it to a
+# run it has independently established is the branch's current one.
+fm_nm_branch_binding_is_this_worktree() {  # <worktree> <toon-output> <branch>
+  [ -n "$3" ] || return 1
+  [ "$(fm_nm_branch_sync_local_branch "$2")" = "$3" ] || return 1
+  fm_nm_run_submitted_head_binds_worktree "$1" "$2"
+}
+
 # --- runs-list primitives ---------------------------------------------------
 #
 # Why the runs list is needed at all, measured 2026-08-29 against the real store
@@ -325,7 +364,7 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
   [ -n "$out" ] && [ -n "$branch" ] || return 1
   while IFS= read -r row; do
     parsed=$(fm_nm_runs_parse_row "$row") || continue
-    IFS=$'\t' read -r st br sha <<< "$parsed"
+    IFS=$'\t' read -r st br sha _ <<< "$parsed"
     [ "$br" = "$branch" ] || continue
     printf '%s\t%s' "$st" "$sha"
     return 0
@@ -405,12 +444,21 @@ fm_nm_runs_listing_is_answered() {  # <runs-output>
   return 1
 }
 
-# Split one `no-mistakes runs` row into "<status><TAB><branch><TAB><sha>".
-# Rows are plain, unquoted, column-padded text -
-# "<status> <branch> <short-sha> <date> [<pr-url>]" - so splitting on the first
-# two whitespace runs is exact. Echoes nothing for a blank row.
+# Split one `no-mistakes runs` row into
+# "<status><TAB><branch><TAB><sha><TAB><pr-url>". Rows are plain, unquoted,
+# column-padded text - "<status> <branch> <short-sha> <date> [<pr-url>]" - so
+# splitting on the first two whitespace runs is exact. Echoes nothing for a
+# blank row.
+#
+# The pull request column is optional and is the row's LAST field, so it is read
+# from the end rather than by counting past the date - the date column spends two
+# whitespace-separated tokens, and a reader that counted them would break on any
+# row whose date is formatted differently. An absolute URL is the only thing that
+# column can hold, which is what makes reading from the end exact; a row with no
+# pull request leaves the field empty. Callers need it because that URL is the
+# only evidence a coarse row carries about whether the run's work landed.
 fm_nm_runs_parse_row() {  # <row>
-  local row status rest branch sha
+  local row status rest branch sha pr
   row=$(fm_nm_trim "${1:-}")
   [ -n "$row" ] || return 1
   status=${row%% *}
@@ -419,7 +467,9 @@ fm_nm_runs_parse_row() {  # <row>
   rest=$(fm_nm_trim "${rest#* }")
   sha=${rest%% *}
   [ -n "$status" ] && [ -n "$branch" ] || return 1
-  printf '%s\t%s\t%s' "$status" "$branch" "$sha"
+  pr=${row##* }
+  case "$pr" in https://*) ;; *) pr="" ;; esac
+  printf '%s\t%s\t%s\t%s' "$status" "$branch" "$sha" "$pr"
 }
 
 # --- run-word translation ---------------------------------------------------
