@@ -84,11 +84,30 @@
 #      resolved the same way wherever it arises. That is why it also covers the
 #      opt-in path whose forge did NOT answer - an opt-in read that could not
 #      reach the forge has established no more than an unasked one, and `done`
-#      there was the same optimistic half under a different caller. And it is why
-#      the coarse runs-list arm is verified too: `checks-passed` and a coarse
-#      `completed` row that names no pull request claim no merge and stay `done`
-#      untouched, but a coarse row that DOES name one is a delivery nobody
-#      checked, exactly like the full path's, and reads the same.
+#      there was the same optimistic half under a different caller.
+#      `checks-passed` is the one finished word that claims NO merge, so on the
+#      full path it owes no merge and is never degraded for the lack of one. It
+#      does owe the reader the difference between a landing and a delivery still
+#      waiting for one: with this home's merge record it reports `done` naming the
+#      record, and without it `done` saying on the line that the pull request is
+#      green and awaiting its merge. `done` is the right word for both - it is the
+#      absorb class for finished work whose next step belongs to a human, which is
+#      exactly what an open green pull request is - and neither line reads as a
+#      landing, which is the part that was missing.
+#      A DECLARED LIMIT, not a promise this read keeps everywhere: the coarse
+#      runs-list arm CANNOT make that distinction. fm_nm_runs_word_for_terminal
+#      collapses `passed`, `checks-passed` and `completed` into the single list
+#      word `completed`, and a runs-list row carries no run id (`no-mistakes runs`
+#      accepts only --limit), so there is nothing to ask `axi status --run` about.
+#      So that arm declines for the WHOLE bucket - a `completed` row naming a pull
+#      request with no local merge record reads `unknown` - and a ready delivery
+#      that missed direct attribution reads `unknown` there too. That is less
+#      informative than the full path and it is not false, and it still makes the
+#      captain look. What would close it is a local record of a pull request
+#      CLOSED without merging, which this home does not keep: bin/fm-pr-poll.sh
+#      emits one `merged` line and stays silent on every other outcome, so an
+#      abandoned pull request leaves no trace here at all. That root cause has its
+#      own ticket, `fm-sondeo-no-registra-cierre-sin-fusion`.
 #   4. Reconcile the status log: a needs-decision/blocked line under an ACTIVE
 #      run is deterministically stale (the gate resolved and the run resumed) and
 #      is flagged superseded. Under a finished run it is not stale - a finished
@@ -1291,32 +1310,60 @@ if [ "$HAVE_RUN" = 1 ]; then
   # established, as not having happened, and the run's own `done` does not stand.
   #
   # WHAT REACHES HERE is every reading that would report a finished run's work as
-  # LANDED, on whichever surface it was read. The full path's `passed` is one:
-  # it is the only `axi status` word that claims a merge, and `checks-passed`
-  # claims none, so it has nothing to verify. The coarse runs-list arm is the
-  # other, and it was the hole this gate left open: the list has ONE terminal
+  # LANDED, on whichever surface it was read. The full path's `passed` is one: it
+  # is the only `axi status` word that claims a merge. The coarse runs-list arm is
+  # the other, and it was the hole this gate left open: the list has ONE terminal
   # green word, `completed`, which fm_nm_runs_word_for_terminal produces for
   # `passed` and `checks-passed` alike, so a `passed` run that missed attribution
   # arrived here under a word this gate did not recognise and carried `done`
   # through untouched - the same unverified merge, reported the optimistic way,
-  # reached by nothing more than which surface answered first. A coarse row does
-  # carry the one fact that matters: the pull request the run is delivering
-  # through. When it names one, that delivery is exactly as unestablished as the
-  # full path's, and the SAME evidence may not yield two verdicts depending on who
-  # asked - so it is verified the same way. When the row names no pull request
-  # there is no delivery to check, which is the `checks-passed` reading and stays
-  # `done` untouched.
+  # reached by nothing more than which surface answered first.
+  #
+  # THAT COLLAPSE IS ALSO THIS ARM'S LIMIT, and it is declared rather than worked
+  # around. A coarse row carries the pull request the run is delivering through,
+  # but NOT which of the two words produced it, and there is nothing left to ask:
+  # the row has no run id and `no-mistakes runs` takes only --limit. So a row
+  # naming a pull request with no local merge record is declined for the whole
+  # bucket - a ready delivery reads `unknown` there alongside an abandoned one.
+  # That is less informative than the full path, and it is not false. A row naming
+  # NO pull request is a different case and keeps its verdict: there is no
+  # delivery on the line to decline, so the reading says nothing about one either
+  # way, exactly as it did before. Separating the bucket needs a local record of a
+  # pull request CLOSED without merging, which bin/fm-pr-poll.sh does not write -
+  # ticket `fm-sondeo-no-registra-cierre-sin-fusion`.
+  #
+  # `checks-passed` is the full path's third reading and claims no merge at all,
+  # so it is never degraded for the lack of one and never spends a forge call:
+  # what a run did not assert, the forge is not asked to refute. What it does owe
+  # the reader is that its `done` is not a landing, which is handled on its own
+  # below, off the resolution ladder. A `checks-passed` run with no recorded pull
+  # request names no delivery either, so it has nothing to add and keeps its word.
   #
   # A reading the arbitration could not stand behind has nothing to verify either:
   # its state is already `unknown` for a reason the forge cannot settle, so asking
   # would spend a bounded call to append a fact about a verdict this read has
   # already discarded.
   RUN_CLAIMS_LANDED=0
+  RUN_READY_DELIVERY=0
   case "$RUN_SOURCE:$RUN_WORD" in
     coarse:completed) [ -n "$RUN_PR" ] && RUN_CLAIMS_LANDED=1 ;;
     *:passed)         RUN_CLAIMS_LANDED=1 ;;
+    *:checks-passed)  [ -n "$RUN_PR" ] && RUN_READY_DELIVERY=1 ;;
   esac
-  if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_CLAIMS_LANDED" = 1 ]; then
+  if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_READY_DELIVERY" = 1 ]; then
+    # `done` with green checks used to end the line there, which left the one
+    # reading that is NOT a landing looking exactly like the one that is. The
+    # merge is a human's next step here, so the state stays `done` - the absorb
+    # class for finished work waiting on a person - and the line says which of the
+    # two it is. The local record is consulted, and only the local record: it is
+    # the same file read the merge-claiming path makes, and it is what tells a
+    # delivery that has since landed from one still waiting.
+    if pr_merge_recorded_locally "$RUN_PR"; then
+      RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is merged, from this home's own record of that confirmed merge"
+    else
+      RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is green and awaiting its merge${SEP}the delivery is ready, not landed"
+    fi
+  elif [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_CLAIMS_LANDED" = 1 ]; then
     PR_STATE=""
     PR_REASON=""
     # ONE reading of the budget for the guard AND for the bound the guard
