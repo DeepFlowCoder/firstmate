@@ -48,10 +48,14 @@
 #      validation. bin/fm-nm-run-lib.sh owns that whole distinction, including
 #      why the reading is right to outlive its run. It is the STRONGER of the two
 #      readings of one word, so it is bounded twice below, and both bounds are
-#      permanent: the runs-list arms cannot see the evidence it is made from
-#      (`fm-corte-por-tope-fuera-del-brazo-de-lista`), and a branch carrying more
-#      than one row of the reported word offers no key to say which of them was
-#      reported (`fm-listado-de-corridas-sin-id`). Each of those keeps `failed`.
+#      permanent: the runs-list arms print `failed` because they cannot see the
+#      evidence it is made from (`fm-corte-por-tope-fuera-del-brazo-de-lista`),
+#      and on this read the cut is named only where the runs list PROVES which
+#      run was reported, which it cannot when that list did not answer, carries
+#      no row for the branch, or carries more than one run of the reported word,
+#      since its rows carry no run id and `axi status` no timestamp
+#      (`fm-listado-de-corridas-sin-id`). Every unproven reading keeps the
+#      ordinary failure phrase inside whatever wrapper its own arm produces.
 #      EXCEPT: while the active step is ci, `axi status` alone cannot tell "still
 #      waiting on checks" from "checks green, waiting on merge" (see
 #      nm_ci_checks_state) - a ci-step log-tail check overrides working -> done
