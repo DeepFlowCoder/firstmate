@@ -65,22 +65,22 @@
 #      that has already failed.
 #   3. Never deduce what a forge says. `outcome: passed` is no-mistakes' word for
 #      "the pull request merged or closed", which is a CLAIM about the forge and
-#      not a reading of it. This read asks NO forge by default: without the opt-in
-#      the run's own established verdict still stands, and only the pull request
-#      clause degrades, saying that no forge was asked and how to ask. With
-#      FM_CREW_STATE_RESOLVE_PR=1 - the one bounded read that can settle it
-#      (bin/fm-forge-pr-state-lib.sh), for a caller a human invoked deliberately -
-#      a merged pull request reports `done` and one closed WITHOUT merging reports
-#      `failed`, each naming the forge as what said so, because `done` means the
-#      work landed rather than that the task is over. A merge is never inferred
-#      from the pipeline outcome in any of those cases. No other run word claims
-#      a merge: `checks-passed` and a coarse `completed` report `done` and say
-#      nothing about a pull request either way.
-#      WHERE THAT SPLIT REACHES: only where the forge can be asked. The periodic,
-#      timer-driven read is forbidden to ask it, so on that path a merged pull
-#      request and one closed without merging are the same reading - the run's
-#      established verdict, with the pull request clause naming that no forge was
-#      asked. Closing that seam is tracked as `fm-barrido-pr-cerrado-sin-fusionar`.
+#      not a reading of it. With FM_CREW_STATE_RESOLVE_PR=1 - the one bounded read
+#      that can settle it (bin/fm-forge-pr-state-lib.sh), for a caller a human
+#      invoked deliberately - a merged pull request reports `done` and one closed
+#      WITHOUT merging reports `failed`, each naming the forge as what said so,
+#      because `done` means the work landed rather than that the task is over. A
+#      merge is never inferred from the pipeline outcome in any of those cases. No
+#      other run word claims a merge: `checks-passed` and a coarse `completed`
+#      report `done` and say nothing about a pull request either way.
+#      WITHOUT the opt-in this read asks no forge, and `done` is then available
+#      only where something OTHER than the pipeline's claim establishes the merge:
+#      this home's own durable record of a merge it already confirmed, which is a
+#      local file read and costs no network (pr_merge_recorded_locally, below).
+#      With no such record the merge is unestablished, and BOTH halves of that are
+#      unestablished - so the reading is `unknown` carrying its reason, never the
+#      optimistic half. That is the whole of the periodic path's honesty: it may
+#      say the work landed, or say it does not know, and nothing in between.
 #   4. Reconcile the status log: a needs-decision/blocked line under an ACTIVE
 #      run is deterministically stale (the gate resolved and the run resumed) and
 #      is flagged superseded. Under a finished run it is not stale - a finished
@@ -187,6 +187,28 @@ case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;;
 RESOLVE_PR=0
 case "${FM_CREW_STATE_RESOLVE_PR:-}" in 1) RESOLVE_PR=1 ;; esac
 SEP=' · '
+
+# The one way a merge can be ESTABLISHED without asking the forge: this home's
+# own durable record of a merge it already confirmed. bin/fm-pr-merge.sh writes
+# it after a merge this home performed, and bin/fm-watch.sh writes it when its
+# merge poll observed one - both through bin/fm-merge-outcome-lib.sh, so the
+# record exists only where a forge answer had already said `merged`. Reading it
+# is a stat and five lines of a private file, which is why the periodic path -
+# forbidden to ask the forge - is allowed to consult it: it settles the question
+# from evidence rather than filling the gap in from the pipeline's own claim.
+#
+# The marker is identity-bound and bin/fm-pr-lib.sh owns that comparison:
+# provider, host, project path and number must all reconstruct the pull request
+# the RUN reports. A task re-armed on a second pull request therefore inherits
+# nothing from the first one's merge - the comparison fails, and this read stays
+# unresolved, which is the direction that cannot invent a landing.
+pr_merge_recorded_locally() {  # <pr-url>
+  local url=${1-}
+  [ -n "$url" ] || return 1
+  fm_pr_url_parse "$url" || return 1
+  fm_pr_poll_merge_already_notified "$STATE" "$ID" \
+    "$FM_PR_PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER"
+}
 
 # An aside every emission carries, whatever source finally answers. It exists
 # for evidence this read has already gathered but that does not decide the
@@ -1227,20 +1249,23 @@ if [ "$HAVE_RUN" = 1 ]; then
   # while GitHub, asked at that same moment, had PR 13 of DeepFlowCoder/firstmate
   # open, unmerged, and carrying a red check.
   #
-  # So the claim stands as landed work in exactly one case: the forge confirms
-  # it. Every other case leaves the merge UNVERIFIED - the forge refuting it, a
-  # forge that did not answer, and the default read that asks no forge at all -
-  # and an unverified merge is not finished work. It reports `unknown` carrying
-  # the reason it could not be settled.
+  # So the claim stands as landed work only where something OTHER than the claim
+  # establishes the merge, and there are exactly two such things: the forge
+  # confirms it when this read is allowed to ask, or this home's own durable
+  # record of a merge it already confirmed says so when it is not. Every other
+  # case leaves the merge UNVERIFIED - the forge refuting it, a forge that did
+  # not answer, and the read that asks no forge and finds no record - and an
+  # unverified merge is not finished work. It reports `unknown` carrying the
+  # reason it could not be settled.
   #
-  # Only the unresolved PART is degraded. A run whose outcome is known and whose
-  # arbitration answered `current` HAS an established verdict, and an adjacent
-  # fact nobody could check is no reason to throw it away: the state stays the
-  # verdict's, and the pull request clause says it was not resolved and why.
-  # Requirement 2 forbids INFERRING a merge from the pipeline outcome, which this
-  # line does not do - it reports the run and declines to report the merge.
-  # Discarding the verdict too cost the fleet snapshot its validity and the
-  # inactive-crew scan its terminal record, for a crew whose work had landed.
+  # The verdict is not thrown away with it. A run whose outcome is known and
+  # whose arbitration answered `current` HAS an established verdict, and it stays
+  # on the line in the run's own words; what changes is that it no longer supplies
+  # the STATE for a delivery nobody checked. Keeping that state was the earlier
+  # reading, and it was the wrong half to keep: it held the fleet snapshot's
+  # validity and the inactive-crew scan's terminal record for a crew whose work
+  # had landed, at the price of reporting the same `done` for a crew whose work
+  # never did. The local record is what buys the first without the second.
   #
   # The forge REFUTING the claim is the other thing entirely: there the merge is
   # established, as not having happened, and the run's own `done` does not stand.
@@ -1265,10 +1290,16 @@ if [ "$HAVE_RUN" = 1 ]; then
     # left to spend, past the bound bin/fm-fleet-snapshot.sh kills the read at,
     # folding a crew to a reasonless `unknown`.
     PR_BUDGET_LEFT=$(read_budget_left)
-    if [ "$RESOLVE_PR" != 1 ]; then
-      PR_REASON="this read asks no forge (set FM_CREW_STATE_RESOLVE_PR=1 to resolve it)"
-    elif [ -z "$RUN_PR" ]; then
+    # "There is no pull request to ask about" is true whether or not this read
+    # asks, so it is tested FIRST. Ordered the other way, the default path
+    # answered a run with no recorded pull request by naming the opt-in as what
+    # would resolve it - and the opt-in resolves nothing when there is no URL to
+    # resolve. A reason that points at a switch which cannot help is worse than
+    # useless now that the reason is what the reader is left holding.
+    if [ -z "$RUN_PR" ]; then
       PR_REASON="the run recorded no pull request to ask about"
+    elif [ "$RESOLVE_PR" != 1 ]; then
+      PR_REASON="this read asks no forge (set FM_CREW_STATE_RESOLVE_PR=1 to resolve it)"
     elif [ "$PR_BUDGET_LEFT" = 0 ]; then
       PR_REASON="this read's budget was spent before the forge could be asked"
     else
@@ -1296,7 +1327,43 @@ if [ "$HAVE_RUN" = 1 ]; then
         RUN_STATE=unknown
         RUN_DETAIL="$RUN_DETAIL${SEP}but $RUN_PR is still open on the forge${SEP}the work has not landed" ;;
       *)
-        RUN_DETAIL="$RUN_DETAIL${SEP}pull request state not resolved: $PR_REASON" ;;
+        # UNRESOLVED IS NOT MERGED, and this is where that used to be lost. The
+        # run's `passed` verdict carried `done` through here untouched, with a
+        # clause saying the merge had not been checked - so on the periodic path,
+        # the one forbidden to ask the forge and therefore the one every
+        # timer-driven caller takes, a pull request closed WITHOUT merging read
+        # exactly like one that merged. `done` is what bin/fm-inactive-reconcile.sh
+        # records as a terminal outcome and what a supervisor reads before tearing
+        # a crew down, so of the two things an unresolved answer might mean, the
+        # optimistic one was the one being asserted, unattended, over work that
+        # may never have landed.
+        #
+        # Two honest answers are available without asking, and the local record is
+        # tried first because it can still SETTLE the question rather than only
+        # decline it. A merge this home already confirmed is established evidence,
+        # and it is what keeps the timer-driven callers whole: the fleet snapshot's
+        # validity and the inactive-crew scan's terminal record both key on `done`,
+        # and work that landed under this home's supervision still reaches it here.
+        #
+        # With no such record, nothing has established the merge, and the read says
+        # exactly that. `unknown` is not new vocabulary for it - it is the same word
+        # the resolved `open` answer above already uses for a finished run whose
+        # work has not landed. The verdict is not discarded either: the run's own
+        # words stay on the line. What it no longer does is speak for a delivery
+        # nobody checked.
+        #
+        # What that buys downstream is attention rather than silence, which is the
+        # point: `done` is the absorb class bin/fm-watch.sh reads as "healthy idle,
+        # a human holds the next step" and absorbs without a wake, so an abandoned
+        # pull request used to be the quietest thing on the fleet. `unknown` is an
+        # unanswered reading, so the same crew surfaces to the supervisor instead.
+        if pr_merge_recorded_locally "$RUN_PR"; then
+          RUN_DETAIL="$RUN_DETAIL${SEP}$RUN_PR is merged, from this home's own record of that confirmed merge"
+        else
+          RUN_STATE=unknown
+          RUN_DETAIL="$RUN_DETAIL${SEP}pull request state not resolved: $PR_REASON${SEP}whether the work landed is unknown"
+        fi
+        ;;
     esac
   fi
 
