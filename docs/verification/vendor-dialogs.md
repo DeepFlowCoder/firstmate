@@ -67,9 +67,15 @@ Provenance differs by class and is stated by the `fm_dialog_provenance` accessor
 
 - `directory-trust` was captured live from a real pane, at 200 and at 80 columns, and every answer was exercised end to end through `bin/fm-control.sh`.
 - `update-available` was captured live from a real pane (it appeared unprompted on a second launch), and its answers are registered from that rendering.
-- `rate-limit-switch` is registered from the vendor's own strings shipped in the 0.147.0 binary plus the option order and description text in `codex-rs/tui/src/chatwidget/rate_limits.rs`, cross-checked against the captain's field measurement of the same dialog (three numbered options awaiting Enter, composer deaf).
-  It has not been triggered on demand, because it fires on a server-side rate-limit signal.
-  The live guard re-measures whichever classes it can trigger; a class it cannot trigger stays registered from these sources and is re-checked when it next appears.
+- `rate-limit-switch` was first registered from the vendor's own strings shipped in the 0.147.0 binary plus the option order and description text in `codex-rs/tui/src/chatwidget/rate_limits.rs`, without any screen behind it.
+  A live capture on **2026-09-19** - a real worker parked behind this dialog, on codex, until it stopped collecting its instructions - proved one of those inferred strings wrong, and the class is now registered from that screen.
+  It still has not been triggered on demand, because it fires on a server-side rate-limit signal, so its answers are registered from the capture rather than exercised end to end.
+  The live guard re-measures whichever classes it can trigger; a class it cannot trigger stays registered from its capture and is re-checked when it next appears.
+
+  What the binary got wrong: the registry demanded `Uses fewer credits for upcoming turns.` as option 1's description.
+  The real dialog prints the **offered model's own description** in that position - `Fast and affordable agentic coding model.` for `gpt-5.6-luna`.
+  Because recognition requires every declared signal, that one unprinted sentence made the whole class unrecognizable on the real dialog and `bin/fm-control.sh <id> dialog` refused it, which is the refusal working as designed rather than the registry being right.
+  That signal is therefore model-dependent by construction: a capture of this dialog offering a different model must be checked against it, and disagreement is a registry defect to fix from the new screen.
 
 A later live capture that contradicts a class's registered shape is a defect in the registry, never a registry to adjust afterwards so it appears to have been right: fix the registry from the new measurement, then refresh this record.
 
@@ -88,6 +94,22 @@ A later live capture that contradicts a class's registered shape is a defect in 
 
   Press enter to continue
 ```
+
+`rate-limit-switch`, real pane, captured 2026-09-19:
+
+```
+  Approaching rate limits
+  Switch to gpt-5.6-luna for lower credit usage?
+
+> 1. Switch to gpt-5.6-luna     Fast and affordable agentic coding model.
+  2. Keep current model
+  3. Keep current model (never show again)  Hide future rate limit reminders about switching models.
+
+  Press enter to confirm or esc to go back
+```
+
+Answering it is not symmetric: option 1 moves the worker onto another model mid-task, changing the lane firstmate chose on quota grounds, and option 3 permanently silences a reminder the fleet wants to keep seeing.
+`fm_dialog_options` in the registry states both consequences, and `bin/fm-control.sh <id> dialog` prints them before anything is pressed.
 
 `update-available`, real pane:
 
