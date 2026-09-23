@@ -63,6 +63,13 @@
 # event    decide | dispatch | escape
 # lane     no-mistakes | direct-PR | local-only | -
 # evidence demonstrated | declared | -
+# class    <class>, or <class>:<identifier> naming what demonstrated it:
+#          clean-revert:<resolved commit sha>, mechanical-pattern:<hash of the
+#          --reproduce command>, docs-only alone because the changed path set
+#          already demonstrates it and is already in the signals column. The
+#          reproduce command itself is deliberately NOT stored: a hash still
+#          distinguishes two commands and still proves the same one was used
+#          again, while keeping the column to identifiers instead of prose.
 # critical comma-separated surface names, or -
 # signals  k=v,k=v, or -
 # Absent values are "-". Tabs, newlines and backslashes inside a value are
@@ -153,6 +160,16 @@ fm_lane_last_decision() {
 # policy code. Patterns are shell globs matched case-insensitively against the
 # repo-relative path. They are deliberately broad: a false match costs one
 # expensive review, a false miss costs an unreviewed change on a safety surface.
+#
+# governing-docs is the one surface that is prose. The principle that bounds it,
+# and that keeps it from growing into a second copy of any project's shared-file
+# list: a document that INSTRUCTS an agent or a contributor is never "pure
+# documentation" for routing, because changing it changes behaviour, and the
+# docs-only class would otherwise carry it to the cheap lane. A document that
+# merely DESCRIBES - README.md, anything under docs/ - stays ordinary
+# documentation and keeps its cheap route. It lists FILENAMES rather than any
+# directory tree, and it is built-in rather than per-repo because these names
+# govern whatever project happens to carry them.
 fm_lane_builtin_surfaces() {
   cat <<'EOF'
 *merge*	merge-routes
@@ -175,6 +192,12 @@ bin/fm-lane.sh	routing-policy
 bin/fm-lane-lib.sh	routing-policy
 .fm-critical-surfaces	routing-policy
 */.fm-critical-surfaces	routing-policy
+CONTRIBUTING.md	governing-docs
+*/CONTRIBUTING.md	governing-docs
+CLAUDE.md	governing-docs
+*/CLAUDE.md	governing-docs
+SKILL.md	governing-docs
+*/SKILL.md	governing-docs
 EOF
 }
 

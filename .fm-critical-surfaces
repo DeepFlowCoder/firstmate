@@ -11,12 +11,12 @@
 # a lock or lease that stops protecting what it names. Add a path here when it
 # joins that set; never remove one to make a delivery cheaper.
 #
-# It also carries the two boundaries this house raises for itself rather than
-# imposing on every project through the portable catalog: this repo's CI
-# configuration, which is what the cheap lane leans on, and the shared tracked
-# material AGENTS.md section 1 already requires ship through the no-mistakes
-# pipeline and PR path. Listing that material here makes the lane policy ENFORCE
-# that rule instead of offering a cheap route around it.
+# It also carries one boundary this house raises for itself rather than imposing
+# it on every project through the portable catalog: this repo's CI configuration.
+# The reason is not a prediction that CI would catch a bad change - that
+# reasoning is rejected outright and belongs nowhere in this policy. It is that
+# THE CHEAP LANE'S SAFETY NET CANNOT BE MODIFIABLE BY THE CHEAP LANE: cutting the
+# net is not something a delivery gets to do without review.
 
 bin/fm-gate-refuse-lib.sh security-guards
 bin/fm-arm-pretool-check.sh security-guards
@@ -46,28 +46,11 @@ bin/fm-stash-guard.sh teardown-and-discard
 # and a delivery that deleted the gate adds no lines, so every diff signal would
 # read cheap and it would route itself past the gate it just removed.
 #
-# Do not delete these two as redundant with the bin/* entry below. That entry
-# protects the gate only INCIDENTALLY, because this repository's shared tracked
-# material happens to include bin/; a protection that stands because some list
-# currently happens to include some directory is exactly the kind that
-# disappears without anyone noticing. Narrowing this file is itself a critical
-# surface, but that defends against DELIBERATE narrowing, not against narrowing
-# that happens in passing inside a legitimate reorganisation.
-# The surface NAME also carries real information. A row in the record saying
-# routing-policy tells whoever reads it in six months that the delivery touched
-# the policy's own enforcement point; shared-tracked-material does not, and the
-# record is half the point of this policy.
+# These two are the only thing protecting the gate, so nothing else may be
+# assumed to cover them. The surface NAME also carries real information: a row in
+# the record saying routing-policy tells whoever reads it in six months that the
+# delivery touched the policy's own enforcement point.
 bin/fm-spawn.sh routing-policy
 bin/fm-promote.sh routing-policy
 
 .github/workflows/* ci-configuration
-
-# AGENTS.md section 1's shared tracked material, minus what a built-in surface
-# already covers. bin/* makes every bin change here expensive, which is what
-# AGENTS.md already requires today.
-README.md shared-tracked-material
-CONTRIBUTING.md shared-tracked-material
-.tasks.toml shared-tracked-material
-bin/* shared-tracked-material
-.agents/skills/* shared-tracked-material
-skills/* shared-tracked-material

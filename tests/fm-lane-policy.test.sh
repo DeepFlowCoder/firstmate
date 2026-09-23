@@ -217,8 +217,8 @@ EOF
 # its own .fm-critical-surfaces, and a delivery that drops an entry from it would
 # quietly send that file to the cheap lane. It covers three groups: the guards,
 # merge routes and teardown paths the patterns miss; the two files that run the
-# dispatch gate; and the shared tracked material AGENTS.md section 1 already
-# requires ship through the no-mistakes pipeline.
+# dispatch gate; and this repo's CI configuration, because the cheap lane's
+# safety net must not be modifiable by the cheap lane.
 test_firstmates_own_safety_surfaces_are_covered() {
   local home out path n=0
   home=$(lane_home ownsurfaces)
@@ -229,9 +229,7 @@ test_firstmates_own_safety_surfaces_are_covered() {
     bin/fm-pr-merge.sh bin/fm-merge-local.sh bin/fm-teardown.sh bin/fm-stash-guard.sh \
     bin/fm-lane.sh bin/fm-lane-lib.sh AGENTS.md \
     bin/fm-spawn.sh bin/fm-promote.sh \
-    .github/workflows/ci.yml \
-    README.md CONTRIBUTING.md .tasks.toml \
-    .agents/skills/stow/SKILL.md skills/stow/SKILL.md
+    .github/workflows/ci.yml
   do
     [ -e "$ROOT/$path" ] || fail "$path no longer exists; update the critical-surface list with it"
     n=$((n + 1))
@@ -441,6 +439,23 @@ EOF
   assert_contains "$out" "reason=class-not-demonstrated" \
     "an unreproducible mechanical claim was not reported as undemonstrated"
 
+  # A command that COPIES the answer re-derives nothing. The head must be
+  # unreachable from inside the re-derivation, or the demonstration is a door
+  # that opens when you say the password out loud.
+  out=$(PATH="$bounded" run_lane "$home" decide mech-forged --project proj \
+    --repo "$repo" --range "$base..$head" --class mechanical-pattern \
+    --reproduce "git checkout $head -- .")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a reproduce command that copied head's content still demonstrated the class"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the forged demonstration was not reported as undemonstrated"
+
+  out=$(PATH="$bounded" run_lane "$home" decide mech-forged2 --project proj \
+    --repo "$repo" --range "$base..$head" --class mechanical-pattern \
+    --reproduce "git read-tree -u --reset $head")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a reproduce command that read head's tree still demonstrated the class"
+
   # The re-derivation must never touch the project it reads from.
   [ "$(git -C "$repo" rev-parse HEAD)" = "$head" ] \
     || fail "the re-derivation moved the source repository's HEAD"
@@ -448,6 +463,110 @@ EOF
     || fail "the re-derivation left changes in the source repository"
 
   pass "lane: a mechanical-pattern class must re-derive the change, and never writes to the project"
+}
+
+# A record that cannot say WHICH commit a revert claimed, or whether the same
+# reproduce command was used twice, cannot be re-checked when a defect turns up
+# months later. The class column therefore carries the demonstrating input as an
+# identifier: a resolved sha, or a hash of the command rather than its text.
+test_the_record_names_what_demonstrated_the_class() {
+  local rec repo base home a_head b_head revert_a revert_b bounded out log
+
+  rec=$(make_repo classrecord)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home classrecord)
+  log="$home/data/lane-log.tsv"
+  bounded=$(path_with_a_timeout_binary "$TMP_ROOT/classrecord/bin")
+
+  printf 'value = 2\n' > "$repo/src/thing.py"
+  a_head=$(commit_all "$repo" change-a)
+  printf 'value = 1\n' > "$repo/src/thing.py"
+  revert_a=$(commit_all "$repo" revert-a)
+  printf 'value = 3\n' > "$repo/src/thing.py"
+  b_head=$(commit_all "$repo" change-b)
+  printf 'value = 1\n' > "$repo/src/thing.py"
+  revert_b=$(commit_all "$repo" revert-b)
+
+  out=$(run_lane "$home" decide rec-a1 --project proj --repo "$repo" \
+    --range "$a_head..$revert_a" --class clean-revert --revert-of "$a_head")
+  assert_contains "$out" "class: clean-revert:$a_head" \
+    "the decision did not name the commit the revert claimed"
+  assert_grep "clean-revert:$a_head" "$log" "the record lost the claimed commit"
+
+  out=$(run_lane "$home" decide rec-a2 --project proj --repo "$repo" \
+    --range "$b_head..$revert_b" --class clean-revert --revert-of "$b_head")
+  assert_grep "clean-revert:$b_head" "$log" "the second revert's commit did not reach the record"
+  [ "$(grep -c 'clean-revert:' "$log")" = 2 ] \
+    || fail "two reverts of different commits did not produce distinguishable rows"
+
+  # A ref that names no commit is refused rather than recorded as an identifier
+  # nobody can resolve.
+  out=$(run_lane "$home" decide rec-a3 --project proj --repo "$repo" \
+    --range "$b_head..$revert_b" --class clean-revert --revert-of no-such-ref)
+  [ "$?" -ne 0 ] || fail "an unresolvable --revert-of should exit non-zero"
+  assert_contains "$out" "does not resolve to a commit" \
+    "the refusal did not say the revert target could not be resolved"
+
+  # The reproduce command is stored as a fixed-length identifier, never as text.
+  out=$(PATH="$bounded" run_lane "$home" decide rec-b1 --project proj --repo "$repo" \
+    --range "$b_head..$revert_b" --class mechanical-pattern \
+    --reproduce "printf 'value = 1\n' > src/thing.py")
+  assert_contains "$out" "class: mechanical-pattern:" \
+    "the decision did not identify the command that re-derived the change"
+  assert_no_grep "printf 'value = 1" "$log" \
+    "the reproduce command was stored verbatim instead of as an identifier"
+
+  pass "lane: the record names what demonstrated the class, as an identifier"
+}
+
+# A document that INSTRUCTS an agent or a contributor is not pure documentation
+# for routing, because changing it changes behaviour. One that merely DESCRIBES
+# keeps its cheap route, and this pins the line in both directions.
+test_documents_that_govern_an_agent_are_not_ordinary_documentation() {
+  local rec repo base home head out
+
+  rec=$(make_repo governing)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home governing)
+
+  printf '# how to contribute\n\nrun the tests\n' > "$repo/CONTRIBUTING.md"
+  head=$(commit_all "$repo" contributing)
+  out=$(run_lane "$home" decide gov-a1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a CONTRIBUTING.md change reached the cheap lane as documentation"
+  assert_contains "$out" "reason=critical-surface" \
+    "the governing document was not routed as a critical surface"
+  assert_contains "$out" "critical-surfaces: governing-docs" \
+    "the decision did not name the governing-docs surface"
+
+  mkdir -p "$repo/.agents/skills/stow"
+  printf '# stow\n\ndo the thing\n' > "$repo/.agents/skills/stow/SKILL.md"
+  head=$(commit_all "$repo" skill)
+  out=$(run_lane "$home" decide gov-a2 --project proj --repo "$repo" \
+    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a SKILL.md change reached the cheap lane as documentation"
+  assert_contains "$out" "critical-surfaces: governing-docs" \
+    "a nested SKILL.md was not caught as a governing document"
+
+  # The control, which is what keeps the surface narrow: a document that only
+  # describes still reaches the cheap lane.
+  printf '# project\n\nit does things\n' > "$repo/README.md"
+  printf 'more\n' >> "$repo/docs/guide.md"
+  head=$(commit_all "$repo" describing-docs)
+  out=$(run_lane "$home" decide gov-b1 --project proj --repo "$repo" \
+    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "an ordinary README and docs change lost its cheap route"
+  assert_contains "$out" "reason=standard-class" \
+    "the descriptive documentation was not routed on its class"
+
+  pass "lane: a document that governs an agent is a critical surface, one that describes is not"
 }
 
 # --- 3. declared evidence can only ever cost more ---------------------------
@@ -773,9 +892,12 @@ EOF
     "a project-declared critical surface did not route to the expensive lane"
   assert_contains "$out" "critical-surfaces: schema" "the project-declared surface was not named"
 
-  out=$(run_lane "$home" catalog --repo "$repo")
-  assert_contains "$out" "merge-routes" "a project catalog file dropped the built-in surfaces"
-  assert_contains "$out" "schema" "the project catalog file was not merged in"
+  # The built-in surfaces keep firing beside the project's own, so the project
+  # file widened the catalog rather than replacing it.
+  out=$(run_lane "$home" decide cat-a1b --project proj --repo "$repo" \
+    --paths src/merge_release.sh)
+  assert_contains "$out" "critical-surfaces: merge-routes" \
+    "a project catalog file dropped the built-in surfaces"
 
   # Narrowing the list is itself a change to how work is routed, so the file is
   # a critical surface in its own right: a delivery that trimmed it could
@@ -790,7 +912,7 @@ EOF
   # A malformed project line is a refusal, because a silently skipped pattern is
   # a silently lost surface.
   printf 'no-surface-name-here\n' > "$repo/.fm-critical-surfaces"
-  out=$(run_lane "$home" catalog --repo "$repo")
+  out=$(run_lane "$home" decide cat-a3 --project proj --repo "$repo" --paths src/thing.py)
   status=$?
   [ "$status" -ne 0 ] || fail "a malformed project catalog line should exit non-zero"
   assert_contains "$out" "malformed line" "the refusal did not name the malformed line"
@@ -985,6 +1107,8 @@ test_deleting_the_dispatch_gate_cannot_route_itself_cheap
 test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only
 test_a_revert_must_be_the_commit_it_claims_to_undo
 test_a_mechanical_change_must_be_re_derivable
+test_the_record_names_what_demonstrated_the_class
+test_documents_that_govern_an_agent_are_not_ordinary_documentation
 test_declared_evidence_never_reaches_the_cheap_lane
 test_an_invalid_class_claim_is_refused_on_declared_evidence
 test_size_routes_a_change_to_be_looked_at_and_never_refuses_it

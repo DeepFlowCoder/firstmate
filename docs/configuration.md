@@ -318,15 +318,16 @@ There are two things an operator sets or reads.
 A project may carry a tracked `.fm-critical-surfaces` file at its root naming paths that always take the expensive lane, one `<glob> <surface-name>` per line with `#` comments.
 It only adds to the built-in catalog in `bin/fm-lane-lib.sh`, so it can widen what is treated as a safety surface and can never narrow it; a malformed line is refused rather than skipped, because a silently dropped pattern is a silently lost surface.
 This repo carries its own for the safety boundaries the built-in name patterns do not all catch, for the two files that run the dispatch gate, and for its CI configuration.
-It also lists the shared tracked material AGENTS.md section 1 already requires ship through the no-mistakes pipeline and PR path, so the lane policy enforces that rule instead of offering a cheap route around it.
+The CI entry is not there because CI is expected to catch a bad change, which is reasoning this policy rejects outright; it is there because the cheap lane's safety net must not be modifiable by the cheap lane.
 
 The gate in front of each dispatch is advisory for fresh intake and binding on a measured change.
 At intake there is no diff, so a decision there rests on a declared path list; the gate then records the lane it computed, says on stderr that the project's registered posture was followed instead, and marks the row `advisory=<lane>:<reason>` so every disagreement between the policy and the posture is countable.
-It refuses a cheap dispatch in three cases: the decision names a critical surface, under either evidence grade; the decision came from a real diff and says the expensive lane; or no decision was recorded at all, which means the critical-surface check never ran.
+It refuses a cheap dispatch in four cases: the decision names a critical surface, under either evidence grade; the decision came from a real diff and says the expensive lane; the decision on record was made for a different project, which never authorizes this one's change; or no decision was recorded at all, which means the critical-surface check never ran.
 A missing or unwritable record never stops an expensive or `local-only` dispatch, which warns and proceeds, because there it costs one delivery's measurement rather than any rigor.
 
 Every lane decision, every ship dispatch and every defect found after a delivery landed is appended to the home's gitignored `data/lane-log.tsv`, tab-separated, one event per line.
 Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"` and read the file back with `bin/fm-lane.sh log`.
+A class-routed decision carries what demonstrated the class in its class column, as `clean-revert:<commit sha>` or `mechanical-pattern:<hash of the reproduce command>`, so a reviewer can re-check months later which commit was claimed or whether the same command was used again.
 A `dispatch` row records an authorised dispatch rather than a completed launch, because it is written before the worker starts, so a spawn that fails afterwards still leaves a row and a retry leaves a second one for the same delivery.
 Anyone computing an escape rate from this file must therefore not treat dispatch rows as deliveries.
 That record is the only measurement of rigor skipped against defects escaped, which nothing published covers for agent-written changes, so it is what makes the policy correctable rather than permanent.

@@ -15,7 +15,6 @@
 #                     [--note <text>]
 #   fm-lane.sh escape <task-id> --note <text> [--project <name>]
 #   fm-lane.sh log [--task <id>] [--event decide|dispatch|escape]
-#   fm-lane.sh catalog [--repo <dir>]
 #
 # decide prints one machine-readable first line:
 #   lane=<no-mistakes|direct-PR> evidence=<demonstrated|declared> reason=<slug>
@@ -180,10 +179,27 @@ blob_at() {
   git -C "$REPO" rev-parse --verify --quiet "$1:$2" 2>/dev/null || true
 }
 
-# Re-derive the change: run the declared command on a throwaway clone of the
-# base and require the resulting tree to equal head's tree exactly. An unbounded
-# run is not one of the outcomes: without a bound the command is never started,
-# so a looping --reproduce cannot hang an intake the operator is waiting on.
+# Re-derive the change: run the declared command on a throwaway copy of the base
+# and require the resulting tree to equal head's tree exactly.
+#
+# THE HEAD MUST BE UNREACHABLE FROM INSIDE THAT COPY, which is why the base is
+# materialised as a plain archive into a fresh directory with its own empty
+# index rather than as a clone. A clone carries every ref and the whole object
+# store, so `--reproduce "git checkout <head> -- ."` re-derived nothing and
+# demonstrated everything: a door that opens when you say the password out loud.
+# Computing head's tree is now the only way to match it.
+#
+# Nothing is written into the routed project: the archive is read-only on it, and
+# the source repository's HEAD and working tree are untouched, which is the
+# property the clone was originally chosen for and a test still pins.
+#
+# The accepted cost: a --reproduce command that legitimately needs git history
+# can no longer demonstrate, so that change routes expensive. Not being able to
+# demonstrate has to cost rigor in excess, never in deficit.
+#
+# An unbounded run is not one of the outcomes either: without a bound the command
+# is never started, so a looping --reproduce cannot hang an intake the operator
+# is waiting on.
 demonstrate_mechanical_pattern() {
   local base=$1 head=$2 cmd=$3 tmp wc produced expected runner
   if command -v timeout >/dev/null 2>&1; then
@@ -197,8 +213,10 @@ demonstrate_mechanical_pattern() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-lane-repro.XXXXXX") || return 1
   TMPDIRS+=("$tmp")
   wc="$tmp/wc"
-  git clone --quiet --shared --no-checkout "$REPO" "$wc" >/dev/null 2>&1 || return 1
-  git -C "$wc" checkout --quiet --detach "$base" >/dev/null 2>&1 || return 1
+  mkdir -p "$wc" || return 1
+  git -C "$REPO" archive --format=tar "$base" >"$tmp/base.tar" 2>/dev/null || return 1
+  tar -xf "$tmp/base.tar" -C "$wc" || return 1
+  git -C "$wc" init --quiet >/dev/null 2>&1 || return 1
   ( cd "$wc" && "$runner" "$LANE_REPRODUCE_TIMEOUT" bash -c "$cmd" ) >/dev/null 2>&1 || return 1
   git -C "$wc" add -A >/dev/null 2>&1 || return 1
   produced=$(git -C "$wc" write-tree 2>/dev/null) || return 1
@@ -209,7 +227,7 @@ demonstrate_mechanical_pattern() {
 # --- decide -----------------------------------------------------------------
 
 cmd_decide() {
-  local evidence catalog hits critical lane reason signals note
+  local evidence catalog hits critical lane reason signals note class_record
   local base head names statuses numstat
   local files dirs lines new_files branch_points
   local signal_reasons=()
@@ -219,6 +237,7 @@ cmd_decide() {
   [ -n "$REPO" ] || die "decide requires --repo <dir>, the project whose .fm-critical-surfaces completes the catalog"
   [ -d "$REPO" ] || die "--repo is not a directory: $REPO"
   [ -z "$CLASS" ] || validate_class_claim
+  class_record=$(class_record_value) || exit 1
 
   if [ -n "$RANGE" ]; then
     [ "${#PATHS[@]}" -eq 0 ] || die "--paths is declared evidence and cannot be combined with --range"
@@ -315,12 +334,12 @@ cmd_decide() {
   fi
 
   fm_lane_append decide "$TASK" "$PROJECT" "$lane" "$evidence" "$reason" \
-    "${CLASS:--}" "$critical" "$signals" "${note:--}" || exit 1
+    "${class_record:--}" "$critical" "$signals" "${note:--}" || exit 1
 
   printf 'lane=%s evidence=%s reason=%s\n' "$lane" "$evidence" "$reason"
   printf 'task: %s\nproject: %s\n' "$TASK" "$PROJECT"
   printf 'critical-surfaces: %s\n' "$critical"
-  printf 'class: %s\n' "${CLASS:--}"
+  printf 'class: %s\n' "${class_record:--}"
   printf 'signals: %s\n' "${signals//,/ }"
   printf 'record: %s\n' "$(fm_lane_log_path)"
   if [ "$lane" = no-mistakes ] && [ "$reason" = "critical-surface" ]; then
@@ -353,6 +372,29 @@ validate_class_claim() {
   esac
 }
 
+# The class column carries what DEMONSTRATED the class, not only its name: two
+# clean reverts of different commits were otherwise byte-identical rows, and the
+# demonstrating input is exactly what a reviewer re-checks when a defect turns up
+# months later. IDENTIFIERS ONLY, never free text, or the column becomes prose
+# again. The --reproduce command is therefore stored as a content hash rather
+# than verbatim: a hash still distinguishes two commands and still proves the
+# same one was used again, while carrying no prose.
+class_record_value() {
+  local resolved
+  case "$CLASS" in
+    '') printf '%s' - ;;
+    clean-revert)
+      resolved=$(git -C "$REPO" rev-parse --verify --quiet "$REVERT_OF^{commit}" 2>/dev/null) \
+        || die "--revert-of does not resolve to a commit in $REPO: $REVERT_OF"
+      printf 'clean-revert:%s' "$resolved"
+      ;;
+    mechanical-pattern)
+      printf 'mechanical-pattern:%s' "$(printf '%s' "$REPRODUCE" | git hash-object --stdin)"
+      ;;
+    *) printf '%s' "$CLASS" ;;
+  esac
+}
+
 demonstrate_class() {
   local base=$1 head=$2
   case "$CLASS" in
@@ -382,10 +424,6 @@ cmd_log() {
     '(t=="" || $3==t) && (e=="" || $2==e)' "$log"
 }
 
-cmd_catalog() {
-  fm_lane_catalog "$REPO"
-}
-
 # --- dispatch ---------------------------------------------------------------
 
 [ "$#" -gt 0 ] || { usage; exit 1; }
@@ -393,7 +431,7 @@ SUB=$1
 shift
 case "$SUB" in
   -h|--help|help) usage; exit 0 ;;
-  decide|escape|log|catalog) ;;
+  decide|escape|log) ;;
   *) die "unknown subcommand: $SUB (try --help)" ;;
 esac
 
@@ -444,5 +482,4 @@ case "$SUB" in
   decide) cmd_decide ;;
   escape) cmd_escape ;;
   log) cmd_log ;;
-  catalog) cmd_catalog ;;
 esac
