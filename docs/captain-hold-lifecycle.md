@@ -17,6 +17,7 @@ Strandedness is measured by reach, not by the surviving mark: the open-decisions
 Reading those annotations as proof the call was "not stranded" left exactly two exits on a question he had never answered - invent words for him, or leave it buried - which is why the mark no longer decides.
 It reopens that task through `tasks-axi reopen` and re-places the captain hold under the reason the command was given, recording no answer at all, so the question returns to the captain instead of being decided for him; it refuses a task that already carries a resolution record, and on a task that is not closed it does nothing.
 When the close kept the hold annotations, `answer` remains the lighter repair for a call he has since answered: it records his words on the closed row without disturbing the close.
+That repair carries the same trace, because recording the answer is exactly what silences the `closed-unanswered` report for that row: it queues the durable wake record first and writes the resolution second, so the two overlap for a moment and the row is never left ended with nothing saying so.
 
 The `answer` subcommand records the captain's exact words and closes the call in the same act.
 It requires a non-empty captain decision file of at most 8192 bytes, writes a resolution block carrying the decision digest and a `Resolution mode:` at the top of the task body (the previous body is preserved below the block and archived through tasks-axi `--archive-body`), then runs `tasks-axi done` - or `tasks-axi unhold` under `--release`, so a captain-gated work item resumes instead of closing.
@@ -27,6 +28,7 @@ That record is best effort like every other wake this file queues, so a wake que
 The block also records the hold reason the answer consumed as `Hold annulled:`, which is what lets `diverged` flag a later hold repeating that same reason without reading a word of what the captain said.
 That record supports a contradiction to check and never a conclusion about which question is live; the Record divergence section below states exactly what the match can and cannot establish.
 On a task closed outside the script, `answer` records the missing block only when the captain-hold annotations tasks-axi preserves through a close prove the captain owned it, and it verifies the task stays closed.
+That path ends no work item itself, so it says only that the answer is now recorded on a row an out-of-band close already ended and that no work item carries what it may have authorized.
 A hold whose `--until` date has passed keeps those annotations while tasks-axi reports it no longer held, so an expired deferral remains answerable.
 
 The `complete` subcommand unions the reviewed captain-held task ids into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
@@ -125,7 +127,7 @@ The absence of a routed work item is legitimate rather than incomplete - when th
 A task re-held under a reason no recorded answer annulled, and a task whose newest record closed with `released`, both carry no match at all.
 And a resolution record written before `Hold annulled:` existed names no question, so an old record can never read as a resurrection.
 
-Cost stays bounded: three `tasks-axi list` calls, one of them asking for the single extra `hold_kind` column, one key scan per status log, the precise per-key fold only for a key that already names a still-open task, and one `show` per open row the listing already showed to carry the captain's mark plus one per row still retained as Done - never one per row in the book.
+Cost stays bounded: two `tasks-axi list` calls, one open listing asking for the single extra `hold_kind` column and read once for both open-row scans, and one over the retained Done rows, plus one key scan per status log, the precise per-key fold only for a key that already names a still-open task, and one `show` per open row the listing already showed to carry the captain's mark plus one per row still retained as Done - never one per row in the book.
 That single extra column is what keeps the scan both bounded and complete: the row becomes `id,state,kind,repo,title,hold_kind`, where the id and state slugs precede the free-text title and `hold_kind` is the last comma-separated token after it, so a title carrying commas or quotes can shift none of the three and no second reader of the backlog format is introduced.
 The comparison is refused unless the status directory is the active home's own, since tasks-axi reads that home's backlog and a mismatch would report one home's logs against another's tasks.
 If tasks-axi is unavailable or its listing cannot be parsed, the guard cannot read the structured record and prints nothing.

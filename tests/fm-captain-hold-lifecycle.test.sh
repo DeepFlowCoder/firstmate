@@ -1565,10 +1565,10 @@ EOF
   # The whole line, title included: an id alone makes firstmate run `show` on
   # each one, on the section whose purpose is naming a silent loss at a glance.
   printf '%s\n' "$drain" \
-    | grep -F "sample-route-call [key=sample-route-call] reads resolved in $id's status log but is still held for the captain: Choose route: north or south" >/dev/null \
+    | grep -F "sample-route-call [key=sample-route-call] resolved in $id, still held: Choose route: north or south" >/dev/null \
     || fail "the drain section omitted the collapsed-identity divergence or its title: $drain"
   printf '%s\n' "$drain" \
-    | grep -F "$id-decision-access [key=access] reads resolved in $id's status log but is still held for the captain: Open or restricted sample access" >/dev/null \
+    | grep -F "$id-decision-access [key=access] resolved in $id, still held: Open or restricted sample access" >/dev/null \
     || fail "the drain section omitted the legacy-identity divergence or its title: $drain"
 
   # It signals; it never closes. Both records must survive the report unchanged,
@@ -1689,7 +1689,7 @@ test_closed_call_with_its_mark_is_still_stranded() {
     || fail "the closed unanswered call was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the closed call"
   printf '%s\n' "$drain" \
-    | grep -F "$call was closed with the captain's question never answered, so it is on no list he reads: Which of the four verifier fixes" >/dev/null \
+    | grep -F "$call closed unanswered: Which of the four verifier fixes" >/dev/null \
     || fail "the closed unanswered call, or the title that names it, never reached the drain: $drain"
   printf '%s\n' "$drain" | grep -F 'hold <task> --reason <reason> --reopen' >/dev/null \
     || fail "the drain section does not name the repair for a call he never answered: $drain"
@@ -1777,9 +1777,9 @@ test_resurrected_hold_over_an_answered_call_is_signalled() {
     || fail "the resurrected hold was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the resurrected hold"
   printf '%s\n' "$drain" \
-    | grep -F 'sample-coop-call carries a live captain hold whose reason matches one its own record says an answer annulled - check whether that question is still open: Write it now or keep piloting' >/dev/null \
+    | grep -F 'sample-coop-call hold repeats annulled reason: Write it now or keep piloting' >/dev/null \
     || fail "the resurrected hold, or the title that names it, never reached the drain: $drain"
-  printf '%s\n' "$drain" | grep -F 'never lift a captain hold on the strength of a repeated hold reason' >/dev/null \
+  printf '%s\n' "$drain" | grep -F 'a repeated hold reason is a contradiction to CHECK and never proof - never lift a captain hold on it' >/dev/null \
     || fail "the drain prescribed acting on the signal instead of checking it: $drain"
 
   # A call the captain answered with --release can never be resurrected: the
@@ -1848,7 +1848,7 @@ test_expired_deferral_resurrection_is_signalled() {
     || fail "the resurrected hold on an expired deferral was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the deferred call"
   printf '%s\n' "$drain" \
-    | grep -F "sample-deferred-call carries a live captain hold whose reason matches one its own record says an answer annulled - check whether that question is still open: $title" >/dev/null \
+    | grep -F "sample-deferred-call hold repeats annulled reason: $title" >/dev/null \
     || fail "the expired-deferral resurrection, or the hostile title naming it, never reached the drain: $drain"
   pass "an expired deferral's resurrected hold is reported, hostile title and all"
 }
@@ -1896,6 +1896,87 @@ test_close_that_ended_the_work_leaves_a_durable_record() {
   printf '%s\n' "$drain" | grep -F 'captain call sample-board-call ended the captain-held work item' >/dev/null \
     || fail "the durable close record never reached the drain: $drain"
   pass "a close that ended the captain-held work leaves a durable record on the direct and the board path"
+}
+
+# Case 1 and Case 2 in the same card, which is the shape the skill recommends
+# `answer` for: the investigation's close already ended the work item, and
+# recording the captain's words is exactly what silences `closed-unanswered` for
+# that row. The report may only go quiet because the trace took over, so this
+# pins both halves of that handover in one sequence.
+test_retroactive_repair_hands_the_report_over_to_the_trace() {
+  local home out
+  home=$(make_home repaired-close-trace)
+  printf 'escribir-ya\n' > "$home/decision.txt"
+  run_captain "$home" hold sample-repaired-call --title "Write it now or keep piloting" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the call closed out of band"
+  tasks_in "$home" "done" sample-repaired-call >/dev/null \
+    || fail "could not reproduce the out-of-band close"
+
+  out=$(run_captain "$home" diverged) || fail "diverged failed before the repair"
+  printf '%s\n' "$out" | grep -F 'closed-unanswered	sample-repaired-call' >/dev/null \
+    || fail "setup error: the out-of-band close was not reported before the answer: $out"
+  assert_not_contains "$(wake_payloads_in "$home")" "sample-repaired-call" \
+    "setup error: a trace existed before the answer was recorded"
+
+  out=$(run_captain "$home" answer sample-repaired-call --decision-file "$home/decision.txt") \
+    || fail "the retroactive repair did not record"
+  assert_contains "$out" "repaired: sample-repaired-call" "the repair did not report what it recorded"
+  assert_contains "$out" "no work item carries what it may have authorized" \
+    "the repair did not name the consequence of recording on an already closed row: $out"
+
+  assert_contains "$(wake_payloads_in "$home")" \
+    "captain call sample-repaired-call was closed outside this owner and its answer is now recorded" \
+    "recording the answer left no durable trace on the one path that had neither"
+  out=$(run_captain "$home" diverged) || fail "diverged failed after the repair"
+  printf '%s\n' "$out" | grep -F 'sample-repaired-call' >/dev/null \
+    && fail "the report and the trace both claim the same row: $out"
+  pass "a retroactive repair raises the durable trace before the report it silences goes quiet"
+}
+
+# The per-item lines are capped, so a long fixed formula is paid for out of the
+# title's budget. These are the measured sizes from the supervisor's own home:
+# ids reach 47 characters at p90 and titles 140, and both must survive whole. A
+# future re-lengthening of the prose fails here instead of quietly eating titles.
+test_realistic_id_and_title_survive_the_divergence_line() {
+  local home held_id closed_id title drain
+  home=$(make_home divergence-line-budget)
+  held_id=sample-budget-resurrected-call
+  closed_id=sample-budget-unanswered-call
+  while [ "${#held_id}" -lt 47 ]; do held_id="${held_id}x"; done
+  while [ "${#closed_id}" -lt 47 ]; do closed_id="${closed_id}y"; done
+  title="Escribir el documento de gobierno de la cooperativa"
+  while [ "${#title}" -lt 140 ]; do title="$title y el calendario acordado"; done
+  title=${title:0:140}
+  [ "${#held_id}" = 47 ] && [ "${#closed_id}" = 47 ] && [ "${#title}" = 140 ] \
+    || fail "the budget fixture drifted off the measured p90 sizes"
+  printf 'escribir-ya\n' > "$home/decision.txt"
+
+  run_captain "$home" hold "$held_id" --title "$title" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the p90 resurrection fixture"
+  run_captain "$home" answer "$held_id" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not record the answer on the p90 fixture"
+  tasks_in "$home" reopen "$held_id" >/dev/null || fail "could not reproduce the raw reopen"
+
+  run_captain "$home" hold "$closed_id" --title "$title" \
+    --reason "captain choice pending" --repo sample >/dev/null \
+    || fail "could not register the p90 stranded fixture"
+  tasks_in "$home" "done" "$closed_id" >/dev/null || fail "could not close the p90 stranded fixture"
+
+  drain=$(run_drain "$home") || fail "the drain failed on the p90 fixtures"
+  printf '%s\n' "$drain" | grep -F "$held_id hold repeats annulled reason: $title" >/dev/null \
+    || fail "a p90 id and title did not survive the resurrection line whole: $drain"
+  printf '%s\n' "$drain" | grep -F "$closed_id closed unanswered: $title" >/dev/null \
+    || fail "a p90 id and title did not survive the closed-unanswered line whole: $drain"
+
+  # The explanation the per-item lines no longer carry still reaches the reader,
+  # once, with its advisory strength intact.
+  printf '%s\n' "$drain" | grep -F 'is a live captain hold carrying the very reason a recorded answer on that same task annulled' >/dev/null \
+    || fail "the section no longer says what the resurrection shape means: $drain"
+  printf '%s\n' "$drain" | grep -F 'a repeated hold reason is a contradiction to CHECK and never proof' >/dev/null \
+    || fail "the section no longer refuses to treat the match as proof: $drain"
+  pass "a p90 id and title survive both divergence lines whole, with the shared explanation printed once"
 }
 
 # Seed one origin investigation with the metadata, status log, and report the
@@ -2096,6 +2177,8 @@ test_close_names_what_it_did_to_the_held_work
 test_close_that_ended_the_work_leaves_a_durable_record
 test_resurrected_hold_over_an_answered_call_is_signalled
 test_expired_deferral_resurrection_is_signalled
+test_retroactive_repair_hands_the_report_over_to_the_trace
+test_realistic_id_and_title_survive_the_divergence_line
 test_pruned_answer_still_proves_the_captains_call
 test_pruned_inventory_still_blocks_an_unanswered_call
 test_blank_inventory_entry_refuses_and_is_repairable

@@ -793,10 +793,12 @@ write_resolution_record() {  # <task-id> <mode> <shown-body> <annulled-hold-reas
 # one row fm_wake_print_deduped presents, and best effort exactly like
 # record_undecidable_refusal above: a wake queue that cannot be locked drops this
 # record rather than failing the close or losing the captain's recorded answer.
-# It states only what the close did and never reads a word of what he said.
-record_close_ended_work() {  # <task-id>
+# It states only what happened to the row and never reads a word of what he said.
+# One key per task, whichever path recorded the answer, because it is one fact
+# about one work item and two records of it would drift apart.
+record_close_ended_work() {  # <task-id> <what-happened-to-the-row>
   fm_wake_append check "captain-close-ended-work-$1" \
-    "check: closing the captain call $1 ended the captain-held work item along with the question, because the close was not a --release. If the captain's answer authorized work, nothing carries it now: confirm that work is under way or queued, or re-dispatch it." \
+    "check: $2 If the captain's answer authorized work, no work item carries it now: confirm that work is under way or queued, or re-dispatch it." \
     >/dev/null 2>&1 || return 1
 }
 
@@ -805,7 +807,8 @@ close_answered() {  # <task-id> <release-0-or-1>
     tasks_axi unhold "$1" >/dev/null || fail "could not release captain-held task $1"
   else
     tasks_axi "done" "$1" >/dev/null || fail "could not close answered captain-held task $1"
-    record_close_ended_work "$1" || true
+    record_close_ended_work "$1" \
+      "closing the captain call $1 ended the captain-held work item along with the question, because the close was not a --release." || true
   fi
 }
 
@@ -871,12 +874,20 @@ command_answer() {
     # this really was the captain's item rather than ordinary finished work.
     [ "$hold_kind" = captain ] \
       || fail "task $id was never held for the captain; nothing to record an answer on"
+    # BEFORE the record, never after. `report_closed_unanswered` is the live
+    # signal on this row and writing the record is exactly what silences it, so
+    # queueing the trace first means the two overlap for a moment. Reorder these
+    # two lines and there is a window in which the row's work item is ended and
+    # NOTHING says so, which is the loss this whole command exists to end.
+    record_close_ended_work "$id" \
+      "the captain call $id was closed outside this owner and its answer is now recorded on that closed row." || true
     write_resolution_record "$id" repaired "$body" "$annulled"
     show=$(task_show "$id") || fail "task $id disappeared while recording the answer"
     [ "$(show_field "$show" state)" = "done" ] || fail "recording the answer reopened closed task $id"
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
-    printf 'repaired: %s\n' "$id"
+    printf 'repaired: %s (%s)\n' "$id" \
+      'the answer is recorded on a row an out-of-band close already ended; no work item carries what it may have authorized'
     return 0
   fi
 
@@ -1273,63 +1284,36 @@ EOF
 # of fact can prove its first reading wrong - so the report says only that the
 # two records disagree and names both reconciliation directions above.
 #
-# Cost stays bounded on a healthy home: three `tasks-axi list` calls, one of
-# them asking for the single extra `hold_kind` column, one key scan per status
-# log, the precise per-key fold only for a key that already names a still-open
-# task, and one `show` per open row the listing already showed to carry the
-# captain's mark plus one per row still retained as Done - never one per row in
-# the book. If tasks-axi is unavailable or its listing cannot be parsed, the
-# guard cannot read the structured record and prints nothing.
+# Cost stays bounded on a healthy home: two `tasks-axi list` calls - one open
+# listing asking for the single extra `hold_kind` column, read once and shared
+# by both open-row scans, and one over the retained Done rows - plus one key
+# scan per status log, the precise per-key fold only for a key that already
+# names a still-open task, and one `show` per open row the listing already
+# showed to carry the captain's mark plus one per row still retained as Done -
+# never one per row in the book. If tasks-axi is unavailable or its listing
+# cannot be parsed, the guard cannot read the structured record and prints
+# nothing.
 #
 # Output: one `<class>\t<task-id>\t<origin>\t<key>\t<title>` line per
 # divergence, class by class; `origin` and `key` are empty for the two shapes
 # that live entirely in the structured record. Nothing prints when the records
 # agree.
 
-# Every still-open task id in this home's backlog, one per line. Only the first
-# two comma-separated listing fields are read - both are slugs that precede any
-# quoted title - so a title containing commas or quotes cannot shift them.
-open_task_ids() {
-  tasks_axi list 2>/dev/null | awk -F, '
-    /^  [A-Za-z0-9._-]+,/ {
-      id = $1
-      sub(/^ +/, "", id)
-      if ($2 != "done") print id
-    }
-  '
-}
-
-# Every task id tasks-axi reports as Done, one per line. Only the leading slug
-# field is read, for the same reason open_task_ids reads two: a title carrying a
-# comma or a quote cannot shift it. The filter is what keeps the closed-call scan
-# below bounded to the rows retention still keeps in the backlog, rather than
-# opening every row in the book.
-done_task_ids() {
-  tasks_axi list --state "done" 2>/dev/null | awk '
-    /^  [A-Za-z0-9._-]+,/ {
-      id = $0
-      sub(/^ +/, "", id)
-      sub(/,.*$/, "", id)
-      print id
-    }
-  '
-}
-
-# Every still-open task id whose row carries the captain's mark, one per line,
-# from the tool's own listing rather than a second reader of the backlog file.
-# Exactly ONE extra column is requested, which makes the row
+# Every still-open row in this home's backlog as `<task-id>\t<hold_kind>`, one
+# per line, from ONE listing that both open-row scans below read. Exactly ONE
+# extra column is requested, which makes the row
 # `id,state,kind,repo,title,hold_kind`: `id` and `state` are slugs that PRECEDE
 # the free-text title, and `hold_kind` is the LAST comma-separated token, itself
 # a slug (or the quoted empty marker) that FOLLOWS it, so a title carrying
 # commas or quotes can shift none of the three. A second extra column would sit
 # after `hold_kind` and break exactly that argument, so this asks for one.
-# `held:` is deliberately not the test here. A hold the captain deferred with
-# `--until` reports `held: no` once its date passes while keeping its
+# `held:` is deliberately not the mark read here. A hold the captain deferred
+# with `--until` reports `held: no` once its date passes while keeping its
 # annotations, and it drops out of `tasks-axi list --state held` - so reading
 # the live bit would miss his own "revisit later" calls twice over, at the
 # listing and at the gate. The surviving annotations prove he owned it, which is
 # the same rule `answer` above already follows.
-captain_marked_open_task_ids() {
+open_task_rows() {
   tasks_axi list --fields hold_kind 2>/dev/null | awk '
     /^  [A-Za-z0-9._-]+,/ {
       row = $0
@@ -1341,7 +1325,23 @@ captain_marked_open_task_ids() {
       sub(/,.*$/, "", state)
       mark = row
       sub(/^.*,/, "", mark)
-      if (mark == "captain" && state != "done") print id
+      if (state != "done") printf "%s\t%s\n", id, mark
+    }
+  '
+}
+
+# Every task id tasks-axi reports as Done, one per line. Only the leading slug
+# field is read, for the same reason open_task_rows reads from both ends: a
+# title carrying a comma or a quote cannot shift it. The filter is what keeps
+# the closed-call scan below bounded to the rows retention still keeps in the
+# backlog, rather than opening every row in the book.
+done_task_ids() {
+  tasks_axi list --state "done" 2>/dev/null | awk '
+    /^  [A-Za-z0-9._-]+,/ {
+      id = $0
+      sub(/^ +/, "", id)
+      sub(/,.*$/, "", id)
+      print id
     }
   '
 }
@@ -1387,10 +1387,12 @@ EOF
 # nothing tasks-axi records orders a hold against a close, so a task re-held
 # under a REPEATED reason after a non-release close cannot be told apart from
 # the restored one. Nothing may lift a captain hold on this signal.
-report_hold_resurrected() {
-  local id show body annulled
-  while IFS= read -r id; do
+report_hold_resurrected() {  # <open-rows>
+  local rows=$1 row id show body annulled tab=$'\t'
+  while IFS= read -r row; do
+    id=${row%%"$tab"*}
     [ -n "$id" ] || continue
+    [ "${row#*"$tab"}" = captain ] || continue
     show=$(task_show "$id") || continue
     [ "$(show_field_value "$show" hold_kind)" = captain ] || continue
     body=$(show_field "$show" body)
@@ -1411,7 +1413,7 @@ report_hold_resurrected() {
     printf 'hold-resurrected\t%s\t\t\t%s\n' "$id" \
       "$(sanitize_field "$(show_field_value "$show" title)")"
   done <<EOF
-$(captain_marked_open_task_ids)
+$rows
 EOF
 }
 
@@ -1430,17 +1432,17 @@ list_has_line() {  # <newline-separated-list> <value>
   esac
 }
 
-report_status_resolved() {
-  local ids resolve f origin tokens id keys key show title
-  ids=$(open_task_ids) || return 0
-  [ -n "$ids" ] || return 0
+report_status_resolved() {  # <open-rows>
+  local rows=$1 resolve f origin tokens row id keys key show title tab=$'\t'
+  [ -n "$rows" ] || return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   for f in "$STATE"/*.status; do
     [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
     origin=$(basename "$f"); origin=${origin%.status}
     tokens=$(status_log_key_tokens "$f")
     [ -n "$tokens" ] || continue
-    while IFS= read -r id; do
+    while IFS= read -r row; do
+      id=${row%%"$tab"*}
       [ -n "$id" ] || continue
       # The keys that could name this task in THIS log: the collapsed identity
       # (the key IS the task id) and, for a pre-collapse row, the legacy derived
@@ -1465,12 +1467,13 @@ report_status_resolved() {
 $keys
 INNER
     done <<EOF
-$ids
+$rows
 EOF
   done
 }
 
 command_diverged() {
+  local open_rows
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
   # Both records must belong to the SAME home or the comparison is meaningless:
   # tasks-axi reads $FM_HOME's backlog, so a state dir pointed somewhere else
@@ -1482,9 +1485,10 @@ command_diverged() {
   # compatibility floor and its extra probes: a listing this parser cannot read
   # simply yields no candidates and the report stays silent.
   command -v tasks-axi >/dev/null 2>&1 || return 0
-  report_status_resolved
+  open_rows=$(open_task_rows)
+  report_status_resolved "$open_rows"
   report_closed_unanswered
-  report_hold_resurrected
+  report_hold_resurrected "$open_rows"
 }
 
 case "${1:-}" in
