@@ -1532,7 +1532,7 @@ test_dead_window_still_reports_active_run_step() {
 
 test_no_timeout_uses_perl_bound() {
   reset_fakes
-  local d toolbin out start elapsed calls_file calls
+  local d toolbin out start elapsed calls_file calls real_date
   d=$(new_case no-timeout)
   make_repo_on_branch "$d/wt" fm/feat-timeout
   make_fakebin "$d" >/dev/null
@@ -1544,6 +1544,21 @@ printf '%s\n' "$*" >> "${FM_FAKE_NM_CALLS:-/dev/null}"
 while :; do :; done
 SH
   chmod +x "$d/fakebin/no-mistakes"
+  # The read's budget is counted in whole `date +%s` seconds, so the one-second
+  # bound below is really anywhere between zero and one second of budget: cross a
+  # second boundary while bash sources its libraries and the budget is spent
+  # before the first call, which skips the very call this case is about and
+  # leaves every assertion below trivially true on a loaded runner. Pin that one
+  # reading - only `+%s`, every other use of date stays real - so the bound this
+  # case hands the perl arm is the bound it gets, whatever the machine is doing.
+  # Elapsed time is still measured on the real clock, in this shell.
+  real_date=$(command -v date) || fail "no date on PATH to pin the read's budget"
+  cat > "$d/fakebin/date" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = "+%s" ]; then printf '%s\n' 1700000000; exit 0; fi
+exec $real_date "\$@"
+SH
+  chmod +x "$d/fakebin/date"
   toolbin=$(make_no_timeout_toolbin "$d")
   fm_write_meta "$d/state/feat-timeout.meta" "window=fm:fm-feat-timeout" "worktree=$d/wt" "kind=ship" \
     "harness=claude"

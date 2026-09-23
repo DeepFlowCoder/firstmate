@@ -48,10 +48,13 @@
 #   check    Print the verdict only when it has CHANGED since the last report.
 #            This is the watcher surface, and the repeat suppression is the whole
 #            reason it is separate: a warning that fires on every poll is one the
-#            captain learns to scroll past. bin/fm-capacity-policy.mjs owns the
-#            digest that decides what "changed" means; it deliberately excludes
-#            the percentage and the projected-exhaustion stamp, which both move
-#            on every poll. That suppression is only as good as the record it
+#            captain learns to scroll past. bin/fm-capacity-policy.mjs owns what
+#            "changed" means and the key each arm is compared by; it deliberately
+#            excludes the percentage and the projected-exhaustion stamp, which
+#            both move on every poll. Each arm is compared and remembered on its
+#            own, because either can be unreadable on a poll the other reads
+#            fine, and state/.capacity holds one key per line in the order the
+#            policy emits them. That suppression is only as good as the record it
 #            rests on, so a record that cannot be WRITTEN is said out loud on
 #            both surfaces: a silent write failure would leave the guard
 #            amnesiac and repeating an unchanged degraded fleet forever, which
@@ -642,29 +645,40 @@ standing_write() {
   return 0
 }
 
-# Publishes VERDICT_LINE and VERDICT_DIGEST, both empty when the fleet is fine,
-# and VERDICT_STANDING with the runway to carry forward. Returns non-zero only
-# when the snapshot could not be classified at all, which is a different thing
-# from a healthy fleet and must never be reported as one.
+# Publishes VERDICT_LINE, empty when there is nothing to say; VERDICT_LANES and
+# VERDICT_BALANCE, the two arms' keys to store; and VERDICT_STANDING with the
+# runway to carry forward. Returns non-zero only when the snapshot could not be
+# classified at all, which is a different thing from a healthy fleet and must
+# never be reported as one.
+#
+# Takes the surface: `check` withholds an arm whose key has not moved, `report`
+# says whatever is worth saying because a new session is a new observer.
 VERDICT_LINE=
-VERDICT_DIGEST=
+VERDICT_LANES=
+VERDICT_BALANCE=
 VERDICT_STANDING=
 
 classify() {
-  local record rest rc=0 readings lanes_flag
+  local surface=$1 record rest rc=0 readings lanes_flag only_flag
   VERDICT_LINE=
-  VERDICT_DIGEST=
+  VERDICT_LANES=
+  VERDICT_BALANCE=
   VERDICT_STANDING=
   command -v node >/dev/null 2>&1 || { SNAPSHOT_PROBLEM="node is not available to classify the snapshot"; return 1; }
   readings=$(history_json)
   lanes_flag=${LANES_UNREADABLE:+--lanes-unreadable}
+  only_flag=
+  [ "$surface" = check ] && only_flag=--only-unreported
   # The amounts and the drain measured from them travel in the environment, never
   # in argv, for the same reason the credential does: `ps` shows every process's
   # full command line to every local user, and a poll's worth of readings on a
   # command line is the captain's whole spending history published to the machine.
   record=$(FM_CAPACITY_BALANCE_READINGS="$readings" \
     FM_CAPACITY_BALANCE_STANDING="$(standing_read)" \
+    FM_CAPACITY_REPORTED_LANES="$(record_read lanes)" \
+    FM_CAPACITY_REPORTED_BALANCE="$(record_read balance)" \
     node "$POLICY" --min-lanes "$MIN_LANES" ${lanes_flag:+"$lanes_flag"} \
+    ${only_flag:+"$only_flag"} \
     --balance-margin-secs "$MARGIN" \
     --emit record <"$SNAPSHOT" 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -672,8 +686,10 @@ classify() {
     return 1
   fi
   [ -n "$record" ] || return 0
-  VERDICT_DIGEST=${record%%	*}
+  VERDICT_LANES=${record%%	*}
   rest=${record#*	}
+  VERDICT_BALANCE=${rest%%	*}
+  rest=${rest#*	}
   VERDICT_STANDING=${rest%%	*}
   VERDICT_LINE=${rest#*	}
   # The policy owns the condition, so it owns both halves of the answer: a rate
@@ -696,10 +712,10 @@ classify() {
 # clean reading.
 classify_or_balance_only() {
   local problem
-  classify && return 0
+  classify "$1" && return 0
   problem=$SNAPSHOT_PROBLEM
   balance_only_snapshot || return 1
-  classify || { SNAPSHOT_PROBLEM=$problem; return 1; }
+  classify "$1" || { SNAPSHOT_PROBLEM=$problem; return 1; }
   SNAPSHOT_PROBLEM=$problem
   return 0
 }
@@ -713,44 +729,34 @@ action_report() {
   [ "$MIN_LANES" -eq 0 ] && return 0
   resolve_margin
   take_balance_reading report
-  if ! acquire_snapshot_or_balance_only report || ! classify_or_balance_only; then
+  if ! acquire_snapshot_or_balance_only report || ! classify_or_balance_only report; then
     [ -z "$SNAPSHOT_PROBLEM" ] || printf 'capacity unknown - %s\n' "$SNAPSHOT_PROBLEM"
     [ -z "$BALANCE_PROBLEM" ] || printf 'balance unknown - %s\n' "$BALANCE_PROBLEM"
     [ -z "$MIN_LANES_PROBLEM" ] || printf '%s\n' "$MIN_LANES_PROBLEM"
     [ -z "$MARGIN_PROBLEM" ] || printf '%s\n' "$MARGIN_PROBLEM"
-    # A failed read leaves no verdict to record - and no standing to RETRACT
-    # one either. This is the same principle the two guards below rest on,
-    # reached from the third direction: a read that never happened establishes
-    # nothing about the lanes, so it cannot be what deletes a shape a
-    # SUCCESSFUL read wrote. Clearing here deleted exactly that, and the watcher
-    # then re-reported the unchanged degraded fleet - so with a quota-axi that
-    # fails intermittently, the captain was woken by the identical sentence once
-    # per session, forever.
+    # A failed read leaves no verdict to record - and no key to RETRACT one
+    # either. A read that never happened establishes nothing about the lanes, so
+    # it cannot be what deletes a shape a SUCCESSFUL read wrote. Clearing here
+    # deleted exactly that, and the watcher then re-reported the unchanged
+    # degraded fleet - so with a quota-axi that fails intermittently, the captain
+    # was woken by the identical sentence once per session, forever.
     #
-    # Nothing is lost by keeping it, because the record holds a SHAPE and not a
+    # Nothing is lost by keeping it, because a key holds a SHAPE and not a
     # moment. If the fleet changed while this session was blind, the next good
-    # read produces a different digest and warns anyway; if it did not change,
-    # suppression is the correct answer. A shape digest cannot suppress a
-    # changed shape - only an identical one, which is its whole job.
+    # read produces a different key and warns anyway; if it did not change,
+    # suppression is the correct answer. A shape key cannot suppress a changed
+    # shape - only an identical one, which is its whole job.
     #
     # Going blind is still announced: the `capacity unknown` line above is
     # printed either way. Saying "I could not look" is right; throwing away the
     # last thing that was known is not.
     return 0
   fi
-  if [ -n "$VERDICT_LINE" ]; then
-    printf '%s\n' "$VERDICT_LINE"
-    # Session start has now reported this shape, so the watcher must not
-    # immediately repeat it; recording here is what makes the two surfaces one
-    # guard rather than two that both shout.
-    record_write "$VERDICT_DIGEST" || record_write_problem
-  else
-    # Only a poll that actually READ the lanes may retract a lane shape. The
-    # stand-in establishes nothing about them, so letting it clear the record
-    # would turn an ordinary quota-axi timeout into a repeat of an unchanged
-    # degraded fleet on the next successful poll.
-    [ -n "$LANES_UNREADABLE" ] || record_clear
-  fi
+  # Session start has now reported this shape, so the watcher must not
+  # immediately repeat it; recording here is what makes the two surfaces one
+  # guard rather than two that both shout.
+  [ -z "$VERDICT_LINE" ] || printf '%s\n' "$VERDICT_LINE"
+  record_store || record_write_problem
   # Reachable with a snapshot problem set: the balance stand-in above classified
   # while the provider snapshot itself stayed unread, and a guard that has gone
   # half blind says which half.
@@ -769,23 +775,39 @@ action_check() {
   take_balance_reading check
   # An unmeasurable snapshot is silent here by design; see this file's header.
   acquire_snapshot_or_balance_only check || return 0
-  classify_or_balance_only || return 0
-  if [ -z "$VERDICT_LINE" ]; then
-    # Recovery is not captain-facing progress (AGENTS.md section 8), so it is
-    # reported by clearing the record rather than by a line: the next genuine
-    # degradation then reads as new and wakes somebody again. A poll that never
-    # read the lanes has recovered nothing and clears nothing; see action_report.
-    [ -n "$LANES_UNREADABLE" ] || record_clear
-    return 0
-  fi
-  [ "$VERDICT_DIGEST" = "$(record_read)" ] && return 0
-  printf '%s\n' "$VERDICT_LINE"
-  record_write "$VERDICT_DIGEST" || record_write_problem
+  classify_or_balance_only check || return 0
+  # The policy withheld every arm whose key had not moved, so a line here is news
+  # by construction. Recovery is not captain-facing progress (AGENTS.md section
+  # 8), so it arrives as an emptied key rather than a line: the next genuine
+  # degradation then reads as new and wakes somebody again.
+  [ -z "$VERDICT_LINE" ] || printf '%s\n' "$VERDICT_LINE"
+  record_store || record_write_problem
 }
 
+# The record is two lines, one key per arm, in the order the policy emits them:
+# lanes, then balance. An older single-line record reads as a lane key with no
+# balance key, so the worst an upgrade costs is one wake per arm, once.
 record_read() {
+  local n
+  case $1 in
+    lanes) n=1 ;;
+    *) n=2 ;;
+  esac
   [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 0
-  head -n 1 "$RECORD" 2>/dev/null
+  sed -n "${n}p" "$RECORD" 2>/dev/null
+}
+
+# Store both arms, or remove the record when neither arm has anything to
+# remember - an absent record is what makes the next degradation news. Nothing
+# to remember is also nothing to fail at, so a fleet that is fine can never be
+# what raises the write-failure sentence below.
+record_store() {
+  if [ -z "$VERDICT_LANES" ] && [ -z "$VERDICT_BALANCE" ]; then
+    record_clear
+    return 0
+  fi
+  record_write "$VERDICT_LANES
+$VERDICT_BALANCE"
 }
 
 # The record IS this guard's memory of what it has already said, so a write that

@@ -1710,6 +1710,68 @@ out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1007
 [ -z "$out" ] || fail "an unchanged degraded fleet must not be re-reported after a quota-axi outage, got: $out"
 pass "a quota-axi outage does not make an unchanged degraded fleet report twice"
 
+# BOTH ARMS DEGRADED AT ONCE is the case the two above each miss by one arm: the
+# first has healthy lanes, the second a healthy balance, and a single shared
+# memory is correct for either on its own. Measured on 2026-09-23 with both
+# degraded and a quota-axi answering every other call, this guard woke the
+# captain on EVERY poll with a fleet that never changed, alternating between the
+# balance sentence alone and the full lane inventory: the balance-only poll
+# overwrote the shared memory with the balance cause, the next poll read its own
+# unchanged lanes as new, wrote both back, and the poll after that repeated the
+# whole exchange. Each wake was justified against the memory it was compared
+# with; the memory had just stopped being a record of what the captain was told.
+home=$(fresh_home both-arms-alternation)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check)
+assert_contains "$out" "1 of 2 provider lanes dispatchable" "the first degraded poll must report the lanes"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the balance falling short is new and must report"
+# Nothing about the fleet or the balance moves from here on. Only whether
+# quota-axi answers moves, and that is not news about either arm.
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1007200 check)
+[ -z "$out" ] || fail "a standing balance warning must not re-report while quota-axi is down, got: $out"
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1010800 check)
+[ -z "$out" ] || fail "an unchanged degraded fleet must not re-report after a balance-only poll, got: $out"
+# Twice more, because the defect was an ALTERNATION: a fix that merely delays the
+# repeat by one poll would still pass a single round trip.
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1014400 check)
+[ -z "$out" ] || fail "the second blind poll must stay quiet too, got: $out"
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1018000 check)
+[ -z "$out" ] || fail "the second readable poll must stay quiet too, got: $out"
+# The other direction, so silence cannot be bought by a guard that has simply
+# gone mute: a real change on either arm, arriving after all that wobble, must
+# still wake somebody.
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(credential_provider codex)"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1021600 check)
+assert_contains "$out" "0 of 2 provider lanes dispatchable" "a genuinely worse fleet must still report"
+pass "an unchanged fleet and an unchanged balance warning wake the captain once between them"
+
+# The same defect reached from the arm that was withheld: while quota-axi is
+# down, a balance warning that genuinely CHANGES must still arrive, and it must
+# not drag the withheld lane inventory's memory down with it.
+home=$(fresh_home blind-lanes-balance-still-changes)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+balance_body "$home/bal-gone.json" 0.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the short runway must report while the lanes are readable"
+printf 'not json at all\n' >"$home/snap.json"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1007200 check)
+assert_contains "$out" "balance spent" "a balance that ran out must report even while quota-axi is down"
+assert_not_contains "$out" "provider lanes dispatchable" "a poll that never read the lanes must not describe them"
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-gone.json" 1010800 check)
+[ -z "$out" ] || fail "the lane shape must survive a balance-only report that fired, got: $out"
+pass "a balance warning that changes while the lanes are unreadable keeps the lane shape"
+
 # === the credential never reaches a command line ============================
 #
 # macOS `ps` shows every process's full argument list to every local user, so a
