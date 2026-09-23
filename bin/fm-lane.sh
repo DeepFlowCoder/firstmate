@@ -251,7 +251,7 @@ cmd_decide() {
   local evidence catalog hits critical lane reason signals note class_record
   local base head names numstat added udiff p q d seen
   local files dirs lines new_files branch_points binary unreadable repo_measured
-  local printed_signals
+  local printed_signals class_evaluated base_measured head_measured
   local seen_dirs=()
   local signal_reasons=()
 
@@ -376,7 +376,25 @@ cmd_decide() {
   repo_measured=${repo_measured//\\/\\\\}
   repo_measured=${repo_measured//,/\\,}
   signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points,binary=$binary,repo=$repo_measured"
+  # The same argument as repo=, one level over: --range is the other independent
+  # input, so a decision measured against the WRONG range was byte-identical to
+  # a correct one. That costs something real on the one path the record lifts a
+  # control - a later demonstrated decision clears a critical-surface binding
+  # without any check that its range has anything to do with the delivery - so a
+  # reviewer could not tell an honest correction from a stale or mistaken one.
+  # Resolved to full commit ids, so two spellings of one commit record
+  # identically and a branch name that later moves cannot rewrite what was read.
+  # A DECLARED decision has no range and records no entry at all: absent and
+  # unknown must stay different answers.
+  if [ "$evidence" = demonstrated ]; then
+    base_measured=$(repo_git rev-parse --verify --quiet "$base^{commit}") \
+      || die "cannot resolve the range's base in $REPO: $base"
+    head_measured=$(repo_git rev-parse --verify --quiet "$head^{commit}") \
+      || die "cannot resolve the range's head in $REPO: $head"
+    signals="$signals,range=$base_measured..$head_measured"
+  fi
 
+  class_evaluated=
   if [ -n "$OVERRIDE" ]; then
     lane=direct-PR
     reason=captain-override
@@ -388,6 +406,7 @@ cmd_decide() {
     note=$NOTE
   elif [ -n "$CLASS" ]; then
     note=$NOTE
+    class_evaluated=$class_record
     if [ "$evidence" != demonstrated ]; then
       lane=no-mistakes
       reason=class-not-demonstrated
@@ -423,12 +442,12 @@ cmd_decide() {
   fi
 
   fm_lane_append decide "$TASK" "$PROJECT" "$lane" "$evidence" "$reason" \
-    "${class_record:--}" "$critical" "$signals" "${note:--}" || exit 1
+    "${class_evaluated:--}" "$critical" "$signals" "${note:--}" || exit 1
 
   printf 'lane=%s evidence=%s reason=%s\n' "$lane" "$evidence" "$reason"
   printf 'task: %s\nproject: %s\n' "$TASK" "$PROJECT"
   printf 'critical-surfaces: %s\n' "$critical"
-  printf 'class: %s\n' "${class_record:--}"
+  printf 'class: %s\n' "${class_evaluated:--}"
   printed_signals=${signals//\\\\/$'\002'}
   printed_signals=${printed_signals//\\,/$'\001'}
   printed_signals=${printed_signals//,/ }

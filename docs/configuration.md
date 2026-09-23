@@ -327,8 +327,10 @@ A missing or unwritable record never stops an expensive or `local-only` dispatch
 
 Every lane decision, every ship dispatch and every defect found after a delivery landed is appended to the home's gitignored `data/lane-log.tsv`, tab-separated, one event per line.
 Record a post-landing defect with `bin/fm-lane.sh escape <task-id> --note "<what it was>"`, and read the file back with `grep <task-id> "$FM_HOME/data/lane-log.tsv"` or any other text tool, which is what the tab-separated format is for.
-A class-routed decision carries what demonstrated the class in its class column, as `clean-revert:<commit sha>`, so a reviewer can re-check months later which commit was claimed.
-Every decision's signals field also names the tree it was measured against in its `repo=` entry, so a decision taken against the wrong clone can be told apart from a correct one rather than reading identically.
+The class column names the class claim the decision actually evaluated, as `clean-revert:<commit sha>`, so a reviewer can re-check months later which commit was claimed.
+A decision that never reached the class tier records `-` there even when `--class` was passed, because a captain override and a critical surface both decide before the claim is looked at, and an unevaluated claim is not a fact about the change; the reason column says whether an evaluated claim was demonstrated.
+Every decision's signals field also names the tree it was measured against in its `repo=` entry, and a demonstrated decision names the range in its `range=` entry with both sides resolved to full commit ids, so a decision taken against the wrong clone or the wrong range can be told apart from a correct one rather than reading identically.
+A declared decision has no range and carries no `range=` entry at all.
 A comma inside that path is written `\,` and a backslash `\\`, so splitting the field on unescaped commas still yields one `k=v` per signal.
 That is a second escaping layer on top of the record's own, so reading a path back takes three steps in order: un-escape the field, split on commas not preceded by a backslash, then un-escape `\,` and `\\` inside the value itself.
 A `dispatch` row records an authorised dispatch rather than a completed launch, because it is written before the worker starts, so a spawn that fails afterwards still leaves a row and a retry leaves a second one for the same delivery.

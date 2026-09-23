@@ -63,15 +63,24 @@
 # event    decide | dispatch | escape
 # lane     no-mistakes | direct-PR | local-only | -
 # evidence demonstrated | declared | -
-# class    <class>, or <class>:<identifier> naming what demonstrated it:
-#          clean-revert:<resolved commit sha>, and docs-only alone because the
-#          changed path set already demonstrates it and is already in the
-#          signals column. Identifiers only, never free text, or the column
-#          becomes prose with a column heading.
+# class    the class claim this decision EVALUATED, or - when it evaluated none.
+#          A decision that never reached the class tier - a captain override, or
+#          a critical surface deciding first - records -, even when --class was
+#          passed, because an unevaluated claim is not a fact about the change.
+#          The reason column says what the evaluation concluded: standard-class
+#          when the claim was demonstrated, class-not-demonstrated when it was
+#          not. The value is <class>, or <class>:<identifier> naming what
+#          demonstrated it: clean-revert:<resolved commit sha>, and docs-only
+#          alone because the changed path set already demonstrates it and is
+#          already in the signals column. Identifiers only, never free text, or
+#          the column becomes prose with a column heading.
 # critical comma-separated surface names, or -
 # signals  k=v,k=v, or -. It names the TREE that was measured in its repo=
 #          entry, resolved physically, so a decision made against the wrong
-#          clone is no longer byte-indistinguishable from a correct one.
+#          clone is no longer byte-indistinguishable from a correct one, and on
+#          DEMONSTRATED evidence the RANGE it measured in its range= entry, both
+#          sides resolved to full commit ids for the same reason. A declared
+#          decision has no range and carries no range= entry at all.
 #          A comma inside a value is escaped \, and a backslash \\, so the k=v
 #          split survives a path that contains the separator. That is a SECOND
 #          escaping layer, applied before the field escaping below, so reversing

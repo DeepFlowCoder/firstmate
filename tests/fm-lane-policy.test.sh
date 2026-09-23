@@ -863,6 +863,98 @@ EOF
   pass "lane: the record names the tree each decision was measured against"
 }
 
+# --range is the other independent input, and it is the one the binding-lift path
+# trusts: a later demonstrated decision clears a critical-surface binding without
+# checking that its range concerns the delivery at all. Two decides over
+# different ranges in one tree must therefore be distinguishable in the record.
+test_the_record_names_the_range_it_measured() {
+  local rec repo base home first second out log
+
+  rec=$(make_repo measuredrange)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home measuredrange)
+  log="$home/data/lane-log.tsv"
+
+  printf 'value = 2\n' > "$repo/src/thing.py"
+  first=$(commit_all "$repo" first-change)
+  printf 'value = 3\n' > "$repo/src/thing.py"
+  second=$(commit_all "$repo" second-change)
+
+  out=$(run_lane "$home" decide range-a1 --project proj --repo "$repo" --range "$base..$first")
+  assert_contains "$out" "range=$base..$first" \
+    "the decision did not name the range it measured"
+
+  # The same tree, a different range: the rows must not read identically.
+  out=$(run_lane "$home" decide range-a2 --project proj --repo "$repo" --range "$first..$second")
+  assert_contains "$out" "range=$first..$second" \
+    "the second decision did not name its own range"
+  assert_grep "range=$base..$first" "$log" "the first range did not reach the record"
+  assert_grep "range=$first..$second" "$log" "the second range did not reach the record"
+
+  # A ref spelling resolves to the same commit ids, so two spellings of one range
+  # record identically and a branch name that moves cannot rewrite what was read.
+  out=$(run_lane "$home" decide range-a3 --project proj --repo "$repo" --range "HEAD~1..HEAD")
+  assert_contains "$out" "range=$first..$second" \
+    "a ref spelling did not resolve to the commit ids it names"
+
+  # Declared evidence has no range, so it records no entry rather than an empty
+  # one: absent and unknown must stay different answers.
+  out=$(run_lane "$home" decide range-b1 --project proj --repo "$repo" --paths src/thing.py)
+  assert_not_contains "$out" "range=" \
+    "a declared decision recorded a range it never measured"
+
+  pass "lane: the record names the range each demonstrated decision measured"
+}
+
+# The class column must mean exactly one thing: the claim this decision
+# evaluated. A captain override and a critical surface both decide before the
+# claim is looked at, so a class named there was never tested against anything.
+test_the_class_column_names_only_an_evaluated_claim() {
+  local rec repo base home head out
+
+  rec=$(make_repo classeval)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home classeval)
+
+  mkdir -p "$repo/bin"
+  printf 'merge it\n' > "$repo/bin/fm-pr-merge.sh"
+  head=$(commit_all "$repo" touch-merge-route)
+
+  # A critical surface decides first, so the docs-only claim - which would have
+  # FAILED, since a .sh file is not documentation - is never evaluated.
+  out=$(run_lane "$home" decide cls-a1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$out" "reason=critical-surface" \
+    "the fixture did not take the critical-surface branch"
+  assert_contains "$out" "class: -" \
+    "a class the decision never evaluated was recorded as if it had been"
+
+  # The captain override decides first for the same reason.
+  out=$(run_lane "$home" decide cls-a2 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only --captain-override "my call")
+  assert_contains "$out" "reason=captain-override" \
+    "the fixture did not take the captain-override branch"
+  assert_contains "$out" "class: -" \
+    "a class the override never evaluated was recorded as if it had been"
+
+  # The control: a claim that IS evaluated still records its value, so the
+  # repair narrowed the column rather than emptying it.
+  printf 'more\n' >> "$repo/docs/guide.md"
+  head=$(commit_all "$repo" docs-change)
+  out=$(run_lane "$home" decide cls-b1 --project proj --repo "$repo" \
+    --range "$(git -C "$repo" rev-parse HEAD~1)..$head" --class docs-only)
+  assert_contains "$out" "reason=standard-class" \
+    "the control did not demonstrate the class"
+  assert_contains "$out" "class: docs-only" \
+    "an evaluated and demonstrated class lost its value"
+
+  pass "lane: the class column names only a claim the decision evaluated"
+}
+
 # A record that cannot say WHICH commit a revert claimed cannot be re-checked
 # when a defect turns up months later. The class column therefore carries the
 # demonstrating input as an identifier: the resolved sha, never free text.
@@ -1686,6 +1778,8 @@ test_a_revert_that_leaves_a_mode_change_is_not_clean
 test_the_revert_proof_looks_up_a_literal_path
 test_an_unreadable_surfaces_file_is_refused_rather_than_read_as_absent
 test_the_record_names_the_tree_it_measured
+test_the_record_names_the_range_it_measured
+test_the_class_column_names_only_an_evaluated_claim
 test_the_record_names_what_demonstrated_the_class
 test_a_non_ascii_path_is_read_as_itself
 test_a_path_git_escapes_is_matched_as_itself
