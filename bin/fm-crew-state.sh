@@ -613,27 +613,39 @@ nm_ci_checks_state() {
 }
 # Coarse fallback for cross-branch attribution. `no-mistakes axi status` (bare)
 # returns exactly ONE run and takes no branch or status selector (verified:
-# `axi status --help` exposes only --run). It is REPO-scoped, not branch-scoped:
-# measured 2026-08-29 from a worktree whose branch had no run at all, it answered
-# with a different branch's run. It usually surfaces this branch's own active
-# run, but "usually" is the whole problem - when a branch holds both an aborted
-# run and its live successor it can hand back the terminal one, which is the
-# false-failure this helper's supersession rule exists to catch. So a crew whose
-# branch genuinely has no run yet sees another branch's answer here, and a crew
-# whose branch has several runs may see the wrong one.
+# `axi status --help` exposes only --run), so nothing here can ASK it for this
+# branch's run. Which run it picks is the vendor's choice, and that choice has
+# changed across versions in the direction of branch scoping, so this fallback
+# must keep working under either behavior:
 #
-# This fallback used to shell out to `no-mistakes axi` (bare, no subcommand)
-# expecting a `runs[N]{id,branch,status,...}:` TOON table and re-query the
-# matched id via `axi status --run <id>`. Verified against the real installed
-# CLI (v1.32.2): the `axi` surface exposes only abort/logs/respond/run/status -
-# there is no runs-listing subcommand under `axi` at all, so that table never
-# appears and the lookup was silently dead code; whenever the bare `axi
-# status` answer was not this crew's own branch, attribution always failed and
-# the caller fell straight through to the pane/log fallback below. (The
-# PRIMARY cause of the 2026-07 herdr false-surface incidents turned out to be
-# a separate bug in bin/fm-watch.sh's stale_is_terminal precedence - see that
-# file's history - but this cross-branch path was independently confirmed
-# dead code and is worth having actually work.)
+#   - measured 2026-08-29, from a worktree whose branch had no run at all, it
+#     answered with a DIFFERENT branch's run.
+#   - measured 2026-09-23 on v1.75.2, it is branch-scoped in both directions
+#     (docs/verification/run-attribution.md records both readings): from a crew
+#     worktree whose branch had a live run it answered for that branch even
+#     though a newer run was live on another branch, and from a worktree whose
+#     branch had none it said so in its own words - `runs_on_current_branch: 0`
+#     with a repo-wide `runs[N]{id,branch,status,head,pr}` table - instead of
+#     handing over a foreign run.
+#
+# The version that answers for another branch is the one this fallback is for.
+# Every rule below therefore rests on the run's own reported branch and never on
+# an assumption about which run the vendor picks, and the same output's
+# branch-scoped push binding is what reaches this branch's run when the vendor
+# answered for a different one. A branch that holds both an aborted run and its
+# live successor can still be answered for with the terminal one under any of
+# these behaviors, which is the false-failure the supersession rule below exists
+# to catch.
+#
+# That `runs[N]{...}` TOON table is the shape this fallback once looked for under
+# the `axi` surface, gave up on (verified against v1.32.2: `axi` exposed only
+# abort/logs/respond/run/status, and the table never appeared, so the lookup was
+# silently dead code), and now meets again as part of `axi status`'s own answer -
+# never carrying a `branch:` key of its own, so it reads here as no attribution
+# rather than as a foreign one. (The PRIMARY cause of the 2026-07 herdr
+# false-surface incidents turned out to be a separate bug in bin/fm-watch.sh's
+# stale_is_terminal precedence - see that file's history - but this cross-branch
+# path was independently confirmed dead and is worth having actually work.)
 #
 # The real run-listing command is the top-level `no-mistakes runs` (verified:
 # `no-mistakes --help` lists it separately from `axi`). It is plain, human-
@@ -681,6 +693,7 @@ BRANCH_NEWEST_STATUS=""
 BRANCH_NEWEST_SHA=""
 COARSE_STATUS=""
 COARSE_ROW_IS_NEWEST=0
+COARSE_VIA_BINDING=0
 RUNS_UNKNOWN_ATTRIBUTION=0
 # Idempotent: a crew has exactly one branch per invocation, so the second caller
 # reuses the first caller's scan instead of re-reading the list.
@@ -703,10 +716,24 @@ nm_scan_runs_for_branch() {  # <branch>
     fi
     # Same code-identity rule as axi status: a same-branch row whose short-sha
     # does not match this worktree (rewritten or advanced tip) cannot answer.
+    # When it does not, the branch's own push binding is tried before giving up -
+    # see nm_branch_binding_is_this_worktree for what it may and may not license.
+    #
+    # The binding needs no newest-row guard here, and one would be dead code: the
+    # three values it reads ($WT, $RUN_OUT and $branch) are all assigned outside
+    # this loop, so it returns the same answer on every row. A success therefore
+    # happens on the FIRST branch row it is reached from - seen=1, the only row
+    # where COARSE_STATUS can still be empty when no earlier row bound - and sets
+    # COARSE_STATUS, which breaks the loop. A failure repeats on every later row.
+    # Neither outcome can ever be consumed on an older row.
     if [ -z "$COARSE_STATUS" ]; then
       if nm_coarse_head_matches_worktree "$sha"; then
         COARSE_STATUS=$st
         [ "$seen" = 1 ] && COARSE_ROW_IS_NEWEST=1
+      elif nm_branch_binding_is_this_worktree "$branch"; then
+        COARSE_STATUS=$st
+        COARSE_ROW_IS_NEWEST=1
+        COARSE_VIA_BINDING=1
       elif ! fm_nm_head_resolvable "$WT" "$sha"; then
         RUNS_UNKNOWN_ATTRIBUTION=1
         break
@@ -805,6 +832,51 @@ nm_coarse_head_matches_worktree() {  # <short-sha>
   fm_nm_head_matches_worktree "$WT" "$1"
 }
 
+# THE second door, and it costs no call to close.
+#
+# The head rule above is the only identity the runs list can offer, and measured
+# 2026-09-23 on the live run of pull request 98 it cannot bind a run the pipeline
+# has rebased: the list row carries the pipeline's pushed head, and this
+# worktree's own commit is not an ancestor of it, so a crew with its pull request
+# open and its checks running has no attribution left on this path. Whether that
+# pushed head is even a git object here is incidental - it is, whenever the shared
+# object store has fetched the remote since the push, and it is not otherwise -
+# and both readings are the same dead end for the list.
+#
+# The signal that DOES bind such a run is the one the same `axi status` output
+# already carries and this path used to throw away with it: the branch-scoped push
+# binding. fm_nm_branch_binding_is_this_worktree owns what it establishes - that
+# THIS BRANCH's currently bound work came out of THIS worktree - and it names no
+# run, so it may license only a row independently established as the branch's
+# current one. The caller applies it to the branch's NEWEST row and to no other:
+# newest-first is what makes that row the branch's current run, and licensing an
+# older row would resurrect a superseded verdict the arbitration exists to bury.
+#
+# That restriction holds structurally, not by a guard at the call site, so do not
+# add one back believing it protects this. The answer depends on nothing the
+# caller's row loop assigns - only on the worktree, the `axi status` output and
+# the branch name, all fixed before the loop starts - so it is constant across
+# rows: the first row that reaches it either binds and ends the scan, or fails
+# and goes on failing. Keeping it row-invariant is what makes that true, so a
+# future version taking row-scoped input (a sha, a run id) would need the newest-
+# row check restored along with it.
+#
+# It licenses nothing else either. A branch name a later task reused moves the
+# binding to that task's own submitted head, so the binding stops answering the
+# moment the branch's current work is not this worktree's - which is why a
+# reused branch cannot borrow this and why an unattributable run stays
+# unattributable rather than becoming a guess at the likeliest one.
+#
+# The alternative was a call: `no-mistakes axi sync --check` renders the same
+# block for the current branch without asking for a run. It is not taken, on
+# measurement rather than on taste - docs/verification/run-attribution.md records
+# both readings - because it costs about 840ms against the 50ms this read's other
+# calls cost, out of ONE deadline shared by the whole read, and it performs a live
+# remote read on a path whose callers are local-only by construction.
+nm_branch_binding_is_this_worktree() {  # <branch>
+  fm_nm_branch_binding_is_this_worktree "$WT" "$RUN_OUT" "$1"
+}
+
 HAVE_RUN=0
 # Why `axi status` did not attribute a run to this crew, in the reader's own
 # terms. Recorded at the moment the attribution is refused so the unknown paths
@@ -901,9 +973,17 @@ if [ "$HAVE_RUN" = 1 ]; then
     # surfaced by each supervisor's span classification (fm-classify-lib.sh's
     # status_span_first_actionable) regardless of this coarse-vs-full
     # distinction, so a real gate is never silently missed.
+    #
+    # Which identity bound the row is part of where the word was read too, and it
+    # is the one part of it a reader may need to check: a row bound by the
+    # branch's push binding was bound by a signal about the BRANCH, so the line
+    # says so rather than leaving a reader to assume the row's own head matched.
     RUN_WORD=$COARSE_STATUS
     RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
-    RUN_DETAIL="$(fm_nm_verdict_detail "$RUN_WORD") (background run)"
+    COARSE_QUALIFIER="background run"
+    [ "$COARSE_VIA_BINDING" = 1 ] \
+      && COARSE_QUALIFIER="background run, bound by this branch's pipeline push"
+    RUN_DETAIL="$(fm_nm_verdict_detail "$RUN_WORD") ($COARSE_QUALIFIER)"
     fm_nm_verdict_is_terminal "$RUN_WORD" && RUN_IS_TERMINAL=1
   else
     status=$(strip_quotes "$(nm_field status)")

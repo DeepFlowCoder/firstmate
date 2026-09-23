@@ -5,12 +5,19 @@
 # fm-crew-state.sh (read-only current-state reporting) and fm-teardown.sh
 # (pre-teardown run abort, see its "Fix 1" header comment). Teardown uses only
 # strict branch-and-head identity; crew-state additionally permits the active
-# pipeline-owned exemption and the submitted-head binding defined below. Getting
-# this wrong in either direction is unsafe: a false negative hides a genuinely
-# parked run - or, in crew-state, leaves a crew with work in flight unreadable -
-# and a false positive lets teardown act on a run it does not own. Every binding
-# here keeps the branch gate as a precondition, so a run on another branch can
-# never answer for a crew however well its other fields line up.
+# pipeline-owned exemption, the submitted-head binding, and the branch binding
+# defined below. Getting this wrong in either direction is unsafe: a false
+# negative hides a genuinely parked run - or, in crew-state, leaves a crew with
+# work in flight unreadable - and a false positive lets teardown act on a run it
+# does not own.
+#
+# EVERY binding here is gated on a branch, so nothing belonging to another
+# branch can answer for a crew however well its other fields line up. The first
+# three gate on the RUN's own reported branch, which is their caller's
+# precondition. The branch binding is the one that exists for the output where
+# that field already refused - it reads a block that describes the checked-out
+# branch rather than the rendered run - so it carries its own branch gate
+# internally and takes the branch to match as an argument.
 #
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards
@@ -267,6 +274,38 @@ fm_nm_run_submitted_head_binds_worktree() {  # <worktree> <toon-output>
   local_full=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 1
   submitted_full=$(git -C "$wt" rev-parse --verify "${submitted}^{commit}" 2>/dev/null) || return 1
   [ "$submitted_full" = "$local_full" ]
+}
+
+# branch_sync.local.branch from captured `axi status` TOON $1: the branch the
+# push binding in that block is ABOUT. `local.branch` is the only `branch:` key
+# inside the block (measured output in docs/verification/run-attribution.md:
+# state, changed, local, pipeline, target, remote, relation, safety, pr_state),
+# so the block-scoped first-match reader answers for it and for nothing else.
+# Empty when the block is absent.
+fm_nm_branch_sync_local_branch() {  # <toon-output>
+  fm_nm_branch_sync_field "$1" branch
+}
+
+# The SAME submitted-head binding as above, made safe to read off an output
+# whose `run:` block answered for some OTHER branch.
+#
+# The block is branch-scoped, so it keeps describing the checked-out branch's own
+# push binding whatever run the `run:` block renders - which is exactly what a
+# caller needs when the branch gate has just refused that run. Reading the
+# binding without also reading WHICH branch it is about would hand a foreign
+# branch's binding to a crew, so this asks for the branch by name and refuses
+# every block that answers for another one. That refusal is what keeps the branch
+# gate ahead of this signal rather than beside it.
+#
+# 0 if captured `axi status` TOON $2 carries a push binding for branch $3 whose
+# recorded submitted head is exactly worktree $1's current commit. What that
+# establishes is bounded and worth stating: THIS BRANCH's currently bound work
+# came out of THIS worktree. It names no run, so a caller may only apply it to a
+# run it has independently established is the branch's current one.
+fm_nm_branch_binding_is_this_worktree() {  # <worktree> <toon-output> <branch>
+  [ -n "$3" ] || return 1
+  [ "$(fm_nm_branch_sync_local_branch "$2")" = "$3" ] || return 1
+  fm_nm_run_submitted_head_binds_worktree "$1" "$2"
 }
 
 # --- runs-list primitives ---------------------------------------------------
