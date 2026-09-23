@@ -44,8 +44,9 @@
 #                 .adoc) or a NAMED prose file - CHANGELOG, README, NOTICE,
 #                 AUTHORS, CONTRIBUTORS, LICENCE - with or without a .txt
 #                 suffix. The object is the tree entry at the range's head,
-#                 which must be a regular non-executable file or absent: a
-#                 symlink, an executable or a submodule link called guide.md is
+#                 which must be a regular non-executable file or absent, and no
+#                 changed path may be binary: a symlink, an executable, a
+#                 submodule link or a blob of binary bytes called guide.md is
 #                 not documentation, whatever it is called. Nothing qualifies by
 #                 where it lives: docs/ widens nothing, and docs/requirements.txt
 #                 is not documentation.
@@ -174,18 +175,28 @@ need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die "$1 requires a value"; }
 # it, and expensive in this one because this repository names it a governing
 # document in .fm-critical-surfaces. authors.md needs no entry here: .md already
 # qualifies it above.
+# PROSE_FILE_NAMES is the single owner of the named prose files, and the ".txt
+# suffix" rule is applied to it rather than restated beside it: the .txt
+# spellings used to be a second copy of the same seven names, so adding a name
+# to one line and forgetting the other was one edit away. fm_lane_prose_extensions
+# in bin/fm-lane-lib.sh is the matching owner for the extensions, read here and
+# by the AUTHORS exception to the *auth* glob. If there is a list, DERIVE FROM
+# IT; do not copy it.
+PROSE_FILE_NAMES='changelog readme notice authors contributors license licence'
+
 is_documentation_path() {
-  local p base
+  local p base stem ext name
   p=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  case "$p" in
-    *.md|*.markdown|*.rst|*.adoc) return 0 ;;
-  esac
+  for ext in $(fm_lane_prose_extensions); do
+    case "$p" in
+      *."$ext") return 0 ;;
+    esac
+  done
   base=${p##*/}
-  case "$base" in
-    changelog|readme|notice|authors|contributors|license|licence) return 0 ;;
-    changelog.txt|readme.txt|notice.txt|authors.txt|contributors.txt) return 0 ;;
-    license.txt|licence.txt) return 0 ;;
-  esac
+  stem=${base%.txt}
+  for name in $PROSE_FILE_NAMES; do
+    [ "$base" != "$name" ] && [ "$stem" != "$name" ] || return 0
+  done
   return 1
 }
 
@@ -205,9 +216,18 @@ is_documentation_path() {
 # mode CHANGE, and the gap read as harmless. Absence of signal taken for signal
 # of absence, one more time - the seventh member of the family the captain
 # tracks as fm-guardas-que-degradan-a-una-comprobacion-mas-debil.
+#
+# THE OBJECT IS ITS TYPE AND ITS CONTENT. A blob's mode is 100644 whatever bytes
+# it holds, so the type half admitted a BINARY blob called guide.md as a prose
+# object, and the row it produced said class docs-only next to binary=1 - a
+# record refuting itself on its own line. The binary determination is the one
+# the signal tier already makes, read here rather than taken again, so this file
+# keeps one owner of what binary means. A count that is not exactly zero fails
+# the demonstration, "-" included: a count nobody could establish is not zero.
 demonstrate_docs_only() {
-  local head=$1 p entry mode
-  shift
+  local head=$1 binary=$2 p entry mode
+  shift 2
+  [ "$binary" = 0 ] || return 1
   for p in "$@"; do
     is_documentation_path "$p" || return 1
     entry=$(tree_entry_at "$head" "$p")
@@ -512,7 +532,7 @@ cmd_decide() {
     if [ "$evidence" != demonstrated ]; then
       lane=no-mistakes
       reason=class-not-demonstrated
-    elif demonstrate_class "$base" "$head"; then
+    elif demonstrate_class "$base" "$head" "$binary"; then
       lane=direct-PR
       reason=standard-class
     else
@@ -602,9 +622,9 @@ class_record_value() {
 }
 
 demonstrate_class() {
-  local base=$1 head=$2
+  local base=$1 head=$2 binary=$3
   case "$CLASS" in
-    docs-only)    demonstrate_docs_only "$head" "${PATHS[@]}" ;;
+    docs-only)    demonstrate_docs_only "$head" "$binary" "${PATHS[@]}" ;;
     clean-revert) demonstrate_clean_revert "$base" "$head" "$REVERT_OF" "${PATHS[@]}" ;;
     *)            return 1 ;;
   esac

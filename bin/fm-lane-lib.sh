@@ -211,6 +211,26 @@ fm_lane_binding_decision() {
     END { if (last != "") print last }' "$log"
 }
 
+# --- the accepted prose extensions ------------------------------------------
+
+# THE SINGLE OWNER of the extensions this policy accepts as prose markup. Two
+# places read it: the docs-only name test in bin/fm-lane.sh, and the AUTHORS
+# exception to the *auth* glob below.
+#
+# It is a function rather than two matching case patterns because of what the
+# second copy cost. The exception was first written as three hand-listed
+# basenames while the name test accepted four extensions, so AUTHORS.rst and
+# AUTHORS.adoc were prose by this policy's own list and were still recorded
+# under the authentication surface - the exact defect the commit that added the
+# exception said it closed.
+#
+# EVERY TIME A LIST THAT ALREADY EXISTS SOMEWHERE IS WRITTEN OUT BY HAND, IT
+# CREATES A SECOND OWNER, AND THE SECOND OWNER FALLS BEHIND THE DAY SOMEONE
+# EXTENDS THE FIRST. If there is a list, DERIVE FROM IT; do not copy it.
+fm_lane_prose_extensions() {
+  printf '%s\n' md markdown rst adoc
+}
+
 # --- critical-surface catalog ----------------------------------------------
 
 # The built-in surfaces the captain named as always-expensive, plus the two that
@@ -331,12 +351,23 @@ fm_lane_catalog() {
 # AUTHORS, so a contributors list was recorded as an AUTHENTICATION surface. It
 # leaked toward the safe side here - one unnecessary expensive review - but it
 # leaked, and a record that names the wrong surface does not measure, it
-# decorates. The three exact basenames AUTHORS, AUTHORS.txt and AUTHORS.md are
-# therefore not authentication, case-insensitively and nothing broader: oauth,
-# authn, authz, auth/ and user_auth.py all still match, so the security surface
-# itself is unchanged. Keeping AUTHORS on the expensive lane is a separate
-# statement, made by NAME where it belongs: this repository declares it under
-# governing-docs in .fm-critical-surfaces, which is what it truthfully is.
+# decorates. Exactly ONE NAME is excepted, in the spellings this policy already
+# accepts as prose, and nothing broader: oauth, authn, authz, auth/ and
+# user_auth.py all still match, so the security surface itself is unchanged.
+# Keeping AUTHORS on the expensive lane is a separate statement, made by NAME
+# where it belongs: this repository declares it under governing-docs in
+# .fm-critical-surfaces, which is what it truthfully is.
+fm_lane_authors_spelling() {
+  local base=$1 ext
+  case "$base" in
+    authors|authors.txt) return 0 ;;
+  esac
+  for ext in $(fm_lane_prose_extensions); do
+    [ "$base" != "authors.$ext" ] || return 0
+  done
+  return 1
+}
+
 fm_lane_critical_hits() {
   local catalog=$1 path glob name lglob hits=""
   local lpaths=()
@@ -358,10 +389,8 @@ fm_lane_critical_hits() {
       # shellcheck disable=SC2254  # lglob is catalog data and must expand as a pattern
       case "$path" in
         $lglob)
-          if [ "$lglob" = '*auth*' ]; then
-            case "${path##*/}" in
-              authors|authors.txt|authors.md) continue ;;
-            esac
+          if [ "$lglob" = '*auth*' ] && fm_lane_authors_spelling "${path##*/}"; then
+            continue
           fi
           hits="${hits:+$hits,}$name"
           printf '%s\n' "$name"

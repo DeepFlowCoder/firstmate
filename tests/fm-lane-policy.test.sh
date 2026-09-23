@@ -1087,7 +1087,10 @@ test_authors_is_a_governing_document_not_an_authentication_surface() {
 
   home=$(lane_home authorsname)
 
-  for name in AUTHORS AUTHORS.txt AUTHORS.md; do
+  # Every spelling the prose rule accepts, because the exception was first
+  # written as three hand-listed basenames while the prose rule accepted four
+  # extensions, and AUTHORS.rst was recorded as authentication.
+  for name in AUTHORS AUTHORS.txt AUTHORS.md AUTHORS.markdown AUTHORS.rst AUTHORS.adoc; do
     n=$((n + 1))
     out=$(run_lane "$home" decide authors-a$n --project firstmate --repo "$ROOT" \
       --paths "$name" --class docs-only)
@@ -1099,7 +1102,7 @@ test_authors_is_a_governing_document_not_an_authentication_surface() {
       "$name is still recorded as an authentication surface"
   done
 
-  # The exception is three names and nothing wider: everything else the glob
+  # The exception is one name and nothing wider: everything else the glob
   # catches is still authentication.
   for name in src/oauth.rb app/authn.go lib/authz/policy.py auth/session.ts user_auth.py; do
     n=$((n + 1))
@@ -1473,6 +1476,53 @@ EOF
     "deleting a prose file stopped demonstrating as documentation"
 
   pass "lane: documentation needs a prose name and a prose object, never the name alone"
+}
+
+# A blob's mode is regular whatever bytes it holds, so the object test's type
+# half admitted binary content under a prose name: the row said class docs-only
+# and binary=1 on the same line, refuting itself.
+test_binary_content_under_a_prose_name_is_not_documentation() {
+  local rec repo base home head out
+
+  rec=$(make_repo binaryprose)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home binaryprose)
+
+  base=$(git -C "$repo" rev-parse HEAD)
+  printf '\000\001\002\003 payload\000' > "$repo/docs/guide.md"
+  head=$(commit_all "$repo" binary-under-a-prose-name)
+  [ "$(git -C "$repo" diff --numstat --no-renames "$base" "$head" | awk '{print $1 $2}')" = '--' ] \
+    || fail "the fixture is not the unmeasurable diff this case has to be built on"
+  out=$(run_lane "$home" decide binprose-a1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "binary content with a prose name demonstrated as documentation"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the binary blob was not reported as undemonstrated"
+  assert_contains "$out" "binary=1" \
+    "the record stopped reporting the unmeasurable path the refusal rests on"
+  assert_not_contains "$out" "reason=standard-class" \
+    "the record still calls a binary blob a demonstrated class beside binary=1"
+
+  # The control: ordinary text prose in the same repo still demonstrates, so the
+  # case above is the content and not the fixture. The range has to be
+  # text-to-text, because git reports a diff with a binary blob on either side
+  # as binary, so restoring the prose is itself an unmeasurable range.
+  printf '# guide\n\nwords\n' > "$repo/docs/guide.md"
+  base=$(commit_all "$repo" restore-text-prose)
+  printf 'more words\n' >> "$repo/docs/guide.md"
+  head=$(commit_all "$repo" edit-text-prose)
+  out=$(run_lane "$home" decide binprose-b1 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "an ordinary prose edit lost its cheap route"
+  assert_contains "$out" "reason=standard-class" \
+    "the text documentation change was not routed on its class"
+  assert_contains "$out" "binary=0" "the control was not the measurable diff it has to be"
+
+  pass "lane: binary content under a prose name is not documentation"
 }
 
 # --- 3. declared evidence can only ever cost more ---------------------------
@@ -2055,6 +2105,7 @@ test_a_binary_change_is_unmeasurable_rather_than_small
 test_a_mode_change_never_reaches_the_cheap_lane
 test_a_class_claim_does_not_carry_a_mode_change_to_the_cheap_lane
 test_a_prose_name_over_a_non_prose_object_is_not_documentation
+test_binary_content_under_a_prose_name_is_not_documentation
 test_documents_that_govern_an_agent_are_not_ordinary_documentation
 test_authors_is_a_governing_document_not_an_authentication_surface
 test_declared_evidence_never_reaches_the_cheap_lane

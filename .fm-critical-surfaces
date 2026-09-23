@@ -73,13 +73,25 @@ SKILL.md governing-docs
 
 # AUTHORS is here under its truthful label. It used to reach the expensive lane
 # by accident, through the portable *auth* glob, which recorded a contributors
-# list as an AUTHENTICATION surface; that glob no longer claims these three
-# exact names, so the routing is now stated rather than inherited from a
-# coincidence of letters. AUTHORS is project governance and attribution: who
-# speaks for this house, and to whom the work is credited.
+# list as an AUTHENTICATION surface; that glob no longer claims the name in any
+# spelling the policy accepts as prose, so the routing is now stated rather than
+# inherited from a coincidence of letters. AUTHORS is project governance and
+# attribution: who speaks for this house, and to whom the work is credited.
+#
+# One spelling per accepted prose extension, because this file is data a glob
+# matcher reads and cannot derive the set from fm_lane_prose_extensions in
+# bin/fm-lane-lib.sh the way the code does. It is the one copy of that list that
+# has to be maintained by hand: whoever adds an extension there adds its AUTHORS
+# line here, or this house loses the expensive route for that spelling.
 AUTHORS governing-docs
 */AUTHORS governing-docs
 AUTHORS.txt governing-docs
 */AUTHORS.txt governing-docs
 AUTHORS.md governing-docs
 */AUTHORS.md governing-docs
+AUTHORS.markdown governing-docs
+*/AUTHORS.markdown governing-docs
+AUTHORS.rst governing-docs
+*/AUTHORS.rst governing-docs
+AUTHORS.adoc governing-docs
+*/AUTHORS.adoc governing-docs
