@@ -149,6 +149,15 @@
 // dispatchable and the threshold was met. A guard that cries wolf spends itself,
 // and the day one of these is right nobody will read it.
 //
+// It then fired a third time, on 2026-09-22, for a neighbouring reason worth
+// keeping separate: not a lane nobody could measure, but one measured and
+// misread. kimi was reported "sign-in required" while its session was good and
+// had never lapsed - only its 15-minute access token had gone stale, and the
+// vendor renewed it unprompted on the very next call. See AUTH_RENEWABLE_STATUSES
+// and AUTH_RENEWABLE_REJECTIONS below for that measurement. The lesson is the
+// same one in different clothing: "does not work as presented right now" is not
+// "dead", and only the second one is the captain's to fix.
+//
 // Two rules follow from that, and both are the same rule the dispatch skill
 // `quota-array-dispatch` already applies to a candidate: uncertainty discloses,
 // it never blocks.
@@ -184,12 +193,61 @@ import { fileURLToPath } from "node:url";
 const SCHEMA_VERSION = 5;
 
 // Structural auth facts. Each one is quota-axi's own machine-readable statement
-// that it EXAMINED the local credential and it cannot be used, independent of
-// quota freshness. `expired_refreshable` is soft expiry rather than sign-out,
-// but it is still the captain's signature that clears it, so it belongs with the
-// other two.
-const AUTH_STATUS_FAULTS = new Set(["unusable", "expired_refreshable"]);
+// that it EXAMINED the local credential and it cannot be RENEWED without the
+// captain, independent of quota freshness. That second half is the whole test: a
+// credential that does not work as presented right now is not the same claim as
+// a credential that is dead, and only the second one costs the captain a
+// signature.
+const AUTH_STATUS_FAULTS = new Set(["unusable"]);
 const AUTH_REASON_FAULTS = new Set(["credentials_expired"]);
+
+// A RENEWABLE expiry, which is not a lost lane and used to be read as one.
+//
+// `expired_refreshable` names its own remedy: the access token is past its hour
+// and the refresh token beside it is still good, so the vendor CLI mints a new
+// one by itself on the next call. This set used to live inside
+// AUTH_STATUS_FAULTS, whose comment conceded the tension and resolved it the
+// wrong way - "soft expiry rather than sign-out, but it is still the captain's
+// signature that clears it". Measured on 2026-09-22, that premise is false.
+//
+// THE MEASUREMENT. A kimi access token 55 HOURS past its expiry, with no
+// revocation tombstone beside it, answered a prompt normally with no login and
+// no prompt of any kind, and rotated both tokens in the doing: expiry moved from
+// 2026-09-20T18:33Z to 2026-09-23T02:11Z. Nothing was signed out and nothing
+// needed the captain; the credential had simply not been spent in two days. The
+// same reading that called that lane lost took the fleet to "1 of 10 provider
+// lanes dispatchable" with the alarm firing, and one ordinary prompt took it
+// back to silence. The lane was there the whole time.
+//
+// quota-axi 0.1.42 emits this status from grok, codex, and pi-codex-credential.
+const AUTH_RENEWABLE_STATUSES = new Set(["expired_refreshable"]);
+
+// One REQUEST was rejected, which is not a verdict about the stored credential.
+//
+// `provider_auth_rejected` is quota-axi's 401/403 from the provider's own
+// endpoint. For kimi that rejection is reached by sending an access token
+// quota-axi has ALREADY resolved as expired (its kimi.js forwards it with
+// `localState: "expired"` rather than stopping), so the 401 is a true answer
+// about a stale derived bearer and says nothing at all about the refresh token
+// that would have replaced it. Reading it as a sign-out sends the captain to
+// re-authenticate an account that was never signed out, and a fresh login buys
+// only the 15 minutes until the next access token expires.
+//
+// KEYED BY PROVIDER ON PURPOSE, and the key is the discipline, not decoration.
+// Whether a rejected request hides a renewable credential is a per-vendor fact
+// that has to be MEASURED, the same standard bin/fm-vendor-auth-probe.sh holds
+// its registry to. quota-axi also emits this slug from zai and opencode-go, and
+// whether those two are renewable behind it was NOT established - so they are
+// deliberately absent and keep firing as before. Add a provider here only after
+// its renewal is measured first-hand, never by reading across from this one.
+//
+// A REAL sign-out still fires, and that is what makes this safe rather than
+// merely kinder: a revoked kimi credential is a zero-length tombstone, which
+// quota-axi's reader decides LOCALLY as `kimi_code_cli_credential_invalid`
+// without ever reaching the network, and a missing one as
+// `kimi_code_cli_credential_unavailable`. Neither is in this set. Only the lane
+// that was measured to come back on its own stops being counted lost.
+const AUTH_RENEWABLE_REJECTIONS = new Set(["kimi:provider_auth_rejected"]);
 
 // Not a fault, and deliberately not in the set above. These say quota-axi could
 // not OPEN the credential store, so it never examined the credential and holds
@@ -415,8 +473,16 @@ function classifyProvider(provider) {
   // A store quota-axi could not open leaves it with nothing to say about the
   // credential, so it cannot have established a fault about one.
   const credentialUnread = AUTH_UNREAD_REASONS.has(state.reason);
+  // Neither does an expiry the vendor renews by itself, nor one rejected request
+  // built from a credential measured to still be good. Both are the same shape
+  // as the unread store above - an `auth_required` that never established the
+  // credential is dead - so both QUALIFY every other auth signal the same way.
+  const credentialRenewable =
+    AUTH_RENEWABLE_STATUSES.has(state.authStatus) ||
+    AUTH_RENEWABLE_REJECTIONS.has(`${id}:${state.error}`);
+  const credentialUnjudged = credentialUnread || credentialRenewable;
   const credentialFault =
-    !credentialUnread &&
+    !credentialUnjudged &&
     (state.status === "auth_required" ||
       AUTH_STATUS_FAULTS.has(state.authStatus) ||
       AUTH_REASON_FAULTS.has(state.reason));
@@ -483,23 +549,32 @@ function classifyProvider(provider) {
   }
 
   // Nothing at all was established. Naming WHY matters, because an unopened
-  // credential store is something the captain can grant access to, while an
-  // upstream that did not answer is something to wait out. quota-axi's own slug
-  // is quoted rather than interpreted. Beside the prose detail runs a closed
-  // sub-cause slug for the repeat-suppression digest: `unread:<reason>` comes
-  // only from AUTH_UNREAD_REASONS, `upstream` is any vendor error, and
-  // `unknown` is a lane with no signal at all.
+  // credential store is something the captain can grant access to, an expiry the
+  // vendor renews by itself is something to do nothing about, and an upstream
+  // that did not answer is something to wait out. quota-axi's own slug is quoted
+  // rather than interpreted. Beside the prose detail runs a closed sub-cause slug
+  // for the repeat-suppression digest: `unread:<reason>` comes only from
+  // AUTH_UNREAD_REASONS, `renewable:<signal>` only from the two renewable sets,
+  // `upstream` is any vendor error, and `unknown` is a lane with no signal at
+  // all.
   const upstreamError = typeof state.error === "string" && state.error !== "";
+  const renewableSignal = AUTH_RENEWABLE_STATUSES.has(state.authStatus)
+    ? state.authStatus
+    : state.error;
   const detail = credentialUnread
     ? `credential store not readable: ${state.reason}`
-    : upstreamError
-      ? state.error
-      : state.status;
+    : credentialRenewable
+      ? `expired, renewed by the vendor on next use: ${renewableSignal}`
+      : upstreamError
+        ? state.error
+        : state.status;
   const subcause = credentialUnread
     ? `unread:${state.reason}`
-    : upstreamError
-      ? "upstream"
-      : "unknown";
+    : credentialRenewable
+      ? `renewable:${renewableSignal}`
+      : upstreamError
+        ? "upstream"
+        : "unknown";
   return {
     id,
     cause: "unmeasured",
