@@ -2,6 +2,8 @@
 
 Verified on 2026-06-11 with codex-cli 0.139.0 unless a fact gives a newer version.
 
+[`docs/verification/openai-lane.md`](../../../../../docs/verification/openai-lane.md) is the empirical record for whether this lane produces and what `quota-axi` reports about it.
+
 ## Operating facts
 
 | Fact | Value |
@@ -14,6 +16,8 @@ Verified on 2026-06-11 with codex-cli 0.139.0 unless a fact gives a newer versio
 | Model flag | `--model <model>`. |
 | Effort flag | `-c 'model_reasoning_effort="<low\|medium\|high\|xhigh>"'`, verified on codex-cli 0.142.1 whose installed schema contains `model_reasoning_effort`, active config uses it, and bundled catalog advertises only these four values while omitting `max`. |
 | Model discovery | Open the current interactive session's `/model` picker. |
+| Non-interactive stdin | `codex exec` waits for piped stdin to close before starting a turn, printing `Reading additional input from stdin...`, so any non-interactive invocation must close it with `< /dev/null`. Verified on codex-cli 0.147.0. |
+| Project instructions | A worker inherits the repository's `AGENTS.md` from the repo root even when `-C` points at a subdirectory, so a codex worker launched inside a firstmate worktree picks up firstmate's own job description. Verified on codex-cli 0.147.0 by an unprompted "Captain" address and an attempt to run `bin/fm-session-start.sh`. |
 
 ## Modal dialogs
 
