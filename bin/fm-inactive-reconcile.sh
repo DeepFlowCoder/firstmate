@@ -25,9 +25,12 @@
 # turn-ended mtime is older than that interval and whose last status is not
 # captain-held. It then uses fm-crew-state.sh as the sole current-state source.
 # Only a done or failed state is suspicious enough to create a durable terminal
-# outcome record or wake the supervisor.
-# Working, paused, parked, blocked, unknown, persistent secondmates, and
-# captain-held work retain their existing supervision semantics.
+# outcome record, and those two wake the supervisor along with it.
+# Working, paused, parked, blocked, persistent secondmates, and captain-held work
+# retain their existing supervision semantics, and so does every `unknown`
+# reading but one: no backend target, an unreachable remote endpoint and an
+# unarbitrated verdict all still neither record nor wake, because none of them
+# says a validation died.
 #
 # THOSE TWO CONSEQUENCES SPLIT FOR EXACTLY ONE READING: a validation its own
 # step's time cap cut off (fm_nm_state_line_is_cap_cut, owned with the whole
