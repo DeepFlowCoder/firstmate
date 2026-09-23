@@ -2151,7 +2151,7 @@ test_other_branch_run_is_refused_despite_a_matching_submitted_head() {
 # while `run:` shows someone else's run. These fixtures put the two in exactly
 # that disagreement, which is what makes the branch name inside the binding
 # load-bearing rather than decorative.
-run_for_other_branch_bound_to() {  # <run-branch> <binding-branch> <advanced-head> <submitted-head> [<pipeline-status>]
+run_for_other_branch_bound_to() {  # <run-branch> <binding-branch> <advanced-head> <submitted-head>
   cat <<EOF
 run:
   id: "01RUNFOREIGN"
@@ -2173,7 +2173,7 @@ branch_sync:
     clean: true
   pipeline:
     run: "01RUNMINE"
-    status: ${5:-running}
+    status: running
     phase: ci
     submitted_head: $4
     current_head: $3
