@@ -1154,6 +1154,15 @@ if [ "$HAVE_RUN" = 1 ]; then
   # the new phrase. Nothing else about the arbitration changes: the cut still
   # pairs with the runs-list row through the unchanged RUN_WORD.
   #
+  # IDENTITY ALONE DECIDES, and the arbitrator's own answer is deliberately not
+  # part of the condition. Keying this on `current` would exempt the one arm
+  # where identity is least established rather than most: when the list never
+  # answered, nothing arbitrated anything, and that arm still carries this phrase
+  # inside its own "cannot confirm" wrapper. The phrase is the claim, so wherever
+  # it can be carried it answers to the same proof - and an unanswered list is
+  # `not established` here for the same reason it is silence everywhere else in
+  # this read.
+  #
   # AND WHERE THE TIE HAS TO BE BROKEN, IT CANNOT BE, so the cut reading does not
   # reach that reading at all and never will: a runs-list row carries no run id
   # and `axi status` carries no timestamp, so a branch carrying more than one row
@@ -1163,7 +1172,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   # It is a different limit from the runs-list arms above, which print `failed`
   # for their own reason - their rows carry no error column - and neither limit
   # stands in for the other.
-  if [ "$RUN_CAP_CUT" = 1 ] && [ "$VERDICT_STANDING" = current ] \
+  if [ "$RUN_CAP_CUT" = 1 ] \
     && ! fm_nm_runs_row_identifies_run "$RUNS_LIST_OUT" "$CREW_BRANCH" "$RUN_TERMINAL_WORD"; then
     RUN_STATE=failed
     RUN_DETAIL=$RUN_FAILED_DETAIL

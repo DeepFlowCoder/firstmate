@@ -1341,6 +1341,43 @@ test_a_listing_that_filled_its_limit_still_identifies_one_row() {
   pass "a listing that filled its own limit still identifies a branch's single row"
 }
 
+# THE ARM WHERE IDENTITY IS LEAST ESTABLISHED, NOT MOST. When the runs list does
+# not answer, nothing arbitrated the reading at all - and the heavy list query is
+# the one likeliest to time out under exactly the multi-crew load this read runs
+# in. The reading already declares itself unconfirmed and already reports
+# `unknown`, but the PHRASE it wraps is still a claim: a branch that ran a cut,
+# re-validated, and had the second run reject the code would be described as work
+# nobody has judged, over code a reviewer really did reject.
+#
+# So the phrase answers to the same proof here as anywhere else, and an
+# unanswered list establishes nothing.
+test_an_unarbitrated_cut_does_not_assert_the_cut_phrase() {
+  reset_fakes
+  local d out; d=$(new_case cut-unarbitrated)
+  make_repo_on_branch "$d/wt" fm/feat-ua
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/ua.meta" "window=fm:fm-ua" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-ua)"
+  # The list never answers, which is silence and not evidence.
+  FM_FAKE_RUNS_LIST=""
+  out=$(run_crew_state "$d" ua)
+
+  assert_not_contains "$out" "time cap" \
+    "an unarbitrated cut must not assert the phrase nothing established"
+  assert_not_contains "$out" "no verdict was reached about the work" \
+    "an unarbitrated cut must not tell a reader the code went unjudged"
+  assert_contains "$out" "run failed (the work is not lost)" \
+    "an unarbitrated cut keeps the ordinary failure phrase it used to carry"
+
+  # The arm's own reading is untouched: it still says it could not confirm, and
+  # it still reports the state that says so.
+  assert_contains "$out" "state: unknown" \
+    "the unarbitrated arm still reports the state it always did"
+  assert_contains "$out" "cannot confirm" \
+    "the unarbitrated arm still names what it could not confirm"
+  pass "a cut whose runs list never answered does not assert the cut phrase"
+}
+
 # THE THIRD PARTY THE FALSE WORD COST. A task idling on a correctly declared
 # external wait was read as a possible wedge, because the old run's `failed`
 # outranked its pause and the watcher's absorb classifier saw an answered
@@ -3935,6 +3972,7 @@ test_a_killed_agent_without_a_cap_stays_an_ordinary_failure
 test_a_cap_cut_is_not_handed_over_to_a_busy_pane
 test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word
 test_a_listing_that_filled_its_limit_still_identifies_one_row
+test_an_unarbitrated_cut_does_not_assert_the_cut_phrase
 test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path
 
 echo "all fm-crew-state tests passed"
