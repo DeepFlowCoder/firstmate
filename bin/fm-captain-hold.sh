@@ -531,10 +531,12 @@ recorded_annulled_hold() {  # <decoded-task-body>
   printf '%s' "${rest%%$'\n'*}"
 }
 
-# `Hold annulled:` names the question this answer settled, so a hold carrying
-# that same question again is provably a question the captain already answered
-# rather than a new one. Nothing reads the captain's words to decide that; it is
-# the reason string the close consumed, recorded at the moment it was consumed.
+# `Hold annulled:` names the question this answer settled, so a later hold
+# carrying that same reason is a contradiction worth checking rather than a new
+# question taken at face value. It establishes no more than that: see
+# report_hold_resurrected for what the match cannot prove. Nothing reads the
+# captain's words to decide it; it is the reason string the close consumed,
+# recorded at the moment it was consumed.
 resolution_block() {  # <mode> <annulled-hold-reason>
   printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n' \
     "$DECISION_DIGEST" "$1"

@@ -24,7 +24,8 @@ An exact retry is idempotent only when the requested close mode matches the newe
 Every close names what it just did to the held work, because that is the one choice a decision card gets wrong silently: without `--release` the close ends the question and the work item under it, so an answer meaning "get on with it" leaves the order in no queue at all.
 That is said on two surfaces, because the one the captain's answers actually arrive on discards the other: the close prints the consequence for a firstmate at a terminal, and it also queues a durable `check` wake record keyed `captain-close-ended-work-<task>` naming the task whose work item the close ended, which `bin/fm-wake-drain.sh` presents at the top of the next wake-handling turn.
 That record is best effort like every other wake this file queues, so a wake queue that cannot be locked drops it rather than failing the close and losing the captain's recorded answer.
-The block also records the hold reason the answer consumed as `Hold annulled:`, which is what lets `diverged` tell a resurrected question from a genuinely new one without reading a word of what the captain said.
+The block also records the hold reason the answer consumed as `Hold annulled:`, which is what lets `diverged` flag a later hold repeating that same reason without reading a word of what the captain said.
+That record supports a contradiction to check and never a conclusion about which question is live; the Record divergence section below states exactly what the match can and cannot establish.
 On a task closed outside the script, `answer` records the missing block only when the captain-hold annotations tasks-axi preserves through a close prove the captain owned it, and it verifies the task stays closed.
 A hold whose `--until` date has passed keeps those annotations while tasks-axi reports it no longer held, so an expired deferral remains answerable.
 

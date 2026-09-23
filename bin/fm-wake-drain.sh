@@ -352,8 +352,8 @@ EOF
 # never changes the drain's exit status - a supervision turn must still present
 # its wakes when the backlog tool is having a bad day.
 print_record_divergence_section() {
-  local diverged class task origin key title line shown=0 omitted=0 bound
-  local output='' used=0 bytes item_bytes=220 global_bytes=2000
+  local diverged row class task origin key title line shown=0 omitted=0 bound
+  local output='' used=0 bytes item_bytes=220 global_bytes=2000 tab=$'\t'
 
   # A non-positive bound is not a bound (bin/fm-timeout-lib.sh), so a bad
   # override falls back to the default rather than disabling the deadline.
@@ -366,7 +366,19 @@ print_record_divergence_section() {
   diverged=$(fm_run_timed "$bound" "$SCRIPT_DIR/fm-captain-hold.sh" diverged 2>/dev/null) || return 0
   [ -n "$diverged" ] || return 0
 
-  while IFS=$(printf '\t') read -r class task origin key title; do
+  # Peeled field by field rather than split by `read`, the way command_answers
+  # in bin/fm-captain-hold.sh already reads its keyed rows. TAB is IFS
+  # whitespace, so `read` collapses a run of them into one delimiter: the two
+  # shapes that leave `origin` and `key` empty would have their title parsed
+  # into `origin` and drop it from the line, on the one section whose purpose is
+  # naming a silent loss at a glance.
+  while IFS= read -r row; do
+    case "$row" in *"$tab"*) ;; *) continue ;; esac
+    class=${row%%"$tab"*}; row=${row#*"$tab"}
+    task=${row%%"$tab"*}; row=${row#*"$tab"}
+    origin=${row%%"$tab"*}; row=${row#*"$tab"}
+    key=${row%%"$tab"*}
+    title=${row#*"$tab"}
     [ -n "$task" ] || continue
     case "$class" in
       closed-unanswered)

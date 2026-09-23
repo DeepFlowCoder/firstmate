@@ -1562,10 +1562,14 @@ EOF
   drain=$(run_drain "$home") || fail "the drain failed while reporting divergence"
   printf '%s\n' "$drain" | grep -F 'RECORD DIVERGENCE' >/dev/null \
     || fail "the divergence never reached the drain: $drain"
-  printf '%s\n' "$drain" | grep -F 'sample-route-call [key=sample-route-call]' >/dev/null \
-    || fail "the drain section omitted the collapsed-identity divergence: $drain"
-  printf '%s\n' "$drain" | grep -F "$id-decision-access [key=access]" >/dev/null \
-    || fail "the drain section omitted the legacy-identity divergence: $drain"
+  # The whole line, title included: an id alone makes firstmate run `show` on
+  # each one, on the section whose purpose is naming a silent loss at a glance.
+  printf '%s\n' "$drain" \
+    | grep -F "sample-route-call [key=sample-route-call] reads resolved in $id's status log but is still held for the captain: Choose route: north or south" >/dev/null \
+    || fail "the drain section omitted the collapsed-identity divergence or its title: $drain"
+  printf '%s\n' "$drain" \
+    | grep -F "$id-decision-access [key=access] reads resolved in $id's status log but is still held for the captain: Open or restricted sample access" >/dev/null \
+    || fail "the drain section omitted the legacy-identity divergence or its title: $drain"
 
   # It signals; it never closes. Both records must survive the report unchanged,
   # because closing a captain call wrongly removes it from review entirely.
@@ -1684,8 +1688,9 @@ test_closed_call_with_its_mark_is_still_stranded() {
   printf '%s\n' "$out" | grep -F "closed-unanswered	$call" >/dev/null \
     || fail "the closed unanswered call was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the closed call"
-  printf '%s\n' "$drain" | grep -F "$call was closed with the captain's question never answered" >/dev/null \
-    || fail "the closed unanswered call never reached the drain: $drain"
+  printf '%s\n' "$drain" \
+    | grep -F "$call was closed with the captain's question never answered, so it is on no list he reads: Which of the four verifier fixes" >/dev/null \
+    || fail "the closed unanswered call, or the title that names it, never reached the drain: $drain"
   printf '%s\n' "$drain" | grep -F 'hold <task> --reason <reason> --reopen' >/dev/null \
     || fail "the drain section does not name the repair for a call he never answered: $drain"
 
@@ -1771,8 +1776,9 @@ test_resurrected_hold_over_an_answered_call_is_signalled() {
   printf '%s\n' "$out" | grep -F 'hold-resurrected	sample-coop-call' >/dev/null \
     || fail "the resurrected hold was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the resurrected hold"
-  printf '%s\n' "$drain" | grep -F 'sample-coop-call carries a live captain hold whose reason matches one its own record says an answer annulled' >/dev/null \
-    || fail "the resurrected hold never reached the drain: $drain"
+  printf '%s\n' "$drain" \
+    | grep -F 'sample-coop-call carries a live captain hold whose reason matches one its own record says an answer annulled - check whether that question is still open: Write it now or keep piloting' >/dev/null \
+    || fail "the resurrected hold, or the title that names it, never reached the drain: $drain"
   printf '%s\n' "$drain" | grep -F 'never lift a captain hold on the strength of a repeated hold reason' >/dev/null \
     || fail "the drain prescribed acting on the signal instead of checking it: $drain"
 
