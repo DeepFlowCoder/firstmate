@@ -23,14 +23,21 @@
 #
 # EVIDENCE:
 #   --range         DEMONSTRATED. Paths and signals are computed from the real
-#                   diff. Only this grade can produce the cheap lane. The range
-#                   is the two-dot <base>..<head> form; three dots are refused
-#                   rather than guessed at, because a caller who wrote them
-#                   meant merge-base semantics and would get the wrong diff.
+#                   diff. It is the only grade a SIGNAL or a CLASS CLAIM can
+#                   reach the cheap lane on; --captain-override is the one
+#                   exception and needs no grade at all. The range is the
+#                   two-dot <base>..<head> form; three dots are refused rather
+#                   than guessed at, because a caller who wrote them meant
+#                   merge-base semantics and would get the wrong diff.
 #   --paths         DECLARED. A list the caller asserts the change will touch.
-#                   It routes critical surfaces to the expensive lane and stops;
-#                   it can never produce the cheap lane, because a change that is
-#                   not written yet cannot be shown benign.
+#                   It routes critical surfaces to the expensive lane and stops:
+#                   no signal and no class claim reaches the cheap lane on this
+#                   grade, because a change that is not written yet cannot be
+#                   shown benign. The captain's explicit --captain-override is
+#                   the one deliberate exception, recorded with his words and
+#                   with the surfaces it overrode, so a row reading
+#                   "lane=direct-PR evidence=declared" is his own call and not a
+#                   signal that talked its way past this.
 #
 # --repo is REQUIRED on BOTH grades, because the project's own
 # .fm-critical-surfaces is read from it. Without it the decision would be made
@@ -40,10 +47,16 @@
 #
 # CLASSES, and how each one is demonstrated rather than alleged:
 #   docs-only     every changed path carries a PROSE NAME and a PROSE OBJECT.
-#                 The name is a prose markup format (.md, .markdown, .rst,
-#                 .adoc) or a NAMED prose file - CHANGELOG, README, NOTICE,
-#                 AUTHORS, CONTRIBUTORS, LICENCE - with or without a .txt
-#                 suffix. The object is the tree entry on the side that EXISTS -
+#                 The name is one of the accepted prose extensions, which
+#                 bin/fm-lane-lib.sh owns and this help reads from it rather
+#                 than restating:
+#                   @PROSE_EXTENSIONS@
+#                 or one of the NAMED prose files, owned by PROSE_FILE_NAMES in
+#                 this file and likewise read from it, with or without a .txt
+#                 suffix:
+#                   @PROSE_FILE_NAMES@
+#                 Both lists are printed from their owner, so neither can fall
+#                 behind it. The object is the tree entry on the side that EXISTS -
 #                 the head for anything that lands, the base for a deletion -
 #                 and it must be a regular non-executable file. No changed path
 #                 may be binary, and a path establishable on NEITHER side is not
@@ -52,9 +65,15 @@
 #                 whatever it is called, and deleting one is not documentation
 #                 either. Nothing qualifies by where it lives: docs/ widens
 #                 nothing, and docs/requirements.txt is not documentation.
-#   clean-revert  with --revert-of <sha>: every changed path's content at the
-#                 range's head equals its content at <sha>^, so the change is
-#                 exactly that commit undone.
+#   clean-revert  with --revert-of <sha>: BOTH halves hold for every path in the
+#                 UNION of the range's paths and <sha>'s own - the base holds
+#                 <sha>'s tree entry, and the head holds <sha>^'s. Entry, not
+#                 content, so a revert that leaves <sha>'s exec bit flipped is
+#                 not one. The head half alone is not the rule and would not be
+#                 enough: it passes for any commit whose parent happened to hold
+#                 the same content. Taking the union is what makes a PARTIAL
+#                 revert fail, since a path <sha> touched and the range left
+#                 alone fails the head half on its own.
 # A class that is claimed and fails its demonstration is not that class: the
 # decision is the expensive lane with reason class-not-demonstrated.
 # A range carrying a MODE CHANGE is not offered to either demonstration at all:
@@ -109,7 +128,11 @@ cleanup() {
 trap cleanup EXIT
 
 usage() {
-  awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
+  local exts names
+  exts=$(fm_lane_prose_extensions | sed 's/^/./' | tr '\n' ' ')
+  names=$(printf '%s' "$PROSE_FILE_NAMES" | tr '[:lower:]' '[:upper:]')
+  awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0" \
+    | sed -e "s/@PROSE_EXTENSIONS@/${exts% }/" -e "s/@PROSE_FILE_NAMES@/$names/"
 }
 
 die() { echo "error: $*" >&2; exit 1; }
