@@ -11,7 +11,7 @@ This record supports three active guarantees, each resting on a different measur
 [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh)'s header owns the attribution rules themselves - the branch gate, the head rule, the pipeline-owned exemption, and the submitted-head binding - and, for the second guarantee, why the `failed` phrase reads as it does.
 [`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) owns how an attributed run becomes a reported state.
 
-The guarantee is scoped to that path deliberately, because the submitted head is only carried by the `axi status` output.
+The first guarantee is scoped to that path deliberately, because the submitted head is only carried by the `axi status` output.
 `axi status` is repo-scoped, so when it answers for another branch the read falls through to the coarse `no-mistakes runs` list, whose rows carry the pipeline-advanced head and no submitted head, and that path still reports unknown attribution after a head move.
 Work to close that second door is tracked as `fm-atribucion-segunda-puerta-repo-scoped`.
 
@@ -235,7 +235,7 @@ drive run: reconcile run 01M354M59S16BBBCEA7ZD8M61S: get_run timed out and daemo
 
 Read at that moment without touching anything, `no-mistakes doctor` reported the daemon `running` and that same run was `status: running` on its branch, and the worker's own words on being reattached were that its gate response "had in fact landed - review is in fix round 1 right now".
 So the service was healthy, the run was live, and the operation the client had reported as failed had already applied.
-That 250ms bound is the CLI's own and has no configuration surface in v1.75.2: neither `no-mistakes --help` nor `no-mistakes axi --help` exposes a timeout flag, and the only environment variables the binary carries are the gate, telemetry, update-check and forge-credential ones:
+That 250ms bound is the CLI's own and has no configuration surface in v1.75.2: neither `no-mistakes --help` nor `no-mistakes axi --help` exposes a timeout flag, and the only environment variables the binary carries are a test override and the gate, telemetry, update-check and forge-credential ones:
 
 ```sh
 strings "$(command -v no-mistakes)" | grep -oE "NO_MISTAKES_[A-Z0-9_]+" | sort -u
@@ -255,7 +255,7 @@ NO_MISTAKES_UMAMI_HOST
 NO_MISTAKES_UMAMI_WEBSITE_ID
 ```
 
-The trailing characters on three of those rows are where the binary's string table runs one constant into the next; the names themselves are the gate, telemetry, update-check and Bitbucket-credential ones, and none of them bounds a probe.
+The trailing characters on three of those rows are where the binary's string table runs one constant into the next; the names themselves are a test override and the gate, telemetry, update-check and Bitbucket-credential ones, and none of them bounds a probe.
 
 So widening that particular probe belongs to the no-mistakes project; what this repo owns is its own bound and what it concludes when one fires.
 `fm_nm_text_is_unconfirmed` matches the request-scoped and probe-scoped clauses of that payload and nothing broader, because a bare "timed out" is also the pipeline's own vocabulary for a real fact about a run.
