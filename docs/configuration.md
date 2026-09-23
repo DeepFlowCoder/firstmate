@@ -322,7 +322,8 @@ This repo carries its own for the safety boundaries the built-in name patterns d
 The CI entry is not there because CI is expected to catch a bad change, which is reasoning this policy rejects outright; it is there because the cheap lane's safety net must not be modifiable by the cheap lane.
 The governing documents are the largest group and the one an operator meets most often: `CONTRIBUTING`, `CLAUDE`, `SKILL` and `AUTHORS` in any extension, plus the instruction material a skill loads, meaning everything under a skill's `references/` and any agent definition it ships.
 Editing any of them in this repo takes the expensive lane, because a document that instructs an agent or a contributor is never pure documentation for routing: changing it changes behaviour, and a skill's reference files are the fleet's behaviour rather than one delivery's.
-They are named by role rather than by spelling, so a reference file added tomorrow is covered the day it lands; `README.md` and anything under `docs/` only describe, and keep their cheap route.
+They are named by role rather than by spelling, so a reference file added tomorrow is covered the day it lands, and they are matched by basename rather than by location, so a governing document is one wherever it sits.
+A file that only describes keeps its cheap route by not carrying one of those names rather than by living in a particular directory, which is why `docs/supervision-protocols/claude.md` takes the expensive lane while the rest of `docs/` does not.
 The file itself states each group's reasoning beside that group, so read it there rather than expecting this page to list the entries.
 
 The gate in front of each dispatch is advisory for fresh intake and binding on a measured change.

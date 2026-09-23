@@ -1598,6 +1598,40 @@ EOF
   assert_contains "$(first_line "$out")" "lane=direct-PR" \
     "deleting a prose file stopped demonstrating as documentation"
 
+  # DELETING a non-prose object under a prose name. The object test asks the head
+  # first, and a deletion has no head entry, so this passed on its NAME alone
+  # until the rule became "establish the type on the side that exists". The mode
+  # count cannot catch it either: a deletion has no later mode, so it is no more
+  # a mode CHANGE than an addition is.
+  base=$head
+  printf '#!/bin/sh\necho release\n' > "$repo/docs/release.md"
+  chmod +x "$repo/docs/release.md"
+  head=$(commit_all "$repo" add-prose-named-script)
+  base=$head
+  git -C "$repo" rm --quiet docs/release.md
+  head=$(commit_all "$repo" delete-prose-named-script)
+  out=$(run_lane "$home" decide proseobj-a3 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "deleting an executable with a prose name demonstrated as documentation"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the deleted executable was not reported as undemonstrated"
+  assert_contains "$out" "mode=0" \
+    "the fixture leaned on the mode count, which cannot see a deleted entry"
+
+  base=$head
+  ln -s ../seed "$repo/docs/link.rst"
+  head=$(commit_all "$repo" add-prose-named-symlink-again)
+  base=$head
+  git -C "$repo" rm --quiet docs/link.rst
+  head=$(commit_all "$repo" delete-prose-named-symlink)
+  out=$(run_lane "$home" decide proseobj-a4 --project proj --repo "$repo" \
+    --range "$base..$head" --class docs-only)
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "deleting a symlink with a prose name demonstrated as documentation"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "the deleted symlink was not reported as undemonstrated"
+
   pass "lane: documentation needs a prose name and a prose object, never the name alone"
 }
 

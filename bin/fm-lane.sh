@@ -207,16 +207,25 @@ is_documentation_path() {
 # demonstration needs a PROSE NAME AND A PROSE OBJECT. The first is decided by
 # the list above; the second is asked of the tree. Neither is sufficient alone.
 #
-# The object half is asked at the range's HEAD, because that is the state the
-# delivery lands. An entry absent there is a deleted prose file, which is prose
-# removed rather than a foreign object introduced, so it passes.
+# THE OBJECT TEST ESTABLISHES THE ENTRY'S TYPE ON THE SIDE THAT EXISTS. A path
+# the diff names is present at the head, at the base, or at both, and never at
+# neither: the head answers for anything that lands, and the base answers for a
+# deletion. If NEITHER side can be established the class is not demonstrated, so
+# the decision comes back no-mistakes with reason=class-not-demonstrated.
+#
+# That is a rule, written once, because the same hole was closed twice as
+# individual cases before this: an entry ADDED with a non-regular mode, then a
+# mode CHANGE, and then a DELETED entry, which passed on its name alone because
+# the object half looked only at the head and read the missing entry as nothing
+# to check. ABSENCE OF SIGNAL IS NOT SIGNAL OF ABSENCE, and being unable to
+# determine something is not the same as determining it is not there. Asking the
+# side that exists covers all three at once and leaves no fourth variant.
 #
 # It has to be asked directly rather than inferred from the mode disqualification
-# cmd_decide computes, because that one only sees entries present on BOTH sides
-# of the range: an ADDED entry has no prior mode to compare against, produces no
-# mode CHANGE, and the gap read as harmless. Absence of signal taken for signal
-# of absence, one more time - the seventh member of the family the captain
-# tracks as fm-guardas-que-degradan-a-una-comprobacion-mas-debil.
+# cmd_decide computes, because that one only compares entries present on BOTH
+# sides: an addition has no prior mode and a deletion has no later one, so
+# neither produces a mode CHANGE. That is correct for a CHANGE count and useless
+# as a type test, which is why the type is established here instead.
 #
 # THE OBJECT IS ITS TYPE AND ITS CONTENT. A blob's mode is 100644 whatever bytes
 # it holds, so the type half admitted a BINARY blob called guide.md as a prose
@@ -226,13 +235,14 @@ is_documentation_path() {
 # keeps one owner of what binary means. A count that is not exactly zero fails
 # the demonstration, "-" included: a count nobody could establish is not zero.
 demonstrate_docs_only() {
-  local head=$1 binary=$2 p entry mode
-  shift 2
+  local head=$1 base=$2 binary=$3 p entry mode
+  shift 3
   [ "$binary" = 0 ] || return 1
   for p in "$@"; do
     is_documentation_path "$p" || return 1
     entry=$(tree_entry_at "$head" "$p")
-    [ -n "$entry" ] || continue
+    [ -n "$entry" ] || entry=$(tree_entry_at "$base" "$p")
+    [ -n "$entry" ] || return 1
     mode=${entry%% *}
     [ "$mode" = 100644 ] || return 1
   done
@@ -625,7 +635,7 @@ class_record_value() {
 demonstrate_class() {
   local base=$1 head=$2 binary=$3
   case "$CLASS" in
-    docs-only)    demonstrate_docs_only "$head" "$binary" "${PATHS[@]}" ;;
+    docs-only)    demonstrate_docs_only "$head" "$base" "$binary" "${PATHS[@]}" ;;
     clean-revert) demonstrate_clean_revert "$base" "$head" "$REVERT_OF" "${PATHS[@]}" ;;
     *)            return 1 ;;
   esac
