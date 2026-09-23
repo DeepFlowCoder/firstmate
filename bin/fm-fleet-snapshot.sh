@@ -25,6 +25,8 @@
 #     retention pruning a completed blocker cannot leave its dependents held.
 #     The backlog wins wherever both files carry the id, and only a checked
 #     archive row counts, because retention can archive pending rows too.
+#     An id repeated inside one file counts done only when every copy is done,
+#     never by section order (archive_states_json owns the every-copy rule).
 #     A blocker id in neither file resolves nothing and stays open, and is also
 #     listed in unknown_blocker_ids so the gap is reported rather than silently
 #     holding work or silently releasing it.
