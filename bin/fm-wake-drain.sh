@@ -341,10 +341,10 @@ EOF
 # contradict each other - a key resolved on the status side while the task held
 # for the captain is still open, a call filed as finished with his question
 # never answered, or a live hold repeating a reason that task's own record says
-# an answer annulled. Each row names only which card and which shape; the
-# section's trailing lines carry what the shapes mean and how to reconcile them,
-# once, so the per-item byte cap is spent on titles rather than on a formula
-# every reader has already learnt. Nothing here closes anything; it exists because
+# an answer annulled. Each row states a condition that stands on its own line,
+# short enough that a typical title survives the per-item cap whole; the
+# trailing lines carry the action and point at the document that owns the rest,
+# once per section. Nothing here closes anything; it exists because
 # each of those reads as settled from one side while the other still says
 # otherwise, with no warning at all. bin/fm-captain-hold.sh's `diverged` owns
 # which shapes count and why; this prints what it reports.
@@ -383,16 +383,17 @@ print_record_divergence_section() {
     key=${row%%"$tab"*}
     title=${row#*"$tab"}
     [ -n "$task" ] || continue
-    # Each row names WHICH card and WHAT shape, and nothing else. The shared
-    # explanation of every shape prints once per section below, because a
-    # formula repeated in front of every title is paid for out of the same
-    # per-item byte cap the title needs: the fixed text is what a reader learns
-    # once, the title is the only part it cannot deduce.
+    # Each row states a condition its reader can act on WITHOUT any other line,
+    # in the fewest characters that manage it, because every one of them is paid
+    # for out of the same per-item cap the title needs and a cut title is not a
+    # shorter name but a wrong one that looks right. None of these may reach for
+    # vocabulary this file invented: the record's own terms belong in the
+    # document that defines them, not in front of a title they would crowd out.
     case "$class" in
       closed-unanswered)
-        line="$task closed unanswered" ;;
+        line="$task closed unanswered, so the captain can no longer see it" ;;
       hold-resurrected)
-        line="$task hold repeats annulled reason" ;;
+        line="$task asks again a question its own record says he answered" ;;
       *)
         line="$task [key=$key] resolved in $origin, still held" ;;
     esac
@@ -418,16 +419,19 @@ EOF
   if [ "$omitted" -gt 0 ]; then
     printf 'RECORD DIVERGENCE: %d more omitted (byte cap)\n' "$omitted" || return 1
   fi
-  # What each shape means, once per section rather than once per row: this is
-  # the text the per-item lines above deliberately do not carry.
-  printf 'RECORD DIVERGENCE: "closed unanswered" is a call filed as finished with no answer recorded, so it is on no list he reads. "hold repeats annulled reason" is a live captain hold carrying the very reason a recorded answer on that same task annulled. "resolved in <origin>, still held" is a key that origin'"'"'s status log closed while the captain-held task stayed open.\n' || return 1
   # Every direction, deliberately. The status resolution is not proof the
   # captain ruled: a call can dissolve, or turn out to have been a question of
   # fact. Reconcile with what actually happened - never by closing on the
-  # strength of this line, and never by lifting one of his holds on it either,
-  # since a repeated hold reason is a contradiction to check and not a proof.
+  # strength of this line, and never by lifting one of his holds on it either.
+  # This is the action, so it prints here; what each shape means, and what none
+  # of them establishes, has one owner and this points at it rather than
+  # reprinting it on every supervision turn to a reader who learnt it on the
+  # first. The advisory rule itself - a repeated hold reason is a contradiction
+  # to CHECK and never grounds to lift a captain hold - is carried by
+  # .agents/skills/captain-hold-lifecycle/SKILL.md, which AGENTS.md section 8
+  # already requires be loaded on any line this section prints.
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>; put a call he never answered back in front of him with bin/fm-captain-hold.sh hold <task> --reason <reason> --reopen; or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
-  printf 'RECORD DIVERGENCE: a repeated hold reason is a contradiction to CHECK and never proof - never lift a captain hold on it; read the record, and ask him again when what he settled cannot be established.\n' || return 1
+  printf 'RECORD DIVERGENCE: docs/captain-hold-lifecycle.md, section "Record divergence", owns what each shape means and what it does not establish.\n' || return 1
 }
 
 # Two failures live in this stage and they carry opposite costs, so they are

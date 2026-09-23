@@ -1689,7 +1689,7 @@ test_closed_call_with_its_mark_is_still_stranded() {
     || fail "the closed unanswered call was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the closed call"
   printf '%s\n' "$drain" \
-    | grep -F "$call closed unanswered: Which of the four verifier fixes" >/dev/null \
+    | grep -F "$call closed unanswered, so the captain can no longer see it: Which of the four verifier fixes" >/dev/null \
     || fail "the closed unanswered call, or the title that names it, never reached the drain: $drain"
   printf '%s\n' "$drain" | grep -F 'hold <task> --reason <reason> --reopen' >/dev/null \
     || fail "the drain section does not name the repair for a call he never answered: $drain"
@@ -1777,10 +1777,10 @@ test_resurrected_hold_over_an_answered_call_is_signalled() {
     || fail "the resurrected hold was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the resurrected hold"
   printf '%s\n' "$drain" \
-    | grep -F 'sample-coop-call hold repeats annulled reason: Write it now or keep piloting' >/dev/null \
+    | grep -F 'sample-coop-call asks again a question its own record says he answered: Write it now or keep piloting' >/dev/null \
     || fail "the resurrected hold, or the title that names it, never reached the drain: $drain"
-  printf '%s\n' "$drain" | grep -F 'a repeated hold reason is a contradiction to CHECK and never proof - never lift a captain hold on it' >/dev/null \
-    || fail "the drain prescribed acting on the signal instead of checking it: $drain"
+  printf '%s\n' "$drain" | grep -F 'docs/captain-hold-lifecycle.md, section "Record divergence", owns what each shape means and what it does not establish' >/dev/null \
+    || fail "the drain section does not point at the document that owns what the shape establishes: $drain"
 
   # A call the captain answered with --release can never be resurrected: the
   # release runs `tasks-axi unhold`, which clears the annotations outright, so a
@@ -1848,7 +1848,7 @@ test_expired_deferral_resurrection_is_signalled() {
     || fail "the resurrected hold on an expired deferral was not reported: $out"
   drain=$(run_drain "$home") || fail "the drain failed while reporting the deferred call"
   printf '%s\n' "$drain" \
-    | grep -F "sample-deferred-call hold repeats annulled reason: $title" >/dev/null \
+    | grep -F "sample-deferred-call asks again a question its own record says he answered: $title" >/dev/null \
     || fail "the expired-deferral resurrection, or the hostile title naming it, never reached the drain: $drain"
   pass "an expired deferral's resurrected hold is reported, hostile title and all"
 }
@@ -1934,49 +1934,72 @@ test_retroactive_repair_hands_the_report_over_to_the_trace() {
   pass "a retroactive repair raises the durable trace before the report it silences goes quiet"
 }
 
-# The per-item lines are capped, so a long fixed formula is paid for out of the
-# title's budget. These are the measured sizes from the supervisor's own home:
-# ids reach 47 characters at p90 and titles 140, and both must survive whole. A
-# future re-lengthening of the prose fails here instead of quietly eating titles.
-test_realistic_id_and_title_survive_the_divergence_line() {
-  local home held_id closed_id title drain
+# Pad a slug or a sentence up to an exact character count, so the budget below
+# is a measurement rather than an eyeballed literal that drifts on the next edit.
+grown_to() {  # <base> <length> <filler>
+  local text=$1
+  while [ "${#text}" -lt "$2" ]; do text="$text$3"; done
+  printf '%s' "${text:0:$2}"
+}
+
+# The per-item lines are capped, so every character of fixed prose is paid for
+# out of the title's budget, and a cut title is not a shorter name but a wrong
+# one that looks right. The criterion is that a TYPICAL card survives whole,
+# measured in the supervisor's own home: ids run to 35 characters at the median
+# and titles to 121 at p75, against 219 usable bytes. A future re-lengthening of
+# the prose fails here instead of quietly eating titles again. The line for a
+# status resolution carries three identifiers rather than one - the task, its
+# key, and the origin whose log closed it - so that fixture spends its
+# identifier budget across all three instead of on one p75 id.
+test_typical_id_and_title_survive_the_divergence_lines() {
+  local home held_id closed_id resolved_id origin title drain
   home=$(make_home divergence-line-budget)
-  held_id=sample-budget-resurrected-call
-  closed_id=sample-budget-unanswered-call
-  while [ "${#held_id}" -lt 47 ]; do held_id="${held_id}x"; done
-  while [ "${#closed_id}" -lt 47 ]; do closed_id="${closed_id}y"; done
-  title="Escribir el documento de gobierno de la cooperativa"
-  while [ "${#title}" -lt 140 ]; do title="$title y el calendario acordado"; done
-  title=${title:0:140}
-  [ "${#held_id}" = 47 ] && [ "${#closed_id}" = 47 ] && [ "${#title}" = 140 ] \
-    || fail "the budget fixture drifted off the measured p90 sizes"
+  held_id=$(grown_to sample-resurrected-call 35 x)
+  closed_id=$(grown_to sample-unanswered-call 35 y)
+  resolved_id=$(grown_to sample-sr-call 18 z)
+  origin=$(grown_to sample-sr-origin 18 w)
+  title=$(grown_to "Escribir el documento de gobierno de la cooperativa" 121 " y el calendario acordado")
+  [ "${#held_id}" = 35 ] && [ "${#closed_id}" = 35 ] && [ "${#title}" = 121 ] \
+    || fail "the budget fixture drifted off the measured typical sizes"
   printf 'escribir-ya\n' > "$home/decision.txt"
 
   run_captain "$home" hold "$held_id" --title "$title" \
     --reason "held over the pilot" --repo sample >/dev/null \
-    || fail "could not register the p90 resurrection fixture"
+    || fail "could not register the resurrection fixture"
   run_captain "$home" answer "$held_id" --decision-file "$home/decision.txt" >/dev/null \
-    || fail "could not record the answer on the p90 fixture"
+    || fail "could not record the answer on the resurrection fixture"
   tasks_in "$home" reopen "$held_id" >/dev/null || fail "could not reproduce the raw reopen"
 
   run_captain "$home" hold "$closed_id" --title "$title" \
     --reason "captain choice pending" --repo sample >/dev/null \
-    || fail "could not register the p90 stranded fixture"
-  tasks_in "$home" "done" "$closed_id" >/dev/null || fail "could not close the p90 stranded fixture"
+    || fail "could not register the stranded fixture"
+  tasks_in "$home" "done" "$closed_id" >/dev/null || fail "could not close the stranded fixture"
 
-  drain=$(run_drain "$home") || fail "the drain failed on the p90 fixtures"
-  printf '%s\n' "$drain" | grep -F "$held_id hold repeats annulled reason: $title" >/dev/null \
-    || fail "a p90 id and title did not survive the resurrection line whole: $drain"
-  printf '%s\n' "$drain" | grep -F "$closed_id closed unanswered: $title" >/dev/null \
-    || fail "a p90 id and title did not survive the closed-unanswered line whole: $drain"
+  run_captain "$home" hold "$resolved_id" --title "$title" \
+    --reason "captain route choice pending" --repo sample >/dev/null \
+    || fail "could not register the status-resolution fixture"
+  cat > "$home/state/$origin.status" <<EOF
+working: report drafted
+needs-decision [key=$resolved_id]: the question this log then closed
+resolved [key=$resolved_id]: answered on the status side only
+EOF
 
-  # The explanation the per-item lines no longer carry still reaches the reader,
-  # once, with its advisory strength intact.
-  printf '%s\n' "$drain" | grep -F 'is a live captain hold carrying the very reason a recorded answer on that same task annulled' >/dev/null \
-    || fail "the section no longer says what the resurrection shape means: $drain"
-  printf '%s\n' "$drain" | grep -F 'a repeated hold reason is a contradiction to CHECK and never proof' >/dev/null \
-    || fail "the section no longer refuses to treat the match as proof: $drain"
-  pass "a p90 id and title survive both divergence lines whole, with the shared explanation printed once"
+  # The title is the only part of a line a reader cannot deduce, so what is
+  # pinned is that it arrives whole on the line naming its task - not the
+  # surrounding prose, which may still be improved.
+  drain=$(run_drain "$home") || fail "the drain failed on the budget fixtures"
+  printf '%s\n' "$drain" | grep -F "$held_id" | grep -F -- "$title" >/dev/null \
+    || fail "a typical id and title did not survive the resurrection line whole: $drain"
+  printf '%s\n' "$drain" | grep -F "$closed_id" | grep -F -- "$title" >/dev/null \
+    || fail "a typical id and title did not survive the closed-unanswered line whole: $drain"
+  printf '%s\n' "$drain" | grep -F "$resolved_id" | grep -F -- "$origin" | grep -F -- "$title" >/dev/null \
+    || fail "a typical title did not survive the status-resolution line whole: $drain"
+
+  # The rows carry no glossary, so the section points at the document that owns
+  # what each shape means and what none of them establishes.
+  printf '%s\n' "$drain" | grep -F 'docs/captain-hold-lifecycle.md' >/dev/null \
+    || fail "the section does not point at the document that owns the shapes: $drain"
+  pass "a typical id and title survive all three divergence lines whole, with no per-row glossary"
 }
 
 # Seed one origin investigation with the metadata, status log, and report the
@@ -2178,7 +2201,7 @@ test_close_that_ended_the_work_leaves_a_durable_record
 test_resurrected_hold_over_an_answered_call_is_signalled
 test_expired_deferral_resurrection_is_signalled
 test_retroactive_repair_hands_the_report_over_to_the_trace
-test_realistic_id_and_title_survive_the_divergence_line
+test_typical_id_and_title_survive_the_divergence_lines
 test_pruned_answer_still_proves_the_captains_call
 test_pruned_inventory_still_blocks_an_unanswered_call
 test_blank_inventory_entry_refuses_and_is_repairable
