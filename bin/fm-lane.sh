@@ -43,13 +43,15 @@
 #                 The name is a prose markup format (.md, .markdown, .rst,
 #                 .adoc) or a NAMED prose file - CHANGELOG, README, NOTICE,
 #                 AUTHORS, CONTRIBUTORS, LICENCE - with or without a .txt
-#                 suffix. The object is the tree entry at the range's head,
-#                 which must be a regular non-executable file or absent, and no
-#                 changed path may be binary: a symlink, an executable, a
-#                 submodule link or a blob of binary bytes called guide.md is
-#                 not documentation, whatever it is called. Nothing qualifies by
-#                 where it lives: docs/ widens nothing, and docs/requirements.txt
-#                 is not documentation.
+#                 suffix. The object is the tree entry on the side that EXISTS -
+#                 the head for anything that lands, the base for a deletion -
+#                 and it must be a regular non-executable file. No changed path
+#                 may be binary, and a path establishable on NEITHER side is not
+#                 demonstrated. So a symlink, an executable, a submodule link or
+#                 a blob of binary bytes called guide.md is not documentation
+#                 whatever it is called, and deleting one is not documentation
+#                 either. Nothing qualifies by where it lives: docs/ widens
+#                 nothing, and docs/requirements.txt is not documentation.
 #   clean-revert  with --revert-of <sha>: every changed path's content at the
 #                 range's head equals its content at <sha>^, so the change is
 #                 exactly that commit undone.
@@ -207,13 +209,12 @@ is_documentation_path() {
 # demonstration needs a PROSE NAME AND A PROSE OBJECT. The first is decided by
 # the list above; the second is asked of the tree. Neither is sufficient alone.
 #
-# THE OBJECT TEST ESTABLISHES THE ENTRY'S TYPE ON THE SIDE THAT EXISTS. A path
-# the diff names is present at the head, at the base, or at both, and never at
-# neither: the head answers for anything that lands, and the base answers for a
-# deletion. If NEITHER side can be established the class is not demonstrated, so
-# the decision comes back no-mistakes with reason=class-not-demonstrated.
+# THE OBJECT TEST ESTABLISHES THE ENTRY'S TYPE ON THE SIDE THAT EXISTS. The rule
+# itself is stated in this file's --help, which bin/fm-lane-lib.sh names the one
+# owner of the mechanics; what follows is why it is that rule and not a simpler
+# one, which is the part that belongs beside the code.
 #
-# That is a rule, written once, because the same hole was closed twice as
+# It is a rule, written once, because the same hole was closed twice as
 # individual cases before this: an entry ADDED with a non-regular mode, then a
 # mode CHANGE, and then a DELETED entry, which passed on its name alone because
 # the object half looked only at the head and read the missing entry as nothing

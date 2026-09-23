@@ -76,15 +76,20 @@ bin/fm-promote.sh routing-policy
 # The documents that govern THIS HOUSE. A document that INSTRUCTS an agent or a
 # contributor is never "pure documentation" for routing, because changing it
 # changes behaviour, and the docs-only class would otherwise carry it to the
-# cheap lane. A document that merely DESCRIBES stays ordinary documentation and
-# keeps its cheap route.
+# cheap lane. A document that merely DESCRIBES is not a governing document.
 #
 # THAT IS DECIDED BY NAME, NEVER BY LOCATION. Every entry below is a BASENAME
 # glob, so a governing document is one wherever it sits - docs/ is not a shelter,
-# and docs/supervision-protocols/claude.md is a governing document today. A
-# descriptive file keeps its cheap route by not carrying one of these names, not
-# by living in a particular directory. There is no location rule in this policy
-# and a description that implies one is how a reader ends up surprised.
+# and docs/supervision-protocols/claude.md is a governing document today. There
+# is no location rule in this policy and a description that implies one is how a
+# reader ends up surprised.
+#
+# NOT A GOVERNING DOCUMENT IS NOT THE SAME AS CHEAP. This group decides one
+# question only, and every other surface in the effective catalog still asks its
+# own: the portable built-in patterns match by name anywhere in the tree too, so
+# a basename carrying guard, merge or auth routes expensive under ITS surface
+# whatever this group says. Only a decide against the real catalog answers what a
+# given path routes to - no comment here can, and none should try.
 # These live here rather than in the portable catalog because a surface put
 # there is imposed silently on every project, while declaring it here raises
 # this house's rigor, stays visible, and decides for nobody else.

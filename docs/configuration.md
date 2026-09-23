@@ -323,7 +323,8 @@ The CI entry is not there because CI is expected to catch a bad change, which is
 The governing documents are the largest group and the one an operator meets most often: `CONTRIBUTING`, `CLAUDE`, `SKILL` and `AUTHORS` in any extension, plus the instruction material a skill loads, meaning everything under a skill's `references/` and any agent definition it ships.
 Editing any of them in this repo takes the expensive lane, because a document that instructs an agent or a contributor is never pure documentation for routing: changing it changes behaviour, and a skill's reference files are the fleet's behaviour rather than one delivery's.
 They are named by role rather than by spelling, so a reference file added tomorrow is covered the day it lands, and they are matched by basename rather than by location, so a governing document is one wherever it sits.
-A file that only describes keeps its cheap route by not carrying one of those names rather than by living in a particular directory, which is why `docs/supervision-protocols/claude.md` takes the expensive lane while the rest of `docs/` does not.
+Not carrying one of those names is what keeps a file out of this group, and it is not on its own what puts a file on the cheap lane: the built-in patterns match by name anywhere in the tree as well, so a path routes expensive if any surface in the effective catalog claims it.
+`bin/fm-lane.sh decide` against the project is the only thing that answers what a given path routes to, and this page deliberately makes no claim about what a directory or the rest of one contains.
 The file itself states each group's reasoning beside that group, so read it there rather than expecting this page to list the entries.
 
 The gate in front of each dispatch is advisory for fresh intake and binding on a measured change.
