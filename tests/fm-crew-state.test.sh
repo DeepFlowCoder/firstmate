@@ -98,13 +98,50 @@ case "$*" in
 esac
 exit 0
 SH
+  # The fake tmux serves two independent questions. FM_FAKE_BUSY drives the busy
+  # SIGNATURE read (is this pane emitting), and FM_FAKE_TMUX_AGENT drives the
+  # recovery-grade AGENT-STATE probe (does an agent exist here at all), which
+  # bin/backends/tmux.sh answers from the session inventory plus the pane's
+  # current command. They are deliberately separate: an agent parked at a gate is
+  # idle and alive at the same time.
+  #
+  # Unset FM_FAKE_TMUX_AGENT means this case does not model the inventory, so
+  # `list-windows` fails the way tmux fails a query it cannot serve and the
+  # classifier reads `unreadable` - never `missing`. That default is the point: a
+  # case that never said anything about agent liveness must land on "not checked",
+  # because reading silence as death would make every unrelated case here assert
+  # one.
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
   display-message)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    for a in "$@"; do
+      case "$a" in
+        *pane_current_command*)
+          case "${FM_FAKE_TMUX_AGENT:-}" in
+            alive) printf 'claude\n' ;;
+            dead) printf 'zsh\n' ;;
+            *) printf 'node\n' ;;
+          esac
+          exit 0 ;;
+      esac
+    done
     printf '%%1\n' ;;
+  list-windows)
+    case "${FM_FAKE_TMUX_AGENT:-}" in
+      alive|dead)
+        # tmux is asked for a SESSION's windows, so the fake cannot derive the
+        # recorded window name and the case must name it. Refusing beats
+        # defaulting: an empty inventory would read `missing`, quietly turning a
+        # case about a live agent into a case about a vanished endpoint.
+        [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] \
+          || { printf 'fake tmux: FM_FAKE_TMUX_AGENT=%s needs FM_FAKE_TMUX_WINDOW\n' "$FM_FAKE_TMUX_AGENT" >&2; exit 2; }
+        printf '%s\n' "$FM_FAKE_TMUX_WINDOW" ;;
+      missing) printf 'some-other-window\n' ;;
+      *) printf 'permission denied\n' >&2; exit 1 ;;
+    esac ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
     if [ "${FM_FAKE_BUSY:-0}" = 1 ]; then printf 'work in progress\n%s\n' "${FM_FAKE_BUSY_TEXT:-esc to interrupt}"
@@ -194,6 +231,11 @@ reset_fakes() {
   FM_FAKE_BUSY=0
   FM_FAKE_BUSY_TEXT=
   FM_FAKE_TMUX_MISSING=0
+  # Empty is "this case models no agent-state inventory", which the classifier
+  # reads as unreadable - the honest answer for a fake that was never told. Only
+  # a case about agent liveness names one of alive/dead/missing.
+  FM_FAKE_TMUX_AGENT=""
+  FM_FAKE_TMUX_WINDOW=""
   FM_FAKE_HERDR_BUSY=0
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
@@ -210,6 +252,7 @@ reset_fakes() {
   # local-only path rather than silently reaching a stub.
   FM_CREW_STATE_RESOLVE_PR=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
+  export FM_FAKE_TMUX_AGENT FM_FAKE_TMUX_WINDOW
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_NM_CALLS
   export FM_FAKE_GH_PR_STATE FM_FAKE_GH_CALLS FM_CREW_STATE_RESOLVE_PR
   export FM_FAKE_TIMEOUT_CALLS FM_FAKE_CLOCK_TICKS
@@ -576,6 +619,139 @@ test_gate_block_parked_not_superseded() {
   assert_contains "$out" "1 finding(s)" "gate block wait includes finding count"
   assert_not_contains "$out" "superseded" "gate block wait not flagged stale"
   pass "gate block parked run is not flagged superseded"
+}
+
+# --- the gate conjunction: parked AND an agent left to answer ---------------
+#
+# Measured 2026-09-13, on the fleet's critical path with five finished deliveries
+# waiting behind it. `parked at review: 4 findings` was true of the run, and an
+# endpoint showing an empty console offering to resume the session was true of
+# the worker; the COMBINATION was the lie, because the gate was waiting on
+# somebody who no longer existed. Nothing corrects that on its own - the only
+# timer a validation has is 168 hours - so the reading is what has to catch it.
+#
+# These cases pin the three answers the endpoint can give, and the whole weight
+# sits on the line between the last two: a worker proven gone is a stuck
+# validation, and a worker nobody could ask about is not.
+
+# Expected absorb class of a state line, through the watcher's own public
+# classifier rather than a second copy of its rules here: `parked` is a healthy
+# idle class absorbed on a long cadence, and `none` is what surfaces.
+assert_absorb_class() {  # <state-line> <expected> <msg>
+  local got
+  got=$(absorb_class_of_state_line "$1")
+  [ "$got" = "$2" ] || fail "$3 (absorb class: expected '$2', got '$got')"$'\n'"--- output ---"$'\n'"$1"
+}
+
+# (1) DEAD: the endpoint is still there and confidently holds no agent - the
+# measured shape, a pane left behind by an agent that exited.
+test_parked_gate_with_dead_agent_escalates() {
+  reset_fakes
+  local d; d=$(new_case parked-agent-dead)
+  make_repo_on_branch "$d/wt" fm/feat-cd
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cd.meta" "window=fm:fm-feat-cd" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/feat-cd.status"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-cd)"
+  FM_FAKE_TMUX_AGENT=dead
+  FM_FAKE_TMUX_WINDOW=fm-feat-cd
+  local out; out=$(run_crew_state "$d" feat-cd)
+  assert_contains "$out" "state: blocked" "a gate whose agent died is a stuck validation, not a healthy park"
+  assert_not_contains "$out" "state: parked" "the dead-agent gate must not still read parked"
+  assert_contains "$out" "source: pane" "the endpoint is what answered, and the line must say so"
+  assert_contains "$out" "parked at review" "the gate itself is still reported, not replaced"
+  assert_contains "$out" "2 finding(s)" "the gate keeps its finding count"
+  assert_contains "$out" "holds no agent" "the line names why the gate cannot be answered"
+  assert_absorb_class "$out" none "a stuck gate must surface instead of being absorbed as healthy idle"
+  pass "a parked gate whose agent died escalates instead of reading healthy"
+}
+
+# (1b) MISSING: the same conclusion from the other proof the classifier owns -
+# the session inventory no longer lists the recorded endpoint at all.
+test_parked_gate_with_missing_endpoint_escalates() {
+  reset_fakes
+  local d; d=$(new_case parked-agent-missing)
+  make_repo_on_branch "$d/wt" fm/feat-cm
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cm.meta" "window=fm:fm-feat-cm" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/feat-cm.status"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-cm)"
+  FM_FAKE_TMUX_AGENT=missing
+  local out; out=$(run_crew_state "$d" feat-cm)
+  assert_contains "$out" "state: blocked" "a gate whose endpoint is gone is a stuck validation"
+  assert_contains "$out" "parked at review" "the gate itself is still reported"
+  assert_contains "$out" "is gone" "the line names the vanished endpoint"
+  assert_absorb_class "$out" none "a stuck gate must surface"
+  pass "a parked gate whose endpoint vanished escalates"
+}
+
+# (2) ALIVE: the ordinary healthy park, and the case that decides whether this
+# check is safe to ship. An agent waiting at a gate is IDLE, so a conjunction
+# that asked whether the pane was busy would condemn every one of them.
+test_parked_gate_with_live_agent_stays_parked() {
+  reset_fakes
+  local d; d=$(new_case parked-agent-alive)
+  make_repo_on_branch "$d/wt" fm/feat-ca
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ca.meta" "window=fm:fm-feat-ca" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/feat-ca.status"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-ca)"
+  FM_FAKE_TMUX_AGENT=alive
+  FM_FAKE_TMUX_WINDOW=fm-feat-ca
+  # Idle by design: this agent is waiting at its gate, which is exactly what a
+  # healthy parked worker looks like.
+  FM_FAKE_BUSY=0
+  local out; out=$(run_crew_state "$d" feat-ca)
+  assert_contains "$out" "state: parked" "a gate with its agent still there is healthy"
+  assert_contains "$out" "source: run-step" "a healthy gate is still the run step's reading"
+  assert_contains "$out" "parked at review: 2 finding(s)" "a healthy gate keeps its full detail"
+  assert_not_contains "$out" "state: blocked" "an idle-but-live agent is not a stuck validation"
+  assert_not_contains "$out" "not confirmed" "a confirmed live agent adds no uncertainty clause"
+  assert_absorb_class "$out" parked "a healthy gate stays a healthy idle class"
+  pass "a parked gate with a live agent still reads healthy"
+}
+
+# (3) UNCHECKABLE: the endpoint could not be read. This is NOT case 1. Reading
+# doubt as death would invent a stuck validation on every crew whose endpoint
+# happened to be unreadable, so the gate keeps its reading and the line carries
+# the uncertainty instead.
+test_parked_gate_with_unreadable_endpoint_is_uncertain() {
+  reset_fakes
+  local d; d=$(new_case parked-agent-unreadable)
+  make_repo_on_branch "$d/wt" fm/feat-cu
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cu.meta" "window=fm:fm-feat-cu" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/feat-cu.status"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-cu)"
+  # No FM_FAKE_TMUX_AGENT: the inventory read fails, which the classifier reads
+  # as unreadable rather than as an absent window.
+  local out; out=$(run_crew_state "$d" feat-cu)
+  assert_contains "$out" "state: parked" "an unreadable endpoint leaves the gate's own reading standing"
+  assert_not_contains "$out" "state: blocked" "could-not-check is never reported as death"
+  assert_contains "$out" "parked at review" "the gate is still reported"
+  assert_contains "$out" "not confirmed" "the line says the worker was not confirmed"
+  assert_contains "$out" "not proof of death" "the uncertainty names itself as uncertainty"
+  assert_absorb_class "$out" parked "an unconfirmed worker must not turn a healthy gate into a false wedge"
+  pass "a parked gate with an unreadable endpoint reports uncertainty, not death"
+}
+
+# (3b) UNCHECKABLE, the other way: a backend with no recovery-grade classifier
+# at all. Every crew on such a backend would be a permanent false wedge if doubt
+# counted as death.
+test_parked_gate_on_unverified_backend_is_uncertain() {
+  reset_fakes
+  local d; d=$(new_case parked-agent-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-cv
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cv.meta" "window=fm-cv" "worktree=$d/wt" "kind=ship" "backend=zellij"
+  printf 'needs-decision: review gate\n' > "$d/state/feat-cv.status"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-cv)"
+  local out; out=$(run_crew_state "$d" feat-cv)
+  assert_contains "$out" "state: parked" "a backend that cannot answer leaves the gate standing"
+  assert_not_contains "$out" "state: blocked" "a backend with no probe never proves an agent stopped"
+  assert_contains "$out" "no probe that can prove an agent stopped" "the line names the backend's own limit"
+  assert_absorb_class "$out" parked "an unprobed backend must not turn every gate into a false wedge"
+  pass "a parked gate on a backend with no agent probe reports uncertainty"
 }
 
 test_ci_ready_done_log_beats_monitoring_run() {
@@ -3332,6 +3508,11 @@ test_stale_blocked_superseded
 test_genuine_parked_not_superseded
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
+test_parked_gate_with_dead_agent_escalates
+test_parked_gate_with_missing_endpoint_escalates
+test_parked_gate_with_live_agent_stays_parked
+test_parked_gate_with_unreadable_endpoint_is_uncertain
+test_parked_gate_on_unverified_backend_is_uncertain
 test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done
