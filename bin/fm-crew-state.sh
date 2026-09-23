@@ -34,6 +34,12 @@
 #      by the `outcome:`, `status:` and coarse runs-list readings, so a word
 #      cannot mean one thing on one surface and another on the next. A gate
 #      (awaiting_approval/fix_review) is read here rather than from a word.
+#      A GATE IS A CONJUNCTION, and the only reading in this file that is: the run
+#      is parked AND an agent still exists to answer it. A gate is a question put
+#      to this crew's worker, so a parked run whose worker has died is a stuck
+#      validation and reports `blocked` (see gate_agent_presence). That adds a
+#      question the run step never answered; it does not demote the run step,
+#      which stays authoritative about the RUN everywhere, here included.
 #      EXCEPT: while the active step is ci, `axi status` alone cannot tell "still
 #      waiting on checks" from "checks green, waiting on merge" (see
 #      nm_ci_checks_state) - a ci-step log-tail check overrides working -> done
@@ -44,7 +50,7 @@
 #      that replaced it (both report the submitted head for the whole successor
 #      run - measured, see bin/fm-nm-run-lib.sh's runs-list primitives), so the
 #      runs list arbitrates. ONE predicate owns that whole question -
-#      nm_verdict_standing, below - and every verdict except a parked gate
+#      nm_verdict_standing, below - and every verdict except a gate
 #      reaches the captain only through it; the rule lives THERE, and this
 #      paragraph only describes it. Its three answers: `current` asserts the
 #      verdict as read, `superseded` reports a bound running successor as
@@ -193,6 +199,14 @@ EMIT_ASIDE=""
 # see reconcile_run_verdict below for what it buys.
 RECONCILE_RUN_VERDICT=0
 
+# Whether the run reading is a GATE - a step parked on an answer only this
+# crew's agent can give. It is declared here, beside the other funnel state,
+# because it is what the funnel and the arbitration both key on, and because the
+# gate reading no longer has a single state word to be recognized by: a gate
+# whose agent has died reports `blocked`, and both readings are still the same
+# gate for every rule that used to test `parked`.
+RUN_IS_GATE=0
+
 # Emit the one canonical line and exit 0. Detail is optional.
 #
 # THE funnel. Every verdict this script prints leaves through here, which is why
@@ -298,7 +312,12 @@ LOG_VERB=$(status_line_verb "$LOG_LINE")
 # than a contradiction left visible; a busy pane, which saw work happening but no
 # run; an unreadable or unarbitrated word, which saw a run still running and could
 # not say what it means. None of them may declare the record stale, and none may
-# be replaced by it. A gate agrees with the record and leaves it alone.
+# be replaced by it. A gate agrees with the record and leaves it alone - INCLUDING
+# a gate this read found unanswerable, whose own line already says that the
+# decision on the record has nobody left to answer it. That is why the test is the
+# gate, not the word `parked`: the same reading now reports `blocked` when its
+# agent is gone, and appending "an unresolved needs-decision is still on the
+# record" to a line that just said exactly that would only repeat it.
 reconcile_run_verdict() {  # <state> <source> <detail>
   local state=$1 src=$2 detail=$3 note
   case "$LOG_VERB" in
@@ -306,7 +325,7 @@ reconcile_run_verdict() {  # <state> <source> <detail>
     *) printf '%s\t%s\t%s' "$state" "$src" "$detail"; return 0 ;;
   esac
   note=$(status_line_note "$LOG_LINE")
-  if [ "$state" != parked ]; then
+  if [ "$RUN_IS_GATE" != 1 ]; then
     if [ "$src" = run-step ] && { [ "$state" = working ] \
       || { [ "$state" = 'done' ] && [ "$RUN_IS_TERMINAL" != 1 ]; }; }; then
       detail="$detail${SEP}status-log superseded by active run"
@@ -409,6 +428,48 @@ pane_is_provably_busy() {
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
   case "${BUSY_VERDICT%% *}" in busy) return 0 ;; esac
   return 1
+}
+
+# Does an agent still EXIST at the recorded endpoint? Echoes exactly one of
+# "gone", "present", or "unchecked", followed by a TAB and, for the two answers
+# that owe one, the reason in the reader's terms.
+#
+# This is the second half of the gate conjunction below, and it is a different
+# question from every other endpoint read in this file. It is NOT whether the
+# pane is busy: an agent waiting at a gate is idle by definition, so asking
+# pane_is_provably_busy here would condemn every healthy parked crew. It is NOT
+# pane_readable either, which answers whether the endpoint can be read at all
+# and so cannot tell a live agent from the bare shell one leaves behind when it
+# exits - the exact shape of the 2026-09-13 incident, where the endpoint was
+# perfectly readable and showed an empty console offering to resume the session.
+#
+# bin/fm-backend.sh's fm_backend_agent_state is the one recovery-grade
+# classifier, and this keeps its line between DEATH and DOUBT exactly where that
+# owner draws it: only `dead` and `missing` are proof that an agent stopped, and
+# `ambiguous`, `unreadable`, `unverified`, a backend with no classifier at all,
+# and an unrecorded target are every one of them doubt. That direction is not
+# symmetric. A false `gone` invents a stuck validation on every crew whose
+# backend cannot answer, which is a fleet-wide false alarm; a false `unchecked`
+# leaves one gate reading exactly as it read before this check existed, plus a
+# line saying so.
+gate_agent_presence() {
+  local verdict
+  [ -n "$BACKEND_TARGET" ] || { printf 'unchecked\tno endpoint is recorded for this crew'; return 0; }
+  verdict=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET" 2>/dev/null) || verdict=''
+  case "$verdict" in
+    alive)
+      printf 'present\t' ;;
+    dead)
+      printf 'gone\tits endpoint %s holds no agent' "$BACKEND_TARGET" ;;
+    missing)
+      printf 'gone\tits endpoint %s is gone' "$BACKEND_TARGET" ;;
+    unverified)
+      printf 'unchecked\tthe %s backend has no probe that can prove an agent stopped' "$TASK_BACKEND" ;;
+    ambiguous|unreadable)
+      printf 'unchecked\tthe endpoint %s read %s, which is not proof of death' "$BACKEND_TARGET" "$verdict" ;;
+    *)
+      printf 'unchecked\tthe endpoint %s answered nothing' "$BACKEND_TARGET" ;;
+  esac
 }
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
@@ -873,6 +934,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       fi
       [ -n "$gate" ] || gate=$status
       [ -n "$gate" ] || gate=gate
+      RUN_IS_GATE=1
       RUN_STATE=parked
       RUN_DETAIL="parked at $gate"
       fcount=$(nm_gate_findings_count)
@@ -880,6 +942,45 @@ if [ "$HAVE_RUN" = 1 ]; then
       if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
         RUN_DETAIL="$RUN_DETAIL (ask-user: authority decision)"
       fi
+      # A gate is a question put to THIS crew's agent, so reading it healthy is a
+      # CONJUNCTION and not one fact: the run is parked AND someone is there to
+      # answer it. Measured 2026-09-13, with only the first half read: `parked at
+      # review: 4 findings` stood over an endpoint whose agent had exited hours
+      # earlier, and neither source was lying - the run really was parked, and the
+      # empty console really was offering to resume the session. Only the
+      # combination lied, and it lied in the one direction nothing corrects,
+      # because the sole timer a validation has is 168 hours: the gate waited on
+      # somebody who no longer existed, read healthy while it waited, and would
+      # have kept reading healthy until the week ran out.
+      #
+      # The run step stays the authority on the RUN - that precedence is right
+      # everywhere else and is untouched here. What is added is a second question
+      # the run step was never able to answer, about the WORKER rather than the
+      # run, and only the answer `gone` may change the state.
+      #
+      # It does not become `unknown` when the endpoint cannot be read. `unknown`
+      # is this file's word for "nothing was established", which would throw away
+      # the gate this read DID establish - and a live gate nobody is shown is
+      # orphaned with nothing left to answer it, the same reason the arbitration
+      # below never touches a gate either. Only the unchecked PART degrades, the
+      # way an unresolved pull request degrades its own clause further down: the
+      # gate keeps its reading and the line says the worker was not confirmed.
+      IFS=$'\t' read -r gate_agent gate_agent_reason <<< "$(gate_agent_presence)"
+      case "$gate_agent" in
+        gone)
+          RUN_STATE=blocked
+          # The pane is what answered, and the line has to say so. A `blocked`
+          # that still claimed `run-step` would be attributing to the pipeline a
+          # verdict the pipeline never gave - it reported a perfectly ordinary
+          # gate - and would send whoever reads it to the run for an explanation
+          # that is not there.
+          EMIT_SOURCE=pane
+          RUN_DETAIL="$RUN_DETAIL${SEP}but $gate_agent_reason, so nothing is left to answer this gate"
+          ;;
+        unchecked)
+          RUN_DETAIL="$RUN_DETAIL${SEP}the worker behind it was not confirmed: $gate_agent_reason"
+          ;;
+      esac
     else
       RUN_WORD=$status
       RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
@@ -943,16 +1044,20 @@ if [ "$HAVE_RUN" = 1 ]; then
   # later task, a rewritten tip), the honest answer is `unknown`: what is certain
   # is only that the reported verdict is NOT current.
   #
-  # A run parked at a gate is the one reading this arbitration never touches. A
+  # A gate is the one reading this arbitration never touches. A
   # gate is a live step a human has to answer, and hiding one orphans it with
   # nothing left to answer it, while showing a gate that has just closed costs a
   # single poll and self-corrects. That asymmetry, not convenience, is why the
-  # parked reading keeps its own path.
+  # gate reading keeps its own path - and why the exemption is the GATE rather
+  # than the word `parked`. A gate whose agent has died reports `blocked`, and it
+  # is the same live step needing the same human: letting the arbitration rewrite
+  # it to `working`, `failed`, or `unknown` would bury the one reading that exists
+  # to be seen.
   RUN_TERMINAL_WORD=$(fm_nm_runs_word_for_terminal "$RUN_WORD")
   SUPERSEDED_SUBJECT="the reported run"
   [ "$RUN_IS_TERMINAL" = 1 ] && SUPERSEDED_SUBJECT="the reported terminal run"
   VERDICT_STANDING=current
-  if [ "$RUN_STATE" != parked ]; then
+  if [ "$RUN_IS_GATE" != 1 ]; then
     nm_scan_runs_for_branch "$CREW_BRANCH"
     VERDICT_STANDING=$(nm_verdict_standing "$RUN_TERMINAL_WORD" "$RUN_IS_TERMINAL")
   fi
