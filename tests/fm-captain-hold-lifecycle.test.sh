@@ -688,20 +688,13 @@ test_out_of_band_close_is_recordable() {
   fi
   assert_present "$home/state/$id.meta" "refused teardown removed investigation metadata"
 
-  # This close kept the captain hold, so the call is blocked but not stranded:
-  # --reopen must not resurface a question the captain closed out of band when
-  # answer can still record his words on it.
+  # This close kept the captain hold, so `answer` can still record his words on
+  # the closed row - which is the path this test takes. The mark surviving is
+  # not proof the captain can still SEE the call; test_closed_call_is_stranded
+  # below owns that measurement and the repair it licenses.
   show=$(tasks_in "$home" show sample-submission-call --full)
   assert_contains "$show" "hold_kind: captain" \
-    "setup error: the plain close dropped the captain provenance, so this is the stranded case"
-  if run_captain "$home" hold sample-submission-call --reason "captain submission choice pending" --reopen \
-    > "$home/held-reopen.out" 2> "$home/held-reopen.err"; then
-    fail "--reopen resurfaced a closed call that answer can still repair"
-  fi
-  assert_grep "answer instead" "$home/held-reopen.err" \
-    "the refusal must name answer as the repair for a close that kept the hold"
-  show=$(tasks_in "$home" show sample-submission-call --full)
-  assert_contains "$show" "state: done" "the refused --reopen reopened the call anyway"
+    "setup error: the plain close dropped the captain provenance, so answer cannot repair it here"
 
   printf 'Declined: do not submit the sample full run upstream.\n' > "$home/submission.txt"
   run_captain "$home" answer sample-submission-call --decision-file "$home/submission.txt" >/dev/null \
@@ -737,16 +730,17 @@ test_out_of_band_close_is_recordable() {
   pass "an out-of-band close is recordable with the captain's word and nothing else"
 }
 
-# The sibling of the case above, and the one that had no way out. The close is
-# out of band again, but the captain hold is LIFTED FIRST - `tasks-axi unhold`
-# then `done`, the shape of "this looks settled, drop the hold and close it".
-# tasks-axi keeps the hold annotations through a plain close, so the case above
-# repairs through `answer`; unhold erases the very `hold_kind` that path relies
-# on as its surviving proof. The task is then closed, carries no captain
-# provenance and no recorded answer, and the origin's attested inventory still
-# names it: `complete` and `verify` fail on it forever, `answer` refuses it as
-# ordinary finished work, and `hold` refuses it as closed. The investigation
-# could never be completed and its source could never be cleaned up.
+# The sibling of the case above, where even `answer` has nothing to work with.
+# The close is out of band again, but the captain hold is LIFTED FIRST -
+# `tasks-axi unhold` then `done`, the shape of "this looks settled, drop the
+# hold and close it". tasks-axi keeps the hold annotations through a plain
+# close, so the case above repairs through `answer`; unhold erases the very
+# `hold_kind` that path relies on as its surviving proof. The task is then
+# closed, carries no captain provenance and no recorded answer, and the origin's
+# attested inventory still names it: `complete` and `verify` fail on it forever,
+# `answer` refuses it as ordinary finished work, and `hold` refuses it as
+# closed. The investigation could never be completed and its source could never
+# be cleaned up.
 #
 # The exit reopens the call rather than closing it: `hold --reopen` puts the
 # question back in front of the captain and records no answer at all, which is
@@ -1654,6 +1648,152 @@ EOF
   pass "a captain call with no routed work, a verified transfer, an open decision, and an answered call all stay silent"
 }
 
+# The measured case the old guard called "not stranded": a captain question
+# closed when its investigation ended, with the hold annotations surviving the
+# close. The mark is there and the captain still cannot see the question -
+# Bearings, which is what he reads, omits it - so the guard that read the mark
+# as reach left exactly two exits on a question he had never answered: invent
+# words for him, or leave it buried. Reach is the test now, and the loss is
+# reported instead of waiting for someone to trip over it.
+test_closed_call_with_its_mark_is_still_stranded() {
+  local home call show out drain
+  home=$(make_home closed-but-marked)
+  call=sample-verifier-call
+  run_captain "$home" hold "$call" --title "Which of the four verifier fixes" \
+    --reason "captain verifier choice pending" --repo sample >/dev/null \
+    || fail "could not register the captain call"
+  run_bearings "$home" | jq -e --arg c "$call" '.decisions_open | map(.id) | index($c)' >/dev/null \
+    || fail "setup error: the open call was not on the captain's list to begin with"
+
+  # The close the policy forbids: the investigation ended and took the question
+  # with it. tasks-axi keeps the hold annotations through a plain close.
+  tasks_in "$home" "done" "$call" >/dev/null || fail "could not reproduce the out-of-band close"
+  show=$(tasks_in "$home" show "$call" --full)
+  assert_contains "$show" "state: done" "setup error: the call was not closed"
+  assert_contains "$show" "hold_kind: captain" \
+    "setup error: the mark did not survive the close, so this is the other stranded shape"
+
+  # The measurement the whole repair rests on: the mark survived, the reach did
+  # not. Whatever the record still says about whose item it was, it is on no
+  # list the captain reads.
+  run_bearings "$home" | jq -e --arg c "$call" '.decisions_open | map(.id) | index($c) | not' >/dev/null \
+    || fail "a closed captain call still reached the captain's open decisions"
+
+  # It is reported rather than left to be found by hand.
+  out=$(run_captain "$home" diverged) || fail "diverged failed on the closed captain call"
+  printf '%s\n' "$out" | grep -F "closed-unanswered	$call" >/dev/null \
+    || fail "the closed unanswered call was not reported: $out"
+  drain=$(run_drain "$home") || fail "the drain failed while reporting the closed call"
+  printf '%s\n' "$drain" | grep -F "$call was closed with the captain's question never answered" >/dev/null \
+    || fail "the closed unanswered call never reached the drain: $drain"
+  printf '%s\n' "$drain" | grep -F 'hold <task> --reason <reason> --reopen' >/dev/null \
+    || fail "the drain section does not name the repair for a call he never answered: $drain"
+
+  # And the repair the policy mandates for a stranded call is allowed, with no
+  # answer invented anywhere along it.
+  out=$(run_captain "$home" hold "$call" --reason "captain verifier choice pending" --reopen) \
+    || fail "--reopen refused a captain call the captain cannot see"
+  assert_contains "$out" "reopened: $call" "--reopen did not report what it repaired"
+  show=$(tasks_in "$home" show "$call" --full)
+  assert_contains "$show" "state: queued" "--reopen left the call closed"
+  assert_contains "$show" "held: yes" "--reopen did not put the question back under a hold"
+  assert_not_contains "$show" "Resolution recorded by fm-captain-hold" \
+    "--reopen invented a captain answer"
+  run_bearings "$home" | jq -e --arg c "$call" '.decisions_open | map(.id) | index($c)' >/dev/null \
+    || fail "the reopened call did not come back to the captain's open decisions"
+  out=$(run_captain "$home" diverged) || fail "diverged failed after the repair"
+  [ -z "$out" ] || fail "the repaired call was still reported as diverged: $out"
+  pass "a closed captain call is stranded by reach even when its mark survived, and is reported and reopenable"
+}
+
+# The composer's blind spot: a decision card that closes the question closes the
+# WORK ITEM under it too, so an answer meaning "get on with it" leaves the order
+# in no queue at all. Nothing here reads what the captain meant; the close just
+# states what it did, at the one moment the mode can still be changed.
+test_close_names_what_it_did_to_the_held_work() {
+  local home out show
+  home=$(make_home close-consequence)
+  printf 'escribir-ya\n' > "$home/decision.txt"
+  run_captain "$home" hold sample-governance-call --title "Write it now or keep piloting" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the governance call"
+  out=$(run_captain "$home" answer sample-governance-call --decision-file "$home/decision.txt") \
+    || fail "the answer did not record"
+  assert_contains "$out" "the question and its work item are both closed" \
+    "a close that ended the held work did not say so: $out"
+  assert_contains "$out" "--release" "the close did not name the flag that keeps held work running: $out"
+
+  run_captain "$home" hold sample-governance-call-b --title "The same, composed right" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the released call"
+  out=$(run_captain "$home" answer sample-governance-call-b --decision-file "$home/decision.txt" --release) \
+    || fail "the release did not record"
+  assert_contains "$out" "the held work resumes" "a release did not say the work continues: $out"
+
+  # The close also records which question it consumed, which is what lets a
+  # resurrected hold be told from a new one without reading the captain's words.
+  show=$(tasks_in "$home" show sample-governance-call --full)
+  assert_contains "$show" "Hold annulled: held over the pilot" \
+    "the resolution record did not name the question the answer settled"
+  pass "every close names what it did to the held work and records the question it settled"
+}
+
+# Repairing one loss made another: a raw `tasks-axi reopen` restores the whole
+# pre-close state, hold included, so the card went back to asking a question the
+# captain had already answered. This owner's --reopen refuses an answered call
+# outright, so it cannot produce the shape; what it can do is stop it being
+# silent when something else does.
+test_resurrected_hold_over_an_answered_call_is_signalled() {
+  local home out drain
+  home=$(make_home hold-resurrected)
+  printf 'escribir-ya\n' > "$home/decision.txt"
+  run_captain "$home" hold sample-coop-call --title "Write it now or keep piloting" \
+    --reason "held over the pilot" --repo sample >/dev/null \
+    || fail "could not register the cooperative call"
+  run_captain "$home" answer sample-coop-call --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not record the captain answer"
+
+  # The sanctioned repair refuses this shape rather than resurfacing it.
+  if run_captain "$home" hold sample-coop-call --reason "held over the pilot" --reopen \
+    > "$home/answered-reopen.out" 2> "$home/answered-reopen.err"; then
+    fail "--reopen resurfaced a call the captain had already answered"
+  fi
+  assert_grep "already records a captain answer" "$home/answered-reopen.err" \
+    "the refusal must name the recorded answer"
+
+  # What actually happened: the raw backlog command, which knows nothing about
+  # captain calls, put the annulled question back up.
+  tasks_in "$home" reopen sample-coop-call >/dev/null || fail "could not reproduce the raw reopen"
+  tasks_in "$home" show sample-coop-call --full | grep -E '^  hold_reason: held over the pilot' >/dev/null \
+    || fail "setup error: the raw reopen did not restore the annulled hold"
+
+  out=$(run_captain "$home" diverged) || fail "diverged failed on the resurrected hold"
+  printf '%s\n' "$out" | grep -F 'hold-resurrected	sample-coop-call' >/dev/null \
+    || fail "the resurrected hold was not reported: $out"
+  drain=$(run_drain "$home") || fail "the drain failed while reporting the resurrected hold"
+  printf '%s\n' "$drain" | grep -F 'sample-coop-call is held for the captain over a question its own record says he already answered' >/dev/null \
+    || fail "the resurrected hold never reached the drain: $drain"
+
+  # A task re-held for a genuinely NEW question is not a resurrection, and
+  # neither is a record written before the annulled question was stored. Drive
+  # both apart from the real case so the signal is not just "held and answered".
+  tasks_in "$home" hold sample-coop-call --reason "a different question entirely" --kind captain >/dev/null \
+    || fail "could not re-hold the call for a new question"
+  tasks_in "$home" add sample-legacy-call "A record written before this line existed" --repo sample >/dev/null \
+    || fail "could not create the legacy-record fixture"
+  tasks_in "$home" update sample-legacy-call --body 'Resolution recorded by fm-captain-hold.
+Decision digest: 0000
+Resolution mode: answered
+
+Captain decision:
+whatever he said' >/dev/null || fail "could not write the legacy resolution record"
+  tasks_in "$home" hold sample-legacy-call --reason "an old question" --kind captain >/dev/null \
+    || fail "could not hold the legacy-record fixture"
+  out=$(run_captain "$home" diverged) || fail "diverged failed on the non-resurrection shapes"
+  [ -z "$out" ] || fail "a new question or a legacy record was reported as a resurrection: $out"
+  pass "a hold resurrected over an answered question is signalled, and a new question is not"
+}
+
 # Seed one origin investigation with the metadata, status log, and report the
 # completion gate reads, and report the home.
 seed_review_home() {  # <name> <origin-id>
@@ -1847,6 +1987,9 @@ test_chat_channel_feeds_the_same_keyed_answer_intake
 test_origin_slug_validation_precedes_path_construction
 test_status_resolution_over_an_open_hold_is_signalled
 test_legitimate_holds_produce_no_divergence_signal
+test_closed_call_with_its_mark_is_still_stranded
+test_close_names_what_it_did_to_the_held_work
+test_resurrected_hold_over_an_answered_call_is_signalled
 test_pruned_answer_still_proves_the_captains_call
 test_pruned_inventory_still_blocks_an_unanswered_call
 test_blank_inventory_entry_refuses_and_is_repairable
