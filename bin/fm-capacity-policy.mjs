@@ -219,7 +219,13 @@ const AUTH_REASON_FAULTS = new Set(["credentials_expired"]);
 // lanes dispatchable" with the alarm firing, and one ordinary prompt took it
 // back to silence. The lane was there the whole time.
 //
-// quota-axi 0.1.42 emits this status from grok, codex, and pi-codex-credential.
+// quota-axi 0.1.42 emits this status only from grok. codex and
+// pi-codex-credential surface a DIFFERENT slug, `credentials_expired_refreshable`,
+// in fields this policy never reads (codex.js:302 inside a redacted
+// `attempts[].error`; pi-codex-credential.js:27 inside `inspect()`), so in
+// practice this softening reaches only grok today. The earlier three-provider
+// claim was a grep error: the substring `expired_refreshable` also matches
+// inside `credentials_expired_refreshable`.
 const AUTH_RENEWABLE_STATUSES = new Set(["expired_refreshable"]);
 
 // One REQUEST was rejected, which is not a verdict about the stored credential.
@@ -247,6 +253,39 @@ const AUTH_RENEWABLE_STATUSES = new Set(["expired_refreshable"]);
 // without ever reaching the network, and a missing one as
 // `kimi_code_cli_credential_unavailable`. Neither is in this set. Only the lane
 // that was measured to come back on its own stops being counted lost.
+//
+// THE BLIND SPOT, WRITTEN WITHOUT SOFTENING. That detection covers only the
+// LOCAL logout that writes its tombstone to disk. A revocation from the SERVER
+// writes nothing on disk, this guard reads it as not measured, and it will NOT
+// ask the captain to sign in again. It is not established whether any signal in
+// the instrument's output distinguishes a server-side revocation from a
+// renewable expiry; neither kimi nor grok has been measured either way, and
+// neither may be assumed. Both providers in these two sets carry the blind spot:
+//
+//   - kimi reaches it through the rejection set above, the
+//     `kimi:provider_auth_rejected` key. quota-axi forwards the bearer (valid
+//     and expired alike) and the provider's 401/403 is the only negative auth
+//     answer; nothing in that answer separates a revoked token from a merely
+//     expired one.
+//   - grok reaches it through the status set above, `expired_refreshable`.
+//     grok.js classifies that when nothing is usable but a refreshable candidate
+//     exists, and refreshable is purely LOCAL: grok.js:992 defines it as
+//     `candidate.hasRefreshToken`, and the local state is `expiresAt` compared
+//     against the clock. Neither consults the server, and `cliUsable` requires
+//     an outcome other than `rejected`, so a server rejection lands exactly in
+//     this branch. A grok credential revoked server-side, with its refresh token
+//     still on disk and its access token expired locally, also reads as not
+//     measured instead of asking for a signature. Written even though grok is
+//     not installed on this machine today: install it tomorrow and the blind
+//     spot is real there too.
+//   - zai and opencode-go are NOT affected: they sit in neither set, keep asking
+//     for a signature as before, and a test pins exactly that.
+//
+// Future lead for the ticket fm-senal-revocacion-vs-vencimiento, noted but NOT
+// delivered here: quota-axi makes the same confusion and knows it. grok.js:259
+// detects refreshable AND rejected together to fire its refresh delegate, so
+// upstream also does not distinguish revocation from expiry and its remedy is to
+// TRY the refresh and see what happens. That is the better exit.
 const AUTH_RENEWABLE_REJECTIONS = new Set(["kimi:provider_auth_rejected"]);
 
 // Not a fault, and deliberately not in the set above. These say quota-axi could
