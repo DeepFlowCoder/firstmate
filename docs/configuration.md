@@ -257,11 +257,11 @@ Because the margin is how long a validation takes, the warning starts exactly wh
 The drain rate is averaged over at least one whole margin of readings and at most two, because a prepaid balance is spent in bursts and a rate taken across the last few minutes would read as empty-by-lunchtime every time a validation started.
 Until that much history exists the guard says the runway is not measured rather than projecting from too little, and an unmeasured runway never fires on its own.
 What it counts as consumption is the sum of the downward moves across that window: the balance going up contributes nothing and resets nothing, so neither the provider's own rounding nor a recharge can erase a measurement or delay one.
-That rate is measured up to the last reading where the balance actually moved.
-Once a warning has been raised it is **anchored** to the drain that raised it: that stored drain is frozen, and the warning is retired when the balance the account holds now, measured against it, buys back more than one validation.
-**Nothing else retires it** - not an idle night, not a further drain, not a poll the watcher missed, not the reading history ageing out, and not a cent of the provider's own rounding, whichever way it moves.
+Once a warning has been raised, the drain that raised it is **remembered** and stays in evidence: the guard keeps projecting from whichever drain is the more urgent, the remembered one or whatever the current window measures.
+The warning is retired only when the balance the account holds now buys back more than one validation **against both**.
+So **nothing softens a standing warning** - not an idle night, not a further drain, not a poll the watcher missed, not the reading history ageing out, and not a cent of the provider's own rounding, whichever way it moves.
 A top-up too small to buy back a validation does not clear it either, because such a top-up leaves the account exactly as unable to finish a run as it was.
-A later measurement can still make a standing warning more urgent; it can never soften one, and it can never be what ends one.
+A later measurement can still make a standing warning more urgent - if the fleet starts burning faster than it was when the alarm rang, the guard says so at once.
 
 An amount of zero is read as a spent balance only once the account has been seen holding something, because a field that has only ever reported zero is not a purse that ran out.
 Some providers report a permanent zero credits figure on a perfectly healthy account, and treating that as a spent balance would arm a warning that fired on every poll forever.

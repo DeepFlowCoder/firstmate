@@ -1061,6 +1061,71 @@ for cent in 19.01 18.99; do
 done
 pass "a cent at the end of an idle stretch leaves the warning anchored where it stands"
 
+# A STANDING WARNING MUST NEVER MAKE THE GUARD QUIETER THAN NO WARNING AT ALL.
+#
+# The remembered drain is evidence, not a ceiling. When the fleet starts burning
+# FASTER than it was when the alarm rang, the fresh measurement is the urgent
+# one, and answering from the remembered drain alone reported an all-clear on a
+# balance the guard had just measured as having thirty-seven minutes left - and
+# deleted the drain on the way out, so the state went with it.
+#
+# The sequence is ordinary for a prepaid account and needs nothing exotic: the
+# warning fires, the captain keeps the fleet going with small top-ups while it
+# burns far harder than it was when the alarm rang, and then tops up once to a
+# figure the old, slower drain calls comfortable. A remembered drain cannot
+# learn about that acceleration on its own, so it has to be checked against the
+# measurement rather than trusted instead of it.
+home=$(fresh_home balance-accelerated-burn)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 19.00 true
+run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check >/dev/null
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "21 units an hour with 19 left is less than one validation"
+# Small top-ups and a much harder burn, every reading still under the 21 that one
+# validation cost when the alarm rang, so the warning rightly stands throughout.
+at=1004500
+for amount in 20.00 1.00 20.00 1.00 20.00 1.00; do
+  balance_body "$home/bal-step.json" "$amount" true
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+  at=$((at + 900))
+done
+# Now a top-up to 30: comfortable at the remembered drain, barely an hour at the
+# one the fleet is actually burning at. Answering from the remembered drain alone
+# printed an all-clear here and deleted the drain on its way out.
+balance_body "$home/bal-topup.json" 30.00 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-topup.json" "$at" report)
+assert_contains "$out" "balance runs out in" "a faster burn must be believed, whatever the remembered drain says"
+assert_present "$home/state/.balance-warning" "the more urgent drain must be carried forward, not discarded"
+pass "fresh evidence sharpens a standing warning instead of retiring it"
+
+# A HARD BURST SHORTER THAN ONE MARGIN, THEN IDLE, MUST STILL BE PROJECTED.
+#
+# This is the fleet's ordinary rhythm: the captain dispatches, the balance falls
+# hard inside the first hour, the runs finish, the fleet goes quiet. While the
+# measuring window ended at the last reading where the balance moved, the span
+# froze the moment the burn stopped, so it never reached the margin's worth of
+# readings the guard needs before it will project - and the account sat at a
+# twelfth of its morning balance in silence until it hit zero, which is the
+# forensic report after the fact this whole guard exists to replace.
+home=$(fresh_home balance-burst-then-idle)
+snapshot "$home/snap.json" "$(healthy_provider claude 80)" "$(healthy_provider codex 60)"
+at=1000000
+for amount in 25.00 22.00 19.00 16.00 13.00 10.00 7.00 4.00 2.00; do
+  balance_body "$home/bal-step.json" "$amount" true
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+  at=$((at + 300))
+done
+# The burn is over in forty minutes, well inside one margin. Now the fleet idles,
+# polling the same untouched amount, and the window keeps growing.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" check >/dev/null
+  at=$((at + 300))
+done
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-step.json" "$at" report)
+assert_contains "$out" "balance runs out in" "a burst shorter than one margin must still be projected once the readings reach one"
+pass "a hard burst followed by idle is warned about rather than left unmeasurable"
+
 # THE BALANCE GOING UP MUST NOT BE ABLE TO KEEP THE GUARD FROM EVER SPEAKING.
 #
 # The case above protects a warning already raised. This one protects the first

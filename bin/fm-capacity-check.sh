@@ -591,18 +591,16 @@ take_balance_reading() {  # <action>
 # The standing balance warning: the measured drain that raised it, as seconds of
 # runway per unit of balance, or nothing.
 #
-# IT IS THE RATE THAT IS REMEMBERED, NOT THE VERDICT, and once a warning stands
-# that rate is FROZEN. The condition this guard warns on is
-# `balance / drain < margin`; remembering the drain lets the guard ask, at every
-# poll, whether the balance the account holds NOW has risen far enough to buy
-# back a validation at the rate that raised the alarm. That is the warning's one
-# exit, and a later measurement cannot reach it.
+# IT IS THE RATE THAT IS REMEMBERED, NOT THE VERDICT. The condition this guard
+# warns on is `balance / drain < margin`; remembering the drain lets the guard
+# ask, at every poll, whether the balance the account holds NOW has risen far
+# enough to buy back a validation at the rate that raised the alarm.
 #
-# Freezing it is the point. While the clearing decision was re-derived from a
-# freshly measured rate, anything that reshaped the measuring window could retire
-# a warning by accident - and six different inputs did, ending with a single cent
-# of provider movement at the end of an idle stretch, which spread the drain
-# across the idle hours and read as a recovery on an account with minutes left.
+# This rate never expires. It stays in evidence beside whatever the current
+# window measures, and the policy projects from whichever of the two is the more
+# urgent - so no reshaping of that window can retire a warning, and a drain that
+# has got WORSE since the alarm is believed immediately rather than being held
+# back to the rate that happened to raise it.
 #
 # A frozen VERDICT would be wrong in the other direction, which is why this holds
 # a rate and not a runway: a rate re-applied to the current balance answers a
