@@ -38,7 +38,11 @@ Three properties follow and are load-bearing for dispatch:
 - A named-model window can be tighter than the account bound, so it must not be read across models. In the same snapshot Claude reported `all_models` with `effectivePercentRemaining` 10 while `model:fable` reported 4, limited by the `model:fable` window itself. A non-Fable Claude model reads 10, not 4.
 
 `quotaSemantics.status` is `unknown` with no `effectiveAvailability` entries at all for providers whose vendor exposes no window (observed for `cursor` and `copilot`).
-`state.authStatus` is present only for some providers (observed for `grok` alone), so its absence is missing evidence, not a credential fault.
+`state.authStatus` facts are recorded in two evidence classes, never conflated.
+Observed in output (quota-axi 0.1.42, 2026-09-23): among `auth_required` providers only `grok` emitted `authStatus`, with `unusable`; `kimi`, `zai`, `opencode-go`, and `copilot` were `auth_required` with no `authStatus`, `claude` and `codex` were `known` or `fresh` with no credential fault, `cursor` was `exhausted_now`, and `agy` and `alibaba` were `unavailable`.
+That first-hand reading confirms an absent `authStatus` is missing evidence, not a proven credential fault.
+Read in source (quota-axi 0.1.42, `/opt/homebrew/lib/node_modules/quota-axi/dist/src/providers/`): the provider code contemplates emitting `authStatus: "expired_refreshable"` from `grok`, `codex`, and `pi-codex-credential`, and `state.error: "provider_auth_rejected"` from `kimi`, `zai`, and `opencode-go`.
+The 2026-09-23 output reproduced neither value for any provider, so those two are recorded as emissions the code contemplates, not as observed output.
 
 ## Completion-runway and selection shape the judgment depends on
 
@@ -205,7 +209,7 @@ These are the verified structural facts that classification rests on:
 - A provider-level `credits` object appears only for `codex` (`{"remaining":0,"unlimited":false,"unit":"credits"}`) and reads the same zero while that provider's weekly window is at 84%, matching the Grok note above on a healthy account.
   `credits.remaining: 0` is therefore never headroom and never evidence of a spent balance.
 - A spent time window is `percentRemaining: 0` with a `resetsAt`.
-  The producer's auth signals are `state.status === "auth_required"`, `state.authStatus` of `unusable` or `expired_refreshable`, `state.reason` slugs in the policy's `AUTH_REASON_FAULTS` or `AUTH_UNREAD_REASONS` sets, and per-provider `state.error` slugs such as `provider_auth_rejected`.
+  The producer's auth-signal fields are `state.status`, `state.authStatus`, `state.reason`, and per-provider `state.error`; the "Quota granularity" section above owns which of their values are observed in output and which are read in the 0.1.42 source.
   Which of those the capacity policy reads as a fault, as renewable, or as an unread store is owned by the policy's header; the load-bearing producer fact is that an `AUTH_UNREAD_REASONS` reason reports quota-axi could not open the credential store rather than that it examined the credential and found it unusable, and the capacity guard runs `quota-axi --json` without `--allow-keychain-prompt`, so a store it cannot read is its ordinary reading rather than an exception.
 - quota-axi 0.1.29 exposes no signal that separates "balance exhausted (recharge)" from a spent allowance with no reset reported, so the capacity policy reports that shape as `exhausted` rather than guessing `balance`.
 
