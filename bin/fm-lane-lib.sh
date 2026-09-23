@@ -232,20 +232,19 @@ fm_lane_binding_decision() {
 
 # --- the accepted prose extensions ------------------------------------------
 
-# THE SINGLE OWNER of the extensions this policy accepts as prose markup. Two
-# places read it: the docs-only name test in bin/fm-lane.sh, and the AUTHORS
-# exception to the *auth* glob below.
+# THE SINGLE OWNER of the extensions this policy accepts as prose markup. The
+# docs-only name test in bin/fm-lane.sh reads it, and nothing else does or
+# should: every other rule that once consulted it now names what it means
+# irrespective of extension, which is why none of them can fall behind this list.
 #
-# It is a function rather than two matching case patterns because of what the
-# second copy cost. The exception was first written as three hand-listed
-# basenames while the name test accepted four extensions, so AUTHORS.rst and
-# AUTHORS.adoc were prose by this policy's own list and were still recorded
-# under the authentication surface - the exact defect the commit that added the
-# exception said it closed.
+# It stays a function rather than a case pattern inlined at its one reader
+# because the list is POLICY and this file owns the policy. Whoever extends it
+# extends the docs-only class and nothing else.
 #
 # EVERY TIME A LIST THAT ALREADY EXISTS SOMEWHERE IS WRITTEN OUT BY HAND, IT
 # CREATES A SECOND OWNER, AND THE SECOND OWNER FALLS BEHIND THE DAY SOMEONE
-# EXTENDS THE FIRST. If there is a list, DERIVE FROM IT; do not copy it.
+# EXTENDS THE FIRST. If there is a list, DERIVE FROM IT; do not copy it - and
+# better still, write the rule so it needs no list at all.
 fm_lane_prose_extensions() {
   printf '%s\n' md markdown rst adoc
 }
@@ -370,20 +369,25 @@ fm_lane_catalog() {
 # AUTHORS, so a contributors list was recorded as an AUTHENTICATION surface. It
 # leaked toward the safe side here - one unnecessary expensive review - but it
 # leaked, and a record that names the wrong surface does not measure, it
-# decorates. Exactly ONE NAME is excepted, in the spellings this policy already
-# accepts as prose, and nothing broader: oauth, authn, authz, auth/ and
-# user_auth.py all still match, so the security surface itself is unchanged.
-# Keeping AUTHORS on the expensive lane is a separate statement, made by NAME
-# where it belongs: this repository declares it under governing-docs in
-# .fm-critical-surfaces, which is what it truthfully is.
+# decorates. Exactly ONE NAME is excepted, irrespective of extension, and
+# nothing broader: oauth, authn, authz, auth/ and user_auth.py all still match,
+# so the security surface itself is unchanged.
+#
+# The extension is not consulted because the alternative was a seam. While this
+# derived the accepted prose extensions and the catalog data named AUTHORS
+# without them, the two disagreed about every other spelling: AUTHORS.org was
+# recorded under authentication AND governing-docs at once, one of the two false,
+# and a row that refutes itself does not measure. Naming the same thing on both
+# sides leaves nothing to drift.
+#
+# AUTHORS.py escaping this glob is not a weakening. Nothing about that path was
+# ever authentication, and a project that means to hold it expensive does what
+# this repository does: names it, under governing-docs in .fm-critical-surfaces,
+# irrespective of extension - which is what it truthfully is.
 fm_lane_authors_spelling() {
-  local base=$1 ext
-  case "$base" in
-    authors|authors.txt) return 0 ;;
+  case "$1" in
+    authors|authors.*) return 0 ;;
   esac
-  for ext in $(fm_lane_prose_extensions); do
-    [ "$base" != "authors.$ext" ] || return 0
-  done
   return 1
 }
 

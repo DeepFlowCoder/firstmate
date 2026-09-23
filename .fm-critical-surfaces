@@ -64,38 +64,74 @@ bin/fm-promote.sh routing-policy
 # there is imposed silently on every project, while declaring it here raises
 # this house's rigor, stays visible, and decides for nobody else.
 # AGENTS.md is already a built-in routing-policy surface; do not repeat it.
-CONTRIBUTING.md governing-docs
-*/CONTRIBUTING.md governing-docs
-CLAUDE.md governing-docs
-*/CLAUDE.md governing-docs
-SKILL.md governing-docs
-*/SKILL.md governing-docs
+#
+# NAME THE ROLE, NOT THE SPELLING. A file is not an instruction because it ends
+# in .md; it is an instruction because something LOADS IT AS ONE. Every entry
+# below names the document and lets the extension follow, so no entry here can
+# fall behind the prose extensions bin/fm-lane-lib.sh accepts. Naming only the
+# .md spelling was a live hole, not a latent one: .rst and .adoc are accepted
+# prose today, so CONTRIBUTING.rst and CLAUDE.rst reached the CHEAP lane.
+CONTRIBUTING governing-docs
+CONTRIBUTING.* governing-docs
+*/CONTRIBUTING governing-docs
+*/CONTRIBUTING.* governing-docs
+CLAUDE governing-docs
+CLAUDE.* governing-docs
+*/CLAUDE governing-docs
+*/CLAUDE.* governing-docs
+SKILL governing-docs
+SKILL.* governing-docs
+*/SKILL governing-docs
+*/SKILL.* governing-docs
+
+# The instruction material a skill LOADS, named by the role it plays rather than
+# by which extension a file happens to carry. A skill's instructions are its
+# SKILL.md above, everything under its references/, and any agent definition it
+# ships that supplies a prompt. Naming the locations means a reference file added
+# tomorrow is covered the day it lands, with nothing to keep in step.
+#
+# THOSE FILES ARE THE FLEET'S BEHAVIOUR. A change there does not break one task -
+# it changes how every future session acts. Of everything this policy routes, it
+# is the least able to go cheap, and naming SKILL.md alone left all of it on the
+# cheap route: a reference document changes agent behaviour exactly as its
+# SKILL.md does.
+#
+# Measured against the tree rather than carried over from a report: 21 SKILL.md
+# files, 12 files under references/, and 1 agent definition
+# (.agents/skills/firstmate-codexapp/agents/openai.yaml, which carries a
+# default_prompt), so 34 tracked instruction files, of which the 13 that are not
+# SKILL.md previously kept the cheap route. One tracked file under a skill is
+# deliberately NOT covered: .agents/skills/bearings/assets/board-template.html is
+# a rendered output template, not instruction - it is what a skill PRODUCES, not
+# what an agent is told.
+skills/*/references/* governing-docs
+*/skills/*/references/* governing-docs
+skills/*/agents/* governing-docs
+*/skills/*/agents/* governing-docs
 
 # AUTHORS is here under its truthful label. It used to reach the expensive lane
 # by accident, through the portable *auth* glob, which recorded a contributors
-# list as an AUTHENTICATION surface; that glob no longer claims AUTHORS in the
-# spellings the prose rule accepts, so the routing is now stated rather than
-# inherited from a coincidence of letters. AUTHORS is project governance and
-# attribution: who speaks for this house, and to whom the work is credited.
+# list as an AUTHENTICATION surface; that glob no longer claims AUTHORS in any
+# spelling, so the routing is now stated rather than inherited from a coincidence
+# of letters. AUTHORS is project governance and attribution: who speaks for this
+# house, and to whom the work is credited.
 #
-# The entries name AUTHORS irrespective of its extension, and this is the one
-# place in this delivery where a coupling cannot be removed: this file is data a
-# glob matcher reads, so it cannot derive the accepted prose extensions from
-# fm_lane_prose_extensions in bin/fm-lane-lib.sh the way the code does.
+# These entries and the exception in fm_lane_critical_hits both name AUTHORS
+# irrespective of extension, so THERE IS NO SEAM BETWEEN THEM LEFT TO DRIFT.
+# Both once derived from the accepted prose extensions, which meant the two could
+# disagree about a spelling: while the data side enumerated one line per
+# extension, adding a single extension in code made AUTHORS.<ext> escape the
+# *auth* glob automatically with no line here to hold it expensive, and a
+# governance document landed on the CHEAP lane. While only the code side derived,
+# AUTHORS.org was routed correctly but recorded under BOTH surfaces, one of them
+# false.
 #
 # WHEN TWO THINGS MUST BE COUPLED AND THE COUPLING CANNOT BE AVOIDED, IT MUST
 # FAIL CLOSED. If they fall out of sync, the result must be MORE expensive, never
 # cheaper. A coupling that cheapens when it breaks is a trap with a date on it:
 # it will be sprung by someone doing something perfectly reasonable in another
-# file, and it will lower rigor silently when it is.
-#
-# These entries used to enumerate one spelling per accepted prose extension, and
-# that copy failed OPEN. Adding a single extension to the prose list - a
-# perfectly reasonable edit two files away - makes AUTHORS.<ext> prose and
-# excepts it from the *auth* glob automatically, while no line here covers it, so
-# a governance document lands on the CHEAP lane. Naming the extension with a glob
-# cannot narrow anything: an unforeseen spelling routes EXPENSIVE, which costs
-# one review, and no future edit to the prose list can take that away.
+# file, and it will lower rigor silently when it is. The strongest form of that
+# rule is the one used here: not having the seam at all.
 AUTHORS governing-docs
 */AUTHORS governing-docs
 AUTHORS.* governing-docs

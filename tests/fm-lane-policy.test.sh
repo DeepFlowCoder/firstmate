@@ -1049,6 +1049,45 @@ test_documents_that_govern_an_agent_are_not_ordinary_documentation() {
   assert_contains "$out" "critical-surfaces: governing-docs" \
     "a nested SKILL.md was not caught as a governing document"
 
+  # The role, not the spelling. A governing document is one whatever extension it
+  # carries, and the prose rule accepts .rst and .adoc today, so naming only the
+  # .md spelling was a live cheap route rather than a latent one.
+  n=0
+  for name in CONTRIBUTING.rst CLAUDE.adoc SKILL.markdown docs/CONTRIBUTING.rst; do
+    n=$((n + 1))
+    out=$(run_lane "$home" decide gov-spell$n --project firstmate --repo "$ROOT" \
+      --paths "$name" --class docs-only)
+    assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+      "$name reached the cheap lane because of how it is spelled"
+    assert_contains "$out" "critical-surfaces: governing-docs" \
+      "$name was not caught as the governing document it is"
+  done
+
+  # The instruction material a skill LOADS is covered by role, so a reference
+  # document or an agent definition is a governing document exactly as the
+  # SKILL.md beside it is. Those files are the fleet's behaviour.
+  n=0
+  for name in .agents/skills/harness-adapters/references/common/dispatch.md \
+    .agents/skills/harness-adapters/references/harness/claude.md \
+    .agents/skills/firstmate-codexapp/agents/openai.yaml \
+    skills/no-mistakes/references/anything.rst
+  do
+    n=$((n + 1))
+    out=$(run_lane "$home" decide gov-role$n --project firstmate --repo "$ROOT" \
+      --paths "$name" --class docs-only)
+    assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+      "$name kept the cheap route although a skill loads it as instructions"
+    assert_contains "$out" "critical-surfaces: governing-docs" \
+      "$name was not caught as the instruction material it is"
+  done
+
+  # The boundary, which is what keeps the role narrow: what a skill PRODUCES is
+  # not what an agent is told, so a rendered output template is not covered.
+  out=$(run_lane "$home" decide gov-asset1 --project firstmate --repo "$ROOT" \
+    --paths .agents/skills/bearings/assets/board-template.html)
+  assert_contains "$out" "critical-surfaces: -" \
+    "a skill's rendered output template was swept in as instruction material"
+
   # The control, which is what keeps the surface narrow: a document that only
   # describes still reaches the cheap lane, in a project that declares no
   # governing documents of its own.
@@ -1102,21 +1141,23 @@ test_authors_is_a_governing_document_not_an_authentication_surface() {
       "$name is still recorded as an authentication surface"
   done
 
-  # THE COUPLING FAILS CLOSED, which is the point of naming the extension with a
-  # glob rather than enumerating the accepted ones. These spellings are NOT in
-  # the prose-extension list, so this house still declares them governing-docs
-  # without consulting that list at all. The day one of them is added to it, the
-  # *auth* glob steps aside for that spelling and this entry is the whole reason
-  # AUTHORS stays expensive; while the entries were enumerated, nothing did, and
-  # a governance document would have landed on the cheap lane.
+  # THERE IS NO SEAM LEFT, which is the point of naming AUTHORS irrespective of
+  # extension on BOTH sides. These spellings are not in the prose-extension list,
+  # and both properties still hold for them: held expensive by this house, and
+  # recorded under the one surface that is true of them. While only the code side
+  # derived from that list, these rows carried authentication AND governing-docs
+  # at once, one of the two false; while only the data side enumerated, a new
+  # prose extension would have dropped them onto the cheap lane.
   for name in AUTHORS.org AUTHORS.textile docs/AUTHORS.tex; do
     n=$((n + 1))
     out=$(run_lane "$home" decide authors-a$n --project firstmate --repo "$ROOT" \
       --paths "$name" --class docs-only)
     assert_contains "$(first_line "$out")" "lane=no-mistakes" \
       "$name reached the cheap lane"
-    assert_contains "$out" "governing-docs" \
+    assert_contains "$out" "critical-surfaces: governing-docs" \
       "$name is not held expensive by this house independently of the prose list"
+    assert_not_contains "$out" "authentication" \
+      "$name is still recorded under a surface that is not true of it"
   done
 
   # The exception is one name and nothing wider: everything else the glob
