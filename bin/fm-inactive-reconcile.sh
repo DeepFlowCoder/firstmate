@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# fm-inactive-reconcile.sh - bounded reconciliation of suspicious inactive terminal outcomes.
+# fm-inactive-reconcile.sh - bounded reconciliation of suspicious inactive
+# crewmates: their terminal outcomes, and the wake owed for a validation a time
+# cap cut off, which reaches no outcome to reconcile.
 #
 # Usage:
 #   fm-inactive-reconcile.sh scan [--startup]
