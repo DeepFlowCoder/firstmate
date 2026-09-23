@@ -117,7 +117,7 @@ first_line() { printf '%s\n' "$1" | head -n 1; }
 # field fails to parse as k=v. A reader that stops after step one gets a path
 # whose backslashes are still doubled, which is the defect this pins.
 recorded_repo_of() {  # <log> <task-id>
-  local log=$1 task=$2 field protected kv value= kvs=()
+  local log=$1 task=$2 field protected kv value='' kvs=()
   field=$(awk -F'\t' -v t="$task" '$3==t { print $10 }' "$log")
 
   field=${field//\\\\/$'\002'}
