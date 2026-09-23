@@ -499,3 +499,99 @@ fm_nm_failure_cause_detail() {  # <run-error-text>
     printf 'the provider balance ran out, so no validation can run until it is recharged'
   fi
 }
+
+# --- the cap cut: a run that ENDED without ever judging the work -------------
+#
+# THE WORD `failed` SPENT ON TWO OPPOSITE THINGS. A run whose review or test
+# agent is killed by that step's own time cap is recorded `failed`, exactly like
+# a run whose reviewer read the code and rejected it. They are opposite states:
+# one says there is work to redo, the other says the work is still unjudged. The
+# reader of the bare word hears the first, so a cut reviewer is reported as bad
+# code and stays reported that way for as long as the record answers.
+#
+# MEASURED 2026-09-23 against the real store (~/.no-mistakes/state.sqlite), and
+# this is not a rare shape: of the 55 runs recorded `failed`, 14 carry a cap cut
+# in their own `error:` text - a quarter of every failure this fleet has ever
+# recorded. The two exact wordings, transcribed:
+#
+#   step test failed: agent run tests timed out after 30m0s: agent last produced
+#   output 13s ago (104 observed); agent reported: claude exited: signal: killed
+#
+#   step review failed: agent fix reached its absolute wall-clock limit after
+#   30m0s: agent last produced output 647ms ago (128 observed); agent reported:
+#   claude parse events: context deadline exceeded
+#
+# Both say the same thing twice over: the agent was producing output seconds
+# before it died, and what ended it was the clock. Nothing in either payload is
+# a statement about the code.
+#
+# THE HOUSE ALREADY DRAWS THIS LINE, and this follows it rather than opening a
+# seventh way of drawing it. fm_nm_verdict_state maps `cancelled` to `unknown`
+# because an abort produced no verdict; fm_nm_call_answered refuses to call an
+# unconfirmed request a failed one; bin/fm-capacity-policy.mjs reads an
+# unmeasurable lane as disclosed uncertainty rather than a lost one. Unmeasurable
+# evidence is uncertainty, never a fault. A cap cut is that same third state,
+# arrived at from the failure side.
+#
+# WHAT IT IS NOT IS BENIGN, and over-correcting here is the worse mistake. A cut
+# is not an abort a worker chose and has already moved past: nobody chose it, the
+# branch has never been reviewed, and the one action it demands is to validate
+# again. So the reading it produces still stands and still asks to be looked at -
+# what changes is WHICH action it asks for, redo the code or redo the validation,
+# not whether one is needed. bin/fm-crew-state.sh owns that consequence: a cap cut
+# reports `unknown` and is deliberately NOT routed to the verdictless fall-through
+# a cancellation takes, because falling through to a busy pane would report the
+# crew as working while its validation lies dead.
+#
+# WHETHER THE LABEL SHOULD OUTLIVE ITS RUN. It should, and giving it a clock
+# would be the wrong repair. Until a successor run exists, the last run IS the
+# newest thing known about the branch, and bin/fm-crew-state.sh's arbitration
+# already withdraws the reading the moment a newer run supersedes it. An expiry
+# would only swap a wrong reading for no reading at a time nobody chose. What
+# must not outlive the run is the CLAIM the word smuggles - and once the cut
+# reports as an absent verdict, what survives is true for as long as it stands:
+# nothing has judged this code, and it still needs validating.
+#
+# EVERY CLAUSE POINTS AT THE OBSERVATION THAT JUSTIFIES IT, and one that cannot
+# is a speculation sitting inside a detector:
+#   agent ... timed out after <dur>          the first payload above, verbatim
+#   agent ... reached its absolute
+#     wall-clock limit after <dur>           the second payload above, verbatim
+# The `agent` anchor and the trailing duration are both load-bearing. They keep
+# this disjoint from every other failure the store actually carries: a bare
+# `agent review: pi exited: signal: killed` is an agent that died without a cap
+# firing and stays an ordinary failure, and the client-side `get_run timed out`
+# that fm_nm_text_is_unconfirmed owns names no duration and no agent, so neither
+# can borrow this verdict.
+fm_nm_failure_is_cap_cut() {  # <run-error-text>
+  local text=${1:-}
+  [ -n "$text" ] || return 1
+  printf '%s' "$text" \
+    | grep -Eqi 'agent[^:]{0,40} (timed out|reached its absolute wall-clock limit) after [0-9]'
+}
+
+# The cap a cut names, e.g. `30m0s`, or nothing when the text names none. The
+# duration is the one detail that tells a reader whether the cap is the problem
+# or the work outgrew it, so it is carried rather than flattened away.
+fm_nm_cap_cut_duration() {  # <run-error-text>
+  local dur
+  dur=$(printf '%s' "${1:-}" \
+    | grep -oEi '(timed out|wall-clock limit) after [0-9][a-z0-9]*' \
+    | head -1)
+  [ -n "$dur" ] || return 0
+  printf '%s' "${dur##* }"
+}
+
+# The phrase for a cap cut: what happened, what it did NOT establish, and the one
+# action it asks for. It replaces the failure phrase rather than qualifying it,
+# because the failure phrase is the thing that was wrong.
+fm_nm_cap_cut_detail() {  # <run-error-text>
+  local dur
+  dur=$(fm_nm_cap_cut_duration "${1:-}")
+  if [ -n "$dur" ]; then
+    printf 'validation was cut off by its own %s time cap' "$dur"
+  else
+    printf 'validation was cut off by its own time cap'
+  fi
+  printf ': no verdict was reached about the work, which still needs validating (the work is not lost)'
+}
