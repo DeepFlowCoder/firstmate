@@ -473,6 +473,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/push-mirror-custody.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/run-attribution.md",
       "audience": "maintainer-verification"
     },
