@@ -350,6 +350,7 @@ EOF
 
 test_a_revert_must_be_the_commit_it_claims_to_undo() {
   local rec repo base home docs_head code_head revert_head out
+  local two_file_head partial_head
 
   rec=$(make_repo revertclass)
   IFS='|' read -r repo base <<EOF
@@ -381,6 +382,24 @@ EOF
     "a revert claimed against the wrong commit reached the cheap lane"
   assert_contains "$out" "reason=class-not-demonstrated" \
     "a mis-attributed revert was not reported as undemonstrated"
+
+  # Half of a commit undone is a tree that never shipped, which is exactly what
+  # the class's premise excludes. Proving only over the paths the RANGE changed
+  # never examines the file the delivery left carrying the commit's change.
+  printf 'left alone\n' > "$repo/src/other.py"
+  commit_all "$repo" seed-second-file >/dev/null
+  printf 'value = 9\n' > "$repo/src/thing.py"
+  printf 'changed too\n' > "$repo/src/other.py"
+  two_file_head=$(commit_all "$repo" two-file-change)
+  printf 'value = 2\n' > "$repo/src/thing.py"
+  partial_head=$(commit_all "$repo" revert-only-one)
+  out=$(run_lane "$home" decide revert-partial --project proj \
+    --repo "$repo" --range "$two_file_head..$partial_head" \
+    --class clean-revert --revert-of "$two_file_head")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a partial revert demonstrated as the whole commit undone and reached the cheap lane"
+  assert_contains "$out" "reason=class-not-demonstrated" \
+    "a partial revert was not reported as undemonstrated"
 
   pass "lane: a clean-revert class must be the commit it names, undone"
 }
@@ -548,6 +567,90 @@ test_a_non_ascii_path_is_read_as_itself() {
     "a revert claim over a non-ASCII path demonstrated against blobs nobody read"
 
   pass "lane: a non-ASCII path is matched and proved as itself, not as its escaped form"
+}
+
+# The non-ASCII case above is only the half core.quotePath governs. git C-quotes
+# a double quote, a backslash and control characters UNCONDITIONALLY, so these
+# spellings escaped the surface match no matter how that setting was configured,
+# and a newline additionally split one path into two.
+#
+# macOS and Linux both allow every character below in a filename except the path
+# separator, so no case here is skipped; a filesystem that refused one would fail
+# the fixture's own commit rather than pass silently.
+test_a_path_git_escapes_is_matched_as_itself() {
+  local repo home base head out name n=0
+
+  repo="$TMP_ROOT/escapedpaths/repo"
+  mkdir -p "$repo/src/billing"
+  git -C "$repo" init --quiet 2>/dev/null || { git init --quiet "$repo"; }
+  home=$(lane_home escapedpaths)
+
+  printf 'src/billing/* money-movement\n' > "$repo/.fm-critical-surfaces"
+  printf 'seed\n' > "$repo/src/seed.rb"
+  git -C "$repo" add -A
+  git -C "$repo" commit --quiet -m base
+
+  for name in 'led"ger.rb' 'back\slash.rb' "$(printf 'two\nlines.rb')"; do
+    n=$((n + 1))
+    base=$(git -C "$repo" rev-parse HEAD)
+    printf 'total = 1\n' > "$repo/src/billing/$name"
+    head=$(commit_all "$repo" "escaped-$n")
+    [ "$(git -C "$repo" diff --name-only -z --no-renames "$base" "$head" | tr -dc '\000' | wc -c | tr -d ' ')" = 1 ] \
+      || fail "the fixture did not commit exactly one path for case $n"
+
+    out=$(run_lane "$home" decide esc-a$n --project proj --repo "$repo" \
+      --range "$base..$head")
+    assert_contains "$out" "critical-surfaces: money-movement" \
+      "a critical surface stopped matching because git escaped the path (case $n)"
+    assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+      "a change on a declared critical surface was routed cheap (case $n)"
+    assert_contains "$out" "files=1" \
+      "an escaped path was not counted as exactly one changed file (case $n)"
+  done
+
+  pass "lane: a path git escapes is matched and counted as itself"
+}
+
+# Tier 3 decides on size, novelty, diffusion and complexity, and none of them can
+# be computed for a binary blob: numstat reports "-" for both counts and the
+# unified diff carries no added line at all. Read as numbers that is a change of
+# zero lines and zero branch points, which routed it cheap and recorded a size it
+# never measured.
+test_a_binary_change_is_unmeasurable_rather_than_small() {
+  local rec repo base home head out
+
+  rec=$(make_repo binarysig)
+  IFS='|' read -r repo base <<EOF
+$rec
+EOF
+  home=$(lane_home binarysig)
+
+  mkdir -p "$repo/assets"
+  printf '\000\001\002\003 payload one\000' > "$repo/assets/payload.bin"
+  base=$(commit_all "$repo" seed-binary)
+
+  printf '\000\007\006\005 payload two\000' > "$repo/assets/payload.bin"
+  head=$(commit_all "$repo" replace-binary)
+  out=$(run_lane "$home" decide bin-a1 --project proj --repo "$repo" --range "$base..$head")
+  assert_contains "$(first_line "$out")" "lane=no-mistakes" \
+    "a binary change was routed cheap on signals nothing measured"
+  assert_contains "$out" "reason=signals:binary" \
+    "the expensive routing did not name the unmeasurable diff as the cause"
+  assert_contains "$out" "binary=1" \
+    "the record did not say how many paths could not be measured"
+
+  # The control: the same repo and the same shape of small edit on a text path
+  # still reaches the cheap lane, so the case above is the binary content and
+  # not the fixture.
+  printf 'value = 2\n' > "$repo/src/thing.py"
+  head=$(commit_all "$repo" text-edit)
+  out=$(run_lane "$home" decide bin-b1 --project proj --repo "$repo" \
+    --range "$(git -C "$repo" rev-parse HEAD~1)..$head")
+  assert_contains "$(first_line "$out")" "lane=direct-PR" \
+    "a small text edit lost its cheap route"
+  assert_contains "$out" "binary=0" "the record did not report zero unmeasurable paths"
+
+  pass "lane: a binary change is unmeasurable rather than small, and routes expensive"
 }
 
 # --- 3. declared evidence can only ever cost more ---------------------------
@@ -1058,6 +1161,8 @@ test_docs_only_reaches_the_cheap_lane_only_when_it_is_really_docs_only
 test_a_revert_must_be_the_commit_it_claims_to_undo
 test_the_record_names_what_demonstrated_the_class
 test_a_non_ascii_path_is_read_as_itself
+test_a_path_git_escapes_is_matched_as_itself
+test_a_binary_change_is_unmeasurable_rather_than_small
 test_documents_that_govern_an_agent_are_not_ordinary_documentation
 test_declared_evidence_never_reaches_the_cheap_lane
 test_an_invalid_class_claim_is_refused_on_declared_evidence

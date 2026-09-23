@@ -100,16 +100,22 @@ usage() {
 
 die() { echo "error: $*" >&2; exit 1; }
 
-# Every read of the routed repository goes through here, so nothing can reach it
-# without core.quotePath=false. With git's default, a path holding any non-ASCII
-# byte comes back C-quoted - "src/billing/facturaci\303\263n.rb", surrounding
-# quotes included - and the leading quote stops an anchored critical-surface glob
+# One place the routed repository is addressed. It guarantees nothing about path
+# encoding on its own; that is what -z does at each call site that reads paths.
+#
+# Every such call site passes -z and reads NUL-delimited, never text lines. git
+# C-quotes a path holding a double quote, a backslash or a control character
+# UNCONDITIONALLY, and one holding a non-ASCII byte unless core.quotePath is
+# off, so a line-based read hands on `"src/billing/led\"ger.rb"` - surrounding
+# quotes included. That leading quote stopped an anchored critical-surface glob
 # from matching, so a change on a declared safety surface was routed cheap and
-# said so silently. The same quoted name made every blob_at read fail, which made
-# both halves of the clean-revert proof compare empty to empty and succeed for a
-# revert that undid nothing. One wrapper rather than a flag per call site,
-# because the next call site added is the one that would be forgotten.
-repo_git() { git -C "$REPO" -c core.quotePath=false "$@"; }
+# said so silently, and it made every blob_at read fail, which made both halves
+# of the clean-revert proof compare empty to empty and succeed for a revert that
+# undid nothing. A path holding a newline additionally split into two paths.
+# -z removes the escaping rather than turning one class of it off, so
+# core.quotePath is not set here: it would cover only the non-ASCII case and
+# suggest a guarantee -z already provides in full.
+repo_git() { git -C "$REPO" "$@"; }
 
 # --- shared argument state --------------------------------------------------
 
@@ -168,10 +174,19 @@ demonstrate_docs_only() {
 # nothing to do with. Requiring both also makes "<sha> never touched this path"
 # fail on its own, since that would force base and head to agree on a path the
 # diff says changed.
+#
+# The paths checked are the UNION of the range's and <sha>'s own, because the
+# range's alone proved too little: a delivery undoing one of the two files <sha>
+# modified never examined the other, so half of <sha> left applied demonstrated
+# as "exactly <sha> undone" and reached the cheap lane. A path <sha> touched and
+# the range left alone fails the second half, which is that partial revert.
 demonstrate_clean_revert() {
   local base=$1 head=$2 sha=$3 p
-  shift 3
-  for p in "$@"; do
+  local paths=("${@:4}")
+  while IFS= read -r -d '' p; do
+    [ -z "$p" ] || paths+=("$p")
+  done < <(repo_git diff --name-only -z --no-renames "$sha^" "$sha" 2>/dev/null)
+  for p in ${paths[@]+"${paths[@]}"}; do
     [ "$(blob_at "$base" "$p")" = "$(blob_at "$sha" "$p")" ] || return 1
     [ "$(blob_at "$head" "$p")" = "$(blob_at "$sha^" "$p")" ] || return 1
   done
@@ -189,8 +204,8 @@ blob_at() {
 
 cmd_decide() {
   local evidence catalog hits critical lane reason signals note class_record
-  local base head names statuses numstat
-  local files dirs lines new_files branch_points
+  local base head names numstat p
+  local files dirs lines new_files branch_points binary
   local signal_reasons=()
 
   [ -n "$TASK" ] || die "decide requires a task id"
@@ -221,12 +236,14 @@ cmd_decide() {
   fi
 
   if [ "$evidence" = demonstrated ]; then
-    names=$(repo_git diff --name-only --no-renames "$base" "$head") \
+    names=$(mktemp "${TMPDIR:-/tmp}/fm-lane-names.XXXXXX")
+    TMPDIRS+=("$names")
+    repo_git diff --name-only -z --no-renames "$base" "$head" >"$names" \
       || die "cannot read the diff $RANGE in $REPO"
-    [ -n "$names" ] || die "$RANGE changes nothing in $REPO; there is no delivery to route"
-    while IFS= read -r p; do
+    while IFS= read -r -d '' p; do
       [ -z "$p" ] || PATHS+=("$p")
-    done <<<"$names"
+    done <"$names"
+    [ "${#PATHS[@]}" -gt 0 ] || die "$RANGE changes nothing in $REPO; there is no delivery to route"
   fi
 
   catalog=$(mktemp "${TMPDIR:-/tmp}/fm-lane-catalog.XXXXXX")
@@ -243,16 +260,25 @@ cmd_decide() {
   lines=-
   new_files=-
   branch_points=-
+  binary=-
   if [ "$evidence" = demonstrated ]; then
-    statuses=$(repo_git diff --name-status --no-renames "$base" "$head")
-    new_files=$(printf '%s\n' "$statuses" | grep -c '^A' || true)
+    new_files=0
+    while IFS= read -r -d '' p; do
+      [ -z "$p" ] || new_files=$((new_files + 1))
+    done < <(repo_git diff --diff-filter=A --name-only -z --no-renames "$base" "$head")
     numstat=$(repo_git diff --numstat --no-renames "$base" "$head")
     lines=$(printf '%s\n' "$numstat" | awk '{ a=$1; d=$2; if (a=="-") a=0; if (d=="-") d=0; s+=a+d } END { printf "%d", s+0 }')
+    # git reports a binary path as "-" for both counts because there are no
+    # lines to count. Tier 3 decides on size, novelty, diffusion and complexity,
+    # and not one of them can be computed for a blob, so a binary path is
+    # UNMEASURABLE rather than small - the awk above resolves it to 0, which is
+    # the number the record would otherwise claim it measured.
+    binary=$(printf '%s\n' "$numstat" | awk '$1=="-" && $2=="-" { n++ } END { printf "%d", n+0 }')
     branch_points=$(repo_git diff --unified=0 --no-renames "$base" "$head" \
       | grep '^+' | grep -v '^+++' \
       | grep -cE '(^|[^[:alnum:]_])(if|elif|else|for|while|case|switch|catch|except|unless)([^[:alnum:]_]|$)|&&|\|\|' || true)
   fi
-  signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points"
+  signals="files=$files,dirs=$dirs,lines=$lines,new-files=$new_files,branch-points=$branch_points,binary=$binary"
 
   if [ -n "$OVERRIDE" ]; then
     lane=direct-PR
@@ -281,6 +307,7 @@ cmd_decide() {
     note=$NOTE
   else
     note=$NOTE
+    [ "$binary" -eq 0 ] || signal_reasons+=(binary)
     [ "$new_files" -eq 0 ] || signal_reasons+=(novelty)
     [ "$dirs" -lt "$LANE_MAX_DIRS" ] || signal_reasons+=(diffusion)
     [ "$branch_points" -lt "$LANE_MAX_BRANCH_POINTS" ] || signal_reasons+=(complexity)
