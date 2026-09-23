@@ -106,11 +106,16 @@
 #      collapses `passed`, `checks-passed` and `completed` into the single list
 #      word `completed`, and a runs-list row carries no run id (`no-mistakes runs`
 #      accepts only --limit), so there is nothing to ask `axi status --run` about.
-#      So that arm declines for the WHOLE bucket - a `completed` row naming a pull
-#      request with no local merge record reads `unknown` - and a ready delivery
-#      that missed direct attribution reads `unknown` there too. That is less
-#      informative than the full path and it is not false, and it still makes the
-#      captain look. What would close it is a local record of a pull request
+#      So ON THE READ THAT ASKS NO FORGE that arm declines for the WHOLE bucket -
+#      a `completed` row naming a pull request with no local merge record reads
+#      `unknown` - and a ready delivery that missed direct attribution reads
+#      `unknown` there too. That is less informative than the full path and it is
+#      not false, and it still makes the captain look. Under
+#      FM_CREW_STATE_RESOLVE_PR=1 the same row reaches the forge resolution like
+#      any other merge-claiming reading, and the forge's own answer decides it:
+#      merged reads `done`, closed without merging reads `failed`, still open
+#      reads `unknown`. The decline is what the UNASKED read is left with, not a
+#      property of the row. What would close it is a local record of a pull request
 #      CLOSED without merging, which this home does not keep: bin/fm-pr-poll.sh
 #      emits one `merged` line and stays silent on every other outcome, so an
 #      abandoned pull request leaves no trace here at all. That root cause has its
