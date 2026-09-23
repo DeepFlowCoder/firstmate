@@ -1434,9 +1434,13 @@ test_an_unarbitrated_cut_does_not_assert_the_cut_phrase() {
 # outranked its pause and the watcher's absorb classifier saw an answered
 # non-healthy verdict: short cadence, no label, straight down the stuck path.
 #
-# The repair is the word alone, and it reaches that classifier for free. This
-# asserts through fm-classify-lib.sh's OWN predicates over a REAL fm-crew-state
-# read, because the classifier is what actually decided the task's fate.
+# The repair is the word alone, and it reaches that classifier for free - on a
+# branch whose reported run can be identified, because where it cannot the
+# reading degrades back to `failed` and the pause is masked exactly as before,
+# the same `fm-listado-de-corridas-sin-id` bound the cut reading itself carries.
+# This asserts through fm-classify-lib.sh's OWN predicates over a REAL
+# fm-crew-state read, because the classifier is what actually decided the task's
+# fate.
 test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path() {
   reset_fakes
   local d short cut bad; d=$(new_case cut-vs-pause)

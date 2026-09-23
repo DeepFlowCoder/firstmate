@@ -1222,11 +1222,16 @@ families_for_changed_path() {
       printf '%s\n' live-harness-optin
       ;;
     bin/fm-nm-run-lib.sh)
-      # Shared no-mistakes run-attribution primitives, sourced by both
-      # bin/fm-crew-state.sh (pure-contract-unit) and bin/fm-teardown.sh's
-      # pre-teardown run abort (pr-forge).
+      # Shared no-mistakes run-attribution primitives, sourced by three
+      # consumers: bin/fm-crew-state.sh (pure-contract-unit),
+      # bin/fm-teardown.sh's pre-teardown run abort (pr-forge), and
+      # bin/fm-inactive-reconcile.sh's cap-cut wake (watcher-wake-lock), which
+      # reads the cut phrase back out of a crew-state line through the same
+      # literal that writes it - so a rewording here has to re-select the suite
+      # that proves the supervisor is still woken.
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
+      printf '%s\n' watcher-wake-lock
       ;;
     bin/fm-composer-lib.sh)
       # The shared shape catalogue is vendor-rendered signal; a change to it
