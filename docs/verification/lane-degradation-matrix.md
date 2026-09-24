@@ -9,9 +9,7 @@ Task chronology and delivery evidence stay in the private report.
 
 ## The family
 
-A guard receives something it cannot evaluate and, instead of refusing, carries on with a weaker check or with none.
-It does not fail and it does not warn, so from outside the result is indistinguishable from having protected.
-Seven instances were found in the delivery that landed the lane policy on 2026-09-23, which is what established it as a family rather than a run of unrelated bugs.
+The family under verification is the one where a guard that cannot evaluate its input carries on more weakly instead of refusing; judging whether the rows below still cover it takes the family's definition, and `tests/fm-lane-degradation.test.sh` owns that definition.
 
 ## Non-vacuity result
 

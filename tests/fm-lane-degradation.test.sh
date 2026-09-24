@@ -35,6 +35,13 @@
 # justification. Applied to the git reads it prints exactly one violation and no
 # false ones.
 #
+# THIS FILE IS THE SINGLE OWNER OF THAT INVARIANT, so bin/fm-lane-lib.sh's
+# header, tests/fm-lane-policy.test.sh's header,
+# .agents/skills/firstmate-coding-guidelines/SKILL.md and
+# docs/verification/lane-degradation-matrix.md each point here and say why it
+# matters to their own reader rather than restating it, and a fourth copy is not
+# to be written.
+#
 # REFUSING AND SAYING SO ARE DIFFERENT THINGS, and which is owed depends on what
 # was lost. When a channel that carries a project's own declared rigor cannot be
 # read, the answer is unknowable and the only safe response is to refuse OUT
@@ -106,10 +113,10 @@ DECIDE_FAILED_READS=0
 
 # run_decide <home> <fakebin-or-empty> <decide-args...>
 #   -> DECIDE_OUT/DECIDE_CODE/DECIDE_FAILED_READS
-# DECIDE_OUT carries the decision's own voice and nothing else, because
-# assert_never_silently_cheap weighs it as the evidence that the tool spoke: the
-# shim names the read it refused in FM_SHIM_REPORT rather than on stderr, and
-# DECIDE_FAILED_READS is how a case knows that injection fired at all.
+# assert_never_silently_cheap weighs DECIDE_OUT as the evidence that the tool
+# spoke, so the one voice kept out of it is the shim's own: the read it refuses
+# is named in FM_SHIM_REPORT rather than on stderr, and DECIDE_FAILED_READS is
+# how a case knows that injection fired at all.
 run_decide() {
   local home=$1 fakebin=$2 report
   shift 2
