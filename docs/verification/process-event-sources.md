@@ -56,8 +56,15 @@ It is not closed by broadening the name expression, because a real response alre
 It is written down because a reader who meets silence there will otherwise assume the case is covered, and that assumption is the failure mode - the same disclosure rule this file already applies to the cases that cannot be driven.
 
 The before-the-fix demonstration this delivery was commissioned to produce is RETIRED, not met and not weakened.
-Its original form required demonstrating a live silent-loss face before fixing it; measurement showed there is no such live face in this tree, and a criterion that requires demonstrating a defect that does not exist cannot be satisfied.
+The commission names one acceptance criterion - demonstrate the defect before fixing it, across two faces, `feedback` and LIST - and that criterion is retired by measurement rather than satisfied: the face it required demonstrating does not exist in this tree.
 No demonstration was fabricated to close it.
+
+Two claims in the commission's own work record are SUPERSEDED BY MEASUREMENT, and are named here rather than left quietly absent, because a reader comparing that record against this artifact will otherwise have to discover the difference alone.
+The first is its four-row before/after table; the second is the `feedback`-face outcome that table asserts, "message delivered" and a minted `ship-it` answer.
+Both rested on the `feedback` block name, and the installed 0.1.52 has one poll-output builder with one call site that keys the content block `prompts` on every branch, so that name is not emitted at all - it was an assumption written as a measurement.
+
+The REVERSAL that follows is the opposite of what the commission's record states, so it is spelled out: under the narrowing, `feedback` is deliberately detected-but-NOT-read, so a `feedback`-framed result now REFUSES - `messages` exits 3, `answers` exits 1 and mints nothing - where that record claims it delivers a message and an answer.
+The refusal is the safe direction, loud rather than silent, and `tests/fm-procevent.test.sh` pins it as the expected outcome.
 
 The three defects earlier recorded here as real were regressions in this delivery's own UNPUBLISHED work, caught by the pipeline before publishing: the keyed answer lost entirely, the declared-count bound's empty read, and an empty array shadowing a populated one.
 They are not product defects and are not to be recorded as such.

@@ -2226,10 +2226,13 @@ ans_out=$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null) || ans
 [ -z "$ans_out" ] || fail "an empty content block minted a keyed answer: $ans_out"
 
 # Rows are read from the one key the response publishes them under, and DETECTION
-# of a content block stays deliberately wider than that reading. A result
-# declaring a top-level content block this reader takes no rows from is therefore
-# refused out loud - the general guard that would catch a block name this tool
-# does not publish today, which is why no branch per imagined name is carried.
+# is wider than that reading by exactly one name: a result declaring `prompts` or
+# the historical `feedback` and yielding no rows from it is refused out loud. That
+# pair is an allowlist and nothing more general, so a THIRD top-level name is not
+# detected at all and reads as empty at exit 0 - the silent loss this delivery
+# exists to end, still open here because broadening the name expression would
+# swallow real top-level arrays such as `artifact_failures` and no correct cure is
+# established; docs/verification/process-event-sources.md owns that open gap.
 cat > "$MSGS" <<'EOF'
 session:
   file: /board.html
