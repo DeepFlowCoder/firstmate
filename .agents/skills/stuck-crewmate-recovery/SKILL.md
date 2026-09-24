@@ -52,9 +52,11 @@ Escalate in order:
    On a harness whose working state is never established, the wake instead reports a turn boundary that passed after the record was written while it stayed unacknowledged.
    Read that as evidence and not as a verdict: the acknowledgement is moved only after the instruction has been carried out, so a worker that read the steer and is working through it looks exactly the same from here.
    Inspect the pane to tell those apart before doing anything else, and note that the silence the wake reports is counted from the watcher's first recorded re-ring rather than from the doorbell `fm-send` typed when the record was written, so it understates how long the worker has been quiet.
-   The third variant on that same harness says the task records no turn boundaries at all, which means its launch armed no turn-end signal and none will ever appear for it.
-   It still ends in "inspect the worker" while admitting it cannot tell a worker that stopped reading from one still inside its turn.
-   Inspect it, but establish which of those two it is before escalating any further, because this is the wake with the least evidence behind it and the procedure below ends in replacing the worker.
+   The third variant on that same harness says the task's launch armed no turn-end signal, which is a fact recorded at spawn and means no turn boundary will ever appear for it.
+   A fourth says instead that there is no record of whether this task's launch arms one, which is not the same claim: nobody checked, rather than somebody checked and found none.
+   That is what a task spawned before the fact was recorded looks like, and what a raw launch command firstmate did not compose looks like.
+   Both still end in "inspect the worker" while admitting they cannot tell a worker that stopped reading from one still inside its turn.
+   Inspect them, but establish which of those two it is before escalating any further, because these are the wakes with the least evidence behind them and the procedure below ends in replacing the worker.
    The same harness also produces two wakes that are explicitly not a worker to inspect.
    One reports an instruction unacknowledged with no turn boundary at all since it was written, because a worker that has not reached a single boundary since the steer arrived has had no point at which to read it.
    The other reports a worker that has not finished a turn yet, which is the ordinary shape of a crewmate steered minutes after launch while its first turn is still open.

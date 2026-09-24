@@ -45,8 +45,10 @@
 #      because a crewmate still inside its first turn and a secondmate whose
 #      launch armed nothing look identical on disk and mean opposite things: the
 #      first is held and told it has not finished a turn, the second escalates
-#      and is told the task records none at all. Neither hold reports a
-#      duration, because a worker that reached no boundary has no silence.
+#      and is told its launch armed none. A task carrying no such record at all
+#      escalates too and is told exactly that, because "nobody checked" is not
+#      "checked and found none". Neither hold reports a duration, because a
+#      worker that reached no boundary has no silence.
 #   7. The escalation's own prefix separates budget spent from doorbells rung,
 #      on every arm: attempts that were skipped or failed typed nothing, so a
 #      ladder can spend its whole budget having delivered none, and a ladder
@@ -177,13 +179,46 @@ test_watcher_escalates_codex_without_turn_end_wiring() {
   queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
   grep -qF 'unread firstmate instruction' <<<"$queue" \
     || fail "the escalation must survive a task that records no turn boundaries:"$'\n'"$queue"
-  grep -qF 'records no turn boundaries at all' <<<"$queue" \
+  grep -qF 'launch armed no turn-end signal' <<<"$queue" \
     || fail "the escalation should say the task will never record one:"$'\n'"$queue"
   grep -qF 'has not finished a turn yet' <<<"$queue" \
     && fail "a task that records no boundaries was mistaken for one still in its first turn:"$'\n'"$queue"
   grep -qF 'with an idle pane' <<<"$queue" \
     && fail "the escalation claimed an idle pane on a harness that establishes none:"$'\n'"$queue"
   pass "watcher: a task whose launch armed no turn-end signal keeps escalating, and says so"
+}
+
+# A task recorded before spawn wrote the launch fact, or launched from a raw
+# command firstmate never composed. Nobody checked whether its launch arms a
+# turn-end signal, which is NOT the same state of the world as having checked
+# and found none - the routing is identical and must stay identical, but the
+# sentence an operator acts on may not turn an unrecorded fact into a negative
+# one about the task.
+test_watcher_escalation_discloses_an_unrecorded_turn_end_fact() {
+  local dir state out log pid rec queue
+  dir=$(setup_watch_case_harness codex-turnend-unrecorded codex '')
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  grep -q '^turnend=' "$state/t1.meta" \
+    && fail "this case requires a task whose meta carries no turn-end fact"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "reconcile that handoff")
+  age_path "$rec"
+  [ ! -e "$state/t1.turn-ended" ] || fail "this case requires a task with no turn-end marker"
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_TASK_INBOX_RING_MAX=1
+  pid=$!
+  wait_watcher_gone "$pid" \
+    || { kill "$pid" 2>/dev/null; fail "an unrecorded turn-end fact stopped the escalation entirely"; }
+  queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
+  grep -qF 'unread firstmate instruction' <<<"$queue" \
+    || fail "routing must be unchanged when the launch fact was never recorded:"$'\n'"$queue"
+  grep -qF "no record of whether this task's launch arms a turn-end signal" <<<"$queue" \
+    || fail "the escalation should disclose the absence as an absence:"$'\n'"$queue"
+  grep -qF 'launch armed no turn-end signal' <<<"$queue" \
+    && fail "an unrecorded launch fact was asserted as a negative fact about the task:"$'\n'"$queue"
+  grep -qF 'has not finished a turn yet' <<<"$queue" \
+    && fail "an unrecorded launch fact must never reach the hold:"$'\n'"$queue"
+  pass "watcher: an unrecorded turn-end fact escalates unchanged and is disclosed as unrecorded"
 }
 
 # The most common codex shape, and the worst false deafness left: a crewmate
@@ -212,7 +247,7 @@ test_watcher_holds_codex_still_inside_its_first_turn() {
     && fail "a worker that has finished no turn must not route to the stuck-worker procedure:"$'\n'"$queue"
   grep -qF 'has not finished a turn yet' <<<"$queue" \
     || fail "the recheck should say the worker has reached no boundary at all:"$'\n'"$queue"
-  grep -qF 'records no turn boundaries at all' <<<"$queue" \
+  grep -qF 'launch armed no turn-end signal' <<<"$queue" \
     && fail "a first turn still open was mistaken for a task that records none:"$'\n'"$queue"
   grep -qF 'silent for' <<<"$queue" \
     && fail "a worker that reached no boundary has no silence to report:"$'\n'"$queue"
@@ -544,14 +579,19 @@ setup_watch_case() {  # <name> -> echoes case dir; state in <dir>/state
 # <turnend> is the launch fact bin/fm-spawn.sh records: `armed` when this task's
 # launch installed wiring that touches state/<id>.turn-ended, `none` when it
 # deliberately installed none. It defaults to `none` here so a fixture that does
-# not care keeps the escalating path.
+# not care keeps the escalating path; an EMPTY third argument writes no
+# turnend= line at all, which is the task recorded before spawn wrote the fact.
 setup_watch_case_harness() {  # <name> <harness> [turnend] -> echoes case dir; state in <dir>/state
-  local name=$1 harness=$2 turnend=${3:-none} dir
+  local name=$1 harness=$2 turnend=${3-none} dir
   dir="$TMP_ROOT/$name"
   mkdir -p "$dir/state"
   make_watch_stubs "$dir" >/dev/null
-  fm_write_meta "$dir/state/t1.meta" "window=sess:fm-t1" "kind=ship" \
-    "harness=$harness" "turnend=$turnend"
+  if [ -n "$turnend" ]; then
+    fm_write_meta "$dir/state/t1.meta" "window=sess:fm-t1" "kind=ship" \
+      "harness=$harness" "turnend=$turnend"
+  else
+    fm_write_meta "$dir/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=$harness"
+  fi
   printf '%s\n' "$dir"
 }
 
@@ -1015,6 +1055,7 @@ test_watcher_holds_codex_with_no_turn_boundary
 test_watcher_escalates_codex_when_the_boundary_predates_the_rering
 test_watcher_escalates_codex_after_a_turn_boundary
 test_watcher_escalates_codex_without_turn_end_wiring
+test_watcher_escalation_discloses_an_unrecorded_turn_end_fact
 test_watcher_holds_codex_still_inside_its_first_turn
 test_watcher_escalates_instrumented_harness_with_no_busy_record
 test_watcher_escalates_unmeasured_kimi_rather_than_holding

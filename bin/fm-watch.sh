@@ -118,10 +118,12 @@
 #                          working state at this poll; or - for a harness
 #                          measured to establish none at all - either a turn
 #                          boundary that passed after the record was written, or
-#                          that this task records no turn boundaries at all,
-#                          which is read from whether its launch armed one
-#                          (turnend= in meta) and never from the marker's mere
-#                          absence. A passed
+#                          that this task's launch armed no turn-end signal, or
+#                          that no record of that launch fact exists. Those last
+#                          two are read from turnend= in meta and never from the
+#                          marker's mere absence, and they are kept apart because
+#                          "checked and found none" and "nobody checked" are not
+#                          the same sentence to whoever acts on it. A passed
 #                          boundary is evidence and not proof, because the
 #                          acknowledgement is moved only after the instruction
 #                          is carried out, and the wake says so. The silence it
@@ -470,10 +472,14 @@ window_harness() {
 # The marker's own absence cannot answer this: it means both "this task will
 # never record a turn boundary" and "this worker has not finished its first turn
 # yet", which are opposite states, and only the second is a worker that
-# provably has had no chance to read. A caller that cannot get the fact must
-# treat it as unarmed, because that keeps the escalation it has today rather than
-# suppressing one on a fact nobody recorded.
-window_turnend_armed() {  # <window>
+# provably has had no chance to read.
+#
+# Anything other than `armed` keeps the escalation, so a fact nobody recorded
+# can never suppress one. But `none` and an unreadable value are not the same
+# sentence to an operator: the first is a launch firstmate composed and knows
+# arms nothing, the second is an absence of a record. A caller must not print
+# the second as the first.
+window_turnend_wiring() {  # <window>
   local w=$1 meta
   meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
   [ -n "$meta" ] || return 0
@@ -640,7 +646,7 @@ turn_boundary_since() {  # <task> <epoch>
 # The escalation only ever claims what the busy contract actually established at
 # this poll; the escalate branch below owns that distinction and why it matters.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor silence busy_state rung attempts
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor silence busy_state rung attempts wiring
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -829,15 +835,23 @@ inbox_steer_check() {  # <window> <task>
             # the doorbell. A task whose launch armed none will never record one,
             # so the question is unanswerable for it and the escalation has to
             # stand. Those are opposite states and the marker looks identical in
-            # both, so the fact is read from the launch that armed it.
-            if [ "$(window_turnend_armed "$w")" = armed ]; then
+            # both, so the fact is read from the launch that armed it. A third
+            # value is neither: when no such record exists the wake says that,
+            # because an unrecorded fact stated in the negative is exactly the
+            # over-assertion this whole route exists to remove.
+            wiring=$(window_turnend_wiring "$w")
+            if [ "$wiring" = armed ]; then
               resurface_absorbed "$w" "$STATE/.steer-unturned-resurfaced-$key" \
                 "$(status_idle_age "$task")" \
                 "stale: $w (firstmate instruction ${rec##*/} unacknowledged by a worker that has not finished a turn yet, so it has reached no point at which to read it; this harness never reports whether it is working, so it cannot tell that from a worker that stopped reading - rechecked on a long cadence not a wedge)"
               triage_log "absorbed steer-inbox escalation (busy state unestablished and no turn finished yet since ${rec##*/} was written): $w"
               return 0
             fi
-            evidence="on a harness that never reports whether it is working and for a task that records no turn boundaries at all, so this cannot tell a worker that stopped reading from one still inside its turn; $silence"
+            if [ "$wiring" = none ]; then
+              evidence="on a harness that never reports whether it is working and for a task whose launch armed no turn-end signal, so no turn boundary is ever recorded for it and this cannot tell a worker that stopped reading from one still inside its turn; $silence"
+            else
+              evidence="on a harness that never reports whether it is working and with no record of whether this task's launch arms a turn-end signal, so this cannot tell a worker that stopped reading from one still inside its turn; $silence"
+            fi
             ;;
         esac
       fi

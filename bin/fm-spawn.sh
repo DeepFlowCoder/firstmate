@@ -1360,9 +1360,13 @@ launch_template() {
   esac
 }
 
+# Whether firstmate composed the launch command itself. A raw one is opaque to
+# every question this script answers about what the launch arms.
+LAUNCH_COMPOSED=1
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
+    LAUNCH_COMPOSED=0
     HARNESS=""
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
@@ -2783,14 +2787,20 @@ mkdir -p "$STATE"
 STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
 # Whether this launch actually arms something that will ever touch that marker,
-# recorded into meta below as turnend=. Set by the wiring arms themselves rather
-# than re-derived from harness and kind, so it cannot drift from what was armed.
+# recorded into meta below as turnend=, one of three words. `armed` is set by
+# the wiring arms from what they actually installed, or - for the adapter whose
+# marker rides the launch command rather than a hook file - from the composed
+# command itself, so the record cannot drift from the launch it describes.
+# `none` means firstmate armed nothing and composed the launch, so it knows
+# there is nothing. `unknown` means firstmate did not compose the launch at all
+# and therefore cannot say what it arms; that is an absence of a record, not a
+# record of an absence, and only one of those is a fact anyone checked.
 # The marker is deliberately NOT seeded here: for a task whose launch arms
 # nothing, a seeded marker never moves again, so every later comparison would
 # report "no boundary since the record" forever and suppress the unread-instruction
 # escalation permanently - the same trade this branch already undid once when it
 # dropped the spawn-record stand-in.
-TURNEND_ARMED=0
+TURNEND_WIRING=none
 exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
@@ -2871,7 +2881,7 @@ if [ "$KIND" != secondmate ]; then
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
-      TURNEND_ARMED=1
+      TURNEND_WIRING=armed
       ;;
     opencode*)
       mkdir -p "$WT/.opencode/plugins"
@@ -2925,7 +2935,7 @@ export const FmBusyState = async () => {
 };
 EOF
       exclude_path '.opencode/plugins/fm-busy-state.js'
-      TURNEND_ARMED=1
+      TURNEND_WIRING=armed
       ;;
     pi|pi-signed)
       # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
@@ -2959,7 +2969,7 @@ export default function (pi: any) {
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF
-      TURNEND_ARMED=1
+      TURNEND_WIRING=armed
       ;;
     codex*)
       # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the
@@ -2968,10 +2978,20 @@ EOF
       # the app-server protocol, and its lifecycle hooks did not fire for a
       # firstmate-launched worker. Codex therefore classifies unknown with
       # an explicit reason rather than falling back to idle, and no busy
-      # wiring is installed. The turn-end NOTIFICATION marker still rides
-      # the launch command via -c notify=[...] and __TURNEND__, which
-      # launch_template carries for exactly the kinds this block runs for.
-      TURNEND_ARMED=1
+      # wiring is installed. The turn-end NOTIFICATION marker instead rides the
+      # launch command via -c notify=[...] and __TURNEND__, so unlike every
+      # other adapter here this arm installs no file, and the only thing that
+      # knows whether a boundary will ever be recorded is the composed command.
+      # Read it from there. Asserting it from kind instead would put the answer
+      # in two places far apart in this file with nothing keeping them agreed,
+      # and a raw launch command - the unverified-adapter escape hatch, which
+      # never consults launch_template - would then be recorded as armed while
+      # arming nothing, holding its steering escalation out of existence for
+      # the life of the task. The placeholder is still unsubstituted here; the
+      # substitution runs after the meta is written.
+      case "$LAUNCH" in
+        *__TURNEND__*) TURNEND_WIRING=armed ;;
+      esac
       ;;
     grok*)
       # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the
@@ -3021,7 +3041,7 @@ EOF
       printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s"}]}]}}\n' "$hook_command" > "$GROK_HOOKS_DIR/fm-turn-end.json"
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-grok-turnend"
       exclude_path '.fm-grok-turnend'
-      TURNEND_ARMED=1
+      TURNEND_WIRING=armed
       ;;
     muse*)
       # muse's turn lifecycle is neither a hook nor a launch flag: its plugin
@@ -3088,9 +3108,16 @@ EOF
       printf '%s\n' "${auth_file##*/}" > "$STATE/$ID.kimi-turnend-token"
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-kimi-turnend"
       exclude_path '.fm-kimi-turnend'
-      TURNEND_ARMED=1
+      TURNEND_WIRING=armed
       ;;
   esac
+fi
+# A launch firstmate did not compose can carry a turn-end signal of its own, and
+# nothing here can read it. Record that as unrecorded rather than as an absence
+# of wiring: a consumer keeps its escalation either way, but only one of the two
+# is a fact anyone checked, and the wake is entitled to say which.
+if [ "$TURNEND_WIRING" = none ] && [ "$LAUNCH_COMPOSED" -eq 0 ]; then
+  TURNEND_WIRING=unknown
 fi
 
 # Delivery posture recorded in meta so fm-teardown's safety check and the
@@ -3164,7 +3191,7 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
-  if [ "$TURNEND_ARMED" -eq 1 ]; then echo "turnend=armed"; else echo "turnend=none"; fi
+  echo "turnend=$TURNEND_WIRING"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"
