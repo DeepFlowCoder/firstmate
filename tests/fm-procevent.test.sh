@@ -2218,11 +2218,11 @@ assert_contains "$msg_out" "hold the release until Thursday" \
   "the row that survived a cut was refused along with the rows that did not"
 
 # The same short block WITHOUT that marker is a capture the runner recorded as
-# complete, so the missing rows are damage nothing else will mention: the repair
-# that shortens a block only runs on input this decoder rejected, and no legitimate
-# response is short (docs/verification/process-event-sources.md records the
-# encoded-and-read-back evidence), so it refuses out loud instead of handing over a
-# prefix as though it were everything the captain said.
+# complete, so the missing rows are damage nothing else will mention. No measured
+# 0.1.52 output is short - docs/verification/process-event-sources.md records the
+# twelve shapes encoded and read back - so it refuses out loud instead of handing
+# over a prefix as though it were everything the captain said. This shortfall needs
+# no repair to arise: the non-strict baseline returns a short block directly.
 rm -f "${PARTIAL%.result}.truncated"
 msg_rc=0
 msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$PARTIAL" 2>/dev/null) || msg_rc=$?
@@ -2236,6 +2236,36 @@ ans_rc=0
 "$ROOT/bin/fm-procevent-lavish.sh" answers "$PARTIAL" >/dev/null 2>&1 || ans_rc=$?
 [ "$ans_rc" -eq 1 ] \
   || fail "a short block on a complete capture answered $ans_rc from the keyed-answer command"
+
+# Damage a row count can never see, which is why the bound asks whether the
+# document needed repair at all rather than how many rows came back. This capture
+# decodes only after the repair closes the unterminated value on its last line, and
+# it still yields exactly the two rows its header declares - so a count would call
+# it whole while the captain's last words arrive reshaped. The same bytes WITH the
+# runner's truncation marker deliver, because there the cut explains the damage and
+# the discarded-content note announces it.
+INROW="$TMP_ROOT/inrow-damage.result"
+printf 'session:\n  file: /b.html\n  status: feedback\nprompts[2]:\n  - uid: f1\n    prompt: first words\n    tag: message\n  - uid: f2\n    prompt: "second words\n' > "$INROW"
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$INROW" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "a complete capture repaired inside its last row answered $msg_rc instead of refusing"
+[ -z "$msg_out" ] \
+  || fail "a repaired complete capture reported reshaped content as the captain's words: $msg_out"
+ans_rc=0
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$INROW" 2>/dev/null)" ] \
+  || fail "a repaired complete capture still minted a keyed answer"
+"$ROOT/bin/fm-procevent-lavish.sh" answers "$INROW" >/dev/null 2>&1 || ans_rc=$?
+[ "$ans_rc" -eq 1 ] \
+  || fail "a repaired complete capture answered $ans_rc from the keyed-answer command"
+: > "${INROW%.result}.truncated"
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$INROW" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 0 ] \
+  || fail "a CUT capture repaired inside its last row answered $msg_rc instead of delivering what survived"
+assert_contains "$msg_out" "first words" \
+  "the rows that survived a cut repaired inside its last row were refused"
+rm -f "${INROW%.result}.truncated"
 
 # The other side of that bound, which is a different result entirely: a content
 # block the decoder DID read, whose header declares no row and yields none, is a

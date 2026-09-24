@@ -7,8 +7,9 @@
 // `--cut` states that the runner's output bound dropped bytes from this capture,
 // which its caller knows from the runner's own truncation marker. It changes what
 // damage the cut explains rather than what is read: a row the cut manufactured is
-// dropped instead of refused (WHAT A ROW BECOMES), and delivering fewer rows than
-// the text declares reads instead of refusing (WHAT BOUNDS THAT REPAIR).
+// dropped instead of refused (WHAT A ROW BECOMES), and a document the trailing-cut
+// repair had to touch - including one delivering fewer rows than the text declares
+// - reads instead of refusing (WHAT BOUNDS THAT REPAIR).
 //
 // Prints a JSON array of row field maps on stdout and exits 0 once the result
 // has been read, whatever it found there - including `[]` for a result that
@@ -113,9 +114,8 @@
 // trailing cut - close an unterminated string on the last line, else drop that
 // line - over at most MAX_REPAIR_LINES lines, because the output bound cuts the
 // end of a capture and never its middle: bin/fm-procevent.sh's own seam keeps the
-// HEAD of oversized output and drains the rest. It decodes a PREFIX of what really
-// arrived, and it is the only step that can hand back fewer rows than the text
-// declares.
+// HEAD of oversized output and drains the rest. It decodes a PREFIX of what
+// really arrived.
 //
 // It still yields a document this decoder accepts, so no row is ever
 // reconstructed by hand. A capture it cannot read is refused out loud -
@@ -123,33 +123,60 @@
 // the captain to read himself - rather than reported as empty, because empty is
 // the one answer that looks exactly like the captain having said nothing.
 //
-// WHAT BOUNDS THAT REPAIR is measured against what the captured text itself
-// DECLARES rather than against what came back, because an honestly empty block, a
-// discarded one, and a partly discarded one are three different states of the
-// world that the decoded rows cannot be told apart by. Three reads are refused:
-// one that recovered no published block at all while the text declares one; one
-// whose text declares a block of N rows while not one of them arrived; and, on a
-// capture the runner did NOT mark cut, one that delivered FEWER rows than the
-// declared count - because only the repair above can produce that shortfall, and
-// only on input this decoder rejected, so on a complete capture it is damage to
-// report rather than a prefix to deliver. Since the declared count is the
-// discriminator, it is used at full strength rather than only at zero.
+// WHAT BOUNDS THAT REPAIR is ONE QUESTION asked directly - did this document
+// arrive damaged, with no cut to explain it - rather than a list of the ways
+// damage can show up. So on a capture the runner did NOT mark cut, the read is
+// refused if the repair RAN AT ALL: `readDocument` reports that, and a repair
+// without a cut behind it is damage whatever it touched. A count cannot ask this
+// question. The case that proves why is damage confined INSIDE a row: measured
+// here, a complete LIST capture ending in an unterminated `prompt: "second words`
+// decodes only after the repair closes that value, and still yields two rows
+// against a declared two - so had the repair instead dropped that line, the
+// captain's words would be gone with the row still delivered and still counted, and
+// no count-based check would ever see it.
+//
+// ONE GAP IN THAT QUESTION STAYS OPEN, measured while pinning the case above and
+// recorded because a reader would otherwise assume it is covered. A LINE THE
+// DECODER ITSELF DISCARDS never reaches the repair: a complete LIST capture whose
+// last line is a mis-indented `   stray: x` decodes on the FIRST attempt with that
+// line silently gone, two rows against a declared two, so `repaired` is false, no
+// count is short, and nothing here refuses. Asking this question the same way would
+// mean re-reading the document strictly and comparing, which is not what the
+// non-strict baseline the cut guarantee depends on can do, so no cure is adopted
+// here. No encoder-produced shape measured for this reader emits a mis-indented
+// line; docs/verification/process-event-sources.md carries the gap with its
+// measurement.
+//
+// Two count-based refusals stand beside it, for damage that arrives without any
+// repair: a read that recovered no published block at all while the text declares
+// one, and a read whose text declares a block of N rows while not one of them
+// arrived. And on a capture NOT marked cut, delivering FEWER rows than the
+// declared count is refused too - the non-strict baseline hands back a short block
+// directly, with no repair involved, so this one is its own case rather than a
+// consequence of the repair.
 //
 // A block that declares no row and yields none is the other thing entirely - a
 // board the captain closed without saying anything - and it reads as empty. A CUT
-// capture that delivered some of the rows its header announced also reads,
-// because delivering what survived is the whole point of the repair and the
-// runner's own discarded-content note already owns saying bytes went missing.
+// capture reads whatever the repair recovered, because delivering what survived is
+// the whole point of it and the runner's own discarded-content note already owns
+// saying bytes went missing.
 //
-// HOW MUCH THAT LAST BOUND RESTS ON, stated as measured rather than as certain:
-// 14 responses encoded by the encoder the producer itself uses - row counts 0, 1,
-// 2, 3, 5 and 12 in both renderings, one carrying embedded newlines and `- uid:`
-// text inside a prompt, one carrying an `attachments` sub-block - were read back
-// here, and all 14 decoded on the FIRST attempt, with the delivered row count
-// equal to the declared count every time. So no case measured here is refused and
-// none needed the repair. That is a handful of shapes, not a proof over every
-// response the producer can emit; docs/verification/process-event-sources.md
-// records the cases and says so.
+// THE REFUSAL IS DELIBERATELY WIDER THAN THE DAMAGE IT CAN NAME, and that is the
+// intended direction: a false refusal reaches the captain as a note telling him to
+// read the result himself, so it is visible and gets fixed, while a row of his lost
+// in silence is never visible at all. For this channel the expensive error is the
+// silent one.
+//
+// WHAT HOLDS THAT UP is a measurement, not an argument: no real output of the
+// installed 0.1.52 needs the repair. 12 shapes were encoded with the encoder the
+// producer itself uses and read back here - the tabular rendering, the LIST
+// rendering, a nested `target`, an attachment list, `artifact_failures` present,
+// accented UTF-8 captain prose, an empty `prompts` array, a prompt carrying escaped
+// quotes, commas and embedded newlines, plus the `ended`, `waiting`,
+// missing-session and interrupted-poll responses - and all 12 decoded on the FIRST
+// attempt, none needing repair, with delivered rows equal to declared every time.
+// That is 12 measured shapes, not a proof over every response the producer can
+// emit; docs/verification/process-event-sources.md records them case by case.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -227,8 +254,10 @@ function publishedRows(document) {
 }
 
 // The non-strict read from the header and the one repair behind it, over the
-// captured text: decode it, then repair the trailing cut. Returns undefined when
-// neither reads it.
+// captured text: decode it, then repair the trailing cut. Reports `{ document,
+// repaired }` so its caller can ask the one question that matters - did this
+// document arrive damaged - rather than infer it. Returns undefined when neither
+// reads it.
 function readDocument(decode, text) {
   const lines = text.split('\n');
   const attempt = (candidate) => {
@@ -239,14 +268,14 @@ function readDocument(decode, text) {
     }
   };
   let document = attempt(lines);
-  if (document !== undefined) return document;
+  if (document !== undefined) return { document, repaired: false };
   const floor = Math.max(0, lines.length - MAX_REPAIR_LINES);
   for (let end = lines.length; end > floor; end--) {
     const head = lines.slice(0, end);
     document = attempt([...head.slice(0, -1), `${head[end - 1]}"`]);
-    if (document !== undefined) return document;
+    if (document !== undefined) return { document, repaired: true };
     document = attempt(head.slice(0, -1));
-    if (document !== undefined) return document;
+    if (document !== undefined) return { document, repaired: true };
   }
   return undefined;
 }
@@ -270,15 +299,18 @@ try {
   fail(`result file could not be read: ${error.message}`);
 }
 
-const document = readDocument(decode, text);
-if (document === undefined) fail(`result file is not readable TOON: ${path}`);
+const read = readDocument(decode, text);
+if (read === undefined) fail(`result file is not readable TOON: ${path}`);
 
-const published = publishedRows(document);
+const published = publishedRows(read.document);
 
-// The recovery bound described in the header: a content block the captured text
-// declares but no read recovered, and rows a declared block announced but no read
-// delivered, were both dropped rather than read - and dropping them silently is
-// the defect this reader exists to end.
+// The bound described in the header, asked directly: did this document arrive
+// damaged, with no cut to explain it? A repair that ran is damage whatever it
+// touched, including damage a row count can never see.
+if (!cut && read.repaired) {
+  fail(`result file needed a trailing-cut repair on a capture recorded as complete: ${path}`);
+}
+
 if (DECLARED_CONTENT_BLOCK.test(text)) {
   const declared = declaredRowCount(text);
   if (!published.decoded) {
