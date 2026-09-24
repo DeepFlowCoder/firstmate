@@ -102,18 +102,29 @@ assert_never_silently_cheap() {
 
 DECIDE_OUT=
 DECIDE_CODE=0
+DECIDE_FAILED_READS=0
 
-# run_decide <home> <fakebin-or-empty> <decide-args...> -> DECIDE_OUT/DECIDE_CODE
+# run_decide <home> <fakebin-or-empty> <decide-args...>
+#   -> DECIDE_OUT/DECIDE_CODE/DECIDE_FAILED_READS
+# DECIDE_OUT carries the decision's own voice and nothing else, because
+# assert_never_silently_cheap weighs it as the evidence that the tool spoke: the
+# shim names the read it refused in FM_SHIM_REPORT rather than on stderr, and
+# DECIDE_FAILED_READS is how a case knows that injection fired at all.
 run_decide() {
-  local home=$1 fakebin=$2
+  local home=$1 fakebin=$2 report
   shift 2
+  DECIDE_FAILED_READS=0
   if [ -n "$fakebin" ]; then
+    report="$fakebin.injected"
+    : > "$report"
     DECIDE_OUT=$(FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
-      FM_SHIM_GIT="$REAL_GIT" PATH="$fakebin:$PATH" "$LANE" "$@" 2>&1)
+      FM_SHIM_GIT="$REAL_GIT" FM_SHIM_REPORT="$report" PATH="$fakebin:$PATH" "$LANE" "$@" 2>&1)
+    DECIDE_CODE=$?
+    DECIDE_FAILED_READS=$(grep -c . "$report" || true)
   else
     DECIDE_OUT=$(FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$LANE" "$@" 2>&1)
+    DECIDE_CODE=$?
   fi
-  DECIDE_CODE=$?
 }
 
 deg_home() {  # <name> -> a home for the record these cases append to
@@ -181,7 +192,7 @@ for a in "$@"; do
 done
 [ -z "${FM_SHIM_TRACE:-}" ] || printf '%s\n' "$sig" >> "$FM_SHIM_TRACE"
 if [ -n "${FM_SHIM_FAIL:-}" ] && [ "$sig" = "$FM_SHIM_FAIL" ]; then
-  echo "fm-shim: this read is unavailable: $sig" >&2
+  [ -z "${FM_SHIM_REPORT:-}" ] || printf '%s\n' "$sig" >> "$FM_SHIM_REPORT"
   exit 1
 fi
 exec "$FM_SHIM_GIT" "$@"
@@ -303,7 +314,7 @@ run_negative() {  # <k> <fail-signature> <trace-file>
 }
 
 test_no_read_the_decision_makes_can_manufacture_a_demonstration() {
-  local trace sigs sig k count=0 refusals=0 label
+  local trace sigs sig k count=0 refusals=0 fired=0 label
 
   build_degradation_fixture
   trace="$TMP_ROOT/reads/trace"
@@ -334,13 +345,19 @@ test_no_read_the_decision_makes_can_manufacture_a_demonstration() {
 
   while IFS= read -r sig; do
     [ -n "$sig" ] || continue
+    fired=0
     for k in 1 2 3 4; do
       run_negative "$k" "$sig" ''
       label=${NEG_LABELS[$((k - 1))]}
       assert_never_silently_cheap "with [$sig] unreadable, $label" \
         "$DECIDE_CODE" "$DECIDE_OUT"
       [ "$DECIDE_CODE" -eq 0 ] || refusals=$((refusals + 1))
+      fired=$((fired + DECIDE_FAILED_READS))
     done
+    # The row's own vacuity guard: an assertion over a read that was never
+    # actually refused is an assertion over an ordinary run.
+    [ "$fired" -gt 0 ] || fail \
+      "[$sig] was named in the trace but refused in none of the four negative controls, so its row asserted over undisturbed runs"
   done < "$sigs"
 
   # Breaking a read the decision depends on has to be able to stop it. If no

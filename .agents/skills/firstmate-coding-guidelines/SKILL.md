@@ -101,10 +101,7 @@ Refusing and saying so are different things, and which is owed depends on what w
 When the unevaluable input carries the guard's own authority, refuse out loud and name the concrete thing that could not be determined, because a guard that declines in silence reads exactly like one that passed.
 When an optional signal cannot be established, record it as unestablished and take the more conservative branch rather than stopping the work, because a guard that refuses everything it does not understand is retired by whoever has to work around it.
 
-Prove the guard mechanically wherever the input has channels a test can break.
-Aim every probe at a negative control, an input that must NOT pass, and assert that making a read or a channel fail never turns it into one that passes.
-That formulation is what keeps the matrix precise: demanding that every failed read change the verdict raises alarms on reads the answer never depended on, and those false alarms are what get the check deleted.
-Derive the matrix from what the code does rather than from a written list, so a channel added later is probed without anyone remembering to extend it, and guard the matrix against going vacuous by asserting that the positive controls really pass and the negative ones really fail with nothing broken.
+Prove the guard mechanically wherever the input has channels a test can break, and read the header of `tests/fm-lane-degradation.test.sh` before you write that proof: it owns the invariant that keeps such a matrix precise, and getting that wrong is what produces a check so full of false alarms that the next person deletes it.
 
 A matrix can only break a channel the code reads, so it cannot see a property the guard never asks about at all.
 That residual is why this rule is written here as well, and why it is read before the guard is built rather than after it ships.
