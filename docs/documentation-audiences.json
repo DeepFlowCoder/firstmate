@@ -441,6 +441,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/lane-degradation-matrix.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/lint-lane-memory.md",
       "audience": "maintainer-verification"
     },

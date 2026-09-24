@@ -3,7 +3,8 @@ name: firstmate-coding-guidelines
 description: >-
   Agent-only reference for changing firstmate's shared, tracked material per AGENTS.md section 1.
   Use before editing any of that material, whether working as firstmate directly or as a crewmate briefed on a firstmate-repo task.
-  Covers the knowledge-placement decision tree, the one-owner rule for contracts, the inline-stub pattern for content moved into a skill, AGENTS.md size discipline, trigger hygiene for new skills, and repo style rules (one sentence per line, plain dash, no agent co-author, shellcheck-clean bin scripts, colocated tests, and maintainer-verification evidence).
+  Also use before building or changing a guard, for the rule on guards that cannot evaluate their input.
+  Covers the knowledge-placement decision tree, the one-owner rule for contracts, the inline-stub pattern for content moved into a skill, AGENTS.md size discipline, trigger hygiene for new skills, guards that degrade silently instead of refusing, and repo style rules (one sentence per line, plain dash, no agent co-author, shellcheck-clean bin scripts, colocated tests, and maintainer-verification evidence).
 user-invocable: false
 metadata:
   internal: true
@@ -80,6 +81,33 @@ Mark an axis not applicable only after inspecting its integration surface, and u
 
 For critical safety, routing, startup, and supervision infrastructure, prefer deterministic and idempotent enforcement over relying on agent memory alone.
 Keep instructions as the authority and discovery layer, but make repeated execution converge safely and make invalid or unsafe states fail closed wherever the runtime can enforce them.
+
+### Guards that cannot evaluate their input
+
+Read this before building or changing a guard, not after.
+This section is the single owner of the rule; `tests/fm-lane-degradation.test.sh` is the single owner of the mechanical form of it, and its header states the invariant and how to copy the pattern.
+
+A guard receives something it cannot evaluate and, instead of refusing, carries on with a weaker check or with none.
+It does not fail, it does not warn, it stops protecting, and from outside that is indistinguishable from having protected.
+Seven instances of that one shape were found in a single delivery on 2026-09-23, and an eighth was found by the matrix written to hunt them, so treat it as the default failure mode of new guard code rather than an unlucky run of bugs.
+
+Four rules close the shapes it takes.
+Absent and unreadable are different answers and must be answered differently, so an existence test that could not run is never evidence of non-existence.
+Absence of signal is not signal of absence, so a change with nothing to measure, such as a commit that only flips a permission bit, is unevaluated rather than benign.
+A name is not the object and a location is not a type, so establish the property itself rather than a proxy for it, and ask the system that actually holds the answer.
+Unknown and zero are not the same value, so a count nobody established must never be compared as though it were the cheapest one.
+
+Refusing and saying so are different things, and which is owed depends on what was lost.
+When the unevaluable input carries the guard's own authority, refuse out loud and name the concrete thing that could not be determined, because a guard that declines in silence reads exactly like one that passed.
+When an optional signal cannot be established, record it as unestablished and take the more conservative branch rather than stopping the work, because a guard that refuses everything it does not understand is retired by whoever has to work around it.
+
+Prove the guard mechanically wherever the input has channels a test can break.
+Aim every probe at a negative control, an input that must NOT pass, and assert that making a read or a channel fail never turns it into one that passes.
+That formulation is what keeps the matrix precise: demanding that every failed read change the verdict raises alarms on reads the answer never depended on, and those false alarms are what get the check deleted.
+Derive the matrix from what the code does rather than from a written list, so a channel added later is probed without anyone remembering to extend it, and guard the matrix against going vacuous by asserting that the positive controls really pass and the negative ones really fail with nothing broken.
+
+A matrix can only break a channel the code reads, so it cannot see a property the guard never asks about at all.
+That residual is why this rule is written here as well, and why it is read before the guard is built rather than after it ships.
 
 ### Harness-dependent checks
 
