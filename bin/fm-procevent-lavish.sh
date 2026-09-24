@@ -483,6 +483,20 @@ sub lavish_prompt_rows {
   return undef unless ref($rows) eq "ARRAY";
   return $rows;
 }
+# The one owner of every decoration field cut to the 512-byte bound: the label
+# beside a keyed answer and the context beside a captain message, which are cut
+# rather than refused when they overrun. A value already within the bound comes
+# back byte-identical; past it, only whole characters survive, because the cut
+# is taken on the decoded text and re-encoded rather than on the raw bytes. So
+# no field this bounds can leave holding half of a multi-byte sequence, which is
+# the one way a cut alone could put bytes no UTF-8 reader accepts into the
+# durable record of a captain decision.
+sub lavish_bounded_field {
+  my ($value) = @_;
+  return $value if length($value) <= 512;
+  my $cut = substr($value, 0, 512);
+  return Encode::encode("UTF-8", Encode::decode("UTF-8", $cut, Encode::FB_QUIET));
+}
 sub lavish_keyed_answer {
   my ($f) = @_;
   return undef unless defined $f->{tag} && $f->{tag} eq "choice";
@@ -514,7 +528,7 @@ sub lavish_keyed_answer {
   return undef unless length $answer && length($answer) <= 512;
   my $label = defined $f->{text} ? $f->{text} : "";
   s/[\x00-\x1f\x7f]/ /g for ($answer, $label);
-  $label = substr($label, 0, 512);
+  $label = lavish_bounded_field($label);
   return { key => $key, answer => $answer, label => $label, mode => $mode };
 }
 '
@@ -608,7 +622,7 @@ cmd_messages() {
       s/\A\s+//, s/\s+\z// for ($prompt, $text);
       my ($message, $context) = length $prompt ? ($prompt, $text) : ($text, "");
       next unless length $message;
-      $context = substr($context, 0, 512);
+      $context = lavish_bounded_field($context);
       print "$message\t$context\n";
     }
   ' || exit 3
