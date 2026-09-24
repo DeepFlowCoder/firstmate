@@ -352,18 +352,17 @@ if [ "$PROVIDER" = github ]; then
   # One reading, rendered flat so it can be parsed without a JSON processor,
   # which bin/fm-pr-poll.sh documents this repo as not requiring. gh supplies its
   # own -q evaluator, so this adds no dependency beyond the gh already used here.
+  #
+  # This header owns the record GRAMMAR; the expression that produces each check
+  # record is FM_PR_FITNESS_RECORD_JQ in bin/fm-pr-fitness-lib.sh, which the
+  # bearings board renders through as well. What is spelled here is only the
+  # framing this gate needs around it: the pr, base, and declared-count lines.
   # shellcheck disable=SC2016  # jq bindings and interpolation are not shell variables.
   FITNESS_QUERY='"pr \(.state) \(.mergeable) \(.mergeStateStatus)",
   "base \(.baseRefName) \(.headRefOid)",
   "checks \((.statusCheckRollup // []) | length)",
   (.statusCheckRollup[]? |
-    (.startedAt | if type == "string" then (try fromdateiso8601 catch 0) else 0 end
-      | if . > 0 then . else 0 end) as $started |
-    if .__typename == "CheckRun" then
-      "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \($started) \(if ((.workflowName // "") | tostring | length) > 0 then "workflow=\((.workflowName | tostring) | @base64)" else "degraded" end) \(.name)"
-    else
-      "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \($started) degraded \(.context)"
-    end)'
+    '"$FM_PR_FITNESS_RECORD_JQ"')'
 
   # gh's own diagnostics are kept rather than discarded: "not authenticated for
   # this host", "no pull request found", and "API rate limit exceeded" all reach

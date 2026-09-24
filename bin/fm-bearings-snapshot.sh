@@ -316,57 +316,42 @@ PR_NL='
 
 # Render a whole repo's pull requests in one pass, one line per pull request:
 #   <number><TAB><empty><TAB><reading><TAB><reading>...
-# where each reading is one check record in the form bin/fm-pr-merge.sh's header
-# owns and fm_pr_fitness_classify reads. The field after the number is always
-# empty, so a pull request carrying no check at all still produces a line
-# carrying a tab and still reaches the fold below, which reads it as none rather
-# than leaving it unanswered. That empty field is this function's framing rather
-# than a record, so the fold strips it before the reading reaches the owner.
+# where each reading is one check record rendered by FM_PR_FITNESS_RECORD_JQ in
+# bin/fm-pr-fitness-lib.sh - the same expression the merge gate renders through,
+# not a second spelling of it. What this function adds is framing only.
+#
+# The field after the number is always empty, so a pull request carrying no check
+# at all still produces a line carrying a tab and still reaches the fold below,
+# which reads it as none rather than leaving it unanswered. That empty field is
+# this function's framing rather than a record, so the fold strips it before the
+# reading reaches the owner.
 #
 # @tsv is what holds that framing: it escapes a tab or a newline inside a forge
 # value instead of letting it break the line and fabricate a reading of its own.
 #
-# A sentinel stands in for any status, conclusion, or state the forge left empty
-# or null, so no field is lost to the classifier's word split. An entry this
-# cannot recognise as either form is rendered as an unreadable degraded check
-# run, which the owner classifies as failing. The same sentinel reading is what
-# `try ... catch` renders for a pull request whose entry errors the render, so
-# one unreadable pull request reads failing on its own rather than dragging every
-# other pull request in the repo down with it.
+# The per-entry `try ... catch` is this caller's too, and stays here: a pull
+# request whose entry errors the render reads failing on its own rather than
+# dragging every other pull request in the repo down with it. The merge gate has
+# no such catch on purpose - an entry it cannot render fails the whole read and
+# it reports unmeasurable - so this must not move into the shared renderer.
 #
-# The trailing name is rendered exactly as the merge gate renders it, empty
-# included, and is deliberately the one field given no sentinel. It is last, so
-# an empty one loses no field to the split, and the owner reads a record with no
-# name as one nothing identifies and folds it with nothing. Naming it here
-# instead would give two such records one identity and let a later green
-# supersede a red - the divergence from the merge gate this whole path exists to
-# close.
+# __typename is what the shared renderer dispatches on, and nothing else. A
+# legacy status context arriving without one still renders context form
+# correctly, because context form is the else branch. What that dispatch decides
+# strictly is a CHECK RUN arriving without one: it renders context form, reads
+# UNKNOWN, and classifies failing - here exactly as at the merge gate, rather
+# than green here and refused there.
 #
-# __typename is expected in practice on a rollup entry, and the two shape tests
-# behind it exist because a legacy status context arriving without one would
-# otherwise be classified as a check run, read UNKNOWN/NONE, and report a healthy
-# delivery as failing. Nobody has verified against GitHub's API that such an
-# entry cannot arrive: __typename is a GraphQL meta-field present here only
-# because the gh CLI's selection set asks for it, which is a property of that
-# client and not a documented provider guarantee. Remove the two shape tests only
-# once someone verifies that against the API and cites the verification here.
+# One divergence from the merge gate is left open deliberately, and it is in this
+# framing rather than in the record: a check NAME containing a newline. @tsv
+# escapes it, so the record stays one line and classifies normally, while at the
+# gate the raw newline adds a line and the count guard reports unmeasurable.
+# Closing it would have to change what the gate does with such a name, and the
+# gate's verdict is frozen, so the two surfaces still disagree on that one shape.
+# It is recorded in docs/verification/pr-merge-fitness.md as an open residual.
 pr_checks_reading() {  # <gh pr list JSON array>
   printf '%s' "${1:-[]}" | jq -r '
-    def word($v; $fallback):
-      ($v | tostring) as $s | if $s == "" or $s == "null" then $fallback else $s end;
-    def started:
-      (.startedAt | if type == "string" then (try fromdateiso8601 catch 0) else 0 end
-        | if . > 0 then . else 0 end);
-    def reading:
-      (if (.__typename | tostring) == "StatusContext" then "context"
-       elif (.__typename | tostring) == "CheckRun" then "run"
-       elif (has("status") or has("conclusion")) then "run"
-       elif (has("state") or has("context")) then "context"
-       else "run" end) as $kind
-      | if $kind == "context"
-        then "check \(word(.state; "UNKNOWN")) CONTEXT \(started) degraded \(.context)"
-        else "check \(word(.status; "UNKNOWN")) \(word(.conclusion; "NONE")) \(started) \(if ((.workflowName // "") | tostring | length) > 0 then "workflow=\((.workflowName | tostring) | @base64)" else "degraded" end) \(.name)"
-        end;
+    def reading: '"$FM_PR_FITNESS_RECORD_JQ"';
     .[]
     | [(.number | tostring), ""]
       + [ try ((.statusCheckRollup // [])[] | reading) catch "check UNKNOWN NONE 0 degraded (unreadable check)" ]

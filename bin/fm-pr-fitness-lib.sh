@@ -69,6 +69,42 @@
 # fm_pr_fitness_rollup projects its verdict into one word, and
 # bin/fm-bearings-snapshot.sh reads that projection through the function.
 
+# FM_PR_FITNESS_RECORD_JQ: the single renderer of one `check ...` record from one
+# statusCheckRollup entry, in the grammar bin/fm-pr-merge.sh's header owns and
+# fm_pr_fitness_classify reads. It is a jq expression, not a function, because
+# its two callers feed jq programs to different tools - gh's -q evaluator at the
+# merge gate and a plain jq at the bearings board - and a record rendered two
+# ways is a verdict decided two ways.
+#
+# The kind dispatch is __typename and nothing else: a CheckRun is a CheckRun, and
+# every other entry - a legacy commit status, and equally an entry carrying no
+# __typename at all - renders context form. That is the strict side. An entry the
+# forge typed as a check run but served without its meta-field reads UNKNOWN in
+# context form and classifies failing, rather than being read as green on the
+# strength of fields a reader guessed the meaning of.
+#
+# A sentinel stands in for any status, conclusion, or state the forge left empty,
+# so no field is lost to the classifier's word split. The trailing name is
+# deliberately given none: it is last, so an empty one loses no field, and the
+# classifier reads a record with no name as one nothing identifies and folds it
+# with nothing. Substituting a stand-in name would give two such records one
+# identity and let a later green supersede a red.
+#
+# What a caller adds around this belongs to that caller, not here: the merge
+# gate's surrounding pr/base/checks lines, and the board's per-entry try/catch
+# and @tsv framing. In particular the gate has NO try/catch - an entry that
+# errors the render fails the whole read and the gate reports unmeasurable - so
+# moving the board's catch in here would turn that into a per-record verdict.
+# shellcheck disable=SC2016,SC2034  # jq bindings are not shell variables; the
+# renderer is read by the sourcing scripts rather than within this library.
+FM_PR_FITNESS_RECORD_JQ='(.startedAt | if type == "string" then (try fromdateiso8601 catch 0) else 0 end
+      | if . > 0 then . else 0 end) as $started |
+    if .__typename == "CheckRun" then
+      "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \($started) \(if ((.workflowName // "") | tostring | length) > 0 then "workflow=\((.workflowName | tostring) | @base64)" else "degraded" end) \(.name)"
+    else
+      "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \($started) degraded \(.context)"
+    end'
+
 # Every FM_PR_FITNESS_* name below is an output of fm_pr_fitness_classify, read
 # by the sourcing script rather than within this library.
 # shellcheck disable=SC2034

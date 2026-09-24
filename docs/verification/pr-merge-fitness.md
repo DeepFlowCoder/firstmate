@@ -354,7 +354,13 @@ gh pr view 17 --repo DeepFlowCoder/firstmate --json statusCheckRollup \
 2026-09-01T15:46:30Z SUCCESS Require no-mistakes
 ```
 
-Driven through the real `bin/fm-bearings-snapshot.sh --include-prs --json` on that rollup, with the gate classifying its own reading of the same pull request:
+Driven through the real `bin/fm-bearings-snapshot.sh --include-prs --json` on that rollup, with the gate classifying its own reading of the same pull request.
+Read the transport precisely: the rollup array above is the forge's, served by `gh` for pull request 17, but the two board numbers below were NOT produced by a live open-pull-request fetch.
+Pull request 17 is merged and 112 is closed, so the `gh pr list --state open` call the board makes cannot return either one.
+The measured array was injected through the test harness's fake `gh`, which fabricates the surrounding pull request object around it.
+The check data is real; the pull request wrapped around it and the transport that delivered it are not, and there is no way to put a merged pull request back on the board's own path to close that gap:
+
+
 
 ```
 === DeepFlowCoder/firstmate#17 ===
@@ -379,6 +385,50 @@ The strict arm holds at the same time, on the forge records `DeepFlowCoder/first
 ```
 
 The later green does not supersede the earlier red on either path, so sharing the owner bought the board agreement without costing it the workflow-identity rule.
+
+### The board's own query path carries the fields the fold depends on
+
+The readings above come from `gh pr view`, which is the merge gate's path.
+The board reads `gh pr list` instead, and the fold it now inherits depends on `__typename`, `workflowName`, and `startedAt` reaching it there.
+That is a separate serialisation and was measured separately, counting the nodes first so the answer cannot be the vacuous one a query over an empty stream returns:
+
+```sh
+gh pr list --repo DeepFlowCoder/firstmate --state all --limit 5 --json number,statusCheckRollup \
+| jq -r '[.[] | .statusCheckRollup[]?] as $n
+| "rollup nodes returned by the LIST path: \($n|length)",
+"nodes with __typename  : \([$n[]|select(has("__typename"))]|length)",
+"nodes with workflowName: \([$n[]|select(has("workflowName"))]|length)",
+"nodes with startedAt   : \([$n[]|select(has("startedAt"))]|length)",
+"example node keys: \($n[0]|keys|join(","))"'
+```
+
+```
+rollup nodes returned by the LIST path: 57
+nodes with __typename  : 57
+nodes with workflowName: 57
+nodes with startedAt   : 57
+example node keys: __typename,completedAt,conclusion,detailsUrl,name,startedAt,status,workflowName
+```
+
+The node count is non-zero, so the three field counts are answers rather than the silence of a query nothing reached.
+
+### One renderer, and the one residual it does not close
+
+Sharing the verdict left the RECORD still written twice: the board spelled its own copy of the gate's per-entry render, and the two had already drifted.
+`FM_PR_FITNESS_RECORD_JQ` in `bin/fm-pr-fitness-lib.sh` is now the single renderer both callers pass to their own jq evaluator, spelled exactly as the gate spelled it, so the gate's reading and its verdict are unchanged on every entry.
+What each caller keeps is framing only: the gate's `pr` / `base` / `checks <count>` lines, and the board's per-entry `try ... catch` and `@tsv`.
+
+The divergence the shared spelling closes is the kind dispatch.
+The gate dispatches on `__typename` alone; the board also guessed "check run" from the presence of a `status` or `conclusion` field, so a check run the forge served without its `__typename` read green on the board and was refused at the gate.
+Three shapes move as a result: an untyped green check run, an untyped green succeeding a typed red, and an untyped red followed by a typed green - the last being the one where the board was hiding a live red the gate kept.
+All three now render context form, read `UNKNOWN`, and classify `failing` on both paths.
+
+Those three shapes are CONSTRUCTED, not measured, and the distinction matters: the forge reading above shows all 57 rollup nodes carrying `__typename`, so no untyped entry occurs on this repository at all.
+They are held by the regressions in `tests/fm-bearings-snapshot.test.sh`, which label themselves as constructed, and a real instance stays unmeasured here for the same reason the degraded population does.
+
+One divergence is left OPEN deliberately: a check NAME containing a newline.
+It lives in the transport rather than in the record - the board's `@tsv` escapes the newline, so the record stays one line and classifies normally, while at the gate the raw newline adds a line and the count guard reports `unmeasurable`.
+Closing it would have to change what the merge gate does with such a name, and the gate's verdict was frozen for this change, so the two surfaces still answer that one shape differently and the board is the more permissive of the two.
 
 The degraded population could NOT be measured against this forge, and the reason is that it does not occur here:
 
