@@ -324,11 +324,18 @@ run_negative() {  # <k> <fail-signature> <trace-file>
 }
 
 test_no_read_the_decision_makes_can_manufacture_a_demonstration() {
-  local trace sigs sig k count=0 refusals=0 fired=0 label
+  local cheap_trace neg_trace neg_sigs sigs sig k count=0 refusals=0 fired=0
+  local required=0 unexercised=0 label
 
   build_degradation_fixture
-  trace="$TMP_ROOT/reads/trace"
-  : > "$trace"
+  # Two traces rather than one, because which reads the NEGATIVES make is what
+  # decides whether a row owes a refusal: a read only the cheap lane makes is
+  # NOT APPLICABLE to a negative control, which is not the same answer as a
+  # refusal that failed to happen.
+  cheap_trace="$TMP_ROOT/reads/trace-positive"
+  neg_trace="$TMP_ROOT/reads/trace-negative"
+  : > "$cheap_trace"
+  : > "$neg_trace"
 
   # The vacuity guards, all four of them, because a matrix that proves nothing
   # looks exactly like a matrix that passes. The positives must really be cheap,
@@ -336,19 +343,21 @@ test_no_read_the_decision_makes_can_manufacture_a_demonstration() {
   # must really be expensive with every read working, or the matrix is asserting
   # what was already true; and the trace must really have caught the reads.
   for k in 1 2 3; do
-    run_positive "$k" '' "$trace"
+    run_positive "$k" '' "$cheap_trace"
     assert_contains "$(lane_line "$DECIDE_OUT")" "lane=direct-PR" \
       "the matrix's positive control $k is not on the cheap lane, so the negatives prove nothing"
   done
   for k in 1 2 3 4; do
-    run_negative "$k" '' "$trace"
+    run_negative "$k" '' "$neg_trace"
     label=${NEG_LABELS[$((k - 1))]}
     assert_contains "$(lane_line "$DECIDE_OUT")" "lane=no-mistakes" \
       "the matrix's negative control ($label) was already cheap before anything was broken"
   done
 
+  neg_sigs="$TMP_ROOT/reads/signatures-negative"
   sigs="$TMP_ROOT/reads/signatures"
-  sort -u "$trace" > "$sigs"
+  sort -u "$neg_trace" > "$neg_sigs"
+  sort -u "$cheap_trace" "$neg_trace" > "$sigs"
   count=$(grep -c . "$sigs" || true)
   [ "$count" -ge 5 ] || fail \
     "the matrix derived only $count git reads from a run that makes several, so the shim is not in the decision's path"
@@ -364,10 +373,17 @@ test_no_read_the_decision_makes_can_manufacture_a_demonstration() {
       [ "$DECIDE_CODE" -eq 0 ] || refusals=$((refusals + 1))
       fired=$((fired + DECIDE_FAILED_READS))
     done
-    # The row's own vacuity guard: an assertion over a read that was never
-    # actually refused is an assertion over an ordinary run.
-    [ "$fired" -gt 0 ] || fail \
-      "[$sig] was named in the trace but refused in none of the four negative controls, so its row asserted over undisturbed runs"
+    # The row's own vacuity guard, owed only where the negatives make the read:
+    # an assertion over a read that was never actually refused is an assertion
+    # over an ordinary run.
+    if grep -qxF -e "$sig" "$neg_sigs"; then
+      [ "$fired" -gt 0 ] || fail \
+        "[$sig] is a read the negative controls make, yet none of the four refused it, so its row asserted over undisturbed runs"
+      required=$((required + 1))
+    else
+      unexercised=$((unexercised + 1))
+      printf '# [%s] is reached by the cheap lane only, so the negative controls owe no refusal of it\n' "$sig"
+    fi
   done < "$sigs"
 
   # Breaking a read the decision depends on has to be able to stop it. If no
@@ -376,7 +392,12 @@ test_no_read_the_decision_makes_can_manufacture_a_demonstration() {
   [ "$refusals" -gt 0 ] || fail \
     "no injected read failure changed the outcome anywhere, so the failure injection is not reaching the decision"
 
-  pass "lane: no read the decision makes can manufacture a demonstration by failing ($count reads probed)"
+  # And the not-applicable branch has its own way of going quiet: an empty or
+  # unwritten negative trace would excuse every row from the refusal it owes.
+  [ "$required" -gt 0 ] || fail \
+    "no signature was subject to the refused-at-least-once requirement, so the negative controls' trace excused the whole matrix"
+
+  pass "lane: no read the decision makes can manufacture a demonstration by failing ($count reads probed, $required refused under a negative control, $unexercised reached by the cheap lane only)"
 }
 
 # --- 2. every filesystem channel --------------------------------------------
