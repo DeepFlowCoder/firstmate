@@ -618,7 +618,7 @@ n=$(cat "$LAVISH_POLL_COUNT" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s\n' "$n" > "$LAVISH_POLL_COUNT"
 if [ "$n" = 1 ]; then
-  printf 'session:\n  file: /review.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nfeedback[1]{text}:\n  ship it\n'
+  printf 'session:\n  file: /review.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nprompts[1]{text}:\n  ship it\n'
 else
   printf 'session:\n  file: /review.html\n  status: ended\n  ended_by: user\n'
 fi
@@ -640,15 +640,14 @@ done
 # What must stay exactly one is the CAPTURE announcement: the defect this
 # regression pins was a source that kept being restarted, so a second
 # `procevent lavish` payload is the shape it took. The captain's own words in
-# that same result legitimately arrive as their own note wake beside it, which
-# is the established shape for a result carrying prose, so counting every
-# distinct payload instead would have this pass only while those words were
-# being dropped.
+# that same result earn their own note wake beside it, which is the established
+# shape for a result carrying prose, so counting every distinct payload instead
+# would count that note as a second restart.
 [ "$(wake_payloads "$HLT" | grep -F "procevent lavish" | sort -u | grep -c .)" = 1 ] \
   || fail "one Send & End produced more than one capture event: $(wake_payloads "$HLT" | sort -u)"
 assert_contains "$(wake_payloads "$HLT")" "procevent lavish $lavish_id 1" "the human's final feedback is announced"
 assert_contains "$(note_bodies "$HLT")" "ship it" \
-  "the human's words in a feedback-framed close reached the captain"
+  "the human's words in a published close reached the captain"
 assert_absent "$HLT/state/procevent/$lavish_id.source" "the ended review source retires automatically"
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/$lavish_id.claim" "the ended review releases its owned claim"
 LAVISH_RESULT=$(first_result "$HLT" "$lavish_id" || true)
@@ -1047,7 +1046,7 @@ case "${plan[$i]}" in
   other-server-error)
     printf 'error: Lavish Editor session store is unavailable\ncode: SERVER_ERROR\n'; exit 1 ;;
   feedback)
-    printf 'session:\n  file: /board.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nfeedback[1]{text}:\n  ship it\n' ;;
+    printf 'session:\n  file: /board.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nprompts[1]{text}:\n  ship it\n' ;;
   stream)
     printf 'x%.0s' {1..4096}
     printf 'ready\n' > "$LAVISH_STREAM_READY"
@@ -2082,28 +2081,27 @@ out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
   || fail "captain text spelling out list rows split into more than one record: $out"
 assert_contains "$out" "line one line two" "the flattened message lost its own words"
 
-# The block under the response's other published name. Twice in a row a reader
-# that recognized only some of the shapes the serializer emits made the captain's
-# words vanish at exit 0 - first this name, then the rendering below - so both
-# faces of that one defect are pinned here, and each is pinned in BOTH renderings
-# rather than only in the one that was reported.
+# One block carrying both kinds of row at once, in each of the two renderings the
+# serializer chooses between. The rendering is the axis a hand reader kept missing
+# - one row with a nested value switches the whole block - so both are pinned, and
+# each is pinned for BOTH commands rather than only the one that was reported.
 cat > "$MSGS" <<'EOF'
 session:
   file: /board.html
   status: feedback
   session_ended: true
   ended_by: user
-feedback[2]{uid,prompt,selector,tag,text}:
+prompts[2]{uid,prompt,selector,tag,text}:
   f1,"hold the release until Thursday","",message,"Freeform message"
   f2,"Context data: {\"question\":\"ship-it\",\"answer\":\"yes\"}","",choice,"Ship it"
 EOF
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" \
   "hold the release until Thursday" \
-  "a message in the block's other published name was lost in silence"
+  "a message sharing its tabular block with a keyed answer was lost in silence"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" "ship-it	yes	Ship it" \
-  "a keyed answer in the block's other published name was lost in silence"
+  "a keyed answer sharing its tabular block with a message was lost in silence"
 
-# The list rendering of that same name, which is what one row carrying an object
+# The list rendering of that same pair, which is what one row carrying an object
 # field does to the whole block - and the row that forces it is ordinary: an
 # element annotation, an attachment, a layout-warnings or whiteboard row all
 # carry one, and a single one of them takes every plain message beside it out of
@@ -2114,7 +2112,7 @@ session:
   status: feedback
   session_ended: true
   ended_by: user
-feedback[3]:
+prompts[3]:
   - uid: f3
     prompt: hold the release until Thursday
     selector: ""
@@ -2218,23 +2216,31 @@ ans_out=$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null) || ans
   || fail "a content block that decoded empty answered $ans_rc from the keyed-answer command"
 [ -z "$ans_out" ] || fail "an empty content block minted a keyed answer: $ans_out"
 
-# An empty block never shadows a populated one beside it: `prompts: []` is how the
-# serializer renders an empty array, and the captain's words in the block's other
-# published name have to arrive through both commands regardless.
+# Rows are read from the one key the response publishes them under, and DETECTION
+# of a content block stays deliberately wider than that reading. A result
+# declaring a top-level content block this reader takes no rows from is therefore
+# refused out loud - the general guard that would catch a block name this tool
+# does not publish today, which is why no branch per imagined name is carried.
 cat > "$MSGS" <<'EOF'
 session:
   file: /board.html
   status: feedback
-prompts: []
 feedback[2]{uid,prompt,selector,tag,text}:
   f8,"hold the release until Thursday","",message,"Freeform message"
   f9,"Context data: {\"question\":\"ship-it\",\"answer\":\"yes\"}","",choice,"Ship it"
 EOF
-assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" \
-  "hold the release until Thursday" \
-  "an empty published block shadowed the populated one carrying the captain's message"
-assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" "ship-it	yes	Ship it" \
-  "an empty published block shadowed the populated one carrying the keyed answer"
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "a declared block this reader takes no rows from answered $msg_rc instead of the read-failure exit"
+[ -z "$msg_out" ] \
+  || fail "a block this reader takes no rows from reported prose anyway: $msg_out"
+ans_rc=0
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null)" ] \
+  || fail "a block this reader takes no rows from still minted a keyed answer"
+"$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" >/dev/null 2>&1 || ans_rc=$?
+[ "$ans_rc" -eq 1 ] \
+  || fail "a block this reader takes no rows from answered $ans_rc from the keyed-answer command"
 
 # A published row whose shape yields no field at all is captain content this
 # reader cannot interpret, and it is refused out loud for the same reason the

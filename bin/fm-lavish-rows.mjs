@@ -15,13 +15,14 @@
 // no machine-readable alternative; docs/verification/process-event-sources.md
 // owns the three readings that measured that on 0.1.52, with the commands and
 // their output. Reading TOON is therefore not a choice. Hand-written frame
-// readers were the choice, and they cost two rounds of the same defect with
-// different faces: each shape the serializer chose that the reader did not
-// recognize made a captain message vanish with exit 0, indistinguishable from
-// the captain having said nothing. A decoder that implements the whole format
-// ends that class of defect instead of administering it, so the format's own
-// decoder is vendored under vendor/toon/ and this is the only reader of the
-// frame.
+// readers were the choice, and the serializer renders the one content block more
+// than one way: a single row carrying a nested value switches the whole block
+// from the tabular frame to the LIST frame, and a reader that recognized only the
+// tabular one made a captain message vanish with exit 0, indistinguishable from
+// the captain having said nothing. That was patched by hand once already. A
+// decoder that implements the whole format ends the class of defect instead of
+// administering it, so the format's own decoder is vendored under vendor/toon/
+// and this is the only reader of the frame.
 //
 // VENDORED DECODER. vendor/toon/index.mjs is @toon-format/toon 4.1.1's
 // published `dist/index.mjs`, byte for byte, with its MIT LICENSE beside it.
@@ -40,16 +41,18 @@
 // Never hand-edit the vendored module; refresh it through the commands above.
 //
 // WHICH BLOCK IS READ. The response's captain rows arrive under a top-level
-// `prompts` key, and `feedback` is the same block under the other name the
-// published vocabulary uses. Both are read, first `prompts` and then
-// `feedback`, because a block this reader does not accept is a block neither
-// content command can see - which is the defect above. Whichever of them
-// carries rows wins, so a block the response rendered empty can never shadow a
-// populated one beside it; an empty block is still recorded as a block that was
-// decoded, which is what the recovery bound below reads. Nothing else in the
-// document is searched: the keys are the published ones, not a guess, and
-// hunting for rows anywhere in the document would invent semantics this reader
-// does not own.
+// `prompts` key, and rows are read from that key alone. Measured in the
+// installed 0.1.52 rather than assumed: the response has ONE builder with ONE
+// call site, and the branch that carries content keys the block `prompts` on
+// every path it can take, so no second name can carry a row. What stays
+// deliberately over-broad is DETECTION, not reading: a captured result that
+// declares a top-level content block this reader took no rows from is refused
+// out loud instead of answered as an empty review, and that one guard is what
+// would catch a block name this tool does not publish today - which is why no
+// speculative branch per imagined name is carried here. Nothing else in the
+// document is searched: the key is the published one, not a guess, and hunting
+// for rows anywhere in the document would invent semantics this reader does not
+// own.
 //
 // WHAT A ROW BECOMES. One field map per published row, carrying that row's
 // SCALAR fields only, each as a string. A nested object or array value is
@@ -162,24 +165,18 @@ function rowFields(row) {
   return Object.keys(fields).length > 0 ? fields : undefined;
 }
 
-// The published block, under either of the two names the response vocabulary
-// uses for it, reported as `{ decoded, rows }` so an empty block stays
-// distinguishable from no block at all. A key that is present but is not an
-// array of rows is not that block and is passed over, so a scalar
-// `feedback: none` cannot shadow a real `prompts` block beside it; neither can
-// an empty array, because the populated block is preferred over it.
+// The published block, reported as `{ decoded, rows }` so a block that decoded
+// and is empty stays distinguishable from no block at all - which is what the
+// recovery bound below reads. A `prompts` key that is present but is not an
+// array of rows is not that block, so it is passed over here and refused by that
+// bound rather than read for something it is not.
 function publishedRows(document) {
   if (document === null || typeof document !== 'object' || Array.isArray(document)) {
     return { decoded: false, rows: [] };
   }
-  let decoded = false;
-  for (const key of ['prompts', 'feedback']) {
-    const value = document[key];
-    if (!Array.isArray(value)) continue;
-    if (value.length > 0) return { decoded: true, rows: value };
-    decoded = true;
-  }
-  return { decoded, rows: [] };
+  const rows = document.prompts;
+  if (!Array.isArray(rows)) return { decoded: false, rows: [] };
+  return { decoded: true, rows };
 }
 
 // Steps 1 and 2 of the header's recovery ladder over one prefix: decode it, then

@@ -99,14 +99,19 @@
 # and its header owns the frame contract: which block is read, what a row
 # becomes, and how a capture the output bound cut still delivers what survived.
 # Nothing here parses the frame, which is deliberate. Reading the frame by hand
-# cost two rounds of one defect wearing different faces - the response is one
-# object the serializer may render several ways, and every rendering a hand
-# reader did not recognize made the captain's words vanish at exit 0 - so the
+# already cost one round of silent loss - the response is one object the
+# serializer renders more than one way, and a rendering the hand reader did not
+# recognize made the captain's words vanish at exit 0 - so the
 # frame layer is the decoder's and this adapter keeps only what is specific to
 # Lavish: which rows are prose, which are keyed answers, and what each is capped
 # at. The `silent` seam's own content check stays a separate, deliberately
 # over-broad line scan, because it decides only whether a result carries any
 # content block at all and must keep failing toward announcing.
+#
+# The `feedback[N]` alternative the `silent` seam's content check accepts is
+# deliberately over-broad DETECTION, not a third frame - that check fails toward
+# announcing, so admitting a frame that never arrives costs nothing, while
+# reading rows out of it here would report utterances the poll never published.
 #
 # Two published rows are machine-shaped rather than typed prose - a
 # `layout-warnings` tag carrying queued layout issues, and a `whiteboard` tag
@@ -165,7 +170,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,153p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,158p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
