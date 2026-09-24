@@ -1414,6 +1414,89 @@ EOF
   pass "a check that reached no verdict never reads as passing, and green checks still do"
 }
 
+# The three cases below are the same question - did this check pass - asked of
+# the board on the record shapes the merge gate folds. They are the regression
+# for two surfaces answering it separately, which they did until the board was
+# routed through the gate's own classifier. The readings are the ones
+# DeepFlowCoder/firstmate actually served, recorded in
+# docs/verification/pr-merge-fitness.md, and each one is a shape where taking the
+# worst raw record and folding by identity give DIFFERENT answers, so a case
+# that stopped separating them would stop testing anything.
+#
+# firstmate#17 is the shape this repository reaches every time it goes green:
+# Require no-mistakes reads the pull request body from its own event payload, so
+# the run before the body was attested is expected to be superseded, and GitHub
+# returns both runs under one head. Measured on that reading, the board said
+# failing while the gate read its checks as green.
+test_superseded_red_uses_the_merge_fitness_verdict() {
+  local home fakebin rollup reds json got
+  home=$(make_home superseded-check); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-01T15:45:35Z","workflowName":"Require no-mistakes","name":"PR must be raised via no-mistakes"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"Require no-mistakes","name":"PR must be raised via no-mistakes"}]'
+  # Without a live red among the records there is no superseding to test and a
+  # passing verdict would prove nothing, so the fixture is checked for one.
+  reds=$(printf '%s' "$rollup" | jq '[.[] | select(.conclusion != "SUCCESS")] | length')
+  [ "$reds" -ge 1 ] || fail "the firstmate#17 fixture no longer carries a red to be superseded"
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on the forge-measured superseded-red reading"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = passing ] \
+    || fail "bearings read $got where the merge gate reads the later same-workflow run as current"
+  pass "a red superseded by a later run of the same check reads passing on both paths"
+}
+
+# A third-party CheckRun has no workflow identity, so two same-named records
+# cannot prove they are re-runs of one check. The merge gate gives those
+# degraded records a key nothing else shares and folds them with nothing; the
+# board has to inherit that strict answer rather than hide the earlier red.
+test_degraded_records_never_supersede_each_other() {
+  local home fakebin rollup json got
+  home=$(make_home degraded-check); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-01T15:45:35Z","workflowName":"","name":"Third-party check"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"","name":"Third-party check"}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on degraded check records"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got after a red degraded record that no later green can prove it superseded"
+  pass "a red record with no workflow identity is never superseded on the board either"
+}
+
+# An unnamed record is identified by nothing, so the gate folds it with nothing.
+# Rendering a stand-in name here instead would give two of them one identity and
+# let the later green carry the red away - a false green the board would report
+# and the gate would not. The two records share a workflow deliberately: with a
+# name substituted they fold, and only the empty name keeps them apart.
+test_unnamed_records_are_identified_with_nothing() {
+  local home fakebin rollup json got
+  home=$(make_home unnamed-check); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-01T15:45:35Z","workflowName":"CI","name":""},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"CI","name":""}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on unnamed check records"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got after a red record no name identifies with the green beside it"
+  pass "a record the forge gave no name is folded with nothing on the board"
+}
+
+# firstmate#112 carries two DISTINCT workflows each rendering a check of the same
+# name, the earlier one red. The fold key is the workflow-and-name pair, so the
+# later green belongs to a different check and supersedes nothing. The board must
+# keep reading that red rather than inheriting a fold the gate does not make.
+test_same_name_in_two_workflows_never_folds() {
+  local home fakebin rollup json got
+  home=$(make_home collision-check); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-24T05:41:39Z","workflowName":"Fold key collision A","name":"Shared collision check"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-24T05:44:17Z","workflowName":"Fold key collision B","name":"Shared collision check"}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on the forge-measured workflow-collision reading"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got after a red check another workflow's same-named green cannot supersede"
+  pass "a same-named check in another workflow supersedes nothing on the board either"
+}
+
 test_partial_github_failure_degrades() {
   local home fakebin json rc
   home=$(make_home partial); write_fixture "$home"
@@ -2692,6 +2775,10 @@ test_superseded_queued_item_dropped_by_default
 test_default_view_filters_by_structured_state_not_row_prose
 test_include_prs_is_the_only_fetch_path
 test_no_verdict_check_is_never_reported_passing
+test_superseded_red_uses_the_merge_fitness_verdict
+test_degraded_records_never_supersede_each_other
+test_unnamed_records_are_identified_with_nothing
+test_same_name_in_two_workflows_never_folds
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags

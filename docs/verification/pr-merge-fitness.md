@@ -161,8 +161,11 @@ The side not taken is the one a merge guard cannot have: a degraded key that col
 For a `CheckRun` an Actions workflow ran, the renderer reads `workflowName` off the same `statusCheckRollup` object, so the pair costs no second query; it base64-encodes that name into one whitespace-free `workflow=<base64>` field, and the classifier folds only records whose workflow field and check name both match.
 That pair is narrower than the check name alone, and it is still not an identity: GitHub does not require a workflow's display name to be unique across workflow files, so two workflows both named `CI`, each rendering a check of the same name, form one fold key here and the later record still supersedes the earlier one.
 That is the only remaining population in this reading where distinct things share a fold key, and the reading carries no workflow path or id to narrow it.
-Outside the gate the fold has exactly one other consumer, `bin/fm-bearings-snapshot.sh`, and it cannot carry this defect: it reads through `fm_pr_fitness_rollup`, which does not fold at all but takes the worst verdict over every record, so it can show a stale red on the board and never hide a live one.
-`bin/fm-ci-timeout-overrun.sh` is the only other script reading check conclusions, and it keys by job id for a diagnostic rather than for a merge decision. Neither is changed here.
+Outside the gate the classifier has exactly one other consumer, `bin/fm-bearings-snapshot.sh`, and it now reaches the same verdict through the same fold: `fm_pr_fitness_rollup` supplies neutral pull-request fields and maps the classifier's verdict to one word rather than deciding anything itself.
+So the board inherits this residual too - two workflows sharing a display name still form one fold key on the board as they do at the gate - and that is the deliberate price of one owner.
+The alternative was measured and is worse: while the board judged every record independently it read `DeepFlowCoder/firstmate#17` as failing at the same instant the gate read its checks as green, which is this repository's normal route to green rather than an edge case, so the two surfaces contradicted each other on ordinary work.
+The measurement of that divergence and of its closure is recorded below under "One owner for the check verdict".
+`bin/fm-ci-timeout-overrun.sh` is the only other script reading check conclusions, and it keys by job id for a diagnostic rather than for a merge decision. It is not changed here.
 
 That `workflowName` is a flat key on `gh`'s `statusCheckRollup` serialisation rather than a nested `checkSuite.workflowRun.workflow.name` is measured, not assumed, because the whole CheckRun fold rests on it: were it absent, `(.workflowName // "")` would render `degraded` for every check run, nothing would fold, and this repository's normal route to green - the two runs of `PR must be raised via no-mistakes` recorded below, the first of them red - would refuse every pull request until `--captain-override-red`.
 Read off a real head of this repository, `DeepFlowCoder/firstmate#109`, which nothing was constructed for:
@@ -332,6 +335,64 @@ The recency key is the run's own start time, rendered as epoch seconds, because 
 The `kubernetes/kubernetes` reading recorded above shows that directly: its start times run 1788289214, 1788290505, 1788288716, 1788288745, 1788288719, so the third record starts earlier than the second and the reading's own order carries no chronology to read.
 Start time rather than completion time, so a re-run still in progress, which has no completion at all, supersedes the finished run it replaced instead of losing to it.
 Records of one identity reporting the same start time are left unordered and the worst of them survives.
+
+## One owner for the check verdict
+
+Measured 2026-09-24 against `DeepFlowCoder/firstmate`.
+
+Two surfaces answer "did this check pass": `bin/fm-pr-merge.sh`, which gates the merge, and `bin/fm-bearings-snapshot.sh`, which reports a summary to the captain.
+Until this change each decided independently, and the divergence is reachable on ordinary work rather than on a constructed edge case.
+`DeepFlowCoder/firstmate#17` carries the shape this repository reaches every time it goes green, because `Require no-mistakes` reads the pull request body from its own event payload and the run before the body was attested is expected to be superseded:
+
+```sh
+gh pr view 17 --repo DeepFlowCoder/firstmate --json statusCheckRollup \
+  -q '.statusCheckRollup[] | select(.name == "PR must be raised via no-mistakes") | "\(.startedAt) \(.conclusion) \(.workflowName)"'
+```
+
+```
+2026-09-01T15:45:35Z FAILURE Require no-mistakes
+2026-09-01T15:46:30Z SUCCESS Require no-mistakes
+```
+
+Driven through the real `bin/fm-bearings-snapshot.sh --include-prs --json` on that rollup, with the gate classifying its own reading of the same pull request:
+
+```
+=== DeepFlowCoder/firstmate#17 ===
+  merge gate         : judged=17 failing=0 superseded=1
+  board reader before: failing
+  board reader after : passing
+```
+
+Before, the board reported a live delivery as failing at the same instant the gate read its checks as green.
+After, both answers come from `fm_pr_fitness_classify`, so there is one verdict rather than two that happen to agree.
+
+The strict arm holds at the same time, on the forge records `DeepFlowCoder/firstmate#112` carries, where two distinct workflows each render a check named `Shared collision check` and the earlier one is red:
+
+```
+=== DeepFlowCoder/firstmate#112 ===
+  check name repeated: Shared collision check
+    2026-09-24T05:41:39Z  FAILURE  workflow=Fold key collision A
+    2026-09-24T05:44:17Z  SUCCESS  workflow=Fold key collision B
+  merge gate         : judged=3 failing=1 superseded=0
+  board reader before: failing
+  board reader after : failing
+```
+
+The later green does not supersede the earlier red on either path, so sharing the owner bought the board agreement without costing it the workflow-identity rule.
+
+The degraded population could NOT be measured against this forge, and the reason is that it does not occur here:
+
+```sh
+gh pr list --repo DeepFlowCoder/firstmate --state all --limit 60 --json number,statusCheckRollup \
+ | jq '[.[] | .statusCheckRollup[]? | select((.__typename != "CheckRun") or (((.workflowName // "") | length) == 0))] | length'
+```
+
+```
+0
+```
+
+Every one of the records across those pull requests is a `CheckRun` carrying a workflow name, and no legacy status context appears at all, so this repository has no third-party check app and no commit status to read.
+The degraded verdict is therefore held by the portable regression below rather than by a forge reading, and a real instance of it stays unmeasured here.
 
 ## Staleness is measurable without depending on a repository setting
 
