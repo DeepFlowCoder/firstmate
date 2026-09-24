@@ -177,7 +177,7 @@ fm_pr_fitness_context() {
 # written - was reported to the captain as passing, which is the one direction a
 # check summary must not be wrong in.
 #
-# The summary is deliberately NOT folded by check name the way
+# The summary is deliberately NOT folded by record identity the way
 # fm_pr_fitness_classify is. A red left behind by a run that a later run
 # superseded still reaches this verdict, so the summary can read failing for a
 # check that is green now. That is the direction this fold is allowed to be
@@ -420,12 +420,12 @@ fm_pr_fitness_classify() {
   # in progress supersedes the completed run it replaced instead of losing to a
   # completion the replaced run has and it does not yet.
   #
-  # Records of one name reporting the SAME start time carry no evidence of which
-  # is current, so the worst of them survives: an ordering that cannot be
+  # Records of one identity reporting the SAME start time carry no evidence of
+  # which is current, so the worst of them survives: an ordering that cannot be
   # measured refuses rather than picking the convenient record. A record the
   # renderer could not date - the forge reported no start time for it, or
   # reported one no date parse accepts - is unorderable in the same way and for
-  # the same reason, so it neither supersedes a sibling of its name nor is
+  # the same reason, so it neither supersedes a sibling of its identity nor is
   # superseded by one, and its own severity always reaches the verdict. Reading
   # an undated record as time zero instead would sort it below every dated
   # sibling, so a re-run GitHub reported no start time for could order a red

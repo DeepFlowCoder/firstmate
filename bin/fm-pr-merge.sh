@@ -42,7 +42,8 @@
 #     would report every red pull request there as fit to merge and retire the
 #     gate on exactly the repositories this fleet merges into.
 #   statusCheckRollup.state read FAILURE on that same head, so GitHub's own
-#     check aggregate does not fold by name either and reproduces the defect.
+#     check aggregate does not fold by run identity either and reproduces the
+#     defect.
 #   The REST check-runs endpoint returned both records under filter=latest,
 #     because that filter is per check suite and a re-triggered workflow run is
 #     a separate suite.
