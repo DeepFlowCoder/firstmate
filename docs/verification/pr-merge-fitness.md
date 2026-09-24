@@ -15,7 +15,7 @@ What a mock cannot prove is that the query itself still returns those fields in 
 
 Recorded 2026-08-29 on Darwin 24.6.0 (arm64) with gh 2.90.0 (2026-04-16) and ShellCheck 0.11.0 (the version `bin/fm-lint.sh` pins).
 The rendered reading and the fold sections below were re-recorded 2026-09-01 on the same host with the same gh, when the reading gained the check-count record and the per-record start time.
-When the reading gained its identity field on 2026-09-23 no live call could be made - see the open item under the fold - so no output below was re-recorded that day; the before-and-after fold measurement added to the portable regression was run then, against the classifier alone, which needs no credential.
+The identity field's readings - the serialisation it comes from, the legacy statuses that carry none, and the live before-and-after negative in the portable regression - were recorded 2026-09-24 UTC on the same host with the same gh; the 2026-09-01 `kubernetes/kubernetes` block below was left as it was returned that day rather than re-run, and a fresh live reading of that same pull request is recorded beside it.
 Queries name `--repo` explicitly: this repo's private mirror and its upstream share pull request numbering, so a bare number is ambiguous.
 
 ## The verdict fields exist and are selectable
@@ -89,9 +89,26 @@ check SUCCESS CONTEXT 1788288719 EasyCLA
 ...
 ```
 
-That block is the output the command returned on 2026-09-01 and is left exactly as it was returned rather than transcribed forward.
-The renderer has since gained the identity field the fold section below describes, and on the `StatusContext` branch that field is the literal `degraded` for every record, so the same reading renders `check FAILURE CONTEXT 1788289214 degraded pull-kubernetes-cmd` today.
-That is a statement about the renderer, not a re-recording: the live reading has not been re-taken under the current renderer, and the open item in the next section says what that leaves unmeasured.
+That block is the output the command returned on 2026-09-01 and is left exactly as it was returned rather than transcribed forward: it is the reading that carried failed and pending legacy statuses, and that pull request has since merged, so it cannot be re-taken in that state.
+The same command under the current renderer, run 2026-09-24 against the same pull request, shows the identity field the fold section below describes on real `StatusContext` records:
+
+```sh
+gh pr view 141762 --repo kubernetes/kubernetes \
+  --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup -q "$FITNESS_QUERY" | head -8
+```
+
+```
+pr MERGED UNKNOWN UNKNOWN
+base master 75db6184cb953c83ae1c177e77bc6a6132d669a3
+checks 21
+check SUCCESS CONTEXT 1788998804 degraded EasyCLA
+check SUCCESS CONTEXT 1789135311 degraded pull-kubernetes-cmd
+check SUCCESS CONTEXT 1789135711 degraded pull-kubernetes-conformance-kind-ga-only-parallel
+check SUCCESS CONTEXT 1789134878 degraded pull-kubernetes-dependencies
+check SUCCESS CONTEXT 1789137566 degraded pull-kubernetes-e2e-gce
+```
+
+Every legacy status renders `degraded`, and the head is the merge-time one rather than the 2026-09-01 head, which is why the conclusions differ from the block above.
 
 That pull request is refused by the gate, and it also settles which field carries a legacy commit status's start time: `gh` serialises `startedAt` for a `StatusContext` as well as for a `CheckRun`, so the expression reads `startedAt` on both branches rather than the `createdAt` the GraphQL `StatusContext` type also exposes.
 
@@ -110,7 +127,32 @@ There is no `createdAt` key in that serialisation at all, so an expression readi
 
 Which records the renderer marks `degraded` is a decision, not a leftover: it is every record GitHub gives no Actions workflow identity, and that is two populations rather than one.
 Every `StatusContext` is one, since a legacy commit status has no workflow at all.
-Every `CheckRun` whose `workflowName` is empty is the other - the check runs a third-party app raises rather than a workflow, the kind the permanently queued `cursor` check suite recorded further down belongs to.
+Every `CheckRun` whose `workflowName` is empty is the other, and that population is real rather than hypothetical: a check run a GitHub App raises through the Checks API belongs to no workflow, so `gh` serves the key empty. Measured 2026-09-24 on `vercel/next.js#99143`, an unrelated public pull request nothing was constructed for:
+
+```sh
+gh pr view 99143 --repo vercel/next.js --json statusCheckRollup \
+  -q '.statusCheckRollup[] | select(.__typename=="CheckRun") | select(((.workflowName // "")|tostring|length) == 0) | tojson' | head -2
+```
+
+```
+{"__typename":"CheckRun","completedAt":"2026-09-24T04:33:05Z","conclusion":"SUCCESS","detailsUrl":"https://socket.dev/dashboard/org/vercel/sbom/04b60b62-6bb8-4071-9574-5aa73ca28b8e","name":"Socket Security: Project Report","startedAt":"2026-09-24T04:32:51Z","status":"COMPLETED","workflowName":""}
+{"__typename":"CheckRun","completedAt":"2026-09-24T04:36:40Z","conclusion":"SUCCESS","detailsUrl":"https://vercel.com/github","name":"Vercel Agent Review","startedAt":"2026-09-24T04:32:47Z","status":"COMPLETED","workflowName":""}
+```
+
+The renderer marks exactly those records, and only those, on that head:
+
+```sh
+gh pr view 99143 --repo vercel/next.js \
+  --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup -q "$FITNESS_QUERY" | grep ' degraded '
+```
+
+```
+check COMPLETED SUCCESS 1790224371 degraded Socket Security: Project Report
+check COMPLETED SUCCESS 1790224367 degraded Vercel Agent Review
+check COMPLETED SUCCESS 1790224367 degraded Vercel Security Review
+```
+
+`workflowName` is empty rather than absent for these, so the `// ""` in the expression is not what catches them - a `length` test on the empty string is.
 Degraded records never fold, in either direction.
 The cost of that lands on the third-party population rather than on legacy statuses, because GitHub's combined-status API already keeps one status per context: an app that re-runs its check on one head leaves a red record no later green supersedes, and `--captain-override-red` is the deliberate act that clears it.
 The side not taken is the one a merge guard cannot have: a degraded key that collapsed two records the gate cannot tell apart would let a live red leave with the record it was folded into.
@@ -119,10 +161,37 @@ For a `CheckRun` an Actions workflow ran, the renderer reads `workflowName` off 
 That pair is narrower than the check name alone, and it is still not an identity: GitHub does not require a workflow's display name to be unique across workflow files, so two workflows both named `CI`, each rendering a check of the same name, form one fold key here and the later record still supersedes the earlier one.
 That is the only remaining population in this reading where distinct things share a fold key, and the reading carries no workflow path or id to narrow it.
 
-**Open item, unmeasured as of 2026-09-23.** That `gh pr view --json statusCheckRollup` serves `workflowName` as a flat key is the one link in this record with no reading behind it: `gh` on this host resolves its token through the system credential store, which the environment that added the field could not reach, so no live call was made.
-What closes it is one `gh pr view` against a pull request carrying Actions check runs, showing a `check ... workflow=<base64> <name>` line.
-If the key is absent, or nested only under `checkSuite.workflowRun.workflow.name`, then `(.workflowName // "")` renders `degraded` for every check run, nothing folds, and this repository's normal route to green - the two runs of `PR must be raised via no-mistakes` recorded below, the first of them red - refuses every pull request until `--captain-override-red`.
-That is the fail-closed direction rather than a false green, but it is an outage, so this record does not yet claim the CheckRun half of the fold is proven end to end.
+That `workflowName` is a flat key on `gh`'s `statusCheckRollup` serialisation rather than a nested `checkSuite.workflowRun.workflow.name` is measured, not assumed, because the whole CheckRun fold rests on it: were it absent, `(.workflowName // "")` would render `degraded` for every check run, nothing would fold, and this repository's normal route to green - the two runs of `PR must be raised via no-mistakes` recorded below, the first of them red - would refuse every pull request until `--captain-override-red`.
+Read off a real head of this repository, `DeepFlowCoder/firstmate#109`, which nothing was constructed for:
+
+```sh
+gh pr view 109 --repo DeepFlowCoder/firstmate --json statusCheckRollup \
+  -q '.statusCheckRollup[] | select(.__typename=="CheckRun") | tojson' | head -3
+```
+
+```
+{"__typename":"CheckRun","completedAt":"2026-09-24T03:41:48Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35951600297/job/107481133867","name":"Lint","startedAt":"2026-09-24T03:28:43Z","status":"COMPLETED","workflowName":"CI"}
+{"__typename":"CheckRun","completedAt":"2026-09-24T03:28:48Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35951600226/job/107481133769","name":"PR must be raised via no-mistakes","startedAt":"2026-09-24T03:28:42Z","status":"COMPLETED","workflowName":"Require no-mistakes"}
+{"__typename":"CheckRun","completedAt":"2026-09-24T03:28:57Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35951600297/job/107481134130","name":"Test coverage guard","startedAt":"2026-09-24T03:28:42Z","status":"COMPLETED","workflowName":"CI"}
+```
+
+There is no `checkSuite` key in that serialisation at all, and `workflowName` carries the workflow's display `name:`, which is what the fold key is built from.
+The renderer's own reading of that head shows the encoded field in place, two workflows apart on one pull request:
+
+```sh
+gh pr view 109 --repo DeepFlowCoder/firstmate \
+  --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup -q "$FITNESS_QUERY" | head -5
+```
+
+```
+pr MERGED UNKNOWN UNKNOWN
+base main 6acb0719b5119eb7abe6a6c6310704e524586e4c
+checks 17
+check COMPLETED SUCCESS 1790220523 workflow=Q0k= Lint
+check COMPLETED SUCCESS 1790220522 workflow=UmVxdWlyZSBuby1taXN0YWtlcw== PR must be raised via no-mistakes
+```
+
+`Q0k=` is `CI` and `UmVxdWlyZSBuby1taXN0YWtlcw==` is `Require no-mistakes`, so the pair costs no second query and the base64 field carries no whitespace into the record.
 
 A `CheckRun` that has not finished carries an empty `conclusion` rather than a null one, which is why the expression tests for the empty string rather than relying on jq's `//` operator.
 The start time is guarded rather than left to `//`, because a start time the parser rejects does not degrade quietly - it aborts the whole expression:
@@ -461,8 +530,90 @@ current fm-pr-fitness-lib.sh      undated-record -> failing   blank-record -> un
 Both readings were accepted before the fix, which is the defect in each case: the undated red was ordered away by its dated green, and the blank line was skipped so the declared count still balanced.
 Both refuse after it.
 
-The two identity cases, `same-name-distinct-workflows` and `degraded-legacy-status`, are regressions for the false-green window the name-only fold left open, so they were measured the same way: against the classifier as it stood at commit `9914d62e`, driven through `fm_pr_fitness_classify` directly, on the SAME semantic head rendered in each version's own record format.
-A green proves nothing about this defect, since the defect is that everything looks green, so each pair below is one head the earlier classifier accepted and the current one refuses.
+### The false green, measured on a real head
+
+The name-only fold's false-green window was reproduced on a live GitHub head rather than argued from synthetic records, because a green proves nothing here: the defect is that everything looks green.
+The collision does not occur in this repository's own workflows, so one was built on a disposable branch, never on `main` and never on the delivery branch: two workflows, `Fold key collision A` and `Fold key collision B`, each exposing a job named `Shared collision check`, A failing on purpose, and B reaching its shared job through a delay job so its record starts later than A's.
+Both refs were created by API on `DeepFlowCoder/firstmate` (`fm-collision-evidence-base` at `main`, `fm-collision-evidence-head` carrying the two workflows), read through a draft pull request whose base was the other disposable branch - so neither `ci.yml` nor `no-mistakes-required.yml` could trigger, both being filtered to `branches: [main]` - and deleted afterwards. `main` never moved from `9914d62e`.
+
+What the forge served for that head, exactly as returned:
+
+```sh
+gh pr view 110 --repo DeepFlowCoder/firstmate --json statusCheckRollup -q '.statusCheckRollup[] | tojson'
+```
+
+```
+{"__typename":"CheckRun","completedAt":"2026-09-24T04:39:19Z","conclusion":"FAILURE","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35956556686/job/107496011691","name":"Shared collision check","startedAt":"2026-09-24T04:39:16Z","status":"COMPLETED","workflowName":"Fold key collision A"}
+{"__typename":"CheckRun","completedAt":"2026-09-24T04:41:48Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35956556722/job/107496011859","name":"Collision B delay","startedAt":"2026-09-24T04:39:16Z","status":"COMPLETED","workflowName":"Fold key collision B"}
+{"__typename":"CheckRun","completedAt":"2026-09-24T04:41:54Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35956556722/job/107496552169","name":"Shared collision check","startedAt":"2026-09-24T04:41:51Z","status":"COMPLETED","workflowName":"Fold key collision B"}
+```
+
+Two genuinely distinct checks, one name, two workflows, the earlier of them red - the shape the intent describes as unreachable in this repository's own workflows and reachable across the fleet.
+That one head was then rendered by BOTH renderers and judged by BOTH classifiers, each version's renderer paired with its own classifier, so nothing in either reading was written by hand:
+
+```sh
+git show 9914d62e:bin/fm-pr-merge.sh | sed -n "/^  FITNESS_QUERY='/,/end)'$/p" > /tmp/base-query.sh
+sed -n "/^  FITNESS_QUERY='/,/end)'$/p" bin/fm-pr-merge.sh > /tmp/head-query.sh
+git show 9914d62e:bin/fm-pr-fitness-lib.sh > /tmp/base-lib.sh
+read_pr() { FITNESS_QUERY=; . "$1"; gh pr view 110 --repo DeepFlowCoder/firstmate \
+  --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup -q "$FITNESS_QUERY"; }
+classify() {
+  bash -c '. "$1"; fm_pr_fitness_classify < "$2"
+    printf "verdict=%s failing=%s superseded=%s\n" "$FM_PR_FITNESS_VERDICT" \
+      "${FM_PR_FITNESS_FAILING//$'\n'/,}" "$FM_PR_FITNESS_SUPERSEDED_COUNT"' _ "$1" "$2"
+}
+read_pr /tmp/base-query.sh > /tmp/base-reading.txt
+read_pr /tmp/head-query.sh > /tmp/head-reading.txt
+cat /tmp/base-reading.txt; classify /tmp/base-lib.sh /tmp/base-reading.txt
+cat /tmp/head-reading.txt; classify bin/fm-pr-fitness-lib.sh /tmp/head-reading.txt
+```
+
+While that pull request was open:
+
+```
+pr OPEN MERGEABLE UNSTABLE
+base fm-collision-evidence-base b7910200d0d696bf23948f530a157c0abd9a88cb
+checks 3
+check COMPLETED FAILURE 1790224756 Shared collision check
+check COMPLETED SUCCESS 1790224756 Collision B delay
+check COMPLETED SUCCESS 1790224911 Shared collision check
+verdict=ok failing= superseded=1
+pr OPEN MERGEABLE UNSTABLE
+base fm-collision-evidence-base b7910200d0d696bf23948f530a157c0abd9a88cb
+checks 3
+check COMPLETED FAILURE 1790224756 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEE= Shared collision check
+check COMPLETED SUCCESS 1790224756 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Collision B delay
+check COMPLETED SUCCESS 1790224911 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Shared collision check
+verdict=failing failing=Shared collision check superseded=0
+```
+
+Before the change the gate reports `ok` on a head carrying a live red, and says so itself: `superseded=1` is the red being folded away by a green from another workflow.
+After it, the same head refuses and names `Shared collision check`, with nothing superseded.
+That is the acceptance criterion's real negative, and `Rm9sZCBrZXkgY29sbGlzaW9uIEE=` / `Rm9sZCBrZXkgY29sbGlzaW9uIEI=` are `Fold key collision A` and `Fold key collision B`, the two identities the earlier key could not tell apart.
+
+The pull request was then closed and both refs deleted, which the same command still shows: the head's three records and the fold difference survive the teardown, and only the pull-request state changed, so both versions now stop at `not-open` before reaching the fold.
+
+```
+pr CLOSED CONFLICTING DIRTY
+base fm-collision-evidence-base b7910200d0d696bf23948f530a157c0abd9a88cb
+checks 3
+check COMPLETED FAILURE 1790224756 Shared collision check
+check COMPLETED SUCCESS 1790224756 Collision B delay
+check COMPLETED SUCCESS 1790224911 Shared collision check
+verdict=not-open failing= superseded=1
+pr CLOSED CONFLICTING DIRTY
+base fm-collision-evidence-base b7910200d0d696bf23948f530a157c0abd9a88cb
+checks 3
+check COMPLETED FAILURE 1790224756 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEE= Shared collision check
+check COMPLETED SUCCESS 1790224756 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Collision B delay
+check COMPLETED SUCCESS 1790224911 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Shared collision check
+verdict=not-open failing=Shared collision check superseded=0
+```
+
+`superseded=1` against `superseded=0`, and an empty `failing` against a named one, are the fold itself and are still re-runnable; the `ok` against `failing` above needed the pull request open and is therefore dated rather than reproducible.
+
+The portable suite's two identity cases, `same-name-distinct-workflows` and `degraded-legacy-status`, pin the same two rules where CI can run them without credentials, and were measured against the classifier as it stood at commit `9914d62e` on the SAME semantic head rendered in each version's own record format.
+The legacy half has no live counterpart of its own: a superseded legacy commit status cannot be constructed on GitHub any more, because the Status API keeps one status per context, which is the measurement the degraded scope's cost estimate rests on.
 
 ```sh
 git show 9914d62e:bin/fm-pr-fitness-lib.sh > /tmp/base-fitness-lib.sh
