@@ -448,8 +448,10 @@ cmd_silent() {
 #
 # Whether the runner's output bound cut this capture is a runner fact, held by the
 # runner's own truncation marker, so it is read here and handed to the reader
-# rather than guessed there: a row the cut manufactured costs the whole read on a
-# capture that arrived complete, and costs only itself on one that did not.
+# rather than guessed there: damage a cut explains - a row the cut manufactured, or
+# fewer rows than the content header declares - is read past on a capture that
+# arrived cut and refused on one that arrived complete. The reader's header owns
+# which damage that covers.
 lavish_rows_json() {  # <result-file>
   if fm_procevent_result_truncated "$1"; then
     "$SCRIPT_DIR/fm-lavish-rows.mjs" --cut "$1"

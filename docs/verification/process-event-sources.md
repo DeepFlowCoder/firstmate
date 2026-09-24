@@ -40,11 +40,12 @@ That face was then patched by hand, and patching renderings one at a time is the
 Which block carries the rows was RE-READ in the installed 0.1.52, because an earlier round of this delivery recorded a second block name as measured fact and that was an assumption, not a measurement:
 
 ```sh
-$ grep -c 'function createPollOutput' /opt/homebrew/lib/node_modules/lavish-axi/dist/cli.mjs
-1
-$ grep -c 'createPollOutput({ file' /opt/homebrew/lib/node_modules/lavish-axi/dist/cli.mjs
-1
+$ grep -n 'createPollOutput({ file' /opt/homebrew/lib/node_modules/lavish-axi/dist/cli.mjs
+10208:    return createPollOutput({ file: absolute, response, agent: detectInvokingAgent(process.env) });
+10248:function createPollOutput({ file, response, agent = "generic" }) {
 ```
+
+Two lines, and they are the whole population: 10248 is the definition and 10208 is its only call.
 
 That one builder has one call site, and its only branch carrying content - `status: feedback` - keys it `prompts: response.prompts || []` on every path it can take, while the `ended` and `waiting` branches carry no content block at all.
 So `prompts` is the one name a poll response can publish rows under, and the reader takes rows from that key alone.
@@ -84,8 +85,22 @@ Plus the hardening: content the decoder cannot read now refuses out loud where b
 
 One thing the old reader could do is worse than losing a message: the hand parser could SCRAPE a damaged block and emit fabricated separate utterances nobody ever wrote, and inventing words the captain never said leaves no trace that they were invented.
 
-`bin/fm-lavish-rows.mjs` now owns the frame and decodes it with `@toon-format/toon` 4.1.1, vendored verbatim under `vendor/toon/` (MIT, zero runtime dependencies, one published module; sha256 `34bf8dce99dccd5632b19f6dc7eb4278502f81f327208de4ea0454d4c1ee4871`).
-Its header owns the refresh commands and the recovery ladder that keeps a bound-cut capture delivering the rows that survived.
+`bin/fm-lavish-rows.mjs` now owns the frame and decodes it with `@toon-format/toon` 4.1.1, vendored verbatim under `vendor/toon/` (MIT, zero runtime dependencies, one published module; sha256 `34bf8dce99dccd5632b19f6dc7eb4278502f81f327208de4ea0454d4c1ee4871`, measured with `shasum -a 256`).
+Its header owns the refresh commands and the trailing-cut repair that keeps a bound-cut capture delivering the rows that survived.
+
+### The producer encodes with a different major - OPEN ASSUMPTION, not verified
+
+Measured on the installed build: `lavish-axi` 0.1.52's `package.json` declares no `@toon-format/toon` dependency, it encodes through `axi-sdk-js` whose `dist/output.js` imports `encode` from that package, and the resolution installed beside it is 2.3.1 (`dist/index.mjs` sha256 `3cc9a2bf7c7c66d9f8cb8e2d41a6c8fa7b333071f0bd5a456b6919b57d995653`).
+The decoder vendored here is 4.1.1, so producer and consumer sit two majors apart, and that this reader reads that encoder's output is an ASSUMPTION rather than a verified property.
+What was actually run across the gap: realistic responses re-encoded with the installed 2.3.1 - tabular and LIST renderings, a nested `target`, an `attachments[N]{...}` sub-block, escaped quotes and commas, embedded newlines, accented Spanish, and the empty `prompts: []` shape - then read back through this reader and through the real `messages` and `answers` commands, all correct.
+Said plainly: a handful of hand-chosen cases across a two-major version gap is useful evidence and it is little. It is not a compatibility guarantee, nothing enforces the producer's version, and a producer-side format divergence is exactly what routes into the shortfall refusal below.
+
+### No legitimate response is short, which is what holds the shortfall refusal up
+
+A capture the runner did NOT mark cut that yields fewer rows than its content header declares is refused out loud (`messages` exit 3, `answers` exit 1, no key minted) rather than delivered as a prefix.
+That refusal rests on a claim that has to be findable rather than deduced: only the trailing-cut repair can hand back fewer rows than the text declares, and it only runs when the first decode throws, so a shortfall requires producer output this decoder rejects.
+The evidence, measured rather than argued: 14 responses were encoded with 2.3.1 - the encoder the producer itself uses - across row counts 0, 1, 2, 3, 5 and 12 in both the tabular and LIST renderings, plus one carrying embedded newlines and `- uid:` text inside a prompt and one carrying an `attachments` sub-block, and every one decoded on the FIRST attempt (so the repair never ran) with the delivered row count equal to the declared count in all 14.
+If that ever stops holding - a producer that emits a count it does not fill, or a divergence the vendored decoder rejects - this refusal is what will fire, and this paragraph is where to look for why.
 The adapter keeps every Lavish-specific rule it already had - which rows are prose, which are keyed answers, which machine-shaped tags are still reported, and what each field is capped at - so this changed what reads the frame and nothing about what the rows mean.
 
 ## The published Lavish poll interface the adapter wraps
@@ -210,7 +225,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | argv integrity | an argument containing spaces survives as one argument, a shell-looking argument is passed literally with no interpretation, and an unrepresentable newline is rejected at registration |
 | bounded output | output beyond `FM_PROCEVENT_MAX_OUTPUT_BYTES` is drained while only the bound is staged, then truncated and captured |
 | a bound-cut capture is never read as an empty one | the suite proves a cut capture commits the completeness marker with its result, a capture that fits records as whole and clears any marker an earlier rolled-back capture left at that generation, and a cut capture is refused the silence verdict, stays unsilenced across a later reconcile, and routes a note saying content was discarded while still delivering the words that survived; this row is suite evidence only, with no dated verification run against a real board behind it |
-| a declared content block is read or refused, never reported empty | the same suite proves a capture cut inside the content block's own header - which leaves nothing below it attributable to a field - answers the read-failure exit and mints no keyed answer, while a cut landing inside a ROW still delivers every row above it, so the reader's recovery can never buy an empty review by discarding the one block that carried the captain's words; the bound is measured against what the captured text DECLARES, so a block cut immediately after a header announcing three rows - which the non-strict decode accepts as an empty array - is refused too, a header declaring no row and yielding none reads as empty through both commands, a cut that delivered one of three declared rows still delivers it at exit 0, a declared content block this reader takes no rows from - the `feedback[N]` name detection deliberately still admits - is refused rather than answered empty, and a published row whose shape yields no field at all is refused out loud rather than passed over on a WHOLE capture, while on a CUT one - the same bytes with the runner's truncation marker beside them as the only difference - that row is dropped and the complete rows above it are still delivered at exit 0, because on a cut capture the runner's discarded-content note already owns saying content went missing |
+| a declared content block is read or refused, never reported empty | the same suite proves a capture cut inside the content block's own header - which leaves nothing below it attributable to a field - answers the read-failure exit and mints no keyed answer, while a cut landing inside a ROW still delivers every row above it, so the reader's recovery can never buy an empty review by discarding the one block that carried the captain's words; the bound is measured against what the captured text DECLARES, so a block cut immediately after a header announcing three rows - which the non-strict decode accepts as an empty array - is refused too, a header declaring no row and yielding none reads as empty through both commands, a capture MARKED CUT that delivered one of three declared rows still delivers it at exit 0 while the same bytes without that marker are refused - a capture the runner recorded as complete may not hand over a prefix of the captain's words as though it were all of them - a declared content block this reader takes no rows from - the `feedback[N]` name detection deliberately still admits - is refused rather than answered empty, and a published row whose shape yields no field at all is refused out loud rather than passed over on a WHOLE capture, while on a CUT one - the same bytes with the runner's truncation marker beside them as the only difference - that row is dropped and the complete rows above it are still delivered at exit 0, because on a cut capture the runner's discarded-content note already owns saying content went missing |
 | a captain's accented words survive the frame reader | the same suite drives a Spanish `choice` row (`Opción B`, answer `sí`) and an accented freeform message through the real adapter, proving the keyed answer is still minted with its label's UTF-8 bytes intact and the message reaches the note channel as valid UTF-8 rather than latin-1 |
 | condition->action single-fire and trust | `tests/fm-procevent-when.test.sh` drives the public `when` adapter and generic runner with real commands, proving stable true fires once, a claimed fire restarts as ambiguous without a second action, concurrent arms publish one complete watch, and mutated specs or action executables are refused before execution |
 | condition->action terminal outcomes | the same suite proves flapping true polls do not fire, action failure, condition error budget, deadline expiry, and a true poll completing after its deadline each produce the expected terminal captured result without an unsafe action |

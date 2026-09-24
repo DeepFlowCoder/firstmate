@@ -2193,20 +2193,49 @@ ans_rc=0
 
 # PARTIAL recovery still delivers, which is the guarantee the bound above may not
 # cost: the same header declaring three rows, cut after the first, delivers that
-# first row's words at exit 0 rather than refusing the whole capture.
-cat > "$MSGS" <<'EOF'
+# first row's words at exit 0 rather than refusing the whole capture. A partial
+# recovery only ever arises on a capture the output bound cut, so this drives the
+# shape that can actually occur - the runner's own truncation marker beside the
+# stored result - rather than a bare short block, which no measured producer output
+# produced and which the shortfall bound below refuses on purpose. The mechanism
+# this leg rides on is the decoder's advisory declared counts: made strict, this
+# fixture stops delivering and refuses instead. The trailing-cut repair is the
+# other half of the same guarantee and the bound-cut capture above is its leg.
+PARTIAL="$TMP_ROOT/partial-cut.result"
+cat > "$PARTIAL" <<'EOF'
 session:
   file: /board.html
   status: feedback
 prompts[3]{uid,prompt,selector,tag,text}:
   p1,"hold the release until Thursday","",message,"Freeform message"
 EOF
+: > "${PARTIAL%.result}.truncated"
 msg_rc=0
-msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" 2>/dev/null) || msg_rc=$?
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$PARTIAL" 2>/dev/null) || msg_rc=$?
 [ "$msg_rc" -eq 0 ] \
   || fail "a cut that delivered one of three declared rows answered $msg_rc instead of delivering it"
 assert_contains "$msg_out" "hold the release until Thursday" \
   "the row that survived a cut was refused along with the rows that did not"
+
+# The same short block WITHOUT that marker is a capture the runner recorded as
+# complete, so the missing rows are damage nothing else will mention: the repair
+# that shortens a block only runs on input this decoder rejected, and no legitimate
+# response is short (docs/verification/process-event-sources.md records the
+# encoded-and-read-back evidence), so it refuses out loud instead of handing over a
+# prefix as though it were everything the captain said.
+rm -f "${PARTIAL%.result}.truncated"
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$PARTIAL" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "a complete capture delivering one of three declared rows answered $msg_rc instead of refusing"
+[ -z "$msg_out" ] \
+  || fail "a short block on a complete capture reported a prefix as the captain's words: $msg_out"
+ans_rc=0
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$PARTIAL" 2>/dev/null)" ] \
+  || fail "a short block on a complete capture still minted a keyed answer"
+"$ROOT/bin/fm-procevent-lavish.sh" answers "$PARTIAL" >/dev/null 2>&1 || ans_rc=$?
+[ "$ans_rc" -eq 1 ] \
+  || fail "a short block on a complete capture answered $ans_rc from the keyed-answer command"
 
 # The other side of that bound, which is a different result entirely: a content
 # block the decoder DID read, whose header declares no row and yields none, is a
@@ -2288,6 +2317,9 @@ ans_rc=0
 # discarded-content note's job, not this read's. The runner's own truncation
 # marker beside the stored result is what says the capture was cut, so these two
 # legs run on the SAME bytes with the marker as the only difference.
+# The header declares exactly the two rows the decoder recovers here - the
+# complete one and the one the cut manufactured - so the shortfall bound above
+# cannot fire and each leg below turns on the fieldless row alone.
 CUTROW="$TMP_ROOT/cutrow.result"
 cat > "$CUTROW" <<'EOF'
 session:
@@ -2296,7 +2328,7 @@ session:
   session_ended: true
   ended_by: user
 dom_snapshot: ""
-prompts[3]:
+prompts[2]:
   - uid: f1
     prompt: hold the release until Thursday
     selector: ""

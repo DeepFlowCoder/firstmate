@@ -5,9 +5,10 @@
 //   fm-lavish-rows.mjs [--cut] <result-file>
 //
 // `--cut` states that the runner's output bound dropped bytes from this capture,
-// which its caller knows from the runner's own truncation marker. It changes one
-// thing, described under WHAT A ROW BECOMES: what a row the cut manufactured
-// costs.
+// which its caller knows from the runner's own truncation marker. It changes what
+// damage the cut explains rather than what is read: a row the cut manufactured is
+// dropped instead of refused (WHAT A ROW BECOMES), and delivering fewer rows than
+// the text declares reads instead of refusing (WHAT BOUNDS THAT REPAIR).
 //
 // Prints a JSON array of row field maps on stdout and exits 0 once the result
 // has been read, whatever it found there - including `[]` for a result that
@@ -25,7 +26,8 @@
 // from the tabular frame to the LIST frame, and a reader that recognized only the
 // tabular one made a captain message vanish with exit 0, indistinguishable from
 // the captain having said nothing. That rendering was already patched by hand
-// before this reader existed, so this closes no loss that is live today: what a
+// before this reader existed - the base adapter's own perl carried a LIST-frame
+// arm beside its tabular one - so this closes no loss that is live today: what a
 // decoder implementing the whole format buys is prospective, ending the class of
 // defect instead of administering it one rendering at a time. So the format's own
 // decoder is vendored under vendor/toon/ and this is the only reader of the
@@ -42,10 +44,18 @@
 //   cp package/LICENSE vendor/toon/LICENSE
 //
 // The copy is verifiable without the network: sha256 of the 4.1.1 module is
-// 34bf8dce99dccd5632b19f6dc7eb4278502f81f327208de4ea0454d4c1ee4871, and npm
-// records its tarball integrity as
+// 34bf8dce99dccd5632b19f6dc7eb4278502f81f327208de4ea0454d4c1ee4871, measured with
+// `shasum -a 256 vendor/toon/index.mjs`, and npm records its tarball integrity as
 // sha512-SGCkS7IjVpwRmGPgnY8ENKpAf0EdAnZDOQkvFW0d2cgOpdn9FEFl7sTgryESyypXrWr0YajHGpwsAUX4zw9ZvA==.
 // Never hand-edit the vendored module; refresh it through the commands above.
+//
+// THE PRODUCER ENCODES WITH A DIFFERENT MAJOR, and that this reads its output is
+// an OPEN ASSUMPTION rather than a verified property. Measured: lavish-axi 0.1.52
+// declares no `@toon-format/toon` dependency of its own and encodes through
+// axi-sdk-js, whose `dist/output.js` imports `encode` from that package, resolved
+// to the transitively installed 2.3.1 - two majors below the 4.1.1 vendored here.
+// docs/verification/process-event-sources.md records what was actually run across
+// that gap, and how little it is.
 //
 // WHICH BLOCK IS READ. The response's captain rows arrive under a top-level
 // `prompts` key, and rows are read from that key alone. Measured in the
@@ -76,9 +86,11 @@
 // into something that was never there.
 //
 // ONE OWNER PER GUARANTEE, which is why `--cut` changes that. On a cut capture
-// the trailing row is frequently something the CUT manufactured - the decoder
-// reads a row opening cut before its first colon as a bare value or an empty
-// object - and refusing the read for it would throw away the complete rows above
+// the trailing row can be something the CUT manufactured: measured on a LIST
+// block cut inside a row's opening line, this decoder reads what is left of
+// `  - uid: f2` as an empty object for the tails `  -` and `  - `, as the bare
+// string `uid` for `  - uid`, and as `{uid: {}}` for `  - uid:` - none of which
+// yields a field. Refusing the read for it would throw away the complete rows above
 // it, the captain's actual words, which is the very loss this reader exists to
 // prevent. On a cut capture the "nothing the captain said disappears silently"
 // guarantee is already owned by the runner's own discarded-content note, which
@@ -86,41 +98,58 @@
 // is dropped here and every row that did yield fields is delivered. That routes
 // the guarantee to its owner rather than duplicating it, and leaves the refusal
 // for the whole capture, where a row yielding nothing is a genuinely unrecognized
-// shape rather than a cut artifact. The declared-block bounds below are unchanged
-// by `--cut`: a declared block from which no row was recovered still refuses.
+// shape rather than a cut artifact. One bound below is unchanged by `--cut` and
+// holds for both: a declared block from which NO row was recovered still refuses,
+// cut or not, because that read is indistinguishable from the captain having said
+// nothing whatever explains it.
 //
 // A TRUNCATED CAPTURE STILL DELIVERS WHAT SURVIVED. The runner bounds a
 // captured result (`FM_PROCEVENT_MAX_OUTPUT_BYTES`), so a long review can
 // arrive cut mid-row, and the words that did arrive must still be delivered.
-// Strict decoding refuses a cut document outright, so two bounded recoveries
-// stand behind the strict read, each one only ever decoding a PREFIX of what
-// really arrived:
+// The read is NON-STRICT throughout - DECODE_OPTIONS is the only options object
+// and the very first attempt uses it - so declared array lengths and tabular row
+// counts are never enforced by the decoder at all, exactly as DECODE_OPTIONS says
+// below. Behind that baseline stands exactly ONE recovery: a repair of the
+// trailing cut - close an unterminated string on the last line, else drop that
+// line - over at most MAX_REPAIR_LINES lines, because the output bound cuts the
+// end of a capture and never its middle: bin/fm-procevent.sh's own seam keeps the
+// HEAD of oversized output and drains the rest. It decodes a PREFIX of what really
+// arrived, and it is the only step that can hand back fewer rows than the text
+// declares.
 //
-//   1. the decoder's own non-strict mode, which stops enforcing declared array
-//      lengths and tabular row counts - a cut block legitimately holds fewer
-//      rows than its header announced;
-//   2. a repair of the trailing cut itself - close an unterminated string on the
-//      last line, else drop that line - over at most MAX_REPAIR_LINES lines,
-//      because the output bound cuts the end of a capture and never its middle.
-//
-// Both still yield a document this decoder accepts, so no row is ever
-// reconstructed by hand. A capture neither of them reads is refused out loud -
+// It still yields a document this decoder accepts, so no row is ever
+// reconstructed by hand. A capture it cannot read is refused out loud -
 // `messages` exit 3, which the runner turns into a note naming the result for
 // the captain to read himself - rather than reported as empty, because empty is
 // the one answer that looks exactly like the captain having said nothing.
 //
-// That refusal is what bounds the recovery, and it is measured against what the
-// captured text itself DECLARES rather than against what came back, because an
-// honestly empty block and a discarded one are two different states of the world
-// that the decoded rows cannot be told apart by. Two reads are therefore refused:
-// one that recovered no published block at all while the text declares one, and
-// one whose text declares a block of N rows while not one of those rows arrived.
+// WHAT BOUNDS THAT REPAIR is measured against what the captured text itself
+// DECLARES rather than against what came back, because an honestly empty block, a
+// discarded one, and a partly discarded one are three different states of the
+// world that the decoded rows cannot be told apart by. Three reads are refused:
+// one that recovered no published block at all while the text declares one; one
+// whose text declares a block of N rows while not one of them arrived; and, on a
+// capture the runner did NOT mark cut, one that delivered FEWER rows than the
+// declared count - because only the repair above can produce that shortfall, and
+// only on input this decoder rejected, so on a complete capture it is damage to
+// report rather than a prefix to deliver. Since the declared count is the
+// discriminator, it is used at full strength rather than only at zero.
+//
 // A block that declares no row and yields none is the other thing entirely - a
-// board the captain closed without saying anything - and it reads as empty; so
-// does a cut that still delivered some of the rows its header announced, because
-// delivering what survived is the whole point of the ladder above. Lavish's own
-// poll never produces a refused document; a cut capture or a malformed one does,
-// and both are things to report rather than to read as an empty review.
+// board the captain closed without saying anything - and it reads as empty. A CUT
+// capture that delivered some of the rows its header announced also reads,
+// because delivering what survived is the whole point of the repair and the
+// runner's own discarded-content note already owns saying bytes went missing.
+//
+// HOW MUCH THAT LAST BOUND RESTS ON, stated as measured rather than as certain:
+// 14 responses encoded by the encoder the producer itself uses - row counts 0, 1,
+// 2, 3, 5 and 12 in both renderings, one carrying embedded newlines and `- uid:`
+// text inside a prompt, one carrying an `attachments` sub-block - were read back
+// here, and all 14 decoded on the FIRST attempt, with the delivered row count
+// equal to the declared count every time. So no case measured here is refused and
+// none needed the repair. That is a handful of shapes, not a proof over every
+// response the producer can emit; docs/verification/process-event-sources.md
+// records the cases and says so.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -129,14 +158,19 @@ import { dirname, join } from 'node:path';
 const MAX_REPAIR_LINES = 8;
 
 // A content block the captured text declares, anchored at column zero because
-// every payload line is indented: captain-supplied text can neither forge a
-// content header nor hide behind one.
+// every payload line is indented, so captain-supplied text can neither forge a
+// content header nor hide behind one. Measured rather than assumed for the forging
+// half: a prompt whose own text contains newlines and a `prompts[1]{x}:` line
+// re-encodes to ONE column-zero line, its own block header, because the encoder
+// escapes the newlines into the quoted value; the run is in
+// docs/verification/process-event-sources.md.
 const DECLARED_CONTENT_BLOCK = /^(?:prompts|feedback)\b/m;
 
-// The row count such a header announces, found the same way and used for nothing
-// else: rows a header announced and no read delivered were discarded, which the
-// decoded array alone cannot be distinguished from a block that is honestly
-// empty. Detection only - every field and row still comes from the decoder.
+// The row count such a header announces, found the same way and used for one
+// thing: comparing what was announced against what was delivered, which the
+// decoded array alone cannot do - it cannot tell a block that is honestly empty
+// from one whose rows were discarded, nor a whole set from a short one. Detection
+// only - every field and row still comes from the decoder.
 const DECLARED_ROW_COUNT = /^(?:prompts|feedback)\[(\d+)\]/gm;
 
 // Declared counts are advisory here: a cut capture's last block legitimately
@@ -167,7 +201,7 @@ function scalarField(value) {
 }
 
 // A row's own scalar fields, or undefined for a row whose shape yields none -
-// which its caller refuses rather than passes over.
+// which its caller refuses on a whole capture and drops on a cut one.
 function rowFields(row) {
   if (row === null || typeof row !== 'object' || Array.isArray(row)) return undefined;
   const fields = {};
@@ -192,8 +226,9 @@ function publishedRows(document) {
   return { decoded: true, rows };
 }
 
-// Both recoveries from the header, over the captured text: decode it, then repair
-// the trailing cut. Returns undefined when neither reads it.
+// The non-strict read from the header and the one repair behind it, over the
+// captured text: decode it, then repair the trailing cut. Returns undefined when
+// neither reads it.
 function readDocument(decode, text) {
   const lines = text.split('\n');
   const attempt = (candidate) => {
@@ -245,11 +280,15 @@ const published = publishedRows(document);
 // delivered, were both dropped rather than read - and dropping them silently is
 // the defect this reader exists to end.
 if (DECLARED_CONTENT_BLOCK.test(text)) {
+  const declared = declaredRowCount(text);
   if (!published.decoded) {
     fail(`result file declares a content block this decoder could not read: ${path}`);
   }
-  if (published.rows.length === 0 && declaredRowCount(text) > 0) {
+  if (published.rows.length === 0 && declared > 0) {
     fail(`result file declares content rows this decoder could not read: ${path}`);
+  }
+  if (!cut && published.rows.length < declared) {
+    fail(`result file declares ${declared} content rows and only ${published.rows.length} could be read: ${path}`);
   }
 }
 
