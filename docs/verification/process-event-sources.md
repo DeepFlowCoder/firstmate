@@ -35,7 +35,8 @@ So reading that format is not a choice, and the only choice ever available was w
 
 Reading it by hand cost a silent loss once already.
 A review round on 2026-08-30 found the hand reader blind to the LIST rendering - which one row carrying an object field switches the whole block into, and an annotation, a whiteboard edit and a layout-warnings row all carry one - so the captain's words reached no reader at all while the command exited 0, which is indistinguishable from the captain having said nothing.
-That face was then patched by hand, and patching renderings one at a time is the pattern this delivery ends rather than a loss it repairs: by this fork's base commit the LIST rendering was already read, so there is no live loss here to close.
+That face was then patched by hand, and patching renderings one at a time is the pattern this delivery ends rather than a loss it repairs: by this branch's base commit the LIST rendering was already read, so there is no live loss here to close.
+That is checkable rather than asserted - `git show 9914d62e:bin/fm-procevent-lavish.sh` shows the base adapter's perl carrying `lavish_list_rows` beside `lavish_table_rows`, both dispatched from `lavish_prompt_rows` - and it is named here because it is the basis for the claim below that this delivery closes no live loss.
 
 Which block carries the rows was RE-READ in the installed 0.1.52, because an earlier round of this delivery recorded a second block name as measured fact and that was an assumption, not a measurement:
 

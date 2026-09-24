@@ -27,8 +27,11 @@
 // from the tabular frame to the LIST frame, and a reader that recognized only the
 // tabular one made a captain message vanish with exit 0, indistinguishable from
 // the captain having said nothing. That rendering was already patched by hand
-// before this reader existed - the base adapter's own perl carried a LIST-frame
-// arm beside its tabular one - so this closes no loss that is live today: what a
+// before this reader existed - at this branch's base commit 9914d62e the adapter's
+// own perl carried `lavish_list_rows` beside `lavish_table_rows`, both dispatched
+// from `lavish_prompt_rows`, which is checkable with `git show
+// 9914d62e:bin/fm-procevent-lavish.sh` - so this closes no loss that is live
+// today: what a
 // decoder implementing the whole format buys is prospective, ending the class of
 // defect instead of administering it one rendering at a time. So the format's own
 // decoder is vendored under vendor/toon/ and this is the only reader of the
@@ -94,8 +97,11 @@
 // yields a field. Refusing the read for it would throw away the complete rows above
 // it, the captain's actual words, which is the very loss this reader exists to
 // prevent. On a cut capture the "nothing the captain said disappears silently"
-// guarantee is already owned by the runner's own discarded-content note, which
-// names the result for the captain whatever this reader found; so a fieldless row
+// guarantee is already owned elsewhere, by the runner's captain-message seam -
+// `feed_captain_messages` in bin/fm-procevent.sh, which appends its
+// `truncation_caveat` and queues a note naming the result's source id and sequence
+// whenever the truncation marker is present, whatever this reader found; so a
+// fieldless row
 // is dropped here and every row that did yield fields is delivered. That routes
 // the guarantee to its owner rather than duplicating it, and leaves the refusal
 // for the whole capture, where a row yielding nothing is a genuinely unrecognized
@@ -340,6 +346,18 @@ const published = publishedRows(read.document);
 // The bound described in the header, asked directly: did this document arrive
 // damaged, with no cut to explain it? A repair that ran is damage whatever it
 // touched, including damage a row count can never see.
+//
+// THIS REFUSES WIDER THAN THE DAMAGE IT CAN NAME, and that is the DELIBERATE
+// direction rather than an oversight: a false refusal reaches the captain as a
+// note telling him to read the result himself, so it is visible and gets fixed,
+// while one row of his lost in silence is never visible at all. For a channel
+// carrying his own words the expensive error is the silent one. What holds the
+// width up is a measurement, not a preference - no real output of the installed
+// 0.1.52 needs the repair at all, so a repair that ran on a capture the runner
+// recorded as complete means damage - and if that ever stops being true this
+// refusal fires on valid documents, which is the cost accepted here knowingly.
+// docs/verification/process-event-sources.md holds the eleven measured shapes and
+// what to re-measure.
 if (!cut && read.repaired) {
   fail(`result file needed a trailing-cut repair on a capture recorded as complete: ${path}`);
 }
@@ -356,6 +374,13 @@ if (DECLARED_CONTENT_BLOCK.test(text)) {
   if (published.rows.length === 0 && declared > 0) {
     fail(`result file declares content rows this decoder could not read: ${path}`);
   }
+  // Wider than the intent's empty-read bound above, and deliberately so, for the
+  // same reason as the repair refusal: a prefix of the captain's words handed over
+  // as though it were all of them is a silent loss, while refusing it is a visible
+  // one. The same measurement holds it up - no measured 0.1.52 response is short,
+  // every one of the eleven shapes delivered exactly its declared count - and
+  // docs/verification/process-event-sources.md is where those shapes and the
+  // re-measure instruction live.
   if (!cut && published.rows.length < declared) {
     fail(`result file declares ${declared} content rows and only ${published.rows.length} could be read: ${path}`);
   }
