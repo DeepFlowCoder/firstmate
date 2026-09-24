@@ -110,22 +110,36 @@ The justification is a measurement, and it replaces an earlier claim in this fil
 The retired claim said only the trailing-cut repair can hand back fewer rows than the text declares; one document disproves it, because a block declaring 3 rows and supplying 1 well-formed row decodes on the FIRST attempt under `strict: false` and returns that single row with no repair involved - the non-strict baseline is itself a short-block producer.
 
 What is measured instead: no real output of the installed 0.1.52 needs the repair at all.
-Twelve shapes were encoded with the encoder the producer itself uses - `@toon-format/toon` 2.3.1, reached through `axi-sdk-js` - and read back through the vendored decoder with this reader's own options:
+Eleven shapes that real output takes were encoded with the encoder the producer itself uses - `@toon-format/toon` 2.3.1, reached through `axi-sdk-js` - and read back through the vendored 4.1.1 decoder with this reader's own options:
 
 ```text
-tabular rendering                 first-attempt OK   declared 3  delivered 3
-LIST rendering (nested target)    first-attempt OK   declared 2  delivered 2
-nested target object alone        first-attempt OK   declared 1  delivered 1
-attachment list                   first-attempt OK   declared 1  delivered 1
-artifact_failures present         first-attempt OK   declared 1  delivered 1
-accented UTF-8 captain prose      first-attempt OK   declared 1  delivered 1
-empty prompts array               first-attempt OK   declared 0  delivered 0
-escaped quotes, commas, newlines  first-attempt OK   declared 1  delivered 1
-ended session                     first-attempt OK
-waiting session                   first-attempt OK
-missing-session error             first-attempt OK
-interrupted-poll error            first-attempt OK
+tabular rendering                    first-attempt OK   declared 3  delivered 3
+LIST rendering                       first-attempt OK   declared 2  delivered 2
+nested target                        first-attempt OK   declared 1  delivered 1
+attachment list                      first-attempt OK   declared 1  delivered 1
+whiteboard row                       first-attempt OK   declared 1  delivered 1
+artifact_failures present            first-attempt OK   declared 1  delivered 1
+accented UTF-8 prose                 first-attempt OK   declared 1  delivered 1
+empty prompts array                  first-attempt OK   declared 0  delivered 0
+escaped quotes/commas/newlines/tabs  first-attempt OK   declared 1  delivered 1
+keyed choice with Context data       first-attempt OK   declared 1  delivered 1
+all row kinds together               first-attempt OK   declared 5  delivered 5
 ```
+
+Zero of the eleven needed repair, and every one delivered exactly its declared count.
+The four responses that carry no content block - `ended`, `waiting`, missing-session and interrupted-poll - were measured the same way, also first-attempt with no repair.
+That is a MEASUREMENT of eleven shapes, never a proof: it is what makes "repair without a cut means damage" a fact rather than an assumption, and the refusal rests on precisely that and nothing wider.
+
+### The one-line repair window, derived and confirmed rather than chosen
+
+`MAX_REPAIR_LINES` is 1, and it replaces an 8 that was a guess dressed as a bound.
+It is DERIVED from the cut mechanism: `bin/fm-procevent.sh`'s output bound writes the first `$limit` bytes to the stored result and drains the remainder, so a cut removes a SUFFIX and leaves exactly ONE partial line, which needs exactly ONE repair.
+It is CONFIRMED BY MEASUREMENT: a real-encoder tabular response (549 bytes) and LIST response (725 bytes) were cut at EVERY byte offset - 1274 offsets - and the reader's own repair loop run over each prefix; the worst case ever needed one repair line, no offset was unreadable, and no offset was readable with a window of 8 but not with 1.
+Principle and measurement agree, which is the reason to trust the number rather than either alone.
+Narrowing it surfaced one thing neither the principle nor a truncation sweep showed, because a cut prefix never ends in a newline while a stored result can: a file's terminating newline was spending a repair line of its own, so the loop now sets it aside and the one line the repair may touch is the last line carrying text.
+That is a correction to the repair, not a margin on the bound - the window is still exactly one line.
+WHAT WOULD INVALIDATE IT, named in advance: if that output bound ever changes to keep the TAIL instead of the head, or to cut anywhere but the end, the derivation collapses and 1 is no longer justified - re-measure before widening it, and do not restore a margin on top of a derived bound, because a margin nobody can justify is how the 8 got here.
+The consequence is intended: a document needing more than one repair line refuses as damaged instead of being reconstructed line by line.
 
 Zero of the twelve needed repair, and every content-carrying one delivered exactly its declared count.
 So on a capture the runner recorded as complete, a repair that ran means damage - full stop, without needing an argument about which step produced it.

@@ -112,10 +112,18 @@
 // counts are never enforced by the decoder at all, exactly as DECODE_OPTIONS says
 // below. Behind that baseline stands exactly ONE recovery: a repair of the
 // trailing cut - close an unterminated string on the last line, else drop that
-// line - over at most MAX_REPAIR_LINES lines, because the output bound cuts the
-// end of a capture and never its middle: bin/fm-procevent.sh's own seam keeps the
-// HEAD of oversized output and drains the rest. It decodes a PREFIX of what
-// really arrived.
+// line - over MAX_REPAIR_LINES = ONE line, because the output bound cuts the end
+// of a capture and never its middle: bin/fm-procevent.sh's own seam keeps the HEAD
+// of oversized output and drains the rest, which leaves exactly one partial line.
+// It decodes a PREFIX of what really arrived.
+//
+// THE CONSEQUENCE OF THAT ONE IS WANTED. A document needing more than one repair
+// line is not a cut this reader can account for, so it is REFUSED as damaged
+// instead of being reconstructed line by line - and reconstructing a broken
+// document quietly, then handing the result over as the captain's words, is this
+// whole delivery's failure family in one line of code. The constant is derived from
+// the cut mechanism and confirmed by measurement rather than chosen as a margin;
+// MAX_REPAIR_LINES below carries both, and names what would topple the derivation.
 //
 // It still yields a document this decoder accepts, so no row is ever
 // reconstructed by hand. A capture it cannot read is refused out loud -
@@ -168,21 +176,32 @@
 // silent one.
 //
 // WHAT HOLDS THAT UP is a measurement, not an argument: no real output of the
-// installed 0.1.52 needs the repair. 12 shapes were encoded with the encoder the
-// producer itself uses and read back here - the tabular rendering, the LIST
-// rendering, a nested `target`, an attachment list, `artifact_failures` present,
-// accented UTF-8 captain prose, an empty `prompts` array, a prompt carrying escaped
-// quotes, commas and embedded newlines, plus the `ended`, `waiting`,
-// missing-session and interrupted-poll responses - and all 12 decoded on the FIRST
-// attempt, none needing repair, with delivered rows equal to declared every time.
-// That is 12 measured shapes, not a proof over every response the producer can
-// emit; docs/verification/process-event-sources.md records them case by case.
+// installed 0.1.52 needs the repair. 11 shapes real output takes were encoded with
+// the encoder the producer itself uses and read back here - the tabular rendering,
+// the LIST rendering, a nested `target`, an attachment list, a `whiteboard` row,
+// `artifact_failures` present, accented UTF-8 captain prose, an empty `prompts`
+// array, a prompt carrying escaped quotes, commas, newlines and tabs, a keyed
+// choice carrying its `Context data:` block, and all row kinds in one response -
+// and all 11 decoded on the FIRST attempt, none needing repair, delivering exactly
+// their declared row count. The four non-content responses (`ended`, `waiting`,
+// missing-session, interrupted-poll) were measured the same way with the same
+// result. That is a MEASUREMENT of eleven shapes, never a proof over every response
+// the producer can emit; docs/verification/process-event-sources.md records them
+// case by case.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-// Truncation is a trailing-line defect, so the repair is bounded to the tail.
-const MAX_REPAIR_LINES = 8;
+// ONE line, DERIVED rather than chosen: the runner's output bound writes the first
+// `$limit` bytes and drains the remainder (bin/fm-procevent.sh), so a cut removes a
+// SUFFIX and leaves exactly one partial line to repair. Confirmed by measurement -
+// 1274 byte offsets, every offset of a real-encoder tabular and LIST response, worst
+// case one repair line and nothing unreadable - so principle and measurement agree.
+// A document needing more than one is not a cut this reader can explain, and it is
+// refused as damaged rather than reconstructed line by line. What would topple this
+// derivation, named in advance: an output bound that keeps the TAIL instead of the
+// head, or cuts anywhere but the end.
+const MAX_REPAIR_LINES = 1;
 
 // A content block the captured text declares, anchored at column zero because
 // every payload line is indented, so captain-supplied text can neither forge a
@@ -269,9 +288,12 @@ function readDocument(decode, text) {
   };
   let document = attempt(lines);
   if (document !== undefined) return { document, repaired: false };
-  const floor = Math.max(0, lines.length - MAX_REPAIR_LINES);
-  for (let end = lines.length; end > floor; end--) {
-    const head = lines.slice(0, end);
+  // A terminating newline is not a damaged line, so it never spends the window: the
+  // one line this repair may touch is the last line that carries text.
+  const content = lines.length > 1 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines;
+  const floor = Math.max(0, content.length - MAX_REPAIR_LINES);
+  for (let end = content.length; end > floor; end--) {
+    const head = content.slice(0, end);
     document = attempt([...head.slice(0, -1), `${head[end - 1]}"`]);
     if (document !== undefined) return { document, repaired: true };
     document = attempt(head.slice(0, -1));

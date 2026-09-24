@@ -2219,10 +2219,11 @@ assert_contains "$msg_out" "hold the release until Thursday" \
 
 # The same short block WITHOUT that marker is a capture the runner recorded as
 # complete, so the missing rows are damage nothing else will mention. No measured
-# 0.1.52 output is short - docs/verification/process-event-sources.md records the
-# twelve shapes encoded and read back - so it refuses out loud instead of handing
-# over a prefix as though it were everything the captain said. This shortfall needs
-# no repair to arise: the non-strict baseline returns a short block directly.
+# 0.1.52 output is short - the eleven encoded shapes in
+# docs/verification/process-event-sources.md all delivered exactly their declared
+# count - so it refuses out loud instead of handing over a prefix as though it were
+# everything the captain said. This shortfall needs no repair to arise: the
+# non-strict baseline returns a short block directly.
 rm -f "${PARTIAL%.result}.truncated"
 msg_rc=0
 msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$PARTIAL" 2>/dev/null) || msg_rc=$?
