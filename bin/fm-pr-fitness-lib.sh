@@ -64,10 +64,53 @@
 # lists below is treated as failing, so a value GitHub adds later refuses a
 # merge instead of being silently read as green.
 #
-# Those pass lists are also the single owner of the same question for a surface
+# The classifier is also the single owner of the same question for a surface
 # that only REPORTS a check summary rather than gating a merge:
-# fm_pr_fitness_rollup folds a whole check list into one word for it, and
-# bin/fm-bearings-snapshot.sh reads its summary through that function.
+# fm_pr_fitness_rollup projects its verdict into one word, and
+# bin/fm-bearings-snapshot.sh reads that projection through the function.
+
+# FM_PR_FITNESS_RECORD_JQ: the single renderer of one `check ...` record from one
+# statusCheckRollup entry, in the grammar bin/fm-pr-merge.sh's header owns and
+# fm_pr_fitness_classify reads. It is a jq expression, not a function, because
+# its two callers feed jq programs to different tools - gh's -q evaluator at the
+# merge gate and a plain jq at the bearings board - and a record rendered two
+# ways is a verdict decided two ways.
+#
+# The kind dispatch is __typename and nothing else: a CheckRun is a CheckRun, and
+# every other entry - a legacy commit status, and equally an entry carrying no
+# __typename at all - renders context form. That is the strict side. An entry the
+# forge typed as a check run but served without its meta-field has no .state, so
+# it renders `check null CONTEXT <started> degraded null` and classifies failing,
+# rather than being read as green on the strength of fields a reader guessed the
+# meaning of.
+#
+# A sentinel stands in for any status, conclusion, or state the forge left EMPTY,
+# so no field is lost to the classifier's word split. Measured: it covers the
+# empty string only, not an absent field - `(null|tostring)` is the string "null",
+# which takes the else branch and interpolates, which is why the untyped entry
+# above reads `null` rather than UNKNOWN. The verdict is the same either way,
+# since "null" is not SUCCESS, PENDING, or EXPECTED, but the guards are what keep
+# an empty field from vanishing into the split and must not be read as redundant
+# normalisation of null. The trailing name is
+# deliberately given none: it is last, so an empty one loses no field, and the
+# classifier reads a record with no name as one nothing identifies and folds it
+# with nothing. Substituting a stand-in name would give two such records one
+# identity and let a later green supersede a red.
+#
+# What a caller adds around this belongs to that caller, not here: the merge
+# gate's surrounding pr/base/checks lines, and the board's per-entry try/catch
+# and @tsv framing. In particular the gate has NO try/catch - an entry that
+# errors the render fails the whole read and the gate reports unmeasurable - so
+# moving the board's catch in here would turn that into a per-record verdict.
+# shellcheck disable=SC2016,SC2034  # jq bindings are not shell variables; the
+# renderer is read by the sourcing scripts rather than within this library.
+FM_PR_FITNESS_RECORD_JQ='(.startedAt | if type == "string" then (try fromdateiso8601 catch 0) else 0 end
+      | if . > 0 then . else 0 end) as $started |
+    if .__typename == "CheckRun" then
+      "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \($started) \(if ((.workflowName // "") | tostring | length) > 0 then "workflow=\((.workflowName | tostring) | @base64)" else "degraded" end) \(.name)"
+    else
+      "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \($started) degraded \(.context)"
+    end'
 
 # Every FM_PR_FITNESS_* name below is an output of fm_pr_fitness_classify, read
 # by the sourcing script rather than within this library.
@@ -154,60 +197,58 @@ fm_pr_fitness_context() {
   esac
 }
 
-# fm_pr_fitness_rollup: fold a whole check list into one summary word, reading it
-# on stdin as one line per check in either of two forms:
-#   run <status> <conclusion>      a check run
-#   context <state>                a legacy commit status
+# fm_pr_fitness_rollup: project a whole classified check list into one summary
+# word, reading the same `check ...` records fm_pr_fitness_classify reads.
 # Echoes one of:
 #   none     the list carried no check at all
 #   failing  at least one check did not pass
 #   pending  at least one check has not finished
 #   passing  every check passed
 #
-# Every field has to be a non-empty word, so a caller renders its own sentinel
-# for a value the forge left empty rather than losing a field to the split, and
-# a line that does not match either form folds as failing: a line this cannot
-# parse is not evidence that anything passed.
+# The wrapper supplies neutral pull-request fields because a reporting surface
+# asks only about checks, then maps the classifier's verdict rather than
+# implementing any check verdict or record-identity rule of its own. Everything
+# the classifier refuses maps to failing, unmeasurable included: a line the owner
+# cannot classify is not evidence that anything passed.
 #
-# This exists so a surface that needs only the summary can ask this owner rather
-# than spell the pass lists again, and bin/fm-bearings-snapshot.sh's own earlier
-# spelling is why. That one named the conclusions it treated as bad and passed
-# everything else, so a check that reached NO verdict - COMPLETED carrying no
-# conclusion, STARTUP_FAILURE, STALE, or any value GitHub adds after it was
-# written - was reported to the captain as passing, which is the one direction a
-# check summary must not be wrong in.
+# This exists so a surface that needs only the summary asks this owner instead of
+# spelling the rules again, and bin/fm-bearings-snapshot.sh has now paid for both
+# halves of that. Its first spelling named the conclusions it treated as bad and
+# passed everything else, so a check that reached NO verdict - COMPLETED carrying
+# no conclusion, STARTUP_FAILURE, STALE, or any value GitHub adds later - was
+# reported to the captain as passing. Its second answered whole records but not
+# their identity, so it read a red left behind by a superseded run while the
+# merge gate read the same head as green, and the two surfaces contradicted each
+# other on this repository's ordinary route to green. Both are regressions in
+# tests/fm-bearings-snapshot.test.sh, and the second is measured in
+# docs/verification/pr-merge-fitness.md.
 #
-# The summary is deliberately NOT folded by record identity the way
-# fm_pr_fitness_classify is. A red left behind by a run that a later run
-# superseded still reaches this verdict, so the summary can read failing for a
-# check that is green now. That is the direction this fold is allowed to be
-# wrong in; merge fitness, which cannot be, uses the classifier instead.
+# The records are held in an array and replayed verbatim rather than joined into
+# one string, so the declared count is always the number of lines that actually
+# reach the owner. Joining them drops an empty line at the front while still
+# counting it, and the count guard then refuses a reading whose records were all
+# fine - every pull request on the board reading failing at once, which is the
+# shape a caller's own framing left in the reading produces.
 fm_pr_fitness_rollup() {
-  local kind f1 f2 rest verdict worst=none
-  while IFS=' ' read -r kind f1 f2 rest || [ -n "$kind" ]; do
-    [ -n "$kind" ] || continue
-    verdict=failing
-    if [ -z "$rest" ]; then
-      case "$kind" in
-        run)
-          if [ -n "$f1" ] && [ -n "$f2" ]; then
-            verdict=$(fm_pr_fitness_checkrun "$f1" "$f2")
-          fi
-          ;;
-        context)
-          if [ -n "$f1" ] && [ -z "$f2" ]; then
-            verdict=$(fm_pr_fitness_context "$f1")
-          fi
-          ;;
-      esac
-    fi
-    case "$verdict" in
-      pass) if [ "$worst" = none ]; then worst=passing; fi ;;
-      running) if [ "$worst" != failing ]; then worst=pending; fi ;;
-      *) worst=failing ;;
-    esac
+  # Not named "records": fm_pr_fitness_classify uses that name for its own
+  # scalar counter, and a caller's array of the same name is a dynamic-scope
+  # collision waiting to be introduced by an edit to either function.
+  local line count=0
+  local -a record_lines=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    record_lines[count]=$line
+    count=$((count + 1))
   done
-  printf '%s' "$worst"
+  fm_pr_fitness_classify < <(
+    printf '%s\n' 'pr OPEN MERGEABLE CLEAN' 'base rollup rollup' "checks $count"
+    [ "$count" -eq 0 ] || printf '%s\n' "${record_lines[@]}"
+  )
+  case "$FM_PR_FITNESS_VERDICT" in
+    ok) printf 'passing' ;;
+    running) printf 'pending' ;;
+    no-checks) printf 'none' ;;
+    *) printf 'failing' ;;
+  esac
 }
 
 # fm_pr_fitness_classify: read the rendered reading on stdin and set

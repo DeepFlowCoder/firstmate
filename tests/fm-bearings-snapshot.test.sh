@@ -62,7 +62,7 @@ JSON
   exit 0
 fi
 cat <<'JSON'
-[{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}]
+[{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"__typename":"CheckRun","conclusion":"SUCCESS","status":"COMPLETED","startedAt":"2026-09-01T15:46:30Z","workflowName":"CI","name":"Build"}]}]
 JSON
 SH
   cat > "$fb/gh-axi" <<'SH'
@@ -1372,6 +1372,13 @@ test_include_prs_is_the_only_fetch_path() {
 # check carrying no conclusion at all, STARTUP_FAILURE, STALE, and any value
 # GitHub adds after this was written. Each of those is a check that ended
 # without a verdict, which is the shape that resembles an approved one.
+#
+# Every check-run row carries its __typename, because that is what the shared
+# renderer dispatches on and this table is about the conclusion and status enums
+# rather than about the dispatch. An entry carrying no __typename is a separate
+# question, asked by test_untyped_check_run_reads_as_the_gate_reads_it below.
+# The one untyped row kept here is the entry with no recognisable check field at
+# all, which is not a check run under any dispatch.
 test_no_verdict_check_is_never_reported_passing() {
   local home fakebin rollup expect json got
   home=$(make_home checks-verdict); write_fixture "$home"
@@ -1385,33 +1392,191 @@ test_no_verdict_check_is_never_reported_passing() {
       || fail "rollup $rollup must read $expect, read $got"
   done <<'EOF'
 []|none
-[{"status":"COMPLETED","conclusion":"SUCCESS"}]|passing
-[{"status":"COMPLETED","conclusion":"SKIPPED"}]|passing
-[{"status":"COMPLETED","conclusion":"NEUTRAL"}]|passing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]|passing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"}]|passing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"NEUTRAL"}]|passing
 [{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","name":"Lint"}]|passing
 [{"__typename":"StatusContext","state":"SUCCESS","context":"legacy"}]|passing
-[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"SUCCESS"}]|passing
-[{"status":"COMPLETED","conclusion":null}]|failing
-[{"status":"COMPLETED"}]|failing
-[{"status":"COMPLETED","conclusion":"STARTUP_FAILURE"}]|failing
-[{"status":"COMPLETED","conclusion":"STALE"}]|failing
-[{"status":"COMPLETED","conclusion":"A_VALUE_GITHUB_ADDED_LATER"}]|failing
-[{"status":"COMPLETED","conclusion":"CANCELLED"}]|failing
-[{"status":"COMPLETED","conclusion":"TIMED_OUT"}]|failing
-[{"status":"COMPLETED","conclusion":"FAILURE"}]|failing
-[{"status":"A_STATUS_GITHUB_ADDED_LATER","conclusion":null}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","workflowName":"A","name":"a"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","workflowName":"B","name":"b"}]|passing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":null}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED"}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"STARTUP_FAILURE"}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"STALE"}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"A_VALUE_GITHUB_ADDED_LATER"}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"CANCELLED"}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"TIMED_OUT"}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]|failing
+[{"__typename":"CheckRun","status":"A_STATUS_GITHUB_ADDED_LATER","conclusion":null}]|failing
 [{"__typename":"StatusContext","state":"ERROR","context":"legacy"}]|failing
 [{"__typename":"StatusContext","state":"A_STATE_GITHUB_ADDED_LATER","context":"legacy"}]|failing
 [{"no":"recognisable","check":"fields"}]|failing
-[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":null}]|failing
-[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"STARTUP_FAILURE"}]|failing
-[{"status":"IN_PROGRESS","conclusion":null}]|pending
-[{"status":"QUEUED"}]|pending
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","workflowName":"A","name":"a"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":null,"workflowName":"B","name":"b"}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","workflowName":"A","name":"a"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"STARTUP_FAILURE","workflowName":"B","name":"b"}]|failing
+[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]|pending
+[{"__typename":"CheckRun","status":"QUEUED"}]|pending
 [{"__typename":"StatusContext","state":"PENDING","context":"legacy"}]|pending
-[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"IN_PROGRESS"}]|pending
-[{"status":"IN_PROGRESS"},{"status":"COMPLETED","conclusion":"FAILURE"}]|failing
+[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","workflowName":"A","name":"a"},{"__typename":"CheckRun","status":"IN_PROGRESS","workflowName":"B","name":"b"}]|pending
+[{"__typename":"CheckRun","status":"IN_PROGRESS","workflowName":"A","name":"a"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","workflowName":"B","name":"b"}]|failing
 EOF
   pass "a check that reached no verdict never reads as passing, and green checks still do"
+}
+
+# FORGE-MEASURED CASES
+# The four cases below are the same question - did this check pass - asked of
+# the board on the record shapes the merge gate folds. The readings are the ones
+# DeepFlowCoder/firstmate actually served, recorded in
+# docs/verification/pr-merge-fitness.md. They guard two different things, and
+# only one of the two is the regression for the surfaces answering separately:
+#
+# firstmate#17 is that regression, and the only case of the four that separates
+# the two readings. Worst-raw says failing, folding by identity says passing, and
+# the test asserts passing - so it fails against any reader that stopped folding.
+#
+# The degraded, unnamed, and workflow-collision cases all assert failing, which
+# is also what the pre-change worst-raw reader returned for each (measured). They
+# therefore do NOT distinguish the old approach from the new one, and claiming
+# they do would be claiming a property they lack. What they pin is the STRICT
+# answer, against a future fold made too permissive: key degraded records by name,
+# or fold an empty name, or drop workflow identity from the key, and the case at
+# hand flips to passing.
+#
+# firstmate#17 is the shape this repository reaches every time it goes green:
+# Require no-mistakes reads the pull request body from its own event payload, so
+# the run before the body was attested is expected to be superseded, and GitHub
+# returns both runs under one head. Measured on that reading, the board said
+# failing while the gate read its checks as green.
+test_superseded_red_uses_the_merge_fitness_verdict() {
+  local home fakebin rollup reds json got
+  home=$(make_home superseded-check); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-01T15:45:35Z","workflowName":"Require no-mistakes","name":"PR must be raised via no-mistakes"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"Require no-mistakes","name":"PR must be raised via no-mistakes"}]'
+  # Without a live red among the records there is no superseding to test and a
+  # passing verdict would prove nothing, so the fixture is checked for one.
+  reds=$(printf '%s' "$rollup" | jq '[.[] | select(.conclusion != "SUCCESS")] | length')
+  [ "$reds" -ge 1 ] || fail "the firstmate#17 fixture no longer carries a red to be superseded"
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on the forge-measured superseded-red reading"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = passing ] \
+    || fail "bearings read $got where the merge gate reads the later same-workflow run as current"
+  pass "a red superseded by a later run of the same check reads passing on both paths"
+}
+
+# A third-party CheckRun has no workflow identity, so two same-named records
+# cannot prove they are re-runs of one check. The merge gate gives those
+# degraded records a key nothing else shares and folds them with nothing; the
+# board has to inherit that strict answer rather than hide the earlier red.
+test_degraded_records_never_supersede_each_other() {
+  local home fakebin rollup json got
+  home=$(make_home degraded-check); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-01T15:45:35Z","workflowName":"","name":"Third-party check"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"","name":"Third-party check"}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on degraded check records"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got after a red degraded record that no later green can prove it superseded"
+  pass "a red record with no workflow identity is never superseded on the board either"
+}
+
+# An unnamed record is identified by nothing, so the gate folds it with nothing.
+# Rendering a stand-in name here instead would give two of them one identity and
+# let the later green carry the red away - a false green the board would report
+# and the gate would not. The two records share a workflow deliberately: with a
+# name substituted they fold, and only the empty name keeps them apart.
+test_unnamed_records_are_identified_with_nothing() {
+  local home fakebin rollup json got
+  home=$(make_home unnamed-check); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-01T15:45:35Z","workflowName":"CI","name":""},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"CI","name":""}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on unnamed check records"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got after a red record no name identifies with the green beside it"
+  pass "a record the forge gave no name is folded with nothing on the board"
+}
+
+# firstmate#112 carries two DISTINCT workflows each rendering a check of the same
+# name, the earlier one red. The fold key is the workflow-and-name pair, so the
+# later green belongs to a different check and supersedes nothing. The board must
+# keep reading that red rather than inheriting a fold the gate does not make.
+test_same_name_in_two_workflows_never_folds() {
+  local home fakebin rollup json got
+  home=$(make_home collision-check); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-24T05:41:39Z","workflowName":"Fold key collision A","name":"Shared collision check"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-24T05:44:17Z","workflowName":"Fold key collision B","name":"Shared collision check"}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on the forge-measured workflow-collision reading"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got after a red check another workflow's same-named green cannot supersede"
+  pass "a same-named check in another workflow supersedes nothing on the board either"
+}
+
+# CONSTRUCTED CASES - NOT MEASURED ON THIS FORGE
+# The three cases below are CONSTRUCTED shapes, deliberately distinguished from
+# the forge-measured group above. None of them has been observed on
+# DeepFlowCoder/firstmate: measured 2026-09-24, every one of the 57 rollup nodes
+# the list path served carried __typename (recorded in
+# docs/verification/pr-merge-fitness.md). They are hand-built to exercise what
+# the board does with an entry GitHub served without that meta-field, which is
+# the one point where the board's own renderer used to disagree with the merge
+# gate's. Do not read them as evidence the shape occurs.
+#
+# Before the two renderers were unified, the board guessed "check run" from the
+# presence of a status or conclusion field, so an untyped entry read green here
+# and was refused at the gate. The shared renderer dispatches on __typename
+# alone, so an untyped entry now renders context form on both paths and
+# classifies failing. The record it renders is `check null CONTEXT <started>
+# degraded null`, not UNKNOWN: the sentinel covers an EMPTY field, and an untyped
+# entry has no .state at all, so the string "null" interpolates instead.
+
+# A green check run with no __typename: one record, nothing to fold. The board
+# used to report this pull request passing while the gate refused it.
+test_untyped_check_run_reads_as_the_gate_reads_it() {
+  local home fakebin rollup json got
+  home=$(make_home untyped-run); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"CI","name":"Build"}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on a check run carrying no __typename"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got for an untyped check run the merge gate reads as an unknown context"
+  pass "a check run with no __typename reads failing on the board, as it does at the gate"
+}
+
+# A red superseded by a later green whose record carries no __typename. The green
+# renders context form, is degraded, and folds with nothing, so the red is never
+# superseded and the red survives - which is what the gate reads too.
+test_untyped_successor_supersedes_nothing() {
+  local home fakebin rollup json got
+  home=$(make_home untyped-successor); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-01T15:45:35Z","workflowName":"CI","name":"Build"},{"status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"CI","name":"Build"}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on an untyped successor to a red check"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got where an untyped green cannot prove it superseded the red before it"
+  pass "an untyped later green supersedes nothing on the board, as at the gate"
+}
+
+# The sharpest of the three: the RED is the record with no __typename. It renders
+# context form, is degraded, and folds with nothing, so no later green of the same
+# check can carry it away. The board used to hide exactly this red.
+test_untyped_red_is_never_carried_away_by_a_later_green() {
+  local home fakebin rollup json got
+  home=$(make_home untyped-red); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  rollup='[{"status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-09-01T15:45:35Z","workflowName":"CI","name":"Build"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-09-01T15:46:30Z","workflowName":"CI","name":"Build"}]'
+  json=$(FAKE_GH_ROLLUP="$rollup" run "$home" "$fakebin" --include-prs --json) \
+    || fail "bearings failed on an untyped red followed by a typed green"
+  got=$(printf '%s' "$json" | jq -r '.candidate_prs[] | select(.num == "9") | .checks')
+  [ "$got" = failing ] \
+    || fail "bearings read $got after an untyped red a later green cannot supersede"
+  pass "an untyped red survives a later green on the board, as it does at the gate"
 }
 
 test_partial_github_failure_degrades() {
@@ -2692,6 +2857,13 @@ test_superseded_queued_item_dropped_by_default
 test_default_view_filters_by_structured_state_not_row_prose
 test_include_prs_is_the_only_fetch_path
 test_no_verdict_check_is_never_reported_passing
+test_superseded_red_uses_the_merge_fitness_verdict
+test_degraded_records_never_supersede_each_other
+test_unnamed_records_are_identified_with_nothing
+test_same_name_in_two_workflows_never_folds
+test_untyped_check_run_reads_as_the_gate_reads_it
+test_untyped_successor_supersedes_nothing
+test_untyped_red_is_never_carried_away_by_a_later_green
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags
