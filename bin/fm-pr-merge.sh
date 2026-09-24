@@ -16,9 +16,11 @@
 #
 # The reading lists one record per check RUN, so a check that ran twice against
 # this head leaves both runs on it and only the later one says what that check
-# reports now. Records are therefore folded by check name and the verdict is
-# taken over the current record of each: two records of one name are not two
-# checks. Without that fold a red left behind by a superseded run refuses a pull
+# reports now. CheckRun records are therefore folded by workflow and check name,
+# and the verdict is taken over the current record of each identity. Legacy
+# commit statuses have no workflow identity and are deliberately never folded,
+# so an ambiguous legacy red fails closed instead of being hidden. Without the
+# CheckRun fold a red left behind by a superseded run refuses a pull
 # request every later signal calls ready, and this repository reaches that shape
 # by design - its Require no-mistakes check reads the pull request body from its
 # own event payload, so a run that fired before the body was attested is
@@ -346,7 +348,7 @@ if [ "$PROVIDER" = github ]; then
   # One reading, rendered flat so it can be parsed without a JSON processor,
   # which bin/fm-pr-poll.sh documents this repo as not requiring. gh supplies its
   # own -q evaluator, so this adds no dependency beyond the gh already used here.
-  # shellcheck disable=SC2016  # $started is a jq binding, not a shell variable.
+  # shellcheck disable=SC2016  # jq bindings and interpolation are not shell variables.
   FITNESS_QUERY='"pr \(.state) \(.mergeable) \(.mergeStateStatus)",
   "base \(.baseRefName) \(.headRefOid)",
   "checks \((.statusCheckRollup // []) | length)",
@@ -354,9 +356,9 @@ if [ "$PROVIDER" = github ]; then
     (.startedAt | if type == "string" then (try fromdateiso8601 catch 0) else 0 end
       | if . > 0 then . else 0 end) as $started |
     if .__typename == "CheckRun" then
-      "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \($started) \(.name)"
+      "check \(if (.status|tostring) == "" then "UNKNOWN" else .status end) \(if (.conclusion|tostring) == "" then "NONE" else .conclusion end) \($started) \(if ((.workflowName // "") | tostring | length) > 0 then "workflow=\((.workflowName | tostring) | @base64)" else "degraded" end) \(.name)"
     else
-      "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \($started) \(.context)"
+      "check \(if (.state|tostring) == "" then "UNKNOWN" else .state end) CONTEXT \($started) degraded \(.context)"
     end)'
 
   # gh's own diagnostics are kept rather than discarded: "not authenticated for

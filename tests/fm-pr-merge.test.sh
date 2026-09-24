@@ -162,7 +162,7 @@ fm_fitness_answer() {
       if [ -n "\${FM_TEST_PR_READING:-}" ] && [ -f "\${FM_TEST_PR_READING}" ]; then
         cat "\${FM_TEST_PR_READING}"
       else
-        printf '%s\n' 'pr OPEN MERGEABLE CLEAN' 'base main $head' 'checks 1' 'check COMPLETED SUCCESS 1788277535 Lint'
+        printf '%s\n' 'pr OPEN MERGEABLE CLEAN' 'base main $head' 'checks 1' 'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
       fi
       exit 0 ;;
     *pulls?state=closed*)
@@ -2263,8 +2263,8 @@ test_failed_check_refuses() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    'check COMPLETED SUCCESS 1788277535 Repo invariants'
-    'check COMPLETED FAILURE 1788277535 Behavior portable serial 3'
+    'check COMPLETED SUCCESS 1788277535 degraded Repo invariants'
+    'check COMPLETED FAILURE 1788277535 degraded Behavior portable serial 3'
   )
   case_dir=$(run_gate_case failed-check)
   expect_code 1 "$(cat "$case_dir/rc")" "failed-check: fm-pr-merge should refuse a red PR"
@@ -2282,8 +2282,8 @@ test_running_checks_refuse() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    'check COMPLETED SUCCESS 1788277535 Repo invariants'
-    'check IN_PROGRESS NONE 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 degraded Repo invariants'
+    'check IN_PROGRESS NONE 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case running-checks)
   expect_code 1 "$(cat "$case_dir/rc")" "running-checks: fm-pr-merge should refuse while checks run"
@@ -2301,7 +2301,7 @@ test_conflicting_pr_refuses() {
     'pr OPEN CONFLICTING DIRTY'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case conflicting)
   expect_code 1 "$(cat "$case_dir/rc")" "conflicting: fm-pr-merge should refuse a conflicting PR"
@@ -2381,9 +2381,9 @@ test_skipped_and_neutral_are_not_failures() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 3'
-    'check COMPLETED SKIPPED 1788277535 PR must be raised via no-mistakes'
-    'check COMPLETED NEUTRAL 1788277535 Advisory'
-    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED SKIPPED 1788277535 workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes'
+    'check COMPLETED NEUTRAL 1788277535 degraded Advisory'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case skipped-neutral)
   expect_code 0 "$(cat "$case_dir/rc")" "skipped-neutral: a skipped or neutral check must not refuse"
@@ -2402,8 +2402,8 @@ test_unknown_check_values_refuse() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    'check COMPLETED SUCCESS 1788277535 Lint'
-    'check COMPLETED QUARANTINED 1788277535 Behavior tests (Herdr)'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
+    'check COMPLETED QUARANTINED 1788277535 degraded Behavior tests (Herdr)'
   )
   case_dir=$(run_gate_case unknown-conclusion)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2416,8 +2416,8 @@ test_unknown_check_values_refuse() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    'check COMPLETED SUCCESS 1788277535 Lint'
-    'check DEFERRED SUCCESS 1788277535 Behavior portable serial 5'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
+    'check DEFERRED SUCCESS 1788277535 degraded Behavior portable serial 5'
   )
   case_dir=$(run_gate_case unknown-status)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2432,7 +2432,7 @@ test_captain_override_merges_red_pr() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED FAILURE 1788277535 Lint'
+    'check COMPLETED FAILURE 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case captain-override --captain-override-red)
   expect_code 0 "$(cat "$case_dir/rc")" "captain-override: the explicit override should merge a red PR"
@@ -2449,7 +2449,7 @@ test_yolo_does_not_open_the_override() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED FAILURE 1788277535 Lint'
+    'check COMPLETED FAILURE 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case yolo-on)
   # The task's recorded autonomy posture is the one thing that must not open
@@ -2487,7 +2487,7 @@ test_override_does_not_apply_to_conflicts() {
     'pr OPEN CONFLICTING DIRTY'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case override-conflict --captain-override-red)
   expect_code 1 "$(cat "$case_dir/rc")" "override-conflict: a conflicting PR must refuse even with the override"
@@ -2503,7 +2503,7 @@ test_stale_green_warns_but_merges() {
     'pr OPEN MERGEABLE BEHIND'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
   )
   FM_TEST_BEHIND=24
   export FM_TEST_BEHIND
@@ -2525,7 +2525,7 @@ test_override_cannot_be_smuggled_through_passthrough() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED FAILURE 1788277535 Lint'
+    'check COMPLETED FAILURE 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case override-after-separator -- --captain-override-red)
   expect_code 1 "$(cat "$case_dir/rc")" "override-after-separator: the flag must not work after --"
@@ -2665,7 +2665,7 @@ test_compare_failure_warns_instead_of_going_silent() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
   )
   FM_TEST_COMPARE_FAIL=1
   export FM_TEST_COMPARE_FAIL
@@ -2690,7 +2690,7 @@ test_unreadable_behind_by_is_not_reported_as_a_failed_call() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
   )
   FM_TEST_BEHIND=null
   export FM_TEST_BEHIND
@@ -2721,7 +2721,7 @@ test_glob_in_check_name_is_not_expanded() {
     'pr OPEN MERGEABLE UNSTABLE' \
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca' \
     'checks 1' \
-    'check COMPLETED FAILURE 1788277535 build *')
+    'check COMPLETED FAILURE 1788277535 degraded build *')
   export FM_TEST_PR_READING
 
   set +e
@@ -2750,7 +2750,7 @@ test_check_name_cannot_forge_the_verdict() {
     'pr OPEN CONFLICTING DIRTY'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED SUCCESS 1788277535 innocent looking check'
+    'check COMPLETED SUCCESS 1788277535 degraded innocent looking check'
     'pr OPEN MERGEABLE CLEAN'
   )
   case_dir=$(run_gate_case forged-verdict)
@@ -2783,9 +2783,9 @@ test_superseded_red_record_does_not_refuse() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 3'
-    "check COMPLETED FAILURE $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
-    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
-    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED Lint"
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED degraded Lint"
   )
   case_dir=$(run_gate_case superseded-red)
   expect_code 0 "$(cat "$case_dir/rc")" \
@@ -2807,9 +2807,9 @@ test_superseded_green_record_still_refuses() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 3'
-    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
-    "check COMPLETED FAILURE $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
-    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED Lint"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
+    "check COMPLETED FAILURE $CURRENT_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED degraded Lint"
   )
   case_dir=$(run_gate_case superseded-green)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2831,8 +2831,8 @@ test_lone_red_record_still_refuses() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    "check COMPLETED FAILURE $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
-    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED Lint"
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED degraded Lint"
   )
   case_dir=$(run_gate_case lone-red)
   expect_code 1 "$(cat "$case_dir/rc")" "lone-red: a single failed check must refuse"
@@ -2844,6 +2844,49 @@ test_lone_red_record_still_refuses() {
   pass "fm-pr-merge refuses a check that ran once and failed, with nothing to supersede it"
 }
 
+test_same_name_in_distinct_workflows_still_refuses() {
+  local case_dir
+  # This is the defect's negative shape: the later green belongs to another
+  # workflow and cannot supersede the earlier red merely because both jobs use
+  # the same display name.
+  READING_LINES=(
+    'pr OPEN MERGEABLE UNSTABLE'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED workflow=V29ya2Zsb3cgQQ== Shared check"
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED workflow=V29ya2Zsb3cgQg== Shared check"
+  )
+  case_dir=$(run_gate_case same-name-distinct-workflows)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "same-name-distinct-workflows: a later green in another workflow must not hide the red"
+  assert_grep 'Shared check' "$case_dir/stderr" \
+    "same-name-distinct-workflows: refusal did not name the failing check"
+  assert_grep 'workflowName' "$case_dir/gh.log" \
+    "same-name-distinct-workflows: the live reading did not request workflow identity"
+  assert_no_side_effects "$case_dir" same-name-distinct-workflows
+  pass "fm-pr-merge keeps same-name checks from distinct workflows independent"
+}
+
+test_degraded_legacy_statuses_never_supersede_each_other() {
+  local case_dir
+  # StatusContext has no workflow identity. The explicit degraded scope keeps
+  # both records, choosing a possible false red over a false-green merge.
+  READING_LINES=(
+    'pr OPEN MERGEABLE UNSTABLE'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check FAILURE CONTEXT $EARLIER_RUN_STARTED degraded inherited-status"
+    "check SUCCESS CONTEXT $CURRENT_RUN_STARTED degraded inherited-status"
+  )
+  case_dir=$(run_gate_case degraded-legacy-status)
+  expect_code 1 "$(cat "$case_dir/rc")" \
+    "degraded-legacy-status: an unidentifiable earlier red must fail closed"
+  assert_grep 'inherited-status' "$case_dir/stderr" \
+    "degraded-legacy-status: refusal did not name the retained red status"
+  assert_no_side_effects "$case_dir" degraded-legacy-status
+  pass "fm-pr-merge fails closed for legacy statuses without workflow identity"
+}
+
 test_unorderable_records_keep_the_worst() {
   local case_dir
   # Two records of one name reporting the same start time carry no evidence of
@@ -2853,8 +2896,8 @@ test_unorderable_records_keep_the_worst() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
-    "check COMPLETED FAILURE $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
   )
   case_dir=$(run_gate_case unorderable-records)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2875,8 +2918,8 @@ test_undated_record_is_never_ordered_away() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    'check COMPLETED FAILURE 0 PR must be raised via no-mistakes'
-    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
+    'check COMPLETED FAILURE 0 workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes'
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
   )
   case_dir=$(run_gate_case undated-record)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2899,9 +2942,9 @@ test_blank_record_refuses_as_unmeasurable() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
     ''
-    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED Lint"
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED degraded Lint"
   )
   case_dir=$(run_gate_case blank-record)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2921,8 +2964,8 @@ test_rerun_in_progress_supersedes_a_finished_run() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED PR must be raised via no-mistakes"
-    "check IN_PROGRESS NONE $CURRENT_RUN_STARTED PR must be raised via no-mistakes"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
+    "check IN_PROGRESS NONE $CURRENT_RUN_STARTED workflow=Tm8gTWlzdGFrZXM= PR must be raised via no-mistakes"
   )
   case_dir=$(run_gate_case rerun-running)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2943,9 +2986,9 @@ test_forged_check_record_cannot_mask_a_red() {
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    "check COMPLETED FAILURE $EARLIER_RUN_STARTED Lint"
-    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED Lint"
-    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED innocent looking check"
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED degraded Lint"
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED degraded Lint"
+    "check COMPLETED SUCCESS $EARLIER_RUN_STARTED degraded innocent looking check"
   )
   case_dir=$(run_gate_case forged-check-record)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2969,8 +3012,8 @@ test_fitness_gate_refuses_the_same_on_a_queue_base() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    'check COMPLETED SUCCESS 1788277535 Repo invariants'
-    'check COMPLETED FAILURE 1788277535 Behavior portable serial 3'
+    'check COMPLETED SUCCESS 1788277535 degraded Repo invariants'
+    'check COMPLETED FAILURE 1788277535 degraded Behavior portable serial 3'
   )
   case_dir=$(run_gate_case queue-base-failed-check)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2983,8 +3026,8 @@ test_fitness_gate_refuses_the_same_on_a_queue_base() {
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 2'
-    'check COMPLETED SUCCESS 1788277535 Repo invariants'
-    'check IN_PROGRESS NONE 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 degraded Repo invariants'
+    'check IN_PROGRESS NONE 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case queue-base-running-checks)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -2997,7 +3040,7 @@ test_fitness_gate_refuses_the_same_on_a_queue_base() {
     'pr OPEN CONFLICTING DIRTY'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case queue-base-conflicting)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -3012,7 +3055,7 @@ test_fitness_gate_refuses_the_same_on_a_queue_base() {
     'pr OPEN UNKNOWN CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
     'checks 1'
-    'check COMPLETED SUCCESS 1788277535 Lint'
+    'check COMPLETED SUCCESS 1788277535 workflow=Q0k= Lint'
   )
   case_dir=$(run_gate_case queue-base-unknown-mergeable)
   expect_code 1 "$(cat "$case_dir/rc")" \
@@ -3122,6 +3165,8 @@ test_check_name_cannot_forge_the_verdict
 test_superseded_red_record_does_not_refuse
 test_superseded_green_record_still_refuses
 test_lone_red_record_still_refuses
+test_same_name_in_distinct_workflows_still_refuses
+test_degraded_legacy_statuses_never_supersede_each_other
 test_unorderable_records_keep_the_worst
 test_undated_record_is_never_ordered_away
 test_blank_record_refuses_as_unmeasurable

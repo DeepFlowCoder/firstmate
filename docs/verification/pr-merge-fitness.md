@@ -80,11 +80,11 @@ gh pr view 141762 --repo kubernetes/kubernetes \
 pr OPEN MERGEABLE BLOCKED
 base master 5e1a29fc9d94e8b3ddf5cfae9b76858fd9e49ff1
 checks 21
-check FAILURE CONTEXT 1788289214 pull-kubernetes-cmd
-check FAILURE CONTEXT 1788290505 pull-kubernetes-verify
-check PENDING CONTEXT 1788288716 pull-kubernetes-e2e-gce
-check PENDING CONTEXT 1788288745 tide
-check SUCCESS CONTEXT 1788288719 EasyCLA
+check FAILURE CONTEXT 1788289214 degraded pull-kubernetes-cmd
+check FAILURE CONTEXT 1788290505 degraded pull-kubernetes-verify
+check PENDING CONTEXT 1788288716 degraded pull-kubernetes-e2e-gce
+check PENDING CONTEXT 1788288745 degraded tide
+check SUCCESS CONTEXT 1788288719 degraded EasyCLA
 ...
 ```
 
@@ -100,6 +100,10 @@ gh pr view 141762 --repo kubernetes/kubernetes --json statusCheckRollup \
 ```
 
 There is no `createdAt` key in that serialisation at all, so an expression reading it would have rendered `0` for every legacy status and left them all unorderable.
+
+The renderer marks every `StatusContext` as `degraded` because that object has no workflow identity.
+The classifier never folds two degraded records together: that can preserve an obsolete red status, but it fails closed instead of letting two distinct same-context statuses collapse into a false green.
+For a `CheckRun`, the same `statusCheckRollup` object supplies `workflowName`; the renderer base64-encodes it into one whitespace-free `workflow=<base64>` field, and the classifier folds only records whose workflow field and check name both match.
 
 A `CheckRun` that has not finished carries an empty `conclusion` rather than a null one, which is why the expression tests for the empty string rather than relying on jq's `//` operator.
 The start time is guarded rather than left to `//`, because a start time the parser rejects does not degrade quietly - it aborts the whole expression:

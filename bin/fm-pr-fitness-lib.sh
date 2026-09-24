@@ -17,8 +17,8 @@
 #   pr <state> <mergeable> <mergeStateStatus>
 #   base <baseRefName> <headRefOid>
 #   checks <count>                                    (how many check records follow)
-#   check <status> <conclusion> <started> <name>      (a CheckRun)
-#   check <state> CONTEXT <started> <name>            (a legacy commit status)
+#   check <status> <conclusion> <started> workflow=<base64> <name> (a CheckRun)
+#   check <state> CONTEXT <started> degraded <name>   (a legacy commit status)
 # <started> is epoch seconds, or 0 when the forge reported no start time this
 # reading could date - an absent one, and equally the placeholder string GitHub
 # serialises an unset timestamp as - which the fold below treats as unorderable
@@ -45,12 +45,12 @@
 # the network lives.
 #
 # GitHub renders one record per check RUN, not per check. A check that ran twice
-# against one head - a re-run, or a second workflow run raised by a later event -
-# contributes two records under one name, and only the later one describes that
-# check now. So the records are folded by name and the verdict is taken over the
-# current record of each name; two records of one name are not two checks. The
-# whole fold is documented at fm_pr_fitness_classify's loop, including why the
-# forge's own verdicts cannot answer this and what an unorderable pair does.
+# against one head contributes two records under one workflow-and-name identity,
+# and only the later one describes that check now. Legacy commit statuses carry
+# no workflow identity, so their explicit degraded identity never folds them:
+# this can retain a superseded red status, but cannot hide a distinct red status
+# and open the merge gate. The whole fold is documented at
+# fm_pr_fitness_classify's loop.
 #
 # Enum values are GitHub's own, read from the live GraphQL schema rather than
 # from memory (CheckConclusionState, CheckStatusState, StatusState,
@@ -220,14 +220,14 @@ fm_pr_fitness_rollup() {
 # the two states no override can help: GitHub itself refuses those merges, so
 # reporting anything else would send the reader to fix the wrong thing.
 fm_pr_fitness_classify() {
-  local kind f1 f2 f3 name verdict
+  local kind f1 f2 f3 scope name verdict
   local state='' mergeable='' merge_state='' saw_pr=0 saw_base=0
   local declared='' failing='' running=''
   # Parallel arrays rather than one keyed by name: stock macOS Bash is 3.2,
   # which has no associative arrays, and .github/workflows/ci.yml holds this
   # tree to parsing under it.
   local records=0 i=0 j=0 keep=0
-  local -a chk_name chk_rank chk_time chk_order
+  local -a chk_name chk_key chk_foldable chk_rank chk_time chk_order
 
   FM_PR_FITNESS_VERDICT=
   FM_PR_FITNESS_REASON=
@@ -241,7 +241,7 @@ fm_pr_fitness_classify() {
   FM_PR_FITNESS_HEAD=
   FM_PR_FITNESS_MERGE_STATE=
 
-  while IFS=' ' read -r kind f1 f2 f3 name || [ -n "$kind" ]; do
+  while IFS=' ' read -r kind f1 f2 f3 scope name || [ -n "$kind" ]; do
     case "$kind" in
       # A legitimate reading carries exactly one pr and one base record. A
       # second of either can only come from a value that contained a newline -
@@ -257,7 +257,7 @@ fm_pr_fitness_classify() {
         # Every fixed-width record is refused when it carries more than its own
         # fields, for the same reason a repeat of one is: the surplus can only
         # come from a value that contained a newline.
-        if [ -n "$name" ]; then
+        if [ -n "$scope" ] || [ -n "$name" ]; then
           FM_PR_FITNESS_VERDICT=unmeasurable
           FM_PR_FITNESS_REASON="the reading from GitHub carried a pull request record with unexpected trailing content"
           return 0
@@ -273,7 +273,7 @@ fm_pr_fitness_classify() {
           FM_PR_FITNESS_REASON="the reading from GitHub carried more than one base record"
           return 0
         fi
-        if [ -n "$f3" ] || [ -n "$name" ]; then
+        if [ -n "$f3" ] || [ -n "$scope" ] || [ -n "$name" ]; then
           FM_PR_FITNESS_VERDICT=unmeasurable
           FM_PR_FITNESS_REASON="the reading from GitHub carried a base record with unexpected trailing content"
           return 0
@@ -295,7 +295,7 @@ fm_pr_fitness_classify() {
             return 0
             ;;
         esac
-        if [ -n "$f2" ] || [ -n "$f3" ] || [ -n "$name" ]; then
+        if [ -n "$f2" ] || [ -n "$f3" ] || [ -n "$scope" ] || [ -n "$name" ]; then
           FM_PR_FITNESS_VERDICT=unmeasurable
           FM_PR_FITNESS_REASON="the reading from GitHub carried a check-count record with unexpected trailing content"
           return 0
@@ -318,6 +318,21 @@ fm_pr_fitness_classify() {
           verdict=$(fm_pr_fitness_checkrun "$f1" "$f2")
         fi
         chk_name[records]=$name
+        case "$scope" in
+          workflow=?*)
+            chk_key[records]="${scope#workflow=} $name"
+            chk_foldable[records]=1
+            ;;
+          degraded)
+            chk_key[records]="degraded-$records"
+            chk_foldable[records]=0
+            ;;
+          *)
+            FM_PR_FITNESS_VERDICT=unmeasurable
+            FM_PR_FITNESS_REASON="the reading from GitHub carried a check record with no declared identity scope"
+            return 0
+            ;;
+        esac
         case "$verdict" in
           failing) chk_rank[records]=2 ;;
           running) chk_rank[records]=1 ;;
@@ -370,7 +385,8 @@ fm_pr_fitness_classify() {
     return 0
   fi
 
-  # Fold the records by check name and judge only the current record of each.
+  # Fold CheckRuns by workflow-and-name and judge only the current record of
+  # each identity.
   #
   # GitHub renders one record per check RUN. A check that ran twice against this
   # head leaves both runs on the reading, so a red left behind by an earlier run
@@ -405,14 +421,21 @@ fm_pr_fitness_classify() {
   # an undated record as time zero instead would sort it below every dated
   # sibling, so a re-run GitHub reported no start time for could order a red
   # away - failing OPEN, which is the one direction a merge guard cannot fail.
-  # An unnamed record is never folded in either direction either, because
-  # nothing identifies it with any other record.
+  # A legacy commit status cannot form that identity because GitHub gives it no
+  # workflow. Its explicit `degraded` scope therefore makes every such record
+  # distinct. This deliberately chooses the fail-closed side of the unavoidable
+  # tradeoff: an older red legacy status may remain red after a green successor,
+  # but two genuinely distinct same-context statuses can never collapse into a
+  # false green. The captain override remains the deliberate escape hatch for a
+  # superseded legacy red that GitHub cannot identify safely.
   while [ "$i" -lt "$records" ]; do
     keep=1
-    if [ -n "${chk_name[$i]}" ] && [ "${chk_time[$i]}" -ne 0 ]; then
+    if [ "${chk_foldable[$i]}" -eq 1 ] && [ -n "${chk_name[$i]}" ] \
+      && [ "${chk_time[$i]}" -ne 0 ]; then
       j=0
       while [ "$j" -lt "$records" ]; do
-        if [ "${chk_name[$j]}" = "${chk_name[$i]}" ] && [ "${chk_time[$j]}" -ne 0 ] \
+        if [ "${chk_foldable[$j]}" -eq 1 ] \
+          && [ "${chk_key[$j]}" = "${chk_key[$i]}" ] && [ "${chk_time[$j]}" -ne 0 ] \
           && { [ "${chk_order[$j]}" -gt "${chk_order[$i]}" ] \
             || { [ "${chk_order[$j]}" -eq "${chk_order[$i]}" ] && [ "$j" -lt "$i" ]; }; }; then
           keep=0
