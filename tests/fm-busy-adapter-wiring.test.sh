@@ -281,14 +281,21 @@ test_claude_hooks_stale_incarnation_harmless() {
 }
 
 test_codex_unverified_until_a_semantic_source_exists() {
-  local rec id=busy-cx-1 out state
+  local rec id=busy-cx-1 out state launch
   rec=$(make_spawn_case codex-unverified codex "$id")
   read_case_record "$rec"
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  launch="$CASE_DIR/launch.log"; : > "$launch"
+  out=$(FM_FAKE_LAUNCH_LOG="$launch" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
   expect_code 0 $? "codex spawn should succeed: $out"
   state="$HOME_DIR/state"
   assert_absent "$state/$id.busy-gen" "codex must not arm a busy contract with no verified semantic source"
   assert_absent "$WT_DIR/.codex/hooks.json" "codex must not install unverified busy hooks"
+  # Codex installs no hook file, so its turn-end marker rides the launch command
+  # alone. The fact recorded for the watcher has to come from that command and
+  # not from a second derivation of harness and kind, so assert both halves here
+  # together: the launch really carries the marker, and the meta says so.
+  assert_grep "$id.turn-ended" "$launch" "the codex crewmate launch dropped the turn-end notify hook"
+  assert_grep 'turnend=armed' "$state/$id.meta" "spawn meta did not record the turn-end signal this launch carries"
   assert_contains "$out" 'spawned '"$id"' harness=codex' "codex spawn did not complete normally"
   out=$(classify codex "$id" "$state")
   [ "$out" = "unknown codex-unverified" ] || fail "codex must classify 'unknown codex-unverified', got '$out'"

@@ -8,7 +8,7 @@ Verified on 2026-06-11 with codex-cli 0.139.0 unless a fact gives a newer versio
 
 | Fact | Value |
 |---|---|
-| Busy state | Unknown until a semantic source is live-verified: the app-server turn lifecycle is unreachable for a pane worker, and project lifecycle hooks did not fire for a Firstmate-launched worker. |
+| Busy state | Unknown until a semantic source is live-verified: the app-server turn lifecycle is unreachable for a pane worker, and project lifecycle hooks did not fire for a Firstmate-launched worker. A Codex pane is therefore never established as idle either, only as unestablished; see "Steering while a turn is open" below for what that costs. |
 | Exit command | `/quit`; its slash popup needs about one second between text and Enter, which the shared submit path used by the control plane handles. |
 | Interrupt | Single Escape. |
 | Skill invocation | `$<skill>`, for example `$no-mistakes`; `/<skill>` is Claude-only and Codex rejects it as "Unrecognized command". |
@@ -18,6 +18,14 @@ Verified on 2026-06-11 with codex-cli 0.139.0 unless a fact gives a newer versio
 | Model discovery | Open the current interactive session's `/model` picker. |
 | Non-interactive stdin | `codex exec` waits for piped stdin to close before starting a turn, printing `Reading additional input from stdin...`, so any non-interactive invocation must close it with `< /dev/null`. Verified on codex-cli 0.147.0. |
 | Project instructions | A worker inherits the repository's `AGENTS.md` from the repo root even when `-C` points at a subdirectory, so a codex worker launched inside a firstmate worktree picks up firstmate's own job description. Verified on codex-cli 0.147.0 by an unprompted "Captain" address and an attempt to run `bin/fm-session-start.sh`. |
+
+## Steering while a turn is open
+
+A Codex worker acknowledges a steering record the ordinary way, by moving it into `handled/`; nothing about the acknowledgement is adapter-specific, and it is not something an adapter implements.
+What Codex cannot supply is the fact the steering ladder needs to read that silence: with no busy state, the ladder never sees a working pane, so it spends its whole delivery budget on wall clock while a single long turn is still open.
+Measured 2026-09-23 on two Codex crewmates: one acknowledged its record inside four minutes, the other had its branch created, files edited, and a test battery running when the third doorbell escalated it as an unread instruction with an idle pane.
+`../../../bin/fm-watch.sh`'s `inbox_steer_check` owns the correction and what each resulting wake is allowed to claim.
+The turn-end marker it leans on is the `notify=` hook in `../../../bin/fm-spawn.sh`'s launch template, which ordinary crewmates and scouts carry and Codex secondmates do not.
 
 ## Modal dialogs
 

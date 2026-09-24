@@ -146,6 +146,32 @@ fm_busy_codex_semantic_source() {
   fm_busy_codex_appserver_observable || fm_busy_codex_hooks_verified
 }
 
+# fm_busy_harness_measured_without_semantic_source: 0 when <harness> is an
+# adapter MEASURED to have no verified semantic busy source at all, so every
+# classification for it is unknown by construction and no caller can ever have
+# read an idle pane for it.
+#
+# Never a question about today's record. A harness whose record merely happens
+# to be missing, malformed, gen-mismatched, source-mismatched, or capture-failed
+# at this instant answers 1, because a transient failure to read a contract is
+# not a contract that reports nothing, and a caller must keep those apart: the
+# verdict word is `unknown` for both, so it cannot tell them apart by itself.
+#
+# Codex is the only entry, from the 2026-09-23 steering measurement. Standalone
+# Kimi classifies unknown kimi-unverified today and so looks identical from the
+# outside, and it is deliberately NOT listed: nobody has measured it. That is
+# not the same as having measured it and found it does not need this, and the
+# two read identically later while meaning opposite things. Adding kimi is a
+# decision for whoever measures it;
+# .agents/skills/harness-adapters/references/harness/kimi.md carries the same
+# fact for anyone arriving from that adapter's side.
+fm_busy_harness_measured_without_semantic_source() {  # <harness>
+  case "${1:-}" in
+    codex*) ! fm_busy_codex_semantic_source ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_busy_record_path() {  # <state-dir> <id>
   printf '%s/%s.busy-state' "$1" "$2"
 }

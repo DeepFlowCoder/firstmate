@@ -44,7 +44,23 @@ If the worktree or ownership cannot be reconciled safely, leave all state intact
 
 Escalate in order:
 
-1. Peek the pane, and check the task's steering inbox (`state/<id>.inbox/`) for unhandled `*.msg` records - a stale wake naming an unread firstmate instruction means the worker never acknowledged a durable steer, and the record itself shows exactly what was intended.
+1. Peek the pane, and check the task's steering inbox (`state/<id>.inbox/`) for unhandled `*.msg` records - a stale wake naming an unread firstmate instruction means the worker has not acknowledged a durable steer, and the record itself shows exactly what was intended.
+   Read what that wake claims before treating the worker as the problem, because it names the evidence it actually has and the three variants mean different things.
+   With an established idle pane, the harness itself reported the worker was not working, and the wake means what it says.
+   When it instead says no reading of whether the worker is working was obtained at that poll, nothing established a working state either way, and the escalation is unchanged and still real.
+   That covers both a record that was momentarily unreadable and an adapter with no verified source at all, and the wake does not distinguish them, so do not read it as either a healthy contract or a broken one.
+   On a harness whose working state is never established, the wake instead reports a turn boundary that passed after the record was written while it stayed unacknowledged.
+   Read that as evidence and not as a verdict: the acknowledgement is moved only after the instruction has been carried out, so a worker that read the steer and is working through it looks exactly the same from here.
+   Inspect the pane to tell those apart before doing anything else.
+   The third variant on that same harness says the task's launch armed no turn-end signal, which is a fact recorded at spawn and means no turn boundary will ever appear for it.
+   A fourth says instead that there is no record of whether this task's launch arms one, which is not the same claim: nobody checked, rather than somebody checked and found none.
+   That is what a task spawned before the fact was recorded looks like, and what a raw launch command firstmate did not compose looks like.
+   Both still end in "inspect the worker" while admitting they cannot tell a worker that stopped reading from one still inside its turn.
+   Inspect them, but establish which of those two it is before escalating any further, because these are the wakes with the least evidence behind them and the procedure below ends in replacing the worker.
+   The same harness also produces two wakes that are explicitly not a worker to inspect.
+   One reports an instruction unacknowledged with no turn boundary at all since it was written, because a worker that has not reached a single boundary since the steer arrived has had no point at which to read it.
+   The other reports a worker that has not finished a turn yet, which is the ordinary shape of a crewmate steered minutes after launch while its first turn is still open.
+   Leave both alone and let the pane's own wedge timer decide.
 2. If the crewmate is waiting on a question its brief already answers, answer in one line via `FM_HOME=<this-firstmate-home> bin/fm-send.sh` from an active firstmate session unless `FM_HOME` is already set to the active firstmate home.
 3. If the crewmate is confused or looping, interrupt with `FM_HOME=<this-firstmate-home> bin/fm-control.sh <task-id> interrupt`, then redirect with one corrective line through `fm-send`.
 4. If the crewmate is genuinely wedged after redirection, relaunch it with `FM_HOME=<this-firstmate-home> bin/fm-control.sh <task-id> relaunch --note '<progress so far>'`, which stops the agent, carries the brief plus that note into a replacement in the same local copy, and restores the prior record if the replacement cannot start.

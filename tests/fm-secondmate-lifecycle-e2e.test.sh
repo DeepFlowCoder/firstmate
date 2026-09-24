@@ -129,6 +129,11 @@ phase_spawn() {
   assert_grep "$SUB_ABS/data/charter.md" "$LOG" "launch did not use the persistent charter"
   assert_no_grep 'notify=' "$LOG" "secondmate codex launch included the parent turn-end notify hook"
   assert_no_grep 'turn-ended' "$LOG" "secondmate codex launch referenced a parent turn-ended signal"
+  # The meta fact the steering escalation reads must agree with the launch that
+  # was actually issued: no notify hook here means no turn boundary will ever be
+  # recorded, so the wake is entitled to say so rather than mistake this task for
+  # a worker still inside its first turn.
+  assert_grep 'turnend=none' "$meta" "spawn meta claimed a turn-end signal this launch never armed"
   assert_no_grep 'treehouse get' "$LOG" "secondmate spawn ran a project treehouse get"
   pass "spawn: launches in the subhome with persistent charter, records routing meta"
 }

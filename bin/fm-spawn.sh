@@ -199,6 +199,9 @@
 #     __WORKTREE__  absolute path to the task worktree
 #     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
+# Whether this launch arms anything that will ever touch state/<id>.turn-ended is
+# recorded in the meta as turnend=<armed|none|unknown>; the TURNEND_WIRING block
+# below owns those three words and why the marker itself cannot answer it.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # A kimi spawn separates a proven delivery failure from an unproven one, and the
@@ -1360,9 +1363,13 @@ launch_template() {
   esac
 }
 
+# Whether firstmate composed the launch command itself. A raw one is opaque to
+# every question this script answers about what the launch arms.
+LAUNCH_COMPOSED=1
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
+    LAUNCH_COMPOSED=0
     HARNESS=""
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
@@ -2782,6 +2789,23 @@ fi
 mkdir -p "$STATE"
 STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
+# Whether this launch actually arms something that will ever touch that marker,
+# recorded into meta below as turnend=, one of three words. `armed` is set by
+# the wiring arms from what will actually run: from the file installed where the
+# harness discovers it on its own, and - for the adapters whose marker reaches
+# the worker only through the launch command, codex via notify= and pi via -e -
+# from the composed command itself, so the record cannot drift from the launch
+# it describes.
+# `none` means firstmate armed nothing and composed the launch, so it knows
+# there is nothing. `unknown` means firstmate did not compose the launch at all
+# and therefore cannot say what it arms; that is an absence of a record, not a
+# record of an absence, and only one of those is a fact anyone checked.
+# The marker is deliberately NOT seeded here: for a task whose launch arms
+# nothing, a seeded marker never moves again, so every later comparison would
+# report "no boundary since the record" forever and suppress the unread-instruction
+# escalation permanently - the same trade this branch already undid once when it
+# dropped the spawn-record stand-in.
+TURNEND_WIRING=none
 exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
@@ -2862,6 +2886,7 @@ if [ "$KIND" != secondmate ]; then
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
+      TURNEND_WIRING=armed
       ;;
     opencode*)
       mkdir -p "$WT/.opencode/plugins"
@@ -2915,6 +2940,7 @@ export const FmBusyState = async () => {
 };
 EOF
       exclude_path '.opencode/plugins/fm-busy-state.js'
+      TURNEND_WIRING=armed
       ;;
     pi|pi-signed)
       # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
@@ -2948,6 +2974,15 @@ export default function (pi: any) {
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF
+      # This extension is written outside the worktree precisely because pi
+      # loads it from an explicit -e path rather than discovering it, so what
+      # was installed here does not decide whether a boundary is ever recorded:
+      # the composed launch does, exactly as for codex below. A raw launch
+      # command carries no -e, and the file would sit unread while the record
+      # claimed otherwise.
+      case "$LAUNCH" in
+        *__PIEXT__*) TURNEND_WIRING=armed ;;
+      esac
       ;;
     codex*)
       # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the
@@ -2956,8 +2991,20 @@ EOF
       # the app-server protocol, and its lifecycle hooks did not fire for a
       # firstmate-launched worker. Codex therefore classifies unknown with
       # an explicit reason rather than falling back to idle, and no busy
-      # wiring is installed. The turn-end NOTIFICATION marker still rides
-      # the launch command via -c notify=[...] and __TURNEND__.
+      # wiring is installed. The turn-end NOTIFICATION marker instead rides the
+      # launch command via -c notify=[...] and __TURNEND__, so unlike every
+      # other adapter here this arm installs no file, and the only thing that
+      # knows whether a boundary will ever be recorded is the composed command.
+      # Read it from there. Asserting it from kind instead would put the answer
+      # in two places far apart in this file with nothing keeping them agreed,
+      # and a raw launch command - the unverified-adapter escape hatch, which
+      # never consults launch_template - would then be recorded as armed while
+      # arming nothing, holding its steering escalation out of existence for
+      # the life of the task. The placeholder is still unsubstituted here; the
+      # substitution runs after the meta is written.
+      case "$LAUNCH" in
+        *__TURNEND__*) TURNEND_WIRING=armed ;;
+      esac
       ;;
     grok*)
       # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the
@@ -3007,6 +3054,7 @@ EOF
       printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s"}]}]}}\n' "$hook_command" > "$GROK_HOOKS_DIR/fm-turn-end.json"
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-grok-turnend"
       exclude_path '.fm-grok-turnend'
+      TURNEND_WIRING=armed
       ;;
     muse*)
       # muse's turn lifecycle is neither a hook nor a launch flag: its plugin
@@ -3073,8 +3121,16 @@ EOF
       printf '%s\n' "${auth_file##*/}" > "$STATE/$ID.kimi-turnend-token"
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-kimi-turnend"
       exclude_path '.fm-kimi-turnend'
+      TURNEND_WIRING=armed
       ;;
   esac
+fi
+# A launch firstmate did not compose can carry a turn-end signal of its own, and
+# nothing here can read it. Record that as unrecorded rather than as an absence
+# of wiring: a consumer keeps its escalation either way, but only one of the two
+# is a fact anyone checked, and the wake is entitled to say which.
+if [ "$TURNEND_WIRING" = none ] && [ "$LAUNCH_COMPOSED" -eq 0 ]; then
+  TURNEND_WIRING=unknown
 fi
 
 # Delivery posture recorded in meta so fm-teardown's safety check and the
@@ -3135,7 +3191,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind turnend mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3148,6 +3204,7 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
+  echo "turnend=$TURNEND_WIRING"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"
