@@ -2448,9 +2448,8 @@ printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,promp
 utf8_messages=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
 assert_contains "$utf8_messages" "$(printf 'mant\303\251n la revisi\303\263n')" \
   "an accented captain message did not arrive as the UTF-8 bytes it was written in"
-printf '%s' "$utf8_messages" | perl -MEncode -e \
-  'my $b = do { local $/; <STDIN> }; eval { Encode::decode("UTF-8", $b, Encode::FB_CROAK); 1 } or exit 1' \
-  || fail "a captain message reached the note channel as bytes that are not valid UTF-8"
+assert_valid_utf8 "$utf8_messages" \
+  "a captain message reached the note channel as bytes that are not valid UTF-8"
 
 # The decoder that reads the frame is a dependency, and a dependency that is not
 # there must be refused rather than answered as an empty review - the frame
