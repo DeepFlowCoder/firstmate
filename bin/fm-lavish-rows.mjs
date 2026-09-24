@@ -2,7 +2,12 @@
 // fm-lavish-rows.mjs - read the published rows out of a captured Lavish result.
 //
 // Usage:
-//   fm-lavish-rows.mjs <result-file>
+//   fm-lavish-rows.mjs [--cut] <result-file>
+//
+// `--cut` states that the runner's output bound dropped bytes from this capture,
+// which its caller knows from the runner's own truncation marker. It changes one
+// thing, described under WHAT A ROW BECOMES: what a row the cut manufactured
+// costs.
 //
 // Prints a JSON array of row field maps on stdout and exits 0 once the result
 // has been read, whatever it found there - including `[]` for a result that
@@ -46,15 +51,16 @@
 // `prompts` key, and rows are read from that key alone. Measured in the
 // installed 0.1.52 rather than assumed: the response has ONE builder with ONE
 // call site, and the branch that carries content keys the block `prompts` on
-// every path it can take, so no second name can carry a row. What stays
-// deliberately over-broad is DETECTION, not reading: a captured result that
-// declares a top-level content block this reader took no rows from is refused
-// out loud instead of answered as an empty review, and that one guard is what
-// would catch a block name this tool does not publish today - which is why no
-// speculative branch per imagined name is carried here. Nothing else in the
-// document is searched: the key is the published one, not a guess, and hunting
-// for rows anywhere in the document would invent semantics this reader does not
-// own.
+// every path it can take, so no second name can carry a row. DETECTION is wider
+// than reading by exactly one name: a captured result that declares `prompts` or
+// the historical `feedback` and yields no rows from it is refused out loud
+// instead of answered as an empty review. That pair is an allowlist and nothing
+// more general - a THIRD top-level name would not be detected at all and would
+// read as empty, which docs/verification/process-event-sources.md records as an
+// open gap along with why widening the expression is not the cure. Nothing else
+// in the document is searched: the key is the published one, not a guess, and
+// hunting for rows anywhere in the document would invent semantics this reader
+// does not own.
 //
 // WHAT A ROW BECOMES. One field map per published row, carrying that row's
 // SCALAR fields only, each as a string. A nested object or array value is
@@ -64,10 +70,24 @@
 // of their own. A null value contributes no field, so it can never arrive as
 // the literal word "null" in a captain-facing note. A published row that yields
 // no field at all - one that is not an object of fields, or one whose every
-// value is nested - is captain content this reader cannot interpret, and it is
-// refused out loud rather than passed over: content nobody could read has to
-// stay visible as something unread, and must never evaporate into something
-// that was never there.
+// value is nested - is captain content this reader cannot interpret, and on a
+// WHOLE capture it is refused out loud rather than passed over: content nobody
+// could read has to stay visible as something unread, and must never evaporate
+// into something that was never there.
+//
+// ONE OWNER PER GUARANTEE, which is why `--cut` changes that. On a cut capture
+// the trailing row is frequently something the CUT manufactured - the decoder
+// reads a row opening cut before its first colon as a bare value or an empty
+// object - and refusing the read for it would throw away the complete rows above
+// it, the captain's actual words, which is the very loss this reader exists to
+// prevent. On a cut capture the "nothing the captain said disappears silently"
+// guarantee is already owned by the runner's own discarded-content note, which
+// names the result for the captain whatever this reader found; so a fieldless row
+// is dropped here and every row that did yield fields is delivered. That routes
+// the guarantee to its owner rather than duplicating it, and leaves the refusal
+// for the whole capture, where a row yielding nothing is a genuinely unrecognized
+// shape rather than a cut artifact. The declared-block bounds below are unchanged
+// by `--cut`: a declared block from which no row was recovered still refuses.
 //
 // A TRUNCATED CAPTURE STILL DELIVERS WHAT SURVIVED. The runner bounds a
 // captured result (`FM_PROCEVENT_MAX_OUTPUT_BYTES`), so a long review can
@@ -196,8 +216,10 @@ function readDocument(decode, text) {
   return undefined;
 }
 
-const [path] = process.argv.slice(2);
-if (!path) fail('usage: fm-lavish-rows.mjs <result-file>');
+const args = process.argv.slice(2);
+const cut = args[0] === '--cut';
+const [path, ...extra] = cut ? args.slice(1) : args;
+if (!path || extra.length) fail('usage: fm-lavish-rows.mjs [--cut] <result-file>');
 
 let decode;
 try {
@@ -236,7 +258,10 @@ for (const row of published.rows) {
   const fields = rowFields(row);
   // A row this reader cannot interpret is refused for the same reason: reporting
   // it as absent is the one answer that looks like the captain saying nothing.
+  // On a cut capture that row is the cut's own artifact and the runner's
+  // discarded-content note already owns saying so, per the header.
   if (fields === undefined) {
+    if (cut) continue;
     fail(`result file carries a published row this reader could not read: ${path}`);
   }
   rows.push(fields);

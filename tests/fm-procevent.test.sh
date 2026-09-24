@@ -2277,6 +2277,46 @@ ans_rc=0
 [ "$ans_rc" -eq 1 ] \
   || fail "a row that could not be read answered $ans_rc from the keyed-answer command"
 
+# On a CUT capture that same fieldless row is usually the cut's own artifact - the
+# bound lands inside a LIST row's opening line, before its first colon, and the
+# decoder reads what is left as a bare value or an empty object - so refusing the
+# read for it would throw away the complete rows above it, which are the captain's
+# actual words. Those must arrive, and saying content went missing is the runner's
+# discarded-content note's job, not this read's. The runner's own truncation
+# marker beside the stored result is what says the capture was cut, so these two
+# legs run on the SAME bytes with the marker as the only difference.
+CUTROW="$TMP_ROOT/cutrow.result"
+cat > "$CUTROW" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+  session_ended: true
+  ended_by: user
+dom_snapshot: ""
+prompts[3]:
+  - uid: f1
+    prompt: hold the release until Thursday
+    selector: ""
+    tag: annotation
+    text: Element note
+    target:
+      selector: .badge
+      text: SHIPPED
+  - uid
+EOF
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$CUTROW" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "a whole capture carrying a fieldless row answered $msg_rc instead of the read-failure exit"
+: > "${CUTROW%.result}.truncated"
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$CUTROW" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 0 ] \
+  || fail "a cut capture answered $msg_rc for a row its own cut manufactured, losing the rows above it"
+assert_contains "$msg_out" "hold the release until Thursday" \
+  "the complete row above the cut was thrown away with the row the cut manufactured"
+rm -f "${CUTROW%.result}.truncated"
+
 # The captain writes Spanish, and this is the only channel his words arrive
 # through, so the row's BYTES have to survive the frame reader and this adapter's
 # own decode of it: a decode that re-reads them as characters mints no decision

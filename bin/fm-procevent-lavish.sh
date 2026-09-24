@@ -445,8 +445,17 @@ cmd_silent() {
 # nonzero, and prints nothing on stdout, when the result could not be read at
 # all. Both content commands go through here so they can never disagree about
 # which rows a result contains.
+#
+# Whether the runner's output bound cut this capture is a runner fact, held by the
+# runner's own truncation marker, so it is read here and handed to the reader
+# rather than guessed there: a row the cut manufactured costs the whole read on a
+# capture that arrived complete, and costs only itself on one that did not.
 lavish_rows_json() {  # <result-file>
-  "$SCRIPT_DIR/fm-lavish-rows.mjs" "$1"
+  if fm_procevent_result_truncated "$1"; then
+    "$SCRIPT_DIR/fm-lavish-rows.mjs" --cut "$1"
+  else
+    "$SCRIPT_DIR/fm-lavish-rows.mjs" "$1"
+  fi
 }
 
 # The Lavish-specific half of reading a result, holding everything the frame
