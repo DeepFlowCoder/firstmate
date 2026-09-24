@@ -2782,6 +2782,15 @@ fi
 mkdir -p "$STATE"
 STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
+# Whether this launch actually arms something that will ever touch that marker,
+# recorded into meta below as turnend=. Set by the wiring arms themselves rather
+# than re-derived from harness and kind, so it cannot drift from what was armed.
+# The marker is deliberately NOT seeded here: for a task whose launch arms
+# nothing, a seeded marker never moves again, so every later comparison would
+# report "no boundary since the record" forever and suppress the unread-instruction
+# escalation permanently - the same trade this branch already undid once when it
+# dropped the spawn-record stand-in.
+TURNEND_ARMED=0
 exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
@@ -2862,6 +2871,7 @@ if [ "$KIND" != secondmate ]; then
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
+      TURNEND_ARMED=1
       ;;
     opencode*)
       mkdir -p "$WT/.opencode/plugins"
@@ -2915,6 +2925,7 @@ export const FmBusyState = async () => {
 };
 EOF
       exclude_path '.opencode/plugins/fm-busy-state.js'
+      TURNEND_ARMED=1
       ;;
     pi|pi-signed)
       # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
@@ -2948,6 +2959,7 @@ export default function (pi: any) {
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF
+      TURNEND_ARMED=1
       ;;
     codex*)
       # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the
@@ -2957,7 +2969,9 @@ EOF
       # firstmate-launched worker. Codex therefore classifies unknown with
       # an explicit reason rather than falling back to idle, and no busy
       # wiring is installed. The turn-end NOTIFICATION marker still rides
-      # the launch command via -c notify=[...] and __TURNEND__.
+      # the launch command via -c notify=[...] and __TURNEND__, which
+      # launch_template carries for exactly the kinds this block runs for.
+      TURNEND_ARMED=1
       ;;
     grok*)
       # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the
@@ -3007,6 +3021,7 @@ EOF
       printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s"}]}]}}\n' "$hook_command" > "$GROK_HOOKS_DIR/fm-turn-end.json"
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-grok-turnend"
       exclude_path '.fm-grok-turnend'
+      TURNEND_ARMED=1
       ;;
     muse*)
       # muse's turn lifecycle is neither a hook nor a launch flag: its plugin
@@ -3073,6 +3088,7 @@ EOF
       printf '%s\n' "${auth_file##*/}" > "$STATE/$ID.kimi-turnend-token"
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-kimi-turnend"
       exclude_path '.fm-kimi-turnend'
+      TURNEND_ARMED=1
       ;;
   esac
 fi
@@ -3135,7 +3151,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind turnend mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3148,6 +3164,7 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
+  if [ "$TURNEND_ARMED" -eq 1 ]; then echo "turnend=armed"; else echo "turnend=none"; fi
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"

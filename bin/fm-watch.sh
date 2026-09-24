@@ -117,8 +117,11 @@
 #                          as one; or that nothing readable established a
 #                          working state at this poll; or - for a harness
 #                          measured to establish none at all - either a turn
-#                          boundary that passed after the record was written or
-#                          the absence of any turn-boundary evidence. A passed
+#                          boundary that passed after the record was written, or
+#                          that this task records no turn boundaries at all,
+#                          which is read from whether its launch armed one
+#                          (turnend= in meta) and never from the marker's mere
+#                          absence. A passed
 #                          boundary is evidence and not proof, because the
 #                          acknowledgement is moved only after the instruction
 #                          is carried out, and the wake says so. The silence it
@@ -126,7 +129,10 @@
 #                          watcher's first recorded re-ring, a delivery grace or
 #                          more after the doorbell fm-send typed at write time
 #                          and never records, so each wake says it understates
-#                          rather than rounding the gap away
+#                          rather than rounding the gap away. Only the arms
+#                          where a boundary actually passed carry it: on a
+#                          worker that reached none the elapsed quiet proves
+#                          nothing, so those wakes report no duration
 #   stale: <window> (firstmate instruction ... queued behind a running command)
 #                          the bounded recheck for that case
 #   stale: <window> (firstmate instruction ... no turn boundary at all since it was written)
@@ -137,6 +143,13 @@
 #                          stopped reading from one still inside its turn. A
 #                          boundary anywhere after that instant is not held,
 #                          however late the first re-ring was
+#   stale: <window> (firstmate instruction ... by a worker that has not finished a turn yet)
+#                          the same bounded recheck for the task that has
+#                          recorded NO turn boundary at all and whose launch did
+#                          arm one, so the marker's absence means its first turn
+#                          is still open rather than that none is ever recorded.
+#                          The ordinary shape of a crewmate steered minutes after
+#                          launch, which cannot have read anything yet
 #   stale: <window> (steering-inbox ladder bookkeeping unwritable: ...)
 #                          an unhandled record's ladder cannot advance; quiet
 #                          successful attempts never wake firstmate
@@ -446,6 +459,25 @@ window_harness() {
   meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
   [ -n "$meta" ] || return 0
   grep '^harness=' "$meta" | cut -d= -f2- || true
+}
+
+# Did this task's LAUNCH arm anything that will ever touch state/<id>.turn-ended?
+# `armed` when bin/fm-spawn.sh installed such wiring, `none` when the launch
+# template deliberately carries none - a codex secondmate omits the notify= hook,
+# and the muse and cursor adapters are pull sources with no writer at all. Empty
+# for a task recorded before spawn wrote the fact.
+#
+# The marker's own absence cannot answer this: it means both "this task will
+# never record a turn boundary" and "this worker has not finished its first turn
+# yet", which are opposite states, and only the second is a worker that
+# provably has had no chance to read. A caller that cannot get the fact must
+# treat it as unarmed, because that keeps the escalation it has today rather than
+# suppressing one on a fact nobody recorded.
+window_turnend_armed() {  # <window>
+  local w=$1 meta
+  meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
+  [ -n "$meta" ] || return 0
+  grep '^turnend=' "$meta" | cut -d= -f2- || true
 }
 
 window_label() {
@@ -759,7 +791,12 @@ inbox_steer_check() {  # <window> <task>
         # measured from the first re-ring the ladder actually recorded, which is
         # a delivery grace or more after the doorbell fm-send typed at write
         # time and never recorded. It therefore understates, and says so; it
-        # never decides the hold.
+        # never decides the hold, and it is carried ONLY by the arms where a
+        # boundary actually passed. On a worker that has reached no boundary the
+        # elapsed quiet has no referent the reader can act on - this branch's
+        # whole premise is that it proves nothing - and a duration inside a wake
+        # is read as evidence by whoever is looking at it at three in the
+        # morning, so those arms carry none.
         turn_boundary_since "$task" "$(stat_mtime "$rec")" && boundary=0 || boundary=$?
         anchor=$(fm_task_inbox_first_rering_epoch "$STATE" "$task" "$rec") || anchor=
         if [ -n "$anchor" ]; then
@@ -778,12 +815,30 @@ inbox_steer_check() {  # <window> <task>
             # route that can actually establish it.
             resurface_absorbed "$w" "$STATE/.steer-unturned-resurfaced-$key" \
               "$(status_idle_age "$task")" \
-              "stale: $w (firstmate instruction ${rec##*/} unacknowledged with no turn boundary at all since it was written, $silence; this harness never reports whether it is working, so it cannot tell a worker that stopped reading from one still inside its turn - rechecked on a long cadence not a wedge)"
+              "stale: $w (firstmate instruction ${rec##*/} unacknowledged with no turn boundary at all since it was written; this harness never reports whether it is working, so it cannot tell a worker that stopped reading from one still inside its turn - rechecked on a long cadence not a wedge)"
             triage_log "absorbed steer-inbox escalation (busy state unestablished and no turn boundary since ${rec##*/} was written): $w"
             return 0
             ;;
           0) evidence="and a turn boundary passed after it was written while the record stayed unacknowledged, on a harness that never reports whether it is working; the acknowledgement is moved only after the instruction is carried out, so this is evidence and not proof that the worker stopped reading - a worker still working through it looks the same; $silence" ;;
-          *) evidence="on a harness that never reports whether it is working and with no turn-boundary evidence at all, so this cannot tell a worker that stopped reading from one still inside its turn; $silence" ;;
+          *)
+            # No turn boundary has EVER been recorded for this task, and the
+            # marker's absence alone cannot say why. A task whose launch armed a
+            # turn-end signal has simply not finished its first turn - the
+            # ordinary shape of a codex crewmate steered two minutes in, which
+            # cannot have read anything yet and must not be accused of ignoring
+            # the doorbell. A task whose launch armed none will never record one,
+            # so the question is unanswerable for it and the escalation has to
+            # stand. Those are opposite states and the marker looks identical in
+            # both, so the fact is read from the launch that armed it.
+            if [ "$(window_turnend_armed "$w")" = armed ]; then
+              resurface_absorbed "$w" "$STATE/.steer-unturned-resurfaced-$key" \
+                "$(status_idle_age "$task")" \
+                "stale: $w (firstmate instruction ${rec##*/} unacknowledged by a worker that has not finished a turn yet, so it has reached no point at which to read it; this harness never reports whether it is working, so it cannot tell that from a worker that stopped reading - rechecked on a long cadence not a wedge)"
+              triage_log "absorbed steer-inbox escalation (busy state unestablished and no turn finished yet since ${rec##*/} was written): $w"
+              return 0
+            fi
+            evidence="on a harness that never reports whether it is working and for a task that records no turn boundaries at all, so this cannot tell a worker that stopped reading from one still inside its turn; $silence"
+            ;;
         esac
       fi
       # "After N doorbell delivery attempts" asserts that delivery was attempted
