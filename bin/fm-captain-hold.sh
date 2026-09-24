@@ -40,27 +40,31 @@
 # records the captain's own deferral date through `tasks-axi hold --until`, so
 # a "revisit later" answer is stored as a date instead of a live card.
 #
-# `--reopen` is the one repair for a call CLOSED OUTSIDE this owner in the shape
-# that strands it. tasks-axi keeps the hold annotations through a plain close,
-# so an ordinary out-of-band close still proves it was the captain's item and
-# `answer` below records his words retroactively. Lifting the hold first
-# (`tasks-axi unhold`, or any hand edit that drops those annotations) erases
-# exactly that proof: the task is then closed, carries no captain provenance and
-# no recorded answer, and nothing can repair it - `answer` reads it as ordinary
-# finished work and `hold` refuses it as closed - while the origin's attested
-# inventory still names it, so the completion gate below fails on it forever and
-# the investigation can never be completed. `--reopen` reopens that task and
-# re-places the captain hold, restoring the state the record was in before the
-# close. It records NO answer, because reconciling the record is not the same as
-# deciding for the captain: it puts the question back in front of him, and from
-# there `answer` closes it with his real words as it always did. It refuses a
-# task that already carries a resolution record, which is not stranded but
-# answered, and reopening would resurface a call the captain has already closed.
-# It equally refuses a closed task whose captain hold survived, which `answer`
-# still repairs retroactively, and names `answer` as that shape's repair; so
-# reopening stays the exit for the one shape whose provenance was erased, and
-# never a way past a gate on a call the captain already settled. On a task that
-# is not closed it does nothing and the hold is the ordinary idempotent one.
+# `--reopen` is the repair for a call CLOSED OUTSIDE this owner with no answer
+# recorded. STRANDED IS MEASURED BY REACH, NOT BY THE SURVIVING MARK. A closed
+# task is on no list the captain reads: the open-decisions fold is built from
+# tasks that are still queued or in flight (bin/fm-fleet-snapshot.sh owns
+# captain_actionable), so a closed call reaches him whether or not tasks-axi
+# kept its hold annotations through the close. Those annotations prove WHOSE
+# item it was; they do not put the question back in front of anyone. Reading
+# them as proof it was "not stranded" left exactly two exits on a call the
+# captain had never answered - invent words for him, or leave his question
+# buried - which is why the mark is no longer the test. Everywhere else in this
+# file already reasons this way: see archived_answer_state, where an id archived
+# while still open proves nothing for the same reason.
+# `--reopen` reopens that task and re-places the captain hold under the reason
+# this command was given, so the reopened card states the live question rather
+# than whatever reason the old row carried. It records NO answer, because
+# reconciling the record is not the same as deciding for the captain: it puts
+# the question back in front of him, and from there `answer` closes it with his
+# real words as it always did. It refuses a task that already carries a
+# resolution record, which is not stranded but answered, and reopening would
+# resurface a call the captain has already closed - the resurrection
+# `diverged` reports when a raw `tasks-axi reopen` performs it out of band. On a
+# task that is not closed it does nothing and the hold is the ordinary
+# idempotent one. When the closed task's hold annotations DID survive, `answer`
+# remains the lighter repair for a call the captain has since answered: it
+# records his words on the closed row without disturbing the close.
 #
 # `answer` records the captain's exact words and closes the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes,
@@ -77,6 +81,15 @@
 # answered captain call. A hold that expired by date (`--until` in the past) is
 # still answerable: the surviving hold annotations, not tasks-axi's live
 # `held:` bit, prove the captain owned it.
+# Every close names what it just did to the held WORK, because that is the one
+# choice a decision card can get wrong silently: without `--release` the close
+# ends the question AND the work item under it, so an answer meaning "get on
+# with it" leaves the order in no queue at all. That is said twice - once on
+# stdout for a firstmate at a terminal, and once as a durable keyed wake record,
+# because the channel the captain's answers actually arrive on discards stdout.
+# The record also stores the hold reason the answer consumed (`Hold annulled:`),
+# which is what lets `diverged` below flag a hold that repeats an already
+# answered question without reading a word of what the captain said.
 #
 # ONE KEYED-ANSWER INTAKE, FED BY EVERY CHANNEL.
 # "A keyed answer closes its matching captain-held task" is a single
@@ -504,9 +517,31 @@ recorded_resolution_mode() {  # <task-body>
   printf '%s' "$rest"
 }
 
-resolution_block() {  # <mode>
-  printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n\nCaptain decision:\n%s\n' \
-    "$DECISION_DIGEST" "$1" "$DECISION_TEXT"
+# The hold reason the newest record's answer annulled. Unlike the two readers
+# above this one takes the DECODED body and splits on a real newline only, so a
+# reason is compared byte for byte against the live `hold_reason` rather than
+# against an escaped copy of itself. Empty for a record written before this line
+# existed, which is what keeps an old record from reading as a resurrection.
+recorded_annulled_hold() {  # <decoded-task-body>
+  local rest=$1
+  case "$rest" in
+    *"Hold annulled: "*) rest=${rest#*"Hold annulled: "} ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${rest%%$'\n'*}"
+}
+
+# `Hold annulled:` names the question this answer settled, so a later hold
+# carrying that same reason is a contradiction worth checking rather than a new
+# question taken at face value. It establishes no more than that: see
+# report_hold_resurrected for what the match cannot prove. Nothing reads the
+# captain's words to decide it; it is the reason string the close consumed,
+# recorded at the moment it was consumed.
+resolution_block() {  # <mode> <annulled-hold-reason>
+  printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n' \
+    "$DECISION_DIGEST" "$1"
+  [ -z "${2:-}" ] || printf 'Hold annulled: %s\n' "$2"
+  printf '\nCaptain decision:\n%s\n' "$DECISION_TEXT"
 }
 
 # Durable state of one captain call: an active captain hold (annotations
@@ -681,8 +716,9 @@ command_hold() {
       if body_has_resolution_record "$(show_field "$show" body)"; then
         fail "task $id already records a captain answer; reopening would resurface a call the captain has already closed"
       fi
-      [ "$(show_field_value "$show" hold_kind)" != captain ] \
-        || fail "closed task $id still carries its captain hold, so it is not stranded; record the captain's words with answer instead of reopening the call"
+      # No check on the surviving hold annotations here, deliberately: a closed
+      # call is out of the captain's open-decisions fold either way, so the mark
+      # says whose item it was and never that he can still see it.
       # Probed only on this path, so an ordinary hold pays nothing for a repair
       # it never runs, and a build that advertises the floor without the command
       # names what it is missing instead of failing as an unexplained reopen.
@@ -727,9 +763,9 @@ command_hold() {
 
 # Record a resolution block at the top of the task body, preserving the
 # previous body below it and archiving the pristine original.
-write_resolution_record() {  # <task-id> <mode> <shown-body>
+write_resolution_record() {  # <task-id> <mode> <shown-body> <annulled-hold-reason>
   local id=$1 mode=$2 body=$3 new_body tmp
-  new_body=$(resolution_block "$mode")
+  new_body=$(resolution_block "$mode" "${4:-}")
   body=$(decode_shown_value "$body") \
     || fail "could not decode the existing body for $id"
   if [ -n "$body" ]; then
@@ -748,16 +784,50 @@ write_resolution_record() {  # <task-id> <mode> <shown-body>
   rm -f -- "$tmp"
 }
 
+# One durable, keyed wake record saying this close ended the held WORK ITEM as
+# well as the question. The stdout line below is free and still serves a
+# firstmate running `answer` at a terminal, but it cannot be the trace: every
+# production caller of the keyed intake discards stdout (bin/fm-procevent.sh and
+# bin/fm-send.sh both send it to /dev/null), and the board is the path the
+# captain's answers actually arrive on. Keyed per task so repeats collapse to the
+# one row fm_wake_print_deduped presents, and best effort exactly like
+# record_undecidable_refusal above: a wake queue that cannot be locked drops this
+# record rather than failing the close or losing the captain's recorded answer.
+# It states only what happened to the row and never reads a word of what he said.
+# One key per task, whichever path recorded the answer, because it is one fact
+# about one work item and two records of it would drift apart.
+record_close_ended_work() {  # <task-id> <what-happened-to-the-row>
+  fm_wake_append check "captain-close-ended-work-$1" \
+    "check: $2 If the captain's answer authorized work, no work item carries it now: confirm that work is under way or queued, or re-dispatch it." \
+    >/dev/null 2>&1 || return 1
+}
+
 close_answered() {  # <task-id> <release-0-or-1>
   if [ "$2" = 1 ]; then
     tasks_axi unhold "$1" >/dev/null || fail "could not release captain-held task $1"
   else
     tasks_axi "done" "$1" >/dev/null || fail "could not close answered captain-held task $1"
+    record_close_ended_work "$1" \
+      "closing the captain call $1 ended the captain-held work item along with the question, because the close was not a --release." || true
+  fi
+}
+
+# What the close just did to the held WORK, named at the one moment the mode is
+# still free to change. A card composed without --release closes the question
+# AND the work item under it, so an answer whose sense was "get on with it"
+# leaves the order in no queue at all. This says only what the close did - it
+# never reads the captain's words to guess what he meant - and it is printed on
+# every close so the composer sees the consequence of the mode it chose.
+close_consequence() {  # <release-0-or-1>
+  if [ "$1" = 1 ]; then
+    printf 'the captain hold is lifted and the held work resumes\n'
+  else
+    printf 'the question and its work item are both closed; --release is what leaves the held work running\n'
   fi
 }
 
 command_answer() {
-  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode
+  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode annulled
   require_firstmate_side
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
@@ -776,6 +846,13 @@ command_answer() {
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
   body=$(show_field "$show" body)
+  # The question this answer is about to settle, read before the close consumes
+  # it. tasks-axi keeps hold_reason through a close, so the retroactive repair
+  # below records the same question the out-of-band close settled. Sanitized
+  # through the same field cleaner every other emitted field uses, because this
+  # one goes into a line-structured record; `diverged` sanitizes the live reason
+  # the same way, so the two sides stay comparable byte for byte.
+  annulled=$(sanitize_field "$(show_field_value "$show" hold_reason)")
   if [ "$release" = 1 ]; then outcome=released; else outcome=answered; fi
 
   if [ "$state" = "done" ]; then
@@ -797,12 +874,20 @@ command_answer() {
     # this really was the captain's item rather than ordinary finished work.
     [ "$hold_kind" = captain ] \
       || fail "task $id was never held for the captain; nothing to record an answer on"
-    write_resolution_record "$id" repaired "$body"
+    # BEFORE the record, never after. `report_closed_unanswered` is the live
+    # signal on this row and writing the record is exactly what silences it, so
+    # queueing the trace first means the two overlap for a moment. Reorder these
+    # two lines and there is a window in which the row's work item is ended and
+    # NOTHING says so, which is the loss this whole command exists to end.
+    record_close_ended_work "$id" \
+      "the captain call $id was closed outside this owner, and recording the captain's answer on that already closed row has been ordered; confirm that record landed." || true
+    write_resolution_record "$id" repaired "$body" "$annulled"
     show=$(task_show "$id") || fail "task $id disappeared while recording the answer"
     [ "$(show_field "$show" state)" = "done" ] || fail "recording the answer reopened closed task $id"
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
-    printf 'repaired: %s\n' "$id"
+    printf 'repaired: %s (%s)\n' "$id" \
+      'the answer is recorded on a row an out-of-band close already ended; no work item carries what it may have authorized'
     return 0
   fi
 
@@ -821,15 +906,15 @@ command_answer() {
         answered) [ "$release" = 0 ] || fail "task $id records this answer as a close; retry without --release" ;;
       esac
       close_answered "$id" "$release"
-      printf '%s: %s\n' "$outcome" "$id"
+      printf '%s: %s (%s)\n' "$outcome" "$id" "$(close_consequence "$release")"
       return 0
     fi
-    write_resolution_record "$id" "$outcome" "$body"
+    write_resolution_record "$id" "$outcome" "$body" "$annulled"
     close_answered "$id" "$release"
     show=$(task_show "$id") || fail "task $id disappeared after closing"
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
-    printf '%s: %s\n' "$outcome" "$id"
+    printf '%s: %s (%s)\n' "$outcome" "$id" "$(close_consequence "$release")"
     return 0
   fi
 
@@ -939,7 +1024,7 @@ sanitize_field() {  # <text>
 
 command_answers() {
   local origin='' source='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
-  local recorded_digest recorded_mode tmp err closed=0 skipped=0 reason release_flag tab=$'\t'
+  local recorded_digest recorded_mode tmp err closed=0 skipped=0 reason release_flag released tab=$'\t'
   require_firstmate_side
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1036,7 +1121,11 @@ command_answers() {
     fi
     # shellcheck disable=SC2086  # release_flag is empty or a single literal flag.
     if "$0" answer "$id" --decision-file "$tmp" $release_flag </dev/null >/dev/null 2>"$err"; then
-      printf 'closed: %s\n' "$id"
+      # The decision card is exactly where the close mode gets chosen without
+      # anyone seeing its effect, so this channel names it too rather than
+      # swallowing the line `answer` prints.
+      if [ "$release_flag" = --release ]; then released=1; else released=0; fi
+      printf 'closed: %s (%s)\n' "$id" "$(close_consequence "$released")"
       closed=$((closed + 1))
     else
       reason=$(tr -d '\n' < "$err" | sed 's/^fm-captain-hold: //')
@@ -1164,13 +1253,28 @@ EOF
 # actually said with `answer`, or re-open the status decision when that
 # resolution was not the captain's word.
 #
-# What it flags, and only this: a task that is still open and still carries the
-# captain-hold annotations, whose key was closed on the status side by the
-# RESOLVE verb. The other closing verb is not a divergence: a `captain-held`
-# close is the VERIFIED transfer to that very task, written by command_complete
-# only after verifying it, so the structured row staying open behind it is the
-# correct state. Neither is a still-open status decision - the OPEN DECISIONS
-# fold already owns that one.
+# Three shapes, each a contradiction inside the records themselves. None is
+# decided by reading the captain's words or guessing what an answer meant.
+#
+#   status-resolved   - a task still open and still carrying the captain-hold
+#     annotations, whose key was closed on the status side by the RESOLVE verb.
+#     The other closing verb is not a divergence: a `captain-held` close is the
+#     VERIFIED transfer to that very task, written by command_complete only
+#     after verifying it, so the structured row staying open behind it is the
+#     correct state. Neither is a still-open status decision - the OPEN
+#     DECISIONS fold already owns that one.
+#   closed-unanswered - a call filed as finished with no answer recorded, so it
+#     is on no list the captain reads. `--reopen` above is its repair.
+#   hold-resurrected  - a live captain hold whose reason is the one a recorded
+#     answer on that same task annulled. Reported as a contradiction to check,
+#     never as a settled fact: see report_hold_resurrected for what the match
+#     can and cannot establish.
+#
+# The two added shapes exist because four separate losses were measured in one
+# day and not one of them emitted a signal: every one was found by hand, and the
+# last only because a repair happened to be verified. What they share is not a
+# mechanism - a call's state can move by several paths, and none of them checked
+# that the result still agreed with what the captain said.
 #
 # Routed work is deliberately irrelevant. When the decision IS the deliverable
 # there is nothing to route, so the test is only whether the status side already
@@ -1180,25 +1284,128 @@ EOF
 # of fact can prove its first reading wrong - so the report says only that the
 # two records disagree and names both reconciliation directions above.
 #
-# Cost stays flat on a healthy home: one `tasks-axi list`, one key scan per
-# status log, and the precise per-key fold only for a key that already names a
-# still-open task. If tasks-axi is unavailable or its listing cannot be parsed,
-# the guard cannot read the structured record and prints nothing.
+# Cost stays bounded on a healthy home: ONE `tasks-axi list` call, asking for
+# the single extra `hold_kind` column and read once by all three scans, plus one
+# key scan per status log, the precise per-key fold only for a key that already
+# names a still-open task, and one `show` only for a row that listing already
+# showed to carry the captain's mark - never one per row in the book. If
+# tasks-axi is unavailable or its listing cannot be parsed, the guard cannot
+# read the structured record and prints nothing.
 #
-# Output: one `<task-id>\t<origin>\t<key>\t<title>` line per divergence, in
-# status-log then key order; nothing when the two records agree.
+# Output: one `<class>\t<task-id>\t<origin>\t<key>\t<title>` line per
+# divergence, class by class; `origin` and `key` are empty for the two shapes
+# that live entirely in the structured record. Nothing prints when the records
+# agree.
 
-# Every still-open task id in this home's backlog, one per line. Only the first
-# two comma-separated listing fields are read - both are slugs that precede any
-# quoted title - so a title containing commas or quotes cannot shift them.
-open_task_ids() {
-  tasks_axi list 2>/dev/null | awk -F, '
+# Every row in this home's backlog as `<task-id>\t<state>\t<hold_kind>`, one per
+# line, from the ONE listing all three scans below read. The listing is
+# unfiltered and unlimited, and the Done rows it carries are exactly the set
+# retention still keeps in the backlog, so a second `--state done` pass would
+# re-read rows already in hand; each scan filters this instead.
+# Exactly ONE extra column is requested, which makes the row
+# `id,state,kind,repo,title,hold_kind`: `id` and `state` are slugs that PRECEDE
+# the free-text title, and `hold_kind` is the LAST comma-separated token, itself
+# a slug (or the quoted empty marker) that FOLLOWS it, so a title carrying
+# commas or quotes can shift none of the three. A second extra column would sit
+# after `hold_kind` and break exactly that argument, so this asks for one.
+# `held:` is deliberately not the mark read here. A hold the captain deferred
+# with `--until` reports `held: no` once its date passes while keeping its
+# annotations, and it drops out of `tasks-axi list --state held` - so reading
+# the live bit would miss his own "revisit later" calls twice over, at the
+# listing and at the gate. The surviving annotations prove he owned it, which is
+# the same rule `answer` above already follows.
+task_rows() {
+  tasks_axi list --fields hold_kind 2>/dev/null | awk '
     /^  [A-Za-z0-9._-]+,/ {
-      id = $1
-      sub(/^ +/, "", id)
-      if ($2 != "done") print id
+      row = $0
+      sub(/^ +/, "", row)
+      id = row
+      sub(/,.*$/, "", id)
+      state = row
+      sub(/^[^,]*,/, "", state)
+      sub(/,.*$/, "", state)
+      mark = row
+      sub(/^.*,/, "", mark)
+      printf "%s\t%s\t%s\n", id, state, mark
     }
   '
+}
+
+# A captain call filed as finished with his question never answered. Reach, not
+# the mark, is what makes this a loss: the open-decisions fold is built from
+# open rows, so a closed call is on no list the captain reads, whatever hold
+# annotations survived the close. Both of the measured losses this reports were
+# found by hand - one by a repair attempt, one because a dispatch happened to
+# look at the row - and neither emitted a signal of any kind.
+# Bounded by retention: tasks-axi keeps only the newest ten Done rows in the
+# backlog, so this signal survives roughly ten subsequent closures before the
+# call is pruned into the archive and stops being reported here.
+# It is not lost from every guard - verify_hold_durable still refuses to
+# complete or tear down the origin that attested it, reading both files - but
+# this report is the live one, and repairing a call while it is still in the
+# book is the cheap moment.
+report_closed_unanswered() {  # <task-rows>
+  local rows=$1 row id rest show tab=$'\t'
+  while IFS= read -r row; do
+    id=${row%%"$tab"*}
+    rest=${row#*"$tab"}
+    [ -n "$id" ] || continue
+    [ "${rest%%"$tab"*}" = "done" ] || continue
+    [ "${rest#*"$tab"}" = captain ] || continue
+    show=$(task_show "$id") || continue
+    [ "$(show_field_value "$show" hold_kind)" = captain ] || continue
+    if body_has_resolution_record "$(show_field "$show" body)"; then continue; fi
+    printf 'closed-unanswered\t%s\t\t\t%s\n' "$id" \
+      "$(sanitize_field "$(show_field_value "$show" title)")"
+  done <<EOF
+$rows
+EOF
+}
+
+# A still-open captain call whose live hold reason is the one a recorded answer
+# on that same task annulled. `answer` records the hold reason it consumed, so
+# the comparison is between two recorded strings and never a reading of what the
+# captain meant.
+# The measured cause is a raw `tasks-axi reopen`, which restores the whole
+# pre-close state including the hold the answer had annulled; this owner's
+# `--reopen` refuses an answered call outright, so it cannot produce the shape,
+# only report it. A record written before `Hold annulled:` existed, and a task
+# re-held under a reason no record annulled, both carry no match and stay silent.
+# THE MATCH IS A CONTRADICTION TO CHECK, NOT A PROOF, and this report is
+# therefore read-only in the strongest sense: hold reasons are free text and
+# nothing tasks-axi records orders a hold against a close, so a task re-held
+# under a REPEATED reason after a non-release close cannot be told apart from
+# the restored one. Nothing may lift a captain hold on this signal.
+report_hold_resurrected() {  # <task-rows>
+  local rows=$1 row id rest show body annulled tab=$'\t'
+  while IFS= read -r row; do
+    id=${row%%"$tab"*}
+    rest=${row#*"$tab"}
+    [ -n "$id" ] || continue
+    [ "${rest%%"$tab"*}" != "done" ] || continue
+    [ "${rest#*"$tab"}" = captain ] || continue
+    show=$(task_show "$id") || continue
+    [ "$(show_field_value "$show" hold_kind)" = captain ] || continue
+    body=$(show_field "$show" body)
+    body_has_resolution_record "$body" || continue
+    # A `released` close runs `tasks-axi unhold`, which clears `hold_reason` and
+    # `hold_kind` outright, so a captain hold live after one is necessarily a
+    # NEW placement and can never be the annulled hold restored - however
+    # exactly its reason repeats. The modes whose close leaves the annotations
+    # standing are the only ones this shape can arise from.
+    [ "$(recorded_resolution_mode "$body" || true)" != released ] || continue
+    body=$(decode_shown_value "$body") || continue
+    # An empty recorded value is a record that names no question - every one
+    # written before `Hold annulled:` existed - and must never match, whatever
+    # the live reason reads as.
+    annulled=$(recorded_annulled_hold "$body") || continue
+    [ -n "$annulled" ] || continue
+    [ "$annulled" = "$(sanitize_field "$(show_field_value "$show" hold_reason)")" ] || continue
+    printf 'hold-resurrected\t%s\t\t\t%s\n' "$id" \
+      "$(sanitize_field "$(show_field_value "$show" title)")"
+  done <<EOF
+$rows
+EOF
 }
 
 # Every key token stated anywhere in a status log. A cheap candidate scan: it
@@ -1216,29 +1423,20 @@ list_has_line() {  # <newline-separated-list> <value>
   esac
 }
 
-command_diverged() {
-  local ids resolve f origin tokens id keys key show title
-  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-  # Both records must belong to the SAME home or the comparison is meaningless:
-  # tasks-axi reads $FM_HOME's backlog, so a state dir pointed somewhere else
-  # would report one home's status logs against another home's tasks. Every
-  # production caller pairs the two; a mismatch stays silent rather than
-  # inventing a cross-home divergence.
-  [ "$STATE" = "$FM_HOME/state" ] || return 0
-  # A read-only listing on a per-wake path, so it skips the mutation-oriented
-  # compatibility floor and its extra probes: a listing this parser cannot read
-  # simply yields no candidates and the report stays silent.
-  command -v tasks-axi >/dev/null 2>&1 || return 0
-  ids=$(open_task_ids) || return 0
-  [ -n "$ids" ] || return 0
+report_status_resolved() {  # <task-rows>
+  local rows=$1 resolve f origin tokens row id rest keys key show title tab=$'\t'
+  [ -n "$rows" ] || return 0
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   for f in "$STATE"/*.status; do
     [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
     origin=$(basename "$f"); origin=${origin%.status}
     tokens=$(status_log_key_tokens "$f")
     [ -n "$tokens" ] || continue
-    while IFS= read -r id; do
+    while IFS= read -r row; do
+      id=${row%%"$tab"*}
+      rest=${row#*"$tab"}
       [ -n "$id" ] || continue
+      [ "${rest%%"$tab"*}" != "done" ] || continue
       # The keys that could name this task in THIS log: the collapsed identity
       # (the key IS the task id) and, for a pre-collapse row, the legacy derived
       # one this origin would have minted.
@@ -1256,15 +1454,34 @@ command_diverged() {
         # TAB-separated, so it goes through the same sanitizer every other
         # emitted field uses rather than being trusted to stay one clean line.
         title=$(sanitize_field "$(show_field_value "$show" title)")
-        printf '%s\t%s\t%s\t%s\n' "$id" "$origin" "$key" "$title"
+        printf 'status-resolved\t%s\t%s\t%s\t%s\n' "$id" "$origin" "$key" "$title"
         break
       done <<INNER
 $keys
 INNER
     done <<EOF
-$ids
+$rows
 EOF
   done
+}
+
+command_diverged() {
+  local rows
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  # Both records must belong to the SAME home or the comparison is meaningless:
+  # tasks-axi reads $FM_HOME's backlog, so a state dir pointed somewhere else
+  # would report one home's status logs against another home's tasks. Every
+  # production caller pairs the two; a mismatch stays silent rather than
+  # inventing a cross-home divergence.
+  [ "$STATE" = "$FM_HOME/state" ] || return 0
+  # A read-only listing on a per-wake path, so it skips the mutation-oriented
+  # compatibility floor and its extra probes: a listing this parser cannot read
+  # simply yields no candidates and the report stays silent.
+  command -v tasks-axi >/dev/null 2>&1 || return 0
+  rows=$(task_rows)
+  report_status_resolved "$rows"
+  report_closed_unanswered "$rows"
+  report_hold_resurrected "$rows"
 }
 
 case "${1:-}" in

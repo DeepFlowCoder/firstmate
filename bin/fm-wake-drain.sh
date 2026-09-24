@@ -337,13 +337,17 @@ EOF
   printf "OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'\n" || return 1
 }
 
-# Print the RECORD DIVERGENCE section: every captain call whose two records
-# contradict each other - the status log says a key was resolved outright while
-# the task held for the captain is still open. Nothing here closes anything; the
-# section exists because posting the resolution alone reads as complete on the
-# status side, so the durable record can keep saying the captain owes an answer
-# with no warning at all. bin/fm-captain-hold.sh's `diverged` owns which pairs
-# count and why; this prints what it reports.
+# Print the RECORD DIVERGENCE section: every captain call whose records
+# contradict each other - a key resolved on the status side while the task held
+# for the captain is still open, a call filed as finished with his question
+# never answered, or a live hold repeating a reason that task's own record says
+# an answer annulled. Each row states a condition that stands on its own line,
+# short enough that a typical title survives the per-item cap whole; the
+# trailing lines carry the action and point at the document that owns the rest,
+# once per section. Nothing here closes anything; it exists because
+# each of those reads as settled from one side while the other still says
+# otherwise, with no warning at all. bin/fm-captain-hold.sh's `diverged` owns
+# which shapes count and why; this prints what it reports.
 #
 # Bounded and silent like OPEN DECISIONS above: nothing prints when the two
 # records agree, which is the common case. If tasks-axi is unavailable, the
@@ -351,8 +355,8 @@ EOF
 # never changes the drain's exit status - a supervision turn must still present
 # its wakes when the backlog tool is having a bad day.
 print_record_divergence_section() {
-  local diverged task origin key title line shown=0 omitted=0 bound
-  local output='' used=0 bytes item_bytes=220 global_bytes=2000
+  local diverged row class task origin key title line shown=0 omitted=0 bound
+  local output='' used=0 bytes item_bytes=220 global_bytes=2000 tab=$'\t'
 
   # A non-positive bound is not a bound (bin/fm-timeout-lib.sh), so a bad
   # override falls back to the default rather than disabling the deadline.
@@ -365,9 +369,34 @@ print_record_divergence_section() {
   diverged=$(fm_run_timed "$bound" "$SCRIPT_DIR/fm-captain-hold.sh" diverged 2>/dev/null) || return 0
   [ -n "$diverged" ] || return 0
 
-  while IFS=$(printf '\t') read -r task origin key title; do
+  # Peeled field by field rather than split by `read`, the way command_answers
+  # in bin/fm-captain-hold.sh already reads its keyed rows. TAB is IFS
+  # whitespace, so `read` collapses a run of them into one delimiter: the two
+  # shapes that leave `origin` and `key` empty would have their title parsed
+  # into `origin` and drop it from the line, on the one section whose purpose is
+  # naming a silent loss at a glance.
+  while IFS= read -r row; do
+    case "$row" in *"$tab"*) ;; *) continue ;; esac
+    class=${row%%"$tab"*}; row=${row#*"$tab"}
+    task=${row%%"$tab"*}; row=${row#*"$tab"}
+    origin=${row%%"$tab"*}; row=${row#*"$tab"}
+    key=${row%%"$tab"*}
+    title=${row#*"$tab"}
     [ -n "$task" ] || continue
-    line="$task [key=$key] reads resolved in $origin's status log but is still held for the captain"
+    # Each row states a condition its reader can act on WITHOUT any other line,
+    # in the fewest characters that manage it, because every one of them is paid
+    # for out of the same per-item cap the title needs and a cut title is not a
+    # shorter name but a wrong one that looks right. None of these may reach for
+    # vocabulary this file invented: the record's own terms belong in the
+    # document that defines them, not in front of a title they would crowd out.
+    case "$class" in
+      closed-unanswered)
+        line="$task closed unanswered, so the captain can no longer see it" ;;
+      hold-resurrected)
+        line="$task asks again a question its own record says he answered" ;;
+      *)
+        line="$task [key=$key] resolved in $origin, still held" ;;
+    esac
     [ -z "$title" ] || line="$line: $title"
     fm_cap_line_var "$line" $((item_bytes - 1))
     line=$FM_LINE_CAP_LINE
@@ -385,16 +414,24 @@ $diverged
 EOF
 
   [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || return 0
-  printf 'RECORD DIVERGENCE (answered in the status log, still held in the backlog - nothing was closed automatically):\n' || return 1
+  printf 'RECORD DIVERGENCE (one captain call, two records that disagree - nothing was closed automatically):\n' || return 1
   printf '%s' "$output" || return 1
   if [ "$omitted" -gt 0 ]; then
     printf 'RECORD DIVERGENCE: %d more omitted (byte cap)\n' "$omitted" || return 1
   fi
-  # Both directions, deliberately. The status resolution is not proof the
+  # Every direction, deliberately. The status resolution is not proof the
   # captain ruled: a call can dissolve, or turn out to have been a question of
   # fact. Reconcile with what actually happened - never by closing on the
-  # strength of this line.
-  printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
+  # strength of this line, and never by lifting one of his holds on it either.
+  # This is the action, so it prints here; what each shape means, and what none
+  # of them establishes, has one owner and this points at it rather than
+  # reprinting it on every supervision turn to a reader who learnt it on the
+  # first. The advisory rule itself - a repeated hold reason is a contradiction
+  # to CHECK and never grounds to lift a captain hold - is carried by
+  # .agents/skills/captain-hold-lifecycle/SKILL.md, which AGENTS.md section 8
+  # already requires be loaded on any line this section prints.
+  printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>; put a call he never answered back in front of him with bin/fm-captain-hold.sh hold <task> --reason <reason> --reopen; or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
+  printf 'RECORD DIVERGENCE: docs/captain-hold-lifecycle.md, section "Record divergence", owns what each shape means and what it does not establish.\n' || return 1
 }
 
 # Two failures live in this stage and they carry opposite costs, so they are
@@ -434,7 +471,18 @@ print_status_presentation() {  # [<deduped-raw-rows>]
       fully_presented=$(printf '%s\n' "$annotation_manifest" | awk -F '\t' '$2 == "direct" { sub(/\.status$/, "", $1); print $1 }') || rc=1
     fi
   fi
-  if [ "$rc" -eq 0 ] && [ -n "$snapshot" ]; then print_status_sections "$snapshot" "$fully_presented" || rc=1; fi
+  if [ "$rc" -eq 0 ]; then
+    if [ -n "$snapshot" ]; then
+      print_status_sections "$snapshot" "$fully_presented" || rc=1
+    else
+      # No status log in this home: the cursor-backed sections have nothing to
+      # present, but two of the three shapes the divergence report reads live
+      # entirely in the structured backlog record and need no status log at
+      # all. Gating the whole report on a status snapshot would have hidden a
+      # captain call closed with his question unanswered.
+      print_record_divergence_section || rc=1
+    fi
+  fi
   fm_lock_release "$lock"
   return "$rc"
 }
