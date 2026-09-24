@@ -11,6 +11,7 @@ On 2026-09-23 this register's first entry cost the opposite error, which is the 
 Date of the measurements below: 2026-09-23.
 Machine: Darwin 24.6.0, 8 cores (`sysctl -n hw.ncpu`).
 Load was generated with `for i in $(seq 1 24); do bash -c 'while :; do :; done' & done` and is reported as the 1-minute load average at the time of the run.
+Those loops never end on their own, so stop them with `kill $(jobs -p)` from the same shell once the measurement is over.
 
 ## tests/fm-watcher-lock.test.sh - test_claimed_lock_without_a_first_beat_is_detected
 
@@ -44,8 +45,13 @@ Two runs in eight observed the present-but-empty state, at roughly one empty rea
 A probe that stops at the first value never sees it at all, because the first value is the one `fm_lock_prepare_owner` left and the truncate comes after.
 
 Fix: landed on `main` in PR [105](https://github.com/DeepFlowCoder/firstmate/pull/105), carrying the content of commit `5b4260e0`.
-The case now polls for the pid VALUE rather than the path, and bounds the wait by the suite's own `STARTUP_POLL_CAP_MS` wall clock rather than a 4000-iteration count that is a different amount of time on every host.
-No bound was widened to make it pass: an empty read simply stopped being a verdict.
+The correction is that the case now polls for the pid VALUE rather than for the path, and that change alone is what removes the race: an empty read stopped being a verdict.
+No bound was widened to make it pass.
+
+That same commit carried a second, separate change bundled into the same diff: it replaced the case's 4000-iteration poll bound with one counted against the suite's own `STARTUP_POLL_CAP_MS` wall clock.
+That half runs against the rule owned by [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development), which is to bound a test's own waiting with iteration-counted poll loops wherever the case's assertion is not about the timeout itself.
+This case's assertion is not about a timeout; it waits for a watcher to claim.
+The register records that change because it is in the landed diff, and does not endorse it; it is not the reason the case stopped failing.
 
 Verified after the fix: 20 isolated runs, 20 passed, at load average 307.
 
@@ -61,7 +67,8 @@ In [`../../bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh), `READ_DEADLINE` i
 The skip is correct behavior; it is the case's own assumption that the call always happens which the clock phase breaks.
 
 Measured with a `date` stub that records a high-resolution stamp on every `+%s` read and otherwise defers to the real `date`, so the interval between setting the deadline and the first budget read is read off the program itself.
-Under load average 125, that interval was 136-189 ms, p50 152 ms, over 30 runs - a window that wide crosses a second boundary about one run in seven.
+Under load average 125, that interval was 136-189 ms, p50 152 ms, over 30 runs.
+Across two batches of 30 runs the observed boundary-crossing rate was 6 of 30 and 3 of 30, so between roughly one run in five and one in ten.
 
 Correlating each run's crossing against its own verdict, 30 runs under load, with the fix reverted so the clock is live:
 
@@ -72,6 +79,10 @@ NOCROSSED: fail=0 pass=27
 
 Every crossing failed, with exactly the message CI reported, and no run failed without one.
 That is the cause established rather than suspected.
+
+This measurement is evidence for the iteration-count rule, and it should be read next to case A's second change above.
+Under load the real work stretched - 136-189 ms from setting the deadline to the first budget read - while the fixed whole-second boundary it was judged against did not stretch at all, and that mismatch is precisely what spent the budget before the first call.
+An iteration-counted loop grows with the machine; a wall-clock budget does not.
 
 Fix: landed on `main` in PR [103](https://github.com/DeepFlowCoder/firstmate/pull/103).
 The case pins `date +%s` for the read under test, so the budget stops depending on clock phase, while elapsed time is still measured on the real clock in the case's own shell.
@@ -87,10 +98,14 @@ Both entries above are the same family - a temporal race that gets worse exactly
    A case that needs the whole amount must pin the clock, not widen the number.
 - Poll for the value the case needs, never for the path that will hold it.
    A file that exists is not a file that has been written, and a writer that rewrites one truncates it first.
-- An assertion bounded by wall clock measures the machine as well as the code, so state its margin and re-measure it under load rather than trusting it.
-   Shrinking headroom is the warning; a bound raised to turn a red green is not a fix, it hides the race and buys the same failure back on a busier day.
+- Bound a test's own waiting by iteration count, which stretches under load, and reserve a wall-clock bound for a case whose assertion IS about a timeout.
+   That rule is owned by [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development) and is named rather than restated here, because a second copy of a rule is a second thing to go stale; where this page and that line differ, that line wins.
+   An assertion that is genuinely about a timeout still measures the machine as well as the code, so state its margin and re-measure it under load rather than trusting it: shrinking headroom is the warning, and a bound raised to turn a red green is not a fix, it hides the race and buys the same failure back on a busier day.
 
 Neither fix on this page raised a cap, and that is the point of recording them together.
+
+That rule was already in writing before either of today's failures, and neither of the two tickets that hit them cited it.
+The gap was that an existing rule was not found when it was needed, not that the rule was missing, and that is itself worth recording: it is the reason this register points at [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development) instead of carrying its own competing version of the same rule.
 
 ## Wall-clock assertions still standing, with their measured headroom
 
@@ -101,7 +116,7 @@ These are sound today and are listed so the margin is a known number rather than
 
 ## Re-measuring
 
-Run the owning suite through the repo's runner, under load, from a worktree:
+Run the owning suite through the repo's runner, under load, from a worktree, with the load generator and its `kill $(jobs -p)` stop taken from the top of this page:
 
 ```
 bin/fm-test-run.sh tests/fm-watcher-lock.test.sh
