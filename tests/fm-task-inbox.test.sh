@@ -40,6 +40,11 @@
 #      state went unread rather than claim a pane this poll never classified. The
 #      correction never trades a false deafness signal for a missing one, for
 #      anyone.
+#   7. The escalation's own prefix separates budget spent from doorbells rung,
+#      on every arm: attempts that were skipped or failed typed nothing, so a
+#      ladder can spend its whole budget having delivered none, and a ladder
+#      that never recorded the rung count says so instead of reprinting the
+#      attempt count. Equal numbers keep the short original phrasing.
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
@@ -439,14 +444,44 @@ test_first_rering_anchor_records_only_a_real_ring() {
     || fail "record_ring must work normally under set -u when given its ring result"
   record_ring_under_set_u "$state" "$rec" \
     && fail "a record_ring call with no ring result must fail under set -u, not degrade"
-  # A ladder written before the field existed.
+  # A ladder written before either trailing field existed.
   printf '%s\t2\t100\n' "${rec##*/}" > "$state/t1.inbox/.ring-state"
   inbox_lib "$state" fm_task_inbox_first_rering_epoch "$state" t1 "$rec" \
     && fail "a ladder with no anchor field must report none rather than derive one"
+  inbox_lib "$state" fm_task_inbox_rung_count "$state" t1 "$rec" \
+    && fail "a ladder with no rung field must report none rather than derive one"
+  inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 0
+  inbox_lib "$state" fm_task_inbox_rung_count "$state" t1 "$rec" \
+    && fail "counting from an unknown base would invent a delivery total"
   [ "$(FM_TASK_INBOX_GRACE_SECS=60 FM_TASK_INBOX_RING_MAX=3 \
-      inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" = "ring $rec" ] \
-    || fail "a ladder with no anchor field must still pace and escalate as before"
+      inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" = "escalate $rec 3" ] \
+    || fail "a ladder with no trailing fields must still pace and escalate as before"
   pass "inbox: the first-re-ring anchor records only a re-ring that actually rang"
+}
+
+# Budget spent and doorbells actually rung are different numbers, and the ladder
+# has to keep them apart: an attempt that found proven pending composer text
+# consumes its opportunity and types nothing, so a ladder can reach its
+# escalation threshold having delivered zero doorbells.
+test_rung_count_counts_only_attempts_that_rang() {
+  local state rec rung
+  state="$TMP_ROOT/rung-count/state"; mkdir -p "$state"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "do the thing")
+  age_path "$rec"
+  inbox_lib "$state" fm_task_inbox_rung_count "$state" t1 "$rec" \
+    && fail "a record with no ladder yet must report no rung count"
+  inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 1
+  inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 2
+  rung=$(inbox_lib "$state" fm_task_inbox_rung_count "$state" t1 "$rec") \
+    || fail "a ladder this library wrote must record its rung count"
+  [ "$rung" = 0 ] || fail "a skipped and a failed attempt rang nothing, got $rung"
+  [ "$(FM_TASK_INBOX_GRACE_SECS=0 FM_TASK_INBOX_RING_MAX=2 \
+      inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" = "escalate $rec 2" ] \
+    || fail "both attempts must still have spent their ladder budget"
+  inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 0
+  rung=$(inbox_lib "$state" fm_task_inbox_rung_count "$state" t1 "$rec")
+  [ "$rung" = 1 ] || fail "only the attempt that rang should count, got $rung"
+  pass "inbox: the ladder counts doorbells rung apart from budget spent"
 }
 
 setup_watch_case() {  # <name> -> echoes case dir; state in <dir>/state
@@ -666,7 +701,46 @@ test_watcher_escalates_once_after_budget() {
   # pin the other side of that line.
   grep -qF 'with an idle pane' "$state/.wake-queue" \
     || fail "an established-idle harness should still name the idle pane:"$'\n'"$(cat "$state/.wake-queue")"
+  # Every attempt here rang, so budget spent and doorbells rung agree and the
+  # prefix stays exactly as short as it has always been.
+  grep -qF 'after 1 doorbell delivery attempts' "$state/.wake-queue" \
+    || fail "a ladder whose every attempt rang should keep the short prefix:"$'\n'"$(cat "$state/.wake-queue")"
   pass "watcher: a spent ring budget emits exactly one ordinary stale wake for recovery"
+}
+
+# A ladder whose every attempt was a composer-protected skip spent its whole
+# budget without typing a single doorbell, so nobody ever spoke to this worker.
+# Calling that "3 doorbell delivery attempts" reads as a worker that ignored
+# three doorbells, which is the same over-assertion on the prefix that this
+# route exists to remove from the evidence clause - and it points at the same
+# procedure. The grok harness here is deliberate: this applies on every arm, not
+# only the one with no busy state.
+test_watcher_escalation_separates_skipped_attempts_from_rung_doorbells() {
+  local dir state out log pid rec queue
+  dir=$(setup_watch_case grok-all-skips)
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "stop that preflight run")
+  age_path "$rec"
+  # Spend the whole budget through the production writer on attempts that typed
+  # nothing: a protected composer, then two failed sends.
+  inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 1
+  inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 2
+  inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 1
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_TASK_INBOX_RING_MAX=3
+  pid=$!
+  wait_watcher_gone "$pid" \
+    || { kill "$pid" 2>/dev/null; fail "a spent budget of skips never escalated:"$'\n'"$(cat "$out")"; }
+  queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
+  grep -qF 'unread firstmate instruction' <<<"$queue" \
+    || fail "detection must not shrink when the attempts were skips:"$'\n'"$queue"
+  grep -qF 'doorbell delivery attempts' <<<"$queue" \
+    && fail "attempts that typed nothing were counted as deliveries:"$'\n'"$queue"
+  grep -qF '3 delivery opportunities of which 0 actually rang the doorbell' <<<"$queue" \
+    || fail "the wake should separate budget spent from doorbells rung:"$'\n'"$queue"
+  [ ! -s "$log" ] || fail "this case requires that no doorbell was ever typed:"$'\n'"$(cat "$log")"
+  pass "watcher: an escalation counts doorbells rung apart from opportunities spent"
 }
 
 # The captain's case: an instruction reaches a worker on the adapter with no
@@ -877,6 +951,7 @@ test_ladder_writes_ignore_vanished_inbox
 test_fire_and_forget_records_never_enter_the_ladder
 test_ring_ladder_policy
 test_first_rering_anchor_records_only_a_real_ring
+test_rung_count_counts_only_attempts_that_rang
 test_watcher_rerings_idle_pane_quietly
 test_watcher_never_rings_a_bare_shell
 test_watcher_waits_on_busy_pane
@@ -884,6 +959,7 @@ test_watcher_quiet_on_healthy_inbox
 test_watcher_ack_silences_unwritable_ladder
 test_watcher_surfaces_unwritable_ladder
 test_watcher_escalates_once_after_budget
+test_watcher_escalation_separates_skipped_attempts_from_rung_doorbells
 test_watcher_codex_acknowledgement_never_escalates
 test_watcher_holds_codex_with_no_turn_boundary
 test_watcher_escalates_codex_when_the_boundary_predates_the_rering

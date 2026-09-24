@@ -107,7 +107,12 @@
 #                          recheck below instead, because it cannot acknowledge a
 #                          record before its next turn boundary and its ladder is
 #                          left intact so the real escalation fires the moment it
-#                          stops executing. The reason names the evidence this
+#                          stops executing. The reason separates budget spent
+#                          from doorbells actually rung, because a skip over
+#                          proven pending composer text spends one and types
+#                          none, and a ladder that never recorded the rung count
+#                          says that rather than reprinting the attempt count.
+#                          It then names the evidence this
 #                          poll actually read: an idle pane that was classified
 #                          as one; or that nothing readable established a
 #                          working state at this poll; or - for a harness
@@ -603,7 +608,7 @@ turn_boundary_since() {  # <task> <epoch>
 # The escalation only ever claims what the busy contract actually established at
 # this poll; the escalate branch below owns that distinction and why it matters.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor silence busy_state
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor silence busy_state rung attempts
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -781,7 +786,27 @@ inbox_steer_check() {  # <window> <task>
           *) evidence="on a harness that never reports whether it is working and with no turn-boundary evidence at all, so this cannot tell a worker that stopped reading from one still inside its turn; $silence" ;;
         esac
       fi
-      reason="stale: $w (unread firstmate instruction: $rec still unhandled after $count doorbell delivery attempts $evidence; inspect the worker)"
+      # "After N doorbell delivery attempts" asserts that delivery was attempted
+      # N times. When the composer held proven pending text, or a send failed,
+      # budget was consumed and nothing was typed: those were N opportunities
+      # spent and zero doorbells rung, which is a different fact. The irony is
+      # exact and worth naming here - this whole route exists because a wake
+      # could not tell "has not read it" from "read it and is working", and its
+      # own prefix could not tell "I tried N times" from "I spent N chances
+      # without trying". Every arm gets this, not just the one below: when the
+      # two numbers agree the sentence stays as short as it always was, and when
+      # they differ that gap is the datum that separates a worker gone deaf from
+      # a worker nobody ever spoke to. A ladder that never recorded the rung
+      # count says so rather than reprinting the count it does have.
+      rung=$(fm_task_inbox_rung_count "$STATE" "$task" "$rec") || rung=
+      if [ -z "$rung" ]; then
+        attempts="$count delivery opportunities, with how many of them rang the doorbell not recorded"
+      elif [ "$rung" = "$count" ]; then
+        attempts="$count doorbell delivery attempts"
+      else
+        attempts="$count delivery opportunities of which $rung actually rang the doorbell"
+      fi
+      reason="stale: $w (unread firstmate instruction: $rec still unhandled after $attempts $evidence; inspect the worker)"
       fm_wake_append stale "$w" "$reason" || exit 1
       if ! fm_task_inbox_record_escalated "$STATE" "$task" "$rec"; then
         echo "error: stale wake was queued for $task but its inbox escalation marker could not be written" >&2
