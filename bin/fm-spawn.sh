@@ -2788,9 +2788,11 @@ STATE_REAL=$(cd "$STATE" && pwd -P)
 TURNEND="$STATE_REAL/$ID.turn-ended"
 # Whether this launch actually arms something that will ever touch that marker,
 # recorded into meta below as turnend=, one of three words. `armed` is set by
-# the wiring arms from what they actually installed, or - for the adapter whose
-# marker rides the launch command rather than a hook file - from the composed
-# command itself, so the record cannot drift from the launch it describes.
+# the wiring arms from what will actually run: from the file installed where the
+# harness discovers it on its own, and - for the adapters whose marker reaches
+# the worker only through the launch command, codex via notify= and pi via -e -
+# from the composed command itself, so the record cannot drift from the launch
+# it describes.
 # `none` means firstmate armed nothing and composed the launch, so it knows
 # there is nothing. `unknown` means firstmate did not compose the launch at all
 # and therefore cannot say what it arms; that is an absence of a record, not a
@@ -2969,7 +2971,15 @@ export default function (pi: any) {
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF
-      TURNEND_WIRING=armed
+      # This extension is written outside the worktree precisely because pi
+      # loads it from an explicit -e path rather than discovering it, so what
+      # was installed here does not decide whether a boundary is ever recorded:
+      # the composed launch does, exactly as for codex below. A raw launch
+      # command carries no -e, and the file would sit unread while the record
+      # claimed otherwise.
+      case "$LAUNCH" in
+        *__PIEXT__*) TURNEND_WIRING=armed ;;
+      esac
       ;;
     codex*)
       # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the

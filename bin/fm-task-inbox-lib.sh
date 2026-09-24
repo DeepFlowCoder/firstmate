@@ -30,26 +30,7 @@
 #   <task>.inbox/handled/      the worker's `mv` here IS the acknowledgement
 #   <task>.inbox/.seq.lock     serializes sequence allocation across writers
 #                              (the session and the away daemon)
-#   <task>.inbox/.ring-state   watcher re-ring ladder:
-#                              "<msg>\t<count>\t<epoch>\t<first-rering-epoch>\t<rung>"
-#                              where <count> is the attempt budget SPENT and
-#                              <epoch> the last attempt. <first-rering-epoch> is
-#                              the first WATCHER re-ring that actually typed the
-#                              doorbell and <rung> how many attempts did, which
-#                              is NOT <count>: a composer-protected skip or a
-#                              failed send spends budget and types nothing. Both
-#                              trailing fields are absent from a ladder written
-#                              before they existed, and <first-rering-epoch> is
-#                              also absent while every attempt so far was a
-#                              skip. Neither is ever derived from the others:
-#                              attempts can be skipped and the spacing is a
-#                              floor, so that arithmetic would report a delivery
-#                              nobody made. An unrecorded trailing field is
-#                              written as `-` rather than left empty, because
-#                              the tab is IFS whitespace and an empty interior
-#                              field would collapse and shift the next one into
-#                              its place; every reader rejects a non-numeric
-#                              field as absent, so `-` needs no special case
+#   <task>.inbox/.ring-state   watcher re-ring ladder: "<msg>\t<count>\t<epoch>"
 #   <task>.inbox/.escalated    oldest-message name already surfaced as stale,
 #                              so later polls suppress another escalation
 #
@@ -387,7 +368,7 @@ fm_task_inbox_oldest_unhandled() {  # <state-dir> <task-id>
 # An empty inbox also resets the ladder bookkeeping so the next message starts
 # a fresh ladder.
 fm_task_inbox_due_action() {  # <state-dir> <task-id>
-  local dir oldest base now grace max ladder rec_base count last first rung
+  local dir oldest base now grace max ladder rec_base count last
   dir=$(fm_task_inbox_dir "$1" "$2")
   if ! oldest=$(fm_task_inbox_oldest_unhandled "$1" "$2"); then
     rm -f "$dir/.ring-state" "$dir/.escalated" 2>/dev/null || true
@@ -403,7 +384,7 @@ fm_task_inbox_due_action() {  # <state-dir> <task-id>
   count=0
   last=0
   ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
-  IFS=$(printf '\t') read -r rec_base count last first rung <<EOF
+  IFS=$(printf '\t') read -r rec_base count last <<EOF
 $ladder
 EOF
   if [ "$(cat "$dir/.escalated" 2>/dev/null || true)" = "$base" ]; then
@@ -440,97 +421,22 @@ EOF
 # A concurrently removed inbox is a successful no-op; otherwise failure means
 # the caller must surface the unwritable ladder while the record remains
 # unhandled.
-# <ring-rc> is fm_task_inbox_ring's own return code and is REQUIRED: only a 0
-# advances the rung count and sets the first-re-ring anchor, because a
-# composer-protected skip or a failed send typed nothing into the endpoint, so
-# it starts no silence a worker could be answering, even though it still spends
-# budget. Budget spent and doorbells actually rung are different questions, and
-# this is the only place that can tell them apart. A caller that omits the
-# argument must fail here rather than be read as "typed nothing", which would
-# leave both permanently unset without saying so.
-# A ladder already running for this record without the rung field keeps it
-# unrecorded: how many of ITS earlier attempts rang is genuinely unknown, and
-# counting from an unknown base would invent a delivery total.
-fm_task_inbox_record_ring() {  # <state-dir> <task-id> <record-path> <ring-rc>
-  local dir base ladder rec_base count last first rung now rc=$4
+fm_task_inbox_record_ring() {  # <state-dir> <task-id> <record-path>
+  local dir base ladder rec_base count last
   dir=$(fm_task_inbox_dir "$1" "$2")
   base=${3##*/}
   count=0
   ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
-  IFS=$(printf '\t') read -r rec_base count last first rung <<EOF
+  IFS=$(printf '\t') read -r rec_base count last <<EOF
 $ladder
 EOF
-  if [ "$rec_base" != "$base" ]; then
-    count=0
-    first=
-    rung=0
-  fi
+  [ "$rec_base" = "$base" ] || count=0
   case "$count" in ''|*[!0-9]*) count=0 ;; esac
-  case "$first" in *[!0-9]*) first= ;; esac
-  case "$rung" in *[!0-9]*) rung= ;; esac
-  now=$(date +%s)
-  if [ "$rc" = 0 ]; then
-    [ -n "$first" ] || first=$now
-    [ -z "$rung" ] || rung=$((rung + 1))
-  fi
   [ -d "$dir" ] || return 0
-  if ! { printf '%s\t%s\t%s\t%s\t%s\n' "$base" "$((count + 1))" "$now" "${first:--}" "${rung:--}" > "$dir/.ring-state"; } 2>/dev/null; then
+  if ! { printf '%s\t%s\t%s\n' "$base" "$((count + 1))" "$(date +%s)" > "$dir/.ring-state"; } 2>/dev/null; then
     [ -d "$dir" ] || return 0
     return 1
   fi
-}
-
-# How many of this ladder's spent attempts ACTUALLY rang <record-path>'s
-# doorbell, or failure when the ladder does not record it.
-#
-# Never equal to the attempt count by assumption. An attempt that found proven
-# pending composer text, or whose send failed, consumes budget and types
-# nothing, so a ladder can reach its escalation threshold having delivered
-# zero doorbells. A consumer that prints the attempt count as though it were a
-# delivery count states something nobody observed; a consumer that cannot read
-# this field must say so rather than substitute the count it does have.
-fm_task_inbox_rung_count() {  # <state-dir> <task-id> <record-path>
-  local dir base ladder rec_base count last first rung
-  dir=$(fm_task_inbox_dir "$1" "$2")
-  base=${3##*/}
-  ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
-  IFS=$(printf '\t') read -r rec_base count last first rung <<EOF
-$ladder
-EOF
-  [ "$rec_base" = "$base" ] || return 1
-  case "$rung" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s' "$rung"
-}
-
-# The epoch of the first WATCHER re-ring that actually typed <record-path>'s
-# doorbell, or failure when no re-ring has typed one yet.
-#
-# A REPORTING anchor only. It is the earliest delivery this ladder RECORDS, and
-# deliberately not the earliest delivery that happened: bin/fm-send.sh and the
-# remote steer leg in bin/fm-remote-secondmate-control.sh each ring once at
-# write time and neither advances this ladder, and fm_task_inbox_due_action then
-# stays quiet until the record is a full grace old, so this is at minimum one
-# grace LATER than the doorbell the worker was first offered. Any interval
-# measured from it therefore UNDERSTATES how long the worker has been silent,
-# which a consumer must SAY rather than round away, because the point of an
-# anchor is to name the instant the number was counted from.
-#
-# Never route on it. "Has this worker woken at all since the instruction
-# existed?" is a different question and is answered against the record's own
-# write time, because a boundary that lands between the write-time doorbell and
-# this anchor is still a worker that woke with the instruction already waiting.
-# Deciding a hold from this value would silence exactly that worker.
-fm_task_inbox_first_rering_epoch() {  # <state-dir> <task-id> <record-path>
-  local dir base ladder rec_base count last first rung
-  dir=$(fm_task_inbox_dir "$1" "$2")
-  base=${3##*/}
-  ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
-  IFS=$(printf '\t') read -r rec_base count last first rung <<EOF
-$ladder
-EOF
-  [ "$rec_base" = "$base" ] || return 1
-  case "$first" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s' "$first"
 }
 
 # Mark the current oldest as escalated after its stale wake is durably queued,

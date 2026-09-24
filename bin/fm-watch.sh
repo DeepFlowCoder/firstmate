@@ -107,12 +107,7 @@
 #                          recheck below instead, because it cannot acknowledge a
 #                          record before its next turn boundary and its ladder is
 #                          left intact so the real escalation fires the moment it
-#                          stops executing. The reason separates budget spent
-#                          from doorbells actually rung, because a skip over
-#                          proven pending composer text spends one and types
-#                          none, and a ladder that never recorded the rung count
-#                          says that rather than reprinting the attempt count.
-#                          It then names the evidence this
+#                          stops executing. The reason names the evidence this
 #                          poll actually read: an idle pane that was classified
 #                          as one; or that nothing readable established a
 #                          working state at this poll; or - for a harness
@@ -126,15 +121,11 @@
 #                          the same sentence to whoever acts on it. A passed
 #                          boundary is evidence and not proof, because the
 #                          acknowledgement is moved only after the instruction
-#                          is carried out, and the wake says so. The silence it
-#                          reports is a separate datum counted from the
-#                          watcher's first recorded re-ring, a delivery grace or
-#                          more after the doorbell fm-send typed at write time
-#                          and never records, so each wake says it understates
-#                          rather than rounding the gap away. Only the arms
-#                          where a boundary actually passed carry it: on a
-#                          worker that reached none the elapsed quiet proves
-#                          nothing, so those wakes report no duration
+#                          is carried out, and the wake says so. No wake here
+#                          reports an elapsed-quiet duration: the only delivery
+#                          instants this ladder records start a grace after the
+#                          doorbell fm-send already typed and never recorded, so
+#                          any such number would understate by an unknown amount
 #   stale: <window> (firstmate instruction ... queued behind a running command)
 #                          the bounded recheck for that case
 #   stale: <window> (firstmate instruction ... no turn boundary at all since it was written)
@@ -611,9 +602,7 @@ command_window_too_young() {  # <marker>
 # re-ring, which is precisely the worker that finishes its turn seconds after
 # the doorbell is typed and then freezes. Passing a later delivery anchor here
 # would hold that worker out of the escalation forever, which is the deaf worker
-# this whole route exists to catch. HOW LONG the silence has lasted is a
-# different datum, reported by the caller from fm_task_inbox_first_rering_epoch,
-# and it is never allowed to decide whether the escalation holds.
+# this whole route exists to catch.
 # Deliberately NO spawn-record stand-in here, unlike busy_turn_over_age. That
 # file never moves, so on a task whose harness writes no turn-end marker at all
 # - a codex secondmate carries no notify hook - it would read as "still in the
@@ -646,7 +635,7 @@ turn_boundary_since() {  # <task> <epoch>
 # The escalation only ever claims what the busy contract actually established at
 # this poll; the escalate branch below owns that distinction and why it matters.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor silence busy_state rung attempts wiring
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary busy_state wiring
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -710,7 +699,7 @@ inbox_steer_check() {  # <window> <task>
         wake "$reason"
         return 0
       fi
-      if ! fm_task_inbox_record_ring "$STATE" "$task" "$rec" "$ring_rc"; then
+      if ! fm_task_inbox_record_ring "$STATE" "$task" "$rec"; then
         if [ ! -f "$rec" ]; then
           fm_task_inbox_due_action "$STATE" "$task" >/dev/null || true
           return 0
@@ -793,23 +782,13 @@ inbox_steer_check() {  # <window> <task>
         # ends seconds after the doorbell is typed and is followed by a freeze
         # still escalates. Only a task with no completed turn whatsoever since
         # the record was written is held.
-        # REPORTED SILENCE - how long has it been quiet? A separate datum,
-        # measured from the first re-ring the ladder actually recorded, which is
-        # a delivery grace or more after the doorbell fm-send typed at write
-        # time and never recorded. It therefore understates, and says so; it
-        # never decides the hold, and it is carried ONLY by the arms where a
-        # boundary actually passed. On a worker that has reached no boundary the
-        # elapsed quiet has no referent the reader can act on - this branch's
-        # whole premise is that it proves nothing - and a duration inside a wake
-        # is read as evidence by whoever is looking at it at three in the
-        # morning, so those arms carry none.
+        # No elapsed-quiet duration is reported anywhere here. The ladder's own
+        # attempts are the only delivery instants it records, and they start a
+        # full grace after the doorbell bin/fm-send.sh already typed and never
+        # recorded, so any interval counted from them would understate by an
+        # unknown amount - and a number inside a wake is read as evidence by
+        # whoever is looking at it at three in the morning, caveat or not.
         turn_boundary_since "$task" "$(stat_mtime "$rec")" && boundary=0 || boundary=$?
-        anchor=$(fm_task_inbox_first_rering_epoch "$STATE" "$task" "$rec") || anchor=
-        if [ -n "$anchor" ]; then
-          silence="silent for $(( $(date +%s) - anchor ))s counted from the watcher's first recorded re-ring, which is a delivery grace or more after the doorbell fm-send already typed, so it understates the silence"
-        else
-          silence="with no recorded re-ring to count its silence from"
-        fi
         case "$boundary" in
           1)
             # No turn has ended at all since the record was written, so this
@@ -825,7 +804,7 @@ inbox_steer_check() {  # <window> <task>
             triage_log "absorbed steer-inbox escalation (busy state unestablished and no turn boundary since ${rec##*/} was written): $w"
             return 0
             ;;
-          0) evidence="and a turn boundary passed after it was written while the record stayed unacknowledged, on a harness that never reports whether it is working; the acknowledgement is moved only after the instruction is carried out, so this is evidence and not proof that the worker stopped reading - a worker still working through it looks the same; $silence" ;;
+          0) evidence="and a turn boundary passed after it was written while the record stayed unacknowledged, on a harness that never reports whether it is working; the acknowledgement is moved only after the instruction is carried out, so this is evidence and not proof that the worker stopped reading - a worker still working through it looks the same" ;;
           *)
             # No turn boundary has EVER been recorded for this task, and the
             # marker's absence alone cannot say why. A task whose launch armed a
@@ -848,34 +827,14 @@ inbox_steer_check() {  # <window> <task>
               return 0
             fi
             if [ "$wiring" = none ]; then
-              evidence="on a harness that never reports whether it is working and for a task whose launch armed no turn-end signal, so no turn boundary is ever recorded for it and this cannot tell a worker that stopped reading from one still inside its turn; $silence"
+              evidence="on a harness that never reports whether it is working and for a task whose launch armed no turn-end signal, so no turn boundary is ever recorded for it and this cannot tell a worker that stopped reading from one still inside its turn"
             else
-              evidence="on a harness that never reports whether it is working and with no record of whether this task's launch arms a turn-end signal, so this cannot tell a worker that stopped reading from one still inside its turn; $silence"
+              evidence="on a harness that never reports whether it is working and with no record of whether this task's launch arms a turn-end signal, so this cannot tell a worker that stopped reading from one still inside its turn"
             fi
             ;;
         esac
       fi
-      # "After N doorbell delivery attempts" asserts that delivery was attempted
-      # N times. When the composer held proven pending text, or a send failed,
-      # budget was consumed and nothing was typed: those were N opportunities
-      # spent and zero doorbells rung, which is a different fact. The irony is
-      # exact and worth naming here - this whole route exists because a wake
-      # could not tell "has not read it" from "read it and is working", and its
-      # own prefix could not tell "I tried N times" from "I spent N chances
-      # without trying". Every arm gets this, not just the one below: when the
-      # two numbers agree the sentence stays as short as it always was, and when
-      # they differ that gap is the datum that separates a worker gone deaf from
-      # a worker nobody ever spoke to. A ladder that never recorded the rung
-      # count says so rather than reprinting the count it does have.
-      rung=$(fm_task_inbox_rung_count "$STATE" "$task" "$rec") || rung=
-      if [ -z "$rung" ]; then
-        attempts="$count delivery opportunities, with how many of them rang the doorbell not recorded"
-      elif [ "$rung" = "$count" ]; then
-        attempts="$count doorbell delivery attempts"
-      else
-        attempts="$count delivery opportunities of which $rung actually rang the doorbell"
-      fi
-      reason="stale: $w (unread firstmate instruction: $rec still unhandled after $attempts $evidence; inspect the worker)"
+      reason="stale: $w (unread firstmate instruction: $rec still unhandled after $count doorbell delivery attempts $evidence; inspect the worker)"
       fm_wake_append stale "$w" "$reason" || exit 1
       if ! fm_task_inbox_record_escalated "$STATE" "$task" "$rec"; then
         echo "error: stale wake was queued for $task but its inbox escalation marker could not be written" >&2
