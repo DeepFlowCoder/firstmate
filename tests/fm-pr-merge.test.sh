@@ -2851,6 +2851,14 @@ test_same_name_in_distinct_workflows_still_refuses() {
   # the same display name. The workflow field is the only difference between this
   # reading and the one below it, which the same fold does supersede, so the pair
   # measures the key rather than a gate that refuses every red twice.
+  #
+  # The records below are CONSTRUCTED, but this case is the only one here with a
+  # FORGE-MEASURED counterpart: the same semantic head was built on the live
+  # forge, read, and driven through both versions of the gate on
+  # DeepFlowCoder/firstmate#112, head 95bcd793, two workflows each rendering
+  # Shared collision check with the earlier one red. That recording, including
+  # the merge order the pre-change gate emitted over it, is in
+  # docs/verification/pr-merge-fitness.md.
   READING_LINES=(
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
@@ -2882,6 +2890,12 @@ test_degraded_legacy_statuses_never_supersede_each_other() {
   local case_dir
   # StatusContext has no workflow identity. The explicit degraded scope keeps
   # both records, choosing a possible false red over a false-green merge.
+  #
+  # CONSTRUCTED-ONLY, and permanently so: GitHub's Status API keeps one status
+  # per context, so a single head can never carry two of them and this shape has
+  # no live form anywhere to measure it against. The same holds for the other
+  # degraded population, a third-party app's check run, which cannot be told to
+  # re-run on a head of ours.
   READING_LINES=(
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
@@ -2903,6 +2917,9 @@ test_unorderable_records_keep_the_worst() {
   # Two records of one name reporting the same start time carry no evidence of
   # which is current. An ordering that cannot be measured refuses rather than
   # picking the record that happens to be green.
+  #
+  # CONSTRUCTED-ONLY, like the two cases below it: this is a reading SHAPE, not a
+  # forge state that can be requested, so there is no head to ask GitHub for.
   READING_LINES=(
     'pr OPEN MERGEABLE CLEAN'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
@@ -2921,6 +2938,7 @@ test_unorderable_records_keep_the_worst() {
 
 test_undated_record_is_never_ordered_away() {
   local case_dir
+  # CONSTRUCTED-ONLY: a reading shape, not a forge state that can be requested.
   # A record the forge reported no start time for cannot be ordered against its
   # sibling at all. Reading the missing time as time zero would sort it below
   # every dated sibling, so a dated green would order this red away: the guard
@@ -2945,6 +2963,7 @@ test_undated_record_is_never_ordered_away() {
 
 test_blank_record_refuses_as_unmeasurable() {
   local case_dir
+  # CONSTRUCTED-ONLY: a reading shape, not a forge state that can be requested.
   # The shape a check name ending in a newline takes: the record it names, then
   # an empty line, then the record that followed it. The declared count still
   # balances, because an empty line is no record, so skipping it would accept

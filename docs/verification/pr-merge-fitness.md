@@ -16,6 +16,7 @@ What a mock cannot prove is that the query itself still returns those fields in 
 Recorded 2026-08-29 on Darwin 24.6.0 (arm64) with gh 2.90.0 (2026-04-16) and ShellCheck 0.11.0 (the version `bin/fm-lint.sh` pins).
 The rendered reading and the fold sections below were re-recorded 2026-09-01 on the same host with the same gh, when the reading gained the check-count record and the per-record start time.
 The identity field's readings - the serialisation it comes from, the legacy statuses that carry none, and the live before-and-after negative in the portable regression - were recorded 2026-09-24 UTC on the same host with the same gh; the 2026-09-01 `kubernetes/kubernetes` block below was left as it was returned that day rather than re-run, and a fresh live reading of that same pull request is recorded beside it.
+The two live-negative recordings, which drive the merge CLI itself over that head, were taken 2026-09-24 at 05:44 and 05:40 UTC and are pasted exactly as the recorder printed them, banners and noise included.
 Queries name `--repo` explicitly: this repo's private mirror and its upstream share pull request numbering, so a bare number is ambiguous.
 
 ## The verdict fields exist and are selectable
@@ -160,6 +161,8 @@ The side not taken is the one a merge guard cannot have: a degraded key that col
 For a `CheckRun` an Actions workflow ran, the renderer reads `workflowName` off the same `statusCheckRollup` object, so the pair costs no second query; it base64-encodes that name into one whitespace-free `workflow=<base64>` field, and the classifier folds only records whose workflow field and check name both match.
 That pair is narrower than the check name alone, and it is still not an identity: GitHub does not require a workflow's display name to be unique across workflow files, so two workflows both named `CI`, each rendering a check of the same name, form one fold key here and the later record still supersedes the earlier one.
 That is the only remaining population in this reading where distinct things share a fold key, and the reading carries no workflow path or id to narrow it.
+Outside the gate the fold has exactly one other consumer, `bin/fm-bearings-snapshot.sh`, and it cannot carry this defect: it reads through `fm_pr_fitness_rollup`, which does not fold at all but takes the worst verdict over every record, so it can show a stale red on the board and never hide a live one.
+`bin/fm-ci-timeout-overrun.sh` is the only other script reading check conclusions, and it keys by job id for a diagnostic rather than for a merge decision. Neither is changed here.
 
 That `workflowName` is a flat key on `gh`'s `statusCheckRollup` serialisation rather than a nested `checkSuite.workflowRun.workflow.name` is measured, not assumed, because the whole CheckRun fold rests on it: were it absent, `(.workflowName // "")` would render `degraded` for every check run, nothing would fold, and this repository's normal route to green - the two runs of `PR must be raised via no-mistakes` recorded below, the first of them red - would refuse every pull request until `--captain-override-red`.
 Read off a real head of this repository, `DeepFlowCoder/firstmate#109`, which nothing was constructed for:
@@ -530,90 +533,240 @@ current fm-pr-fitness-lib.sh      undated-record -> failing   blank-record -> un
 Both readings were accepted before the fix, which is the defect in each case: the undated red was ordered away by its dated green, and the blank line was skipped so the declared count still balanced.
 Both refuse after it.
 
-### The false green, measured on a real head
+### The false green, measured on a real head, with the gate driven over it
 
 The name-only fold's false-green window was reproduced on a live GitHub head rather than argued from synthetic records, because a green proves nothing here: the defect is that everything looks green.
-The collision does not occur in this repository's own workflows, so one was built on a disposable branch, never on `main` and never on the delivery branch: two workflows, `Fold key collision A` and `Fold key collision B`, each exposing a job named `Shared collision check`, A failing on purpose, and B reaching its shared job through a delay job so its record starts later than A's.
-Both refs were created by API on `DeepFlowCoder/firstmate` (`fm-collision-evidence-base` at `main`, `fm-collision-evidence-head` carrying the two workflows), read through a draft pull request whose base was the other disposable branch - so neither `ci.yml` nor `no-mistakes-required.yml` could trigger, both being filtered to `branches: [main]` - and deleted afterwards. `main` never moved from `9914d62e`.
+The collision does not occur in this repository's own workflows, so one was built on a disposable branch, never on `main` and never on the delivery branch.
+`DeepFlowCoder/firstmate#112` was an open pull request whose head, `95bcd793`, carried two workflows, `Fold key collision A` and `Fold key collision B`, each rendering a check named `Shared collision check`.
+The one in A failed on purpose and started first; the one in B passed and started later, behind a delay job, so a fold keyed on the name alone reads the green as the later run of the red.
+It targeted the throwaway branch `fm-collision-base-v2`, which is also what kept the reading clean: `ci.yml` and `no-mistakes-required.yml` both filter on `branches: [main]`, so a pull request against a throwaway base raises neither, and the head carried the three collision records and nothing else.
+The pull request was closed and both throwaway branches deleted as soon as the recordings below were captured, so its workflows exist in no branch of this repository, the head is no longer readable, and the recordings are the record.
+They replace an earlier construction of the same collision, `#110`, which the previous revision of this file recorded in the same way and which git history keeps.
 
-What the forge served for that head, exactly as returned:
+The pre-change tree is `9914d62e`, and `bin/fm-pr-fitness-lib.sh` and `bin/fm-pr-merge.sh` are byte-identical there and at `main` `d4b09168`, so the "before" arm is what the fleet ships today rather than an abandoned intermediate.
 
-```sh
-gh pr view 110 --repo DeepFlowCoder/firstmate --json statusCheckRollup -q '.statusCheckRollup[] | tojson'
-```
+What the recording proves is this and no more.
+The pre-change gate judged that live head fit to merge - `verdict=ok`, `failing=[]`, `superseded=1`, `checks_judged=2` - and emitted the merge order `gh-axi pr merge 112 --repo DeepFlowCoder/firstmate --squash`.
+The current gate, over the identical live reading, refuses, names `Shared collision check`, and emits no call at all - `verdict=failing`, `superseded=0`, `checks_judged=3`.
+Nothing here says that merge would have landed: `gh-axi`, the one path that can land one, was a recorder, so the call was recorded and inert.
+Landing it would have been a real state change bought for a conclusion about GitHub rather than about this guard, and the guard's contract is to refuse what is not fit - which the recording shows it did not do.
+The pre-change run's own exit code is 1 because its post-merge read found the pull request still open; that exit code is not a refusal and is not evidence about the fold.
+Nothing in either reading was edited: `pr OPEN MERGEABLE UNSTABLE` is what the forge served.
 
-```
-{"__typename":"CheckRun","completedAt":"2026-09-24T04:39:19Z","conclusion":"FAILURE","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35956556686/job/107496011691","name":"Shared collision check","startedAt":"2026-09-24T04:39:16Z","status":"COMPLETED","workflowName":"Fold key collision A"}
-{"__typename":"CheckRun","completedAt":"2026-09-24T04:41:48Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35956556722/job/107496011859","name":"Collision B delay","startedAt":"2026-09-24T04:39:16Z","status":"COMPLETED","workflowName":"Fold key collision B"}
-{"__typename":"CheckRun","completedAt":"2026-09-24T04:41:54Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35956556722/job/107496552169","name":"Shared collision check","startedAt":"2026-09-24T04:41:51Z","status":"COMPLETED","workflowName":"Fold key collision B"}
-```
+MEASURED against the live forge, on `#112`'s head `95bcd793`: the reading itself, rendered by each version's own `FITNESS_QUERY` from GitHub's own `statusCheckRollup`; each version's classifier verdict over its own reading; the end-to-end merge CLI's decision under both versions and under the captain override; and that an Actions check run carries `workflowName` at all, which the narrowed key depends on.
+MEASURED against the live forge on heads nothing was constructed for: `kubernetes/kubernetes#141762` for legacy commit statuses rendering `degraded`, and `vercel/next.js#99143` for third-party app check runs with an empty `workflowName` rendering `degraded`, both recorded further up.
+NOT DRIVEN, deliberately: the final `gh-axi` call that would land the merge, for the reason stated above.
 
-Two genuinely distinct checks, one name, two workflows, the earlier of them red - the shape the intent describes as unreachable in this repository's own workflows and reachable across the fleet.
-That one head was then rendered by BOTH renderers and judged by BOTH classifiers, each version's renderer paired with its own classifier, so nothing in either reading was written by hand:
-
-```sh
-git show 9914d62e:bin/fm-pr-merge.sh | sed -n "/^  FITNESS_QUERY='/,/end)'$/p" > /tmp/base-query.sh
-sed -n "/^  FITNESS_QUERY='/,/end)'$/p" bin/fm-pr-merge.sh > /tmp/head-query.sh
-git show 9914d62e:bin/fm-pr-fitness-lib.sh > /tmp/base-lib.sh
-read_pr() { FITNESS_QUERY=; . "$1"; gh pr view 110 --repo DeepFlowCoder/firstmate \
-  --json state,mergeable,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup -q "$FITNESS_QUERY"; }
-classify() {
-  bash -c '. "$1"; fm_pr_fitness_classify < "$2"
-    printf "verdict=%s failing=%s superseded=%s\n" "$FM_PR_FITNESS_VERDICT" \
-      "${FM_PR_FITNESS_FAILING//$'\n'/,}" "$FM_PR_FITNESS_SUPERSEDED_COUNT"' _ "$1" "$2"
-}
-read_pr /tmp/base-query.sh > /tmp/base-reading.txt
-read_pr /tmp/head-query.sh > /tmp/head-reading.txt
-cat /tmp/base-reading.txt; classify /tmp/base-lib.sh /tmp/base-reading.txt
-cat /tmp/head-reading.txt; classify bin/fm-pr-fitness-lib.sh /tmp/head-reading.txt
-```
-
-While that pull request was open:
+One pass of the recorder, pasted as it came, including the throwaway home's own supervision banner:
 
 ```
+LIVE NEGATIVE - DeepFlowCoder/firstmate#112, an OPEN pull request on a disposable base
+recorded 2026-09-24 05:44 UTC with gh 2.90.0
+pre-change tree = 9914d62e (byte-identical to main d4b09168 for both files)
+current tree    = 55df6b1f (this delivery's pipeline head)
+
+########## 1. the forge's own records on that head ##########
+$ gh api repos/DeepFlowCoder/firstmate/commits/95bcd793/check-runs --jq '.check_runs[]|{name,status,conclusion,started_at,workflow:.check_suite.id}'
+{"app":"github-actions","conclusion":"success","name":"Shared collision check","started_at":"2026-09-24T05:44:17Z","status":"completed"}
+{"app":"github-actions","conclusion":"success","name":"Collision B delay","started_at":"2026-09-24T05:41:40Z","status":"completed"}
+{"app":"github-actions","conclusion":"failure","name":"Shared collision check","started_at":"2026-09-24T05:41:39Z","status":"completed"}
+
+$ gh pr view 112 --repo DeepFlowCoder/firstmate --json statusCheckRollup -q '.statusCheckRollup[]|tojson'
+{"__typename":"CheckRun","completedAt":"2026-09-24T05:41:42Z","conclusion":"FAILURE","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35961068214/job/107509552609","name":"Shared collision check","startedAt":"2026-09-24T05:41:39Z","status":"COMPLETED","workflowName":"Fold key collision A"}
+{"__typename":"CheckRun","completedAt":"2026-09-24T05:44:14Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35961068234/job/107509552624","name":"Collision B delay","startedAt":"2026-09-24T05:41:40Z","status":"COMPLETED","workflowName":"Fold key collision B"}
+{"__typename":"CheckRun","completedAt":"2026-09-24T05:44:20Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35961068234/job/107510142210","name":"Shared collision check","startedAt":"2026-09-24T05:44:17Z","status":"COMPLETED","workflowName":"Fold key collision B"}
+
+########## 2. each version's OWN renderer on that live head ##########
+--- pre-change (9914d62e) ---
 pr OPEN MERGEABLE UNSTABLE
-base fm-collision-evidence-base b7910200d0d696bf23948f530a157c0abd9a88cb
+base fm-collision-base-v2 95bcd7931591d066dcd6127284603603da1b0093
 checks 3
-check COMPLETED FAILURE 1790224756 Shared collision check
-check COMPLETED SUCCESS 1790224756 Collision B delay
-check COMPLETED SUCCESS 1790224911 Shared collision check
-verdict=ok failing= superseded=1
+check COMPLETED FAILURE 1790228499 Shared collision check
+check COMPLETED SUCCESS 1790228500 Collision B delay
+check COMPLETED SUCCESS 1790228657 Shared collision check
+--- current (55df6b1f) ---
 pr OPEN MERGEABLE UNSTABLE
-base fm-collision-evidence-base b7910200d0d696bf23948f530a157c0abd9a88cb
+base fm-collision-base-v2 95bcd7931591d066dcd6127284603603da1b0093
 checks 3
-check COMPLETED FAILURE 1790224756 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEE= Shared collision check
-check COMPLETED SUCCESS 1790224756 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Collision B delay
-check COMPLETED SUCCESS 1790224911 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Shared collision check
-verdict=failing failing=Shared collision check superseded=0
+check COMPLETED FAILURE 1790228499 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEE= Shared collision check
+check COMPLETED SUCCESS 1790228500 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Collision B delay
+check COMPLETED SUCCESS 1790228657 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Shared collision check
+
+########## 3. each version's OWN classifier on its own reading ##########
+--- pre-change (9914d62e) ---
+verdict=ok
+reason=
+failing=[]
+running=[]
+checks_judged=2 superseded=1 failing_count=0 running_count=0
+--- current (55df6b1f) ---
+verdict=failing
+reason=1 of its checks did not pass: Shared collision check
+failing=[Shared collision check]
+running=[]
+checks_judged=3 superseded=0 failing_count=1 running_count=0
+
+########## 4. the real merge CLI, live, on that same open pull request ##########
+Every read below reaches the live forge through the real gh. gh-axi, the one
+path that can land a merge, is a recorder: a merge this gate decides to make
+is recorded and inert.
+
+--- 4a. PRE-CHANGE gate (9914d62e) - THE FALSE GREEN ---
+$ bin/fm-pr-merge.sh evidence-live-112 https://github.com/DeepFlowCoder/firstmate/pull/112 
+exit status: 1
+stdout:
+  armed: state/evidence-live-112.check.sh
+stderr:
+  warn: PR #112 carries 1 check record(s) superseded by a later run of the same check; the verdict below is taken over each check's current run, so a red result still shown on the pull request page may belong to a run that has since been replaced
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+gh-axi calls (the only path that can land a merge):
+  gh-axi pr merge 112 --repo DeepFlowCoder/firstmate --squash
+
+--- 4b. CURRENT gate (55df6b1f), same live pull request ---
+$ bin/fm-pr-merge.sh evidence-live-112 https://github.com/DeepFlowCoder/firstmate/pull/112 
+exit status: 1
+stdout:
+stderr:
+  error: refusing to merge PR #112 (DeepFlowCoder/firstmate): 1 of its checks did not pass: Shared collision check
+  error: fix that, or re-run with --captain-override-red if the captain explicitly ordered this merge anyway
+gh-axi calls (the only path that can land a merge):
+  (none)
+
+--- 4c. CURRENT gate with the captain override, same live pull request ---
+$ bin/fm-pr-merge.sh evidence-live-112 https://github.com/DeepFlowCoder/firstmate/pull/112 --captain-override-red
+exit status: 1
+stdout:
+  armed: state/evidence-live-112.check.sh
+stderr:
+  warn: PR #112 (DeepFlowCoder/firstmate) is not fit to merge: 1 of its checks did not pass: Shared collision check
+  warn: merging anyway on --captain-override-red; this is the captain's explicit call, not a routine approval
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+gh-axi calls (the only path that can land a merge):
+  gh-axi pr merge 112 --repo DeepFlowCoder/firstmate --squash
 ```
 
-Before the change the gate reports `ok` on a head carrying a live red, and says so itself: `superseded=1` is the red being folded away by a green from another workflow.
-After it, the same head refuses and names `Shared collision check`, with nothing superseded.
-That is the acceptance criterion's real negative, and `Rm9sZCBrZXkgY29sbGlzaW9uIEE=` / `Rm9sZCBrZXkgY29sbGlzaW9uIEI=` are `Fold key collision A` and `Fold key collision B`, the two identities the earlier key could not tell apart.
-
-The pull request was then closed and both refs deleted, which the same command still shows: the head's three records and the fold difference survive the teardown, and only the pull-request state changed, so both versions now stop at `not-open` before reaching the fold.
+The second recording below was taken on an earlier head of the same pull request, before the green half's workflow file was re-registered, and it shows `workflowName` arriving as `.github/workflows/collision-b.yml` rather than as that workflow's `name:`.
+The cause is measurable: the first version of that file GitHub ever saw did not parse, and the display name it recorded for the file was the path.
+It changes no verdict - a path is still an identity, and the fold keys on whatever the field holds, base64-encoded - but `workflowName` is not always a display name.
 
 ```
-pr CLOSED CONFLICTING DIRTY
-base fm-collision-evidence-base b7910200d0d696bf23948f530a157c0abd9a88cb
-checks 3
-check COMPLETED FAILURE 1790224756 Shared collision check
-check COMPLETED SUCCESS 1790224756 Collision B delay
-check COMPLETED SUCCESS 1790224911 Shared collision check
-verdict=not-open failing= superseded=1
-pr CLOSED CONFLICTING DIRTY
-base fm-collision-evidence-base b7910200d0d696bf23948f530a157c0abd9a88cb
-checks 3
-check COMPLETED FAILURE 1790224756 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEE= Shared collision check
-check COMPLETED SUCCESS 1790224756 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Collision B delay
-check COMPLETED SUCCESS 1790224911 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEI= Shared collision check
-verdict=not-open failing=Shared collision check superseded=0
-```
+LIVE NEGATIVE - DeepFlowCoder/firstmate#112, an OPEN pull request on a disposable base
+recorded 2026-09-24 05:40 UTC with gh 2.90.0
+pre-change tree = 9914d62e (byte-identical to main d4b09168 for both files)
+current tree    = 55df6b1f (this delivery's pipeline head)
 
-`superseded=1` against `superseded=0`, and an empty `failing` against a named one, are the fold itself and are still re-runnable; the `ok` against `failing` above needed the pull request open and is therefore dated rather than reproducible.
+########## 1. the forge's own records on that head ##########
+$ gh api repos/DeepFlowCoder/firstmate/commits/a1886a29/check-runs --jq '.check_runs[]|{name,status,conclusion,started_at,workflow:.check_suite.id}'
+{"app":"github-actions","conclusion":"success","name":"Shared collision check","started_at":"2026-09-24T05:39:41Z","status":"completed"}
+{"app":"github-actions","conclusion":"failure","name":"Shared collision check","started_at":"2026-09-24T05:37:06Z","status":"completed"}
+{"app":"github-actions","conclusion":"success","name":"Collision B delay","started_at":"2026-09-24T05:37:05Z","status":"completed"}
+
+$ gh pr view 112 --repo DeepFlowCoder/firstmate --json statusCheckRollup -q '.statusCheckRollup[]|tojson'
+{"__typename":"CheckRun","completedAt":"2026-09-24T05:37:09Z","conclusion":"FAILURE","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35960735333/job/107508543843","name":"Shared collision check","startedAt":"2026-09-24T05:37:06Z","status":"COMPLETED","workflowName":"Fold key collision A"}
+{"__typename":"CheckRun","completedAt":"2026-09-24T05:39:37Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35960735332/job/107508543476","name":"Collision B delay","startedAt":"2026-09-24T05:37:05Z","status":"COMPLETED","workflowName":".github/workflows/collision-b.yml"}
+{"__typename":"CheckRun","completedAt":"2026-09-24T05:39:45Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/DeepFlowCoder/firstmate/actions/runs/35960735332/job/107509114428","name":"Shared collision check","startedAt":"2026-09-24T05:39:41Z","status":"COMPLETED","workflowName":".github/workflows/collision-b.yml"}
+
+########## 2. each version's OWN renderer on that live head ##########
+--- pre-change (9914d62e) ---
+pr OPEN MERGEABLE UNSTABLE
+base fm-collision-base-v2 a1886a29b38460a6262f1623222c1ad768e811af
+checks 3
+check COMPLETED FAILURE 1790228226 Shared collision check
+check COMPLETED SUCCESS 1790228225 Collision B delay
+check COMPLETED SUCCESS 1790228381 Shared collision check
+--- current (55df6b1f) ---
+pr OPEN MERGEABLE UNSTABLE
+base fm-collision-base-v2 a1886a29b38460a6262f1623222c1ad768e811af
+checks 3
+check COMPLETED FAILURE 1790228226 workflow=Rm9sZCBrZXkgY29sbGlzaW9uIEE= Shared collision check
+check COMPLETED SUCCESS 1790228225 workflow=LmdpdGh1Yi93b3JrZmxvd3MvY29sbGlzaW9uLWIueW1s Collision B delay
+check COMPLETED SUCCESS 1790228381 workflow=LmdpdGh1Yi93b3JrZmxvd3MvY29sbGlzaW9uLWIueW1s Shared collision check
+
+########## 3. each version's OWN classifier on its own reading ##########
+--- pre-change (9914d62e) ---
+verdict=ok
+reason=
+failing=[]
+running=[]
+checks_judged=2 superseded=1 failing_count=0 running_count=0
+--- current (55df6b1f) ---
+verdict=failing
+reason=1 of its checks did not pass: Shared collision check
+failing=[Shared collision check]
+running=[]
+checks_judged=3 superseded=0 failing_count=1 running_count=0
+
+########## 4. the real merge CLI, live, on that same open pull request ##########
+Every read below reaches the live forge through the real gh. gh-axi, the one
+path that can land a merge, is a recorder: a merge this gate decides to make
+is recorded and inert.
+
+--- 4a. PRE-CHANGE gate (9914d62e) - THE FALSE GREEN ---
+$ bin/fm-pr-merge.sh evidence-live-112 https://github.com/DeepFlowCoder/firstmate/pull/112 
+exit status: 1
+stdout:
+  armed: state/evidence-live-112.check.sh
+stderr:
+  warn: PR #112 carries 1 check record(s) superseded by a later run of the same check; the verdict below is taken over each check's current run, so a red result still shown on the pull request page may belong to a run that has since been replaced
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+gh-axi calls (the only path that can land a merge):
+  gh-axi pr merge 112 --repo DeepFlowCoder/firstmate --squash
+
+--- 4b. CURRENT gate (55df6b1f), same live pull request ---
+$ bin/fm-pr-merge.sh evidence-live-112 https://github.com/DeepFlowCoder/firstmate/pull/112 
+exit status: 1
+stdout:
+stderr:
+  error: refusing to merge PR #112 (DeepFlowCoder/firstmate): 1 of its checks did not pass: Shared collision check
+  error: fix that, or re-run with --captain-override-red if the captain explicitly ordered this merge anyway
+gh-axi calls (the only path that can land a merge):
+  (none)
+
+--- 4c. CURRENT gate with the captain override, same live pull request ---
+$ bin/fm-pr-merge.sh evidence-live-112 https://github.com/DeepFlowCoder/firstmate/pull/112 --captain-override-red
+exit status: 1
+stdout:
+  armed: state/evidence-live-112.check.sh
+stderr:
+  warn: PR #112 (DeepFlowCoder/firstmate) is not fit to merge: 1 of its checks did not pass: Shared collision check
+  warn: merging anyway on --captain-override-red; this is the captain's explicit call, not a routine approval
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ●  WATCHER DOWN - SUPERVISION IS OFF
+  ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  ●  This is a supervision warning only; the guarded operation WILL still run.
+  ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+gh-axi calls (the only path that can land a merge):
+  gh-axi pr merge 112 --repo DeepFlowCoder/firstmate --squash
+```
 
 The portable suite's two identity cases, `same-name-distinct-workflows` and `degraded-legacy-status`, pin the same two rules where CI can run them without credentials, and were measured against the classifier as it stood at commit `9914d62e` on the SAME semantic head rendered in each version's own record format.
-The legacy half has no live counterpart of its own: a superseded legacy commit status cannot be constructed on GitHub any more, because the Status API keeps one status per context, which is the measurement the degraded scope's cost estimate rests on.
+The readings below are CONSTRUCTED: they are records written here, not records a forge served.
+`same-name-distinct-workflows` has the live counterpart recorded above, `#112`'s head `95bcd793`.
+`degraded-legacy-status` has none and can never have one: the Status API keeps one status per context, so a single head cannot carry two of them and that shape has no live form anywhere - which is also the measurement the degraded scope's cost estimate rests on.
 
 ```sh
 git show 9914d62e:bin/fm-pr-fitness-lib.sh > /tmp/base-fitness-lib.sh
@@ -654,7 +807,11 @@ current degraded         app check run, no workflow     failing     failing=app-
 ```
 
 Recorded 2026-09-23 on the host named under Environment. Three readings each, and the middle row of the first three is what makes the first row a measurement of the key rather than of a fold that stopped folding: the only difference between those two readings is the workflow field, and the head whose two records share a workflow is still folded to `ok`.
-The last row is the third-party population the degraded scope also covers, measured rather than assumed: a check run with no workflow identity behaves exactly like a legacy status here, red retained.
+The last row is the third-party population the degraded scope also covers: a check run with no workflow identity behaves exactly like a legacy status here, red retained.
+Its record shape is the live one measured on `vercel/next.js#99143` above, but the supersession itself is CONSTRUCTED and stays that way, because a third-party app cannot be told to re-run its check on a head of ours.
+
+The three remaining fold cases in the suite - `unorderable-records`, `undated-record`, and `blank-record` - are CONSTRUCTED for one shared reason: each is a reading SHAPE rather than a forge state that can be requested, so there is no head to ask GitHub for.
+The classifier also refuses a record carrying no declared identity scope at all - the shape a pre-change reading has - as unmeasurable rather than misparsing it. That shape has no live form either, since the current renderer never emits it, and the portable suite does not pin it, so it is named here as a known gap rather than as a measurement.
 
 The single-red case and the declared-count case guard the two paths the fold must not disturb: a check that ran once still refuses with nothing to supersede it, and a reading carrying more check records than it declared refuses as unmeasurable rather than letting a forged record supersede a real failing one.
 
