@@ -18,6 +18,11 @@
 #   - every decision, dispatch and post-landing defect lands in the record,
 #     because the policy is not reviewable without it.
 #
+# A case here pins ONE instance of a policy behavior, so when that behavior is a
+# guard which could stop protecting in silence, the channel-level probe for it
+# belongs next door in tests/fm-lane-degradation.test.sh, which hunts that
+# family as a whole.
+#
 # The spawn cases stop before any endpoint exists: the gate runs ahead of
 # backend creation, and a fake `tmux` that exits non-zero backstops the cases
 # meant to get past it, so no window or worktree is ever created.

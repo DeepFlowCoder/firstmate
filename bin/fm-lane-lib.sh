@@ -76,6 +76,13 @@
 # AUTHORS irrespective of extension, so desynchronising costs one unnecessary
 # expensive review instead of one unreviewed governance change.
 #
+# Anything added here that reads an input must refuse rather than continue more
+# weakly when it cannot evaluate it, because a guard in THIS file that stops
+# protecting in silence reads exactly like one that protected:
+# tests/fm-lane-degradation.test.sh owns the contract and the mechanical check,
+# and .agents/skills/firstmate-coding-guidelines/SKILL.md, "Guards that cannot
+# evaluate their input", owns the rule for writing one.
+#
 # WEAKENING IS NEVER PORTABLE. STRENGTHENING IS. A local file may raise ITS OWN
 # project's rigor; nothing local may lower it for anyone else. If a repair appears
 # to require relaxing something beyond this house, it is not a repair - it is a

@@ -264,8 +264,10 @@ demonstrate_docs_only() {
   [ "$binary" = 0 ] || return 1
   for p in "$@"; do
     is_documentation_path "$p" || return 1
-    entry=$(tree_entry_at "$head" "$p")
-    [ -n "$entry" ] || entry=$(tree_entry_at "$base" "$p")
+    entry=$(tree_entry_at "$head" "$p") || return 1
+    if [ -z "$entry" ]; then
+      entry=$(tree_entry_at "$base" "$p") || return 1
+    fi
     [ -n "$entry" ] || return 1
     mode=${entry%% *}
     [ "$mode" = 100644 ] || return 1
@@ -297,9 +299,21 @@ demonstrate_docs_only() {
 # exit status survives, and an enumeration that fails or yields nothing REFUSES
 # the demonstration: a merge commit or an empty one has no first-parent paths to
 # compare, and a claim nobody can read is not a claim that was demonstrated.
+#
+# <sha>'S PARENT IS RESOLVED ONCE, EXPLICITLY, RATHER THAN SPELLED <sha>^ AT THE
+# LOOKUP. That spelling conflated two answers. A root commit has no parent, and
+# its honest prior state is the empty tree, which every path is absent from. A
+# read that cannot be made establishes nothing at all. Both used to arrive at
+# ls-tree as an unresolvable revision and both came back empty, so the second
+# half of the proof could be satisfied by a failure. Asking git for the parent
+# list separates them: it prints nothing and SUCCEEDS for a root commit, and
+# fails when it cannot answer.
 demonstrate_clean_revert() {
-  local base=$1 head=$2 sha=$3 p own own_count=0
+  local base=$1 head=$2 sha=$3 p own own_count=0 parents parent a b
   local paths=("${@:4}")
+  parents=$(repo_git rev-parse "$sha^@") || return 1
+  parent=${parents%%$'\n'*}
+  [ -n "$parent" ] || parent=$(repo_git hash-object -t tree /dev/null) || return 1
   own=$(mktemp "${TMPDIR:-/tmp}/fm-lane-revert.XXXXXX") || return 1
   TMPDIRS+=("$own")
   repo_git diff-tree -r --root --no-commit-id --name-only -z --no-renames "$sha" >"$own" \
@@ -308,9 +322,17 @@ demonstrate_clean_revert() {
     [ -z "$p" ] || { paths+=("$p"); own_count=$((own_count + 1)); }
   done <"$own"
   [ "$own_count" -gt 0 ] || return 1
+  # Each lookup is taken on its own line so a read that could not be made
+  # refuses the demonstration instead of being compared. Inside a command
+  # substitution the exit status is discarded, so the two-lookup comparison this
+  # replaced could be satisfied by two failures agreeing on the empty string.
   for p in ${paths[@]+"${paths[@]}"}; do
-    [ "$(tree_entry_at "$base" "$p")" = "$(tree_entry_at "$sha" "$p")" ] || return 1
-    [ "$(tree_entry_at "$head" "$p")" = "$(tree_entry_at "$sha^" "$p")" ] || return 1
+    a=$(tree_entry_at "$base" "$p") || return 1
+    b=$(tree_entry_at "$sha" "$p") || return 1
+    [ "$a" = "$b" ] || return 1
+    a=$(tree_entry_at "$head" "$p") || return 1
+    b=$(tree_entry_at "$parent" "$p") || return 1
+    [ "$a" = "$b" ] || return 1
   done
   return 0
 }
@@ -318,6 +340,18 @@ demonstrate_clean_revert() {
 # tree_entry_at <rev> <path> -> the tree entry's mode, type and object, or the
 # empty string when the path is absent at that revision. Two absent sides
 # compare equal, which is what a revert of an added file needs.
+#
+# AN UNREADABLE LOOKUP RETURNS NON-ZERO, AND IS NOT THE EMPTY STRING. The read
+# used to be a pipeline, which discards git's exit status, so a lookup that
+# could not be made at all was indistinguishable from one that ran and found
+# nothing. Every caller below compares two of these values, so when the read
+# failed for the whole range - a corrupt or unreadable object store, a revision
+# that will not resolve - all four lookups of a clean-revert proof returned the
+# empty string, both halves compared empty to empty, and ANY range demonstrated
+# as exactly ANY commit undone and took the cheap lane. That is the same defect
+# as the C-quoted path and the eaten pathspec colon, in its third spelling:
+# there the path went missing, here the whole read did.
+# ABSENT AND UNREADABLE ARE DIFFERENT ANSWERS AND MUST BE ANSWERED DIFFERENTLY.
 #
 # THE MODE IS PART OF THE COMPARISON. Resolving the path to a blob id alone
 # compared content and nothing else, so a revert that restored the content and
@@ -334,8 +368,10 @@ demonstrate_clean_revert() {
 # to empty and demonstrated a revert that undid nothing, which is the exact
 # failure -z was adopted to remove, in a narrower spelling.
 tree_entry_at() {
-  repo_git --literal-pathspecs ls-tree --full-tree "$1" -- "$2" 2>/dev/null \
-    | awk '{ print $1, $2, $3; exit }'
+  local out
+  out=$(repo_git --literal-pathspecs ls-tree --full-tree "$1" -- "$2" 2>/dev/null) \
+    || return 1
+  printf '%s' "$out" | awk '{ print $1, $2, $3; exit }'
 }
 
 # --- decide -----------------------------------------------------------------
