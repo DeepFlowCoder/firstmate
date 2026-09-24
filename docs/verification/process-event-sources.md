@@ -10,6 +10,141 @@ Generic keyed-answer feed verified on 2026-08-16 on the same platform, against t
 Cross-origin keyed-answer feed verified on 2026-08-19 through the real runner and Lavish adapter interface.
 Captain-message feed verified on 2026-08-30 through the real runner and Lavish adapter interface, against both renderings the published response uses for its `prompts` block.
 Cut-capture answer refusal verified on 2026-09-12 through the real runner and the same bound fixture channel, with the output bound as the only difference between its two legs; like the completeness marker it reads, this one is suite evidence and was not run against a real board.
+Frame reading moved onto the response format's own decoder on 2026-09-24 with `lavish-axi` 0.1.52 installed, after the section below measured that no machine-readable alternative to that format exists.
+
+## Why the response's frame is decoded rather than parsed
+
+Re-measured on 2026-09-24 against the installed 0.1.52 build, because the whole reason to carry a decoder is that the response format is not optional.
+Three readings, and all three agree that `lavish-axi` publishes no machine-readable alternative:
+
+```text
+$ lavish-axi --help | grep -c -- '--format\|--json'
+0
+$ lavish-axi poll --help | head -1
+Usage: lavish-axi poll <html-file> [--agent-reply "..."]
+$ lavish-axi poll --format json 2>&1 | head -2
+error: "ENOENT: no such file or directory, realpath '<cwd>/json'"
+code: UNKNOWN
+$ lavish-axi poll <a-file-with-no-session> --json 2>&1 | tail -2
+error: No active Lavish Editor session for this file
+code: NOT_FOUND
+```
+
+Neither help text documents a format flag; `--format json` is proof the option does not exist, because `json` is consumed as a positional path; and `--json` is accepted and changes nothing, with the response still arriving in the same format.
+So reading that format is not a choice, and the only choice ever available was whether to read it by hand.
+
+Reading it by hand cost a silent loss once already.
+A review round on 2026-08-30 found the hand reader blind to the LIST rendering - which one row carrying an object field switches the whole block into, and an annotation, a whiteboard edit and a layout-warnings row all carry one - so the captain's words reached no reader at all while the command exited 0, which is indistinguishable from the captain having said nothing.
+That face was then patched by hand, and patching renderings one at a time is the pattern this delivery ends rather than a loss it repairs: by this branch's base commit the LIST rendering was already read, so there is no live loss here to close.
+That is checkable rather than asserted - `git show 9914d62e:bin/fm-procevent-lavish.sh` shows the base adapter's perl carrying `lavish_list_rows` beside `lavish_table_rows`, both dispatched from `lavish_prompt_rows` - and it is named here because it is the basis for the claim below that this delivery closes no live loss.
+
+Which block carries the rows was RE-READ in the installed 0.1.52, because an earlier round of this delivery recorded a second block name as measured fact and that was an assumption, not a measurement:
+
+```sh
+$ grep -n 'createPollOutput({ file' /opt/homebrew/lib/node_modules/lavish-axi/dist/cli.mjs
+10208:    return createPollOutput({ file: absolute, response, agent: detectInvokingAgent(process.env) });
+10248:function createPollOutput({ file, response, agent = "generic" }) {
+```
+
+Two lines, and they are the whole population: 10248 is the definition and 10208 is its only call.
+
+That one builder has one call site, and its only branch carrying content - `status: feedback` - keys it `prompts: response.prompts || []` on every path it can take, while the `ended` and `waiting` branches carry no content block at all.
+So `prompts` is the one name a poll response can publish rows under, and the reader takes rows from that key alone.
+The `feedback[N]` name stays admitted as DETECTION only - in this reader's declared-content-block check and, separately, in the `silent` seam's line scan - because both fail toward reporting: a declared content block no rows were taken from is refused out loud rather than read as an empty review.
+
+A THIRD block name is an OPEN GAP, and this delivery does not close it.
+Detection is the two names `prompts` and the historical `feedback`, which is an allowlist and nothing more general, so a future build publishing captain rows under any other top-level name - `notes[1]{tag,text}:`, say - decodes fine, yields no rows, and exits 0 with nothing: precisely the silent loss this delivery exists to end, arriving through the one door still open.
+It is not closed by broadening the name expression, because a real response already carries other top-level arrays - `artifact_failures` is one 0.1.52 emits - that a general "any top-level array header" match would swallow, refusing ordinary responses; no correct cure is established yet, so the gap is recorded rather than papered over.
+It is written down because a reader who meets silence there will otherwise assume the case is covered, and that assumption is the failure mode - the same disclosure rule this file already applies to the cases that cannot be driven.
+
+The before-the-fix demonstration this delivery was commissioned to produce is RETIRED, not met and not weakened.
+The commission names one acceptance criterion - demonstrate the defect before fixing it, across two faces, `feedback` and LIST - and that criterion is retired by measurement rather than satisfied: the face it required demonstrating does not exist in this tree.
+No demonstration was fabricated to close it.
+
+Two claims in the commission's own work record are SUPERSEDED BY MEASUREMENT, and are named here rather than left quietly absent, because a reader comparing that record against this artifact will otherwise have to discover the difference alone.
+The first is its four-row before/after table; the second is the `feedback`-face outcome that table asserts, "message delivered" and a minted `ship-it` answer.
+Both rested on the `feedback` block name, and the installed 0.1.52 has one poll-output builder with one call site that keys the content block `prompts` on every branch, so that name is not emitted at all - it was an assumption written as a measurement.
+
+The REVERSAL that follows is the opposite of what the commission's record states, so it is spelled out: under the narrowing, `feedback` is deliberately detected-but-NOT-read, so a `feedback`-framed result now REFUSES - `messages` exits 3, `answers` exits 1 and mints nothing - where that record claims it delivers a message and an answer.
+The refusal is the safe direction, loud rather than silent, and `tests/fm-procevent.test.sh` pins it as the expected outcome.
+
+The three defects earlier recorded here as real were regressions in this delivery's own UNPUBLISHED work, caught by the pipeline before publishing: the keyed answer lost entirely, the declared-count bound's empty read, and an empty array shadowing a populated one.
+They are not product defects and are not to be recorded as such.
+The reason reaches past this delivery: counting them as product defects would corrupt the only record able to correct this house's review-lane policy with data, because a defect the process catches before publishing is the process WORKING, not a product failure.
+
+The only PRE-EXISTING defect this delivery surfaced is the keyed answer's value arriving in latin-1.
+It is deferred under its own ticket, `fm-respuesta-del-capitan-llega-en-latin1`, which stays open; this delivery leaves that behaviour at base parity deliberately.
+
+The accented-prose loss did not exist at base.
+Base read the result's raw bytes and passed them through, so accented captain prose came out as valid UTF-8, byte-identical to this tree's output.
+This is recorded plainly because the opposite was asserted twice, and the correction has to outlive the conversation that made it.
+
+What this delivery is worth, with no demonstration and claiming nothing more: against base, on shapes the real 0.1.52 can produce, it closes NO live loss of captain messages.
+What it does is what the captain deliberately bought on 2026-08-30 when he chose the vendored copy of the decoder - in his own words in the record, it "eliminates the entire failure mode instead of administering it".
+Its value is PROSPECTIVE by design, not retrospective: an unrecognized rendering can no longer become a silent blind spot.
+Plus the hardening: content the decoder cannot read now refuses out loud where base read it as empty.
+
+One thing the old reader could do is worse than losing a message: the hand parser could SCRAPE a damaged block and emit fabricated separate utterances nobody ever wrote, and inventing words the captain never said leaves no trace that they were invented.
+
+`bin/fm-lavish-rows.mjs` now owns the frame and decodes it with `@toon-format/toon` 4.1.1, vendored verbatim under `vendor/toon/` (MIT, zero runtime dependencies, one published module; sha256 `34bf8dce99dccd5632b19f6dc7eb4278502f81f327208de4ea0454d4c1ee4871`, measured with `shasum -a 256`).
+Its header owns the refresh commands and the trailing-cut repair that keeps a bound-cut capture delivering the rows that survived.
+The adapter keeps every Lavish-specific rule it already had - which rows are prose, which are keyed answers, which machine-shaped tags are still reported, and what each field is capped at - so this changed what reads the frame and nothing about what the rows mean.
+
+### The producer encodes with a different major - OPEN ASSUMPTION, not verified
+
+Measured on the installed build: `lavish-axi` 0.1.52's `package.json` declares no `@toon-format/toon` dependency, it encodes through `axi-sdk-js` whose `dist/output.js` imports `encode` from that package, and the resolution installed beside it is 2.3.1 (`dist/index.mjs` sha256 `3cc9a2bf7c7c66d9f8cb8e2d41a6c8fa7b333071f0bd5a456b6919b57d995653`).
+The decoder vendored here is 4.1.1, so producer and consumer sit two majors apart, and that this reader reads that encoder's output is an ASSUMPTION rather than a verified property.
+What was actually run across the gap: realistic responses re-encoded with the installed 2.3.1 - tabular and LIST renderings, a nested `target`, an `attachments[N]{...}` sub-block, escaped quotes and commas, embedded newlines, accented Spanish, and the empty `prompts: []` shape - then read back through this reader and through the real `messages` and `answers` commands, all correct.
+Said plainly: a handful of hand-chosen cases across a two-major version gap is useful evidence and it is little. It is not a compatibility guarantee, nothing enforces the producer's version, and a producer-side format divergence is exactly what routes into the shortfall refusal below.
+
+### No real 0.1.52 output needs repair, which is what holds the damaged-capture refusal up
+
+A capture the runner did NOT mark cut is refused out loud (`messages` exit 3, `answers` exit 1, no key minted) when the trailing-cut repair had to run at all, or when a content block delivered fewer rows than it declared.
+The question asked is whether the document arrived damaged, not how the damage shows up, because a row count cannot see damage confined inside a row: measured here, a complete LIST capture ending in an unterminated `prompt: "second words` decodes only after the repair closes that value, and still yields two rows against a declared two - had the repair dropped that line instead, the captain's words would be gone with the row still delivered and still counted.
+
+One gap in that question stays OPEN, and it is recorded because measuring it is what showed it exists.
+A line the DECODER ITSELF discards never reaches the repair, so no bound here sees it: a complete LIST capture whose last line is a mis-indented `   stray: x` decodes on the FIRST attempt with that line silently gone, two rows against a declared two, nothing repaired and no count short, delivered at exit 0.
+This corrects an earlier report of the same shape that attributed the loss to the repair; the repair never runs on it.
+Closing it would mean re-reading the document strictly and comparing against the non-strict read, which is not something the non-strict baseline the bound-cut guarantee depends on can do, so no cure is adopted here and the door is left visible instead.
+No encoder-produced shape measured below emits a mis-indented line, so this is a prospective gap rather than a live loss.
+
+The justification is a measurement, and it replaces an earlier claim in this file that was false.
+The retired claim said only the trailing-cut repair can hand back fewer rows than the text declares; one document disproves it, because a block declaring 3 rows and supplying 1 well-formed row decodes on the FIRST attempt under `strict: false` and returns that single row with no repair involved - the non-strict baseline is itself a short-block producer.
+
+What is measured instead: no real output of the installed 0.1.52 needs the repair at all.
+Eleven shapes that real output takes were encoded with the encoder the producer itself uses - `@toon-format/toon` 2.3.1, reached through `axi-sdk-js` - and read back through the vendored 4.1.1 decoder with this reader's own options:
+
+```text
+tabular rendering                    first-attempt OK   declared 3  delivered 3
+LIST rendering                       first-attempt OK   declared 2  delivered 2
+nested target                        first-attempt OK   declared 1  delivered 1
+attachment list                      first-attempt OK   declared 1  delivered 1
+whiteboard row                       first-attempt OK   declared 1  delivered 1
+artifact_failures present            first-attempt OK   declared 1  delivered 1
+accented UTF-8 prose                 first-attempt OK   declared 1  delivered 1
+empty prompts array                  first-attempt OK   declared 0  delivered 0
+escaped quotes/commas/newlines/tabs  first-attempt OK   declared 1  delivered 1
+keyed choice with Context data       first-attempt OK   declared 1  delivered 1
+all row kinds together               first-attempt OK   declared 5  delivered 5
+```
+
+Zero of the eleven needed repair, and every one delivered exactly its declared count.
+The four responses that carry no content block - `ended`, `waiting`, missing-session and interrupted-poll - were measured the same way, also first-attempt with no repair.
+That is a MEASUREMENT of eleven shapes, never a proof: it is what makes "repair without a cut means damage" a fact rather than an assumption, and the refusal rests on precisely that and nothing wider.
+So on a capture the runner recorded as complete, a repair that ran means damage - full stop, without needing an argument about which step produced it.
+If a future build emits something this decoder must repair, this refusal fires on a valid document: this section is where to look for why, and the eleven shapes above are what to re-measure.
+The refusal is deliberately wider than the damage it can name, which is the intended direction - a false refusal reaches the captain as a note telling him to read the result himself and gets fixed, while one of his rows lost in silence is never visible.
+
+### The one-line repair window, derived and confirmed rather than chosen
+
+`MAX_REPAIR_LINES` is 1, and it replaces an 8 that was a guess dressed as a bound.
+It is DERIVED from the cut mechanism: `bin/fm-procevent.sh`'s output bound writes the first `$limit` bytes to the stored result and drains the remainder, so a cut removes a SUFFIX and leaves exactly ONE partial line, which needs exactly ONE repair.
+It is CONFIRMED BY MEASUREMENT: a real-encoder tabular response (549 bytes) and LIST response (725 bytes) were cut at EVERY byte offset - 1274 offsets - and the reader's own repair loop run over each prefix; the worst case ever needed one repair line, no offset was unreadable, and no offset was readable with a window of 8 but not with 1.
+Principle and measurement agree, which is the reason to trust the number rather than either alone.
+Narrowing it surfaced one thing neither the principle nor a truncation sweep showed, because a cut prefix never ends in a newline while a stored result can: a file's terminating newline was spending a repair line of its own, so the loop now sets it aside and the one line the repair may touch is the last line carrying text.
+That is a correction to the repair, not a margin on the bound - the window is still exactly one line.
+WHAT WOULD INVALIDATE IT, named in advance: if that output bound ever changes to keep the TAIL instead of the head, or to cut anywhere but the end, the derivation collapses and 1 is no longer justified - re-measure before widening it, and do not restore a margin on top of a derived bound, because a margin nobody can justify is how the 8 got here.
+The consequence is intended: a document needing more than one repair line refuses as damaged instead of being reconstructed line by line.
 
 ## The published Lavish poll interface the adapter wraps
 
@@ -101,7 +236,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | adapter-owned application of a captured result | a remote-secondmate reply captured through the real relay in an isolated home reaches that secondmate's local status mirror, settles its correlated pending-reply expectation, re-arms the next cursor-anchored source, and is acknowledged, with no handler step or duplicate `check` wake; its new mirrored bytes remain visible to the watcher's signal gate, while a cursor-loss whole-log recapture that adds no bytes is acknowledged quietly; for an already-escalated request, the same path closes the exact decision so the open-decision fold clears and remains clear; a capture whose adapter application fails because local storage for a referenced remote document is obstructed is left unacknowledged and receives the fallback `check` wake, and the handler's own `handle` still applies it in full after storage recovers |
 | generic keyed-answer feed | `tests/fm-captain-hold-lifecycle.test.sh` drives a bound source through the real runner with a fixture adapter that only prints keyed lines, proving any bound channel reaches the one keyed-answer intake: named captain-held tasks close at capture time, a card-declared release mode frees held work, keys naming no captain-held task skip, freeform prose forges nothing, matching answer-and-mode replays are idempotent while mode mismatches refuse, an unbound source closes nothing, and capture remains independent of the handler wake. |
 | cut capture feeds no keyed answer | the same suite drives one board the captain answered twice - `gold-only`, then `everyone` - through the real runner twice, with `FM_PROCEVENT_MAX_OUTPUT_BYTES` the only difference: cut partway through his last row, the adapter can still read the superseded `gold-only`, and the runner records nothing, leaves the call held with no resolution block and no `gold-only` anywhere in it, and appends one `check` wake naming the stored result; run whole, the same board still closes the call with `Answer: everyone`, `Resolution mode: answered`, and no refusal wake at all |
-| generic captain-message feed | an armed Lavish source driven against a stand-in poll whose `Send & End` response carries the captain's freeform message queues that message into the captain inbox as its own note and its own `check` wake, in both published renderings of the `prompts` block, and that note survives `fm-procevent.sh handled` on the capture; the opposite direction holds too - repeat `reconcile` writes no second note and restarts no retired source, an empty board close and a choice-only close write none at all, a `choice` row the keyed-answer intake could not key is reported as prose while still minting no decision key, an adapter whose `messages` read fails routes that report through the same durable channel, and the `remote-reply` and `when` adapters, which implement no `messages` command, route nothing |
+| generic captain-message feed | an armed Lavish source driven against a stand-in poll whose `Send & End` response carries the captain's freeform message queues that message into the captain inbox as its own note and its own `check` wake, in both published renderings of the content block, and that note survives `fm-procevent.sh handled` on the capture; the opposite direction holds too - repeat `reconcile` writes no second note and restarts no retired source, an empty board close and a choice-only close write none at all, a `choice` row the keyed-answer intake could not key is reported as prose while still minting no decision key, an adapter whose `messages` read fails routes that report through the same durable channel, and the `remote-reply` and `when` adapters, which implement no `messages` command, route nothing |
 | adapter-owned silence verdict | an armed Lavish source driven against a stand-in poll that returns an empty ended session captures its result, records it durably handled, appends no wake, and stays silent through a later `reconcile` that would otherwise republish it, while still retiring its ended source; the same real path with a `Send & End` response carrying the captain's choice still publishes its `check` wake and is left unacknowledged for the handler |
 | silence fails closed | the adapter's published `silent` command suppresses only an `ended` session with no queued content block, and announces a real answer, freeform prose, any recognized content block regardless of its declared count, a malformed top-level content header, a `waiting` or `missing` session, a server error, an unreadable result, and indented payload text imitating an empty content block; the `remote-reply` and `when` adapters, which implement no `silent` command, announce every result |
 | terminal retirement preserves the result | the retired source's captured output, its announced event, its handled acknowledgement, and later explicit `retire` all still behave normally |
@@ -133,6 +268,9 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | argv integrity | an argument containing spaces survives as one argument, a shell-looking argument is passed literally with no interpretation, and an unrepresentable newline is rejected at registration |
 | bounded output | output beyond `FM_PROCEVENT_MAX_OUTPUT_BYTES` is drained while only the bound is staged, then truncated and captured |
 | a bound-cut capture is never read as an empty one | the suite proves a cut capture commits the completeness marker with its result, a capture that fits records as whole and clears any marker an earlier rolled-back capture left at that generation, and a cut capture is refused the silence verdict, stays unsilenced across a later reconcile, and routes a note saying content was discarded while still delivering the words that survived; this row is suite evidence only, with no dated verification run against a real board behind it |
+| a declared content block is read or refused, never reported empty | the same suite proves a capture cut inside the content block's own header - which leaves nothing below it attributable to a field - answers the read-failure exit and mints no keyed answer, while a cut landing inside a ROW still delivers every row above it, so the reader's recovery can never buy an empty review by discarding the one block that carried the captain's words; the bound is measured against what the captured text DECLARES, so a block cut immediately after a header announcing three rows - which the non-strict decode accepts as an empty array - is refused too, a header declaring no row and yielding none reads as empty through both commands, a capture MARKED CUT that delivered one of three declared rows still delivers it at exit 0 while the same bytes without that marker are refused - a capture the runner recorded as complete may not hand over a prefix of the captain's words as though it were all of them - and the same marker-is-the-only-difference pairing holds for damage a row count cannot see, a capture whose last line the trailing-cut repair had to drop or reshape while still yielding exactly its declared row count, which refuses when recorded as complete and delivers what survived when marked cut, a declared content block this reader takes no rows from - the `feedback[N]` name detection deliberately still admits - is refused rather than answered empty, and a published row whose shape yields no field at all is refused out loud rather than passed over on a WHOLE capture, while on a CUT one - the same bytes with the runner's truncation marker beside them as the only difference - that row is dropped and the complete rows above it are still delivered at exit 0, because on a cut capture the runner's discarded-content note already owns saying content went missing |
+| the vendored frame decoder is load-bearing, and losing it fails closed | the same suite runs the real adapter from a tree whose `vendor/toon/` copy is missing, proving `messages` answers the read-failure exit and `answers` mints no key, then copies the real vendored module into that same tree and reads the identical capture's message through it - so the decoder is the only difference between the two answers, and the dependency that carries this adapter's authority over what the captain said is refused out loud when it is absent rather than answered as an empty review |
+| a captain's accented words survive the frame reader | the same suite drives a Spanish `choice` row (`Opción B`, answer `sí`) and an accented freeform message through the real adapter, proving the keyed answer is still minted with its label's UTF-8 bytes intact and the message reaches the note channel as valid UTF-8 rather than latin-1 |
 | condition->action single-fire and trust | `tests/fm-procevent-when.test.sh` drives the public `when` adapter and generic runner with real commands, proving stable true fires once, a claimed fire restarts as ambiguous without a second action, concurrent arms publish one complete watch, and mutated specs or action executables are refused before execution |
 | condition->action terminal outcomes | the same suite proves flapping true polls do not fire, action failure, condition error budget, deadline expiry, and a true poll completing after its deadline each produce the expected terminal captured result without an unsafe action |
 | condition->action process bounds | the same suite proves action timeout terminates descendants and command-output staging remains within `FM_WHEN_OUTPUT_TAIL_BYTES` while the command runs |
