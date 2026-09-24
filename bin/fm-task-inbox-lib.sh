@@ -31,11 +31,11 @@
 #   <task>.inbox/.seq.lock     serializes sequence allocation across writers
 #                              (the session and the away daemon)
 #   <task>.inbox/.ring-state   watcher re-ring ladder:
-#                              "<msg>\t<count>\t<epoch>\t<first-rang-epoch>"
+#                              "<msg>\t<count>\t<epoch>\t<first-rering-epoch>"
 #                              where <epoch> is the LAST attempt and
-#                              <first-rang-epoch> the first attempt that
-#                              ACTUALLY typed the doorbell. The last field is
-#                              absent from a ladder written before it existed
+#                              <first-rering-epoch> the first WATCHER re-ring
+#                              that actually typed the doorbell. The last field
+#                              is absent from a ladder written before it existed
 #                              and from one whose every attempt so far was a
 #                              skip, and it is never derived from the other
 #                              three: attempts can be skipped and the spacing is
@@ -431,13 +431,15 @@ EOF
 # A concurrently removed inbox is a successful no-op; otherwise failure means
 # the caller must surface the unwritable ladder while the record remains
 # unhandled.
-# <ring-rc> is fm_task_inbox_ring's own return code, and only a 0 sets the
-# first-rang anchor: a composer-protected skip or a failed send typed nothing
-# into the endpoint, so it starts no silence a worker could be answering, even
-# though it still spends budget. Budget and anchor are different questions and
-# this is the only place that can tell them apart.
+# <ring-rc> is fm_task_inbox_ring's own return code and is REQUIRED: only a 0
+# sets the first-re-ring anchor, because a composer-protected skip or a failed
+# send typed nothing into the endpoint, so it starts no silence a worker could
+# be answering, even though it still spends budget. Budget and anchor are
+# different questions and this is the only place that can tell them apart. A
+# caller that omits the argument must fail here rather than be read as "typed
+# nothing", which would leave the anchor permanently unset without saying so.
 fm_task_inbox_record_ring() {  # <state-dir> <task-id> <record-path> <ring-rc>
-  local dir base ladder rec_base count last first now rc=${4:-1}
+  local dir base ladder rec_base count last first now rc=$4
   dir=$(fm_task_inbox_dir "$1" "$2")
   base=${3##*/}
   count=0
@@ -460,12 +462,20 @@ EOF
   fi
 }
 
-# The epoch of the first delivery attempt that ACTUALLY rang <record-path>'s
-# doorbell, or failure when no attempt has typed one yet. That instant, not the
-# record's own arrival, is when a worker's silence starts being evidence of
-# anything: the ladder waits a full grace before the first ring, so a worker
-# that reached a turn boundary in that window was offered nothing to read there.
-fm_task_inbox_first_ring_epoch() {  # <state-dir> <task-id> <record-path>
+# The epoch of the first WATCHER re-ring that actually typed <record-path>'s
+# doorbell, or failure when no re-ring has typed one yet.
+#
+# This is the earliest delivery this ladder RECORDS, and it is deliberately not
+# the earliest delivery that happened. bin/fm-send.sh and the remote steer leg
+# in bin/fm-remote-secondmate-control.sh each ring once at write time and
+# neither advances this ladder, and fm_task_inbox_due_action then stays quiet
+# until the record is a full grace old, so this anchor is at minimum one grace
+# LATER than the doorbell the worker was first offered. Any interval measured
+# from it therefore UNDERSTATES how long the worker has been silent. That is the
+# safe direction - a consumer holds and rechecks rather than accusing a working
+# worker - but it is a fact a consumer must SAY rather than round away, because
+# the point of the anchor is to name the instant the number was counted from.
+fm_task_inbox_first_rering_epoch() {  # <state-dir> <task-id> <record-path>
   local dir base ladder rec_base count last first
   dir=$(fm_task_inbox_dir "$1" "$2")
   base=${3##*/}

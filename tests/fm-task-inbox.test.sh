@@ -24,14 +24,16 @@
 #      bookkeeping only while its record remains unhandled, and emits exactly
 #      one stale wake once the ring budget is spent.
 #   6. The escalation claims only what the busy contract can establish for that
-#      harness, measured from the doorbell that was actually typed. On a harness
-#      that never establishes a working state, a worker that acknowledges is
-#      never called deaf, an unacknowledged record with no turn boundary since
-#      its doorbell first rang is rechecked instead of routed to the stuck-worker
-#      procedure - including a boundary that fell between the record's arrival
-#      and that first ring - and one that DID pass a boundary still escalates,
-#      naming that evidence rather than an idle pane it never read. A task with
-#      no turn-end wiring at all keeps escalating too, and so does an
+#      harness, measured from the first re-ring this ladder recorded - the only
+#      delivery instant it has, and one the wakes name and admit understates the
+#      silence, because bin/fm-send.sh already rang once at write time without
+#      advancing the ladder. On a harness that never establishes a working state,
+#      a worker that acknowledges is never called deaf, an unacknowledged record
+#      with no turn boundary since that re-ring is rechecked instead of routed to
+#      the stuck-worker procedure - including a boundary that fell between the
+#      record's arrival and that re-ring - and one that DID pass a boundary still
+#      escalates, naming that evidence rather than an idle pane it never read. A
+#      task with no turn-end wiring at all keeps escalating too, and so does an
 #      instrumented harness whose busy record merely happens to be absent, with
 #      its wording unchanged: the correction never trades a false deafness signal
 #      for a missing one, for anyone.
@@ -160,8 +162,8 @@ test_watcher_escalates_codex_without_turn_end_wiring() {
   queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
   grep -qF 'unread firstmate instruction' <<<"$queue" \
     || fail "the escalation must survive a task with no turn-end evidence:"$'\n'"$queue"
-  grep -qF 'no usable turn-boundary evidence' <<<"$queue" \
-    || fail "the escalation should name the missing turn evidence:"$'\n'"$queue"
+  grep -qF "no turn boundary measurable from the watcher's first re-ring" <<<"$queue" \
+    || fail "the escalation should name the missing turn evidence and its anchor:"$'\n'"$queue"
   grep -qF 'with an idle pane' <<<"$queue" \
     && fail "the escalation claimed an idle pane on a harness that establishes none:"$'\n'"$queue"
   pass "watcher: a harness with no turn-end wiring keeps escalating, naming the evidence it lacks"
@@ -383,43 +385,65 @@ test_ring_ladder_policy() {
   pass "inbox: the re-ring ladder paces by grace, escalates once, and resets on ack"
 }
 
+# Advance the ladder through the production library under the same `set -u` its
+# consumers run under (bin/fm-watch.sh and bin/fm-send.sh both set it), so a
+# missing argument surfaces as the shell error it is rather than as a default.
+record_ring_under_set_u() {  # <state> <record-path> [ring-rc]
+  local state=$1 rec=$2
+  shift 2
+  FM_STATE_OVERRIDE="$state" bash -uc '
+    . "$1"
+    shift
+    fm_task_inbox_record_ring "$@"
+  ' _ "$ROOT/bin/fm-task-inbox-lib.sh" "$state" t1 "$rec" "$@" 2>/dev/null
+}
+
 # The anchor the watcher measures its turn-boundary question from: the first
-# attempt that ACTUALLY typed the doorbell. A composer-protected skip spends
-# ladder budget without starting any silence a worker could be answering, and a
-# ladder written before the field existed has no anchor rather than one derived
-# from the count and the spacing, which would name an instant nobody measured.
-test_first_ring_anchor_records_only_a_real_ring() {
+# WATCHER re-ring that actually typed the doorbell. A composer-protected skip
+# spends ladder budget without starting any silence a worker could be answering,
+# and a ladder written before the field existed has no anchor rather than one
+# derived from the count and the spacing, which would name an instant nobody
+# measured. The ring bin/fm-send.sh types at write time is not on this ladder at
+# all, which is why the anchor is late and the wakes say so.
+test_first_rering_anchor_records_only_a_real_ring() {
   local state rec first second
-  state="$TMP_ROOT/first-ring/state"; mkdir -p "$state"
+  state="$TMP_ROOT/first-rering/state"; mkdir -p "$state"
   rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "do the thing")
   age_path "$rec"
-  inbox_lib "$state" fm_task_inbox_first_ring_epoch "$state" t1 "$rec" \
-    && fail "an unrung record must have no first-ring anchor"
+  inbox_lib "$state" fm_task_inbox_first_rering_epoch "$state" t1 "$rec" \
+    && fail "a record with no recorded re-ring must have no anchor"
   # A composer-protected skip: budget spent, nothing typed.
   inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 1
-  inbox_lib "$state" fm_task_inbox_first_ring_epoch "$state" t1 "$rec" \
+  inbox_lib "$state" fm_task_inbox_first_rering_epoch "$state" t1 "$rec" \
     && fail "a skipped attempt typed nothing, so it must not start the silence"
   [ "$(FM_TASK_INBOX_GRACE_SECS=0 FM_TASK_INBOX_RING_MAX=3 \
       inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" = "ring $rec" ] \
     || fail "a skipped attempt must still consume its ladder budget"
   inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 0
-  first=$(inbox_lib "$state" fm_task_inbox_first_ring_epoch "$state" t1 "$rec") \
-    || fail "an attempt that rang must record the anchor"
+  first=$(inbox_lib "$state" fm_task_inbox_first_rering_epoch "$state" t1 "$rec") \
+    || fail "a re-ring that typed the doorbell must record the anchor"
   case "$first" in ''|*[!0-9]*) fail "the anchor should be an epoch, got: $first" ;; esac
   sleep 1
   inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 0
-  second=$(inbox_lib "$state" fm_task_inbox_first_ring_epoch "$state" t1 "$rec") \
-    || fail "a later ring lost the anchor"
+  second=$(inbox_lib "$state" fm_task_inbox_first_rering_epoch "$state" t1 "$rec") \
+    || fail "a later re-ring lost the anchor"
   [ "$second" = "$first" ] \
-    || fail "the anchor must stay at the FIRST ring, got $second after $first"
+    || fail "the anchor must stay at the FIRST re-ring, got $second after $first"
+  # The ring result is required. Every production consumer runs the library
+  # under `set -u`, and there a missing argument must be a loud failure rather
+  # than a silent "typed nothing" that leaves the anchor unset forever.
+  record_ring_under_set_u "$state" "$rec" 0 \
+    || fail "record_ring must work normally under set -u when given its ring result"
+  record_ring_under_set_u "$state" "$rec" \
+    && fail "a record_ring call with no ring result must fail under set -u, not degrade"
   # A ladder written before the field existed.
   printf '%s\t2\t100\n' "${rec##*/}" > "$state/t1.inbox/.ring-state"
-  inbox_lib "$state" fm_task_inbox_first_ring_epoch "$state" t1 "$rec" \
+  inbox_lib "$state" fm_task_inbox_first_rering_epoch "$state" t1 "$rec" \
     && fail "a ladder with no anchor field must report none rather than derive one"
   [ "$(FM_TASK_INBOX_GRACE_SECS=60 FM_TASK_INBOX_RING_MAX=3 \
       inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" = "ring $rec" ] \
     || fail "a ladder with no anchor field must still pace and escalate as before"
-  pass "inbox: the first-ring anchor records only an attempt that actually rang"
+  pass "inbox: the first-re-ring anchor records only a re-ring that actually rang"
 }
 
 setup_watch_case() {  # <name> -> echoes case dir; state in <dir>/state
@@ -675,8 +699,8 @@ test_watcher_codex_acknowledgement_never_escalates() {
   pass "watcher: a worker on a harness with no busy state that acknowledges is never called deaf"
 }
 
-# No turn has ended since the doorbell rang, so the worker has had no point at
-# which to read it, and on this harness nothing else establishes what it is
+# No turn has ended since the watcher's re-ring, so the worker has had no point
+# at which to read it, and on this harness nothing else establishes what it is
 # doing. The wake must say that instead of sending anyone to inspect it.
 test_watcher_holds_codex_with_no_turn_boundary() {
   local dir state out log pid rec queue
@@ -692,13 +716,15 @@ test_watcher_holds_codex_with_no_turn_boundary() {
     || { kill "$pid" 2>/dev/null; fail "the bounded recheck never surfaced:"$'\n'"$(cat "$out")"; }
   queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
   grep -qF 'unread firstmate instruction' <<<"$queue" \
-    && fail "a worker with no turn boundary since the doorbell rang was called deaf:"$'\n'"$queue"
+    && fail "a worker with no turn boundary since the re-ring was called deaf:"$'\n'"$queue"
   grep -qF 'inspect the worker' <<<"$queue" \
     && fail "an unestablished working state must not route to the stuck-worker procedure:"$'\n'"$queue"
   grep -qF 'with an idle pane' <<<"$queue" \
     && fail "the watcher claimed an idle pane on a harness that establishes none:"$'\n'"$queue"
-  grep -qF 'no turn boundary since its doorbell first rang' <<<"$queue" \
-    || fail "the recheck should name the missing turn boundary:"$'\n'"$queue"
+  grep -qF "no turn boundary since the watcher's first re-ring" <<<"$queue" \
+    || fail "the recheck should name the instant it measured from:"$'\n'"$queue"
+  grep -qF 'understates how long the worker has been silent' <<<"$queue" \
+    || fail "the recheck should state the direction of its own error:"$'\n'"$queue"
   grep -qF 'never reports whether it is working' <<<"$queue" \
     || fail "the recheck should name which two states it cannot tell apart:"$'\n'"$queue"
   [ -f "$rec" ] || fail "the held record must stay durable and unhandled"
@@ -706,17 +732,19 @@ test_watcher_holds_codex_with_no_turn_boundary() {
 }
 
 # The interval the wake NAMES has to be the interval it measured. A turn that
-# ended after the record arrived but before the first doorbell was typed is not
-# a chance to read anything: the ladder holds a full grace before it rings, so
-# the worker went idle with nothing yet offered to it. Anchoring on the record's
-# arrival read exactly this shape as "the worker had its chance".
-test_watcher_holds_codex_when_the_boundary_predates_the_doorbell() {
+# ended before the watcher's first re-ring is not a chance to read THAT
+# doorbell, so this holds - but the anchor is the earliest delivery the ladder
+# records, not the earliest that happened, because bin/fm-send.sh already rang
+# once at write time and never advanced this ladder. The hold is therefore the
+# understating side of the error, and the wake has to say so rather than let a
+# reader take the interval for the worker's full silence.
+test_watcher_holds_codex_when_the_boundary_predates_the_rering() {
   local dir state out log pid rec queue
-  dir=$(setup_watch_case_harness codex-boundary-before-doorbell codex)
+  dir=$(setup_watch_case_harness codex-boundary-before-rering codex)
   state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
   rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "stop that preflight run")
   age_path "$rec"
-  # Strictly after the record arrived, and still long before any doorbell the
+  # Strictly after the record arrived, and still long before any re-ring the
   # watcher below will type.
   seed_turn_end "$state" t1 202001010500
   watch_bg "$state" "$dir/fakebin" "$out" \
@@ -728,16 +756,19 @@ test_watcher_holds_codex_when_the_boundary_predates_the_doorbell() {
   [ -s "$log" ] || fail "this case requires the watcher to have actually typed a doorbell"
   queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
   grep -qF 'unread firstmate instruction' <<<"$queue" \
-    && fail "a boundary that predates the first doorbell was read as a chance to read it:"$'\n'"$queue"
-  grep -qF 'no turn boundary since its doorbell first rang' <<<"$queue" \
-    || fail "the recheck should measure from the doorbell, not from the record:"$'\n'"$queue"
+    && fail "a boundary that predates the first re-ring was read as a chance to read it:"$'\n'"$queue"
+  grep -qF "no turn boundary since the watcher's first re-ring" <<<"$queue" \
+    || fail "the recheck should measure from the re-ring, not from the record:"$'\n'"$queue"
+  grep -qF 'understates how long the worker has been silent' <<<"$queue" \
+    || fail "the recheck should admit that its anchor is later than the real doorbell:"$'\n'"$queue"
   [ -f "$rec" ] || fail "the held record must stay durable and unhandled"
-  pass "watcher: a turn boundary before the first typed doorbell is not the worker's chance to read it"
+  pass "watcher: a turn boundary before the first recorded re-ring holds, and the wake names that anchor"
 }
 
-# A turn DID end after the doorbell rang and the record is still unacknowledged,
-# so the worker had its chance: this one escalates, and detection is unchanged.
-# What it may not do is borrow the idle-pane wording it never earned.
+# A turn DID end after the recorded re-ring and the record is still
+# unacknowledged, so the worker had its chance: this one escalates, and
+# detection is unchanged. What it may not do is borrow the idle-pane wording it
+# never earned, or name an interval without saying where it was counted from.
 test_watcher_escalates_codex_after_a_turn_boundary() {
   local dir state out log pid rec queue
   dir=$(setup_watch_case_harness codex-boundary-passed codex)
@@ -745,7 +776,7 @@ test_watcher_escalates_codex_after_a_turn_boundary() {
   rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "that report landed early")
   age_path "$rec"
   # Spend the ladder through the production writer so the anchor is a real
-  # delivery, then record the turn that ended after it.
+  # recorded re-ring, then record the turn that ended after it.
   inbox_lib "$state" fm_task_inbox_record_ring "$state" t1 "$rec" 0
   seed_turn_end "$state" t1
   watch_bg "$state" "$dir/fakebin" "$out" \
@@ -757,8 +788,10 @@ test_watcher_escalates_codex_after_a_turn_boundary() {
   queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
   grep -qF 'unread firstmate instruction' <<<"$queue" \
     || fail "the escalation should still fire once the worker had its turn boundary:"$'\n'"$queue"
-  grep -qF 'turn boundary passed after its doorbell first rang' <<<"$queue" \
-    || fail "the escalation should name the evidence it actually has:"$'\n'"$queue"
+  grep -qF "turn boundary passed after the watcher's first re-ring" <<<"$queue" \
+    || fail "the escalation should name the instant it measured from:"$'\n'"$queue"
+  grep -qF 'understates how long the worker has been silent' <<<"$queue" \
+    || fail "the escalation should state the direction of its own error:"$'\n'"$queue"
   grep -qF 'with an idle pane' <<<"$queue" \
     && fail "the escalation claimed an idle pane on a harness that establishes none:"$'\n'"$queue"
   pass "watcher: a passed turn boundary still escalates, naming that evidence instead of an idle pane"
@@ -802,7 +835,7 @@ test_concurrent_writers_never_clobber
 test_ladder_writes_ignore_vanished_inbox
 test_fire_and_forget_records_never_enter_the_ladder
 test_ring_ladder_policy
-test_first_ring_anchor_records_only_a_real_ring
+test_first_rering_anchor_records_only_a_real_ring
 test_watcher_rerings_idle_pane_quietly
 test_watcher_never_rings_a_bare_shell
 test_watcher_waits_on_busy_pane
@@ -812,7 +845,7 @@ test_watcher_surfaces_unwritable_ladder
 test_watcher_escalates_once_after_budget
 test_watcher_codex_acknowledgement_never_escalates
 test_watcher_holds_codex_with_no_turn_boundary
-test_watcher_holds_codex_when_the_boundary_predates_the_doorbell
+test_watcher_holds_codex_when_the_boundary_predates_the_rering
 test_watcher_escalates_codex_after_a_turn_boundary
 test_watcher_escalates_codex_without_turn_end_wiring
 test_watcher_escalates_instrumented_harness_with_no_busy_record
