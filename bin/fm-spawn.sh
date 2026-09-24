@@ -199,6 +199,9 @@
 #     __WORKTREE__  absolute path to the task worktree
 #     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
+# Whether this launch arms anything that will ever touch state/<id>.turn-ended is
+# recorded in the meta as turnend=<armed|none|unknown>; the TURNEND_WIRING block
+# below owns those three words and why the marker itself cannot answer it.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # A kimi spawn separates a proven delivery failure from an unproven one, and the
