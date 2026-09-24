@@ -456,7 +456,11 @@ use strict; use warnings;
 sub lavish_prompt_rows {
   my $json = do { local $/; <STDIN> };
   return undef unless defined $json && length $json;
-  my $rows = eval { JSON::PP::decode_json($json) };
+  # Decoded WITHOUT the UTF-8 layer, so every string stays the bytes the reader
+  # printed: the captain writes accented Spanish, the keyed-answer probe below
+  # decodes its `Context data:` block as UTF-8 bytes, and a note this prints must
+  # reach him as the UTF-8 it arrived as.
+  my $rows = eval { JSON::PP->new->decode($json) };
   return undef unless ref($rows) eq "ARRAY";
   return $rows;
 }

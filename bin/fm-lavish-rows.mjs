@@ -43,7 +43,10 @@
 // `prompts` key, and `feedback` is the same block under the other name the
 // published vocabulary uses. Both are read, first `prompts` and then
 // `feedback`, because a block this reader does not accept is a block neither
-// content command can see - which is the defect above. Nothing else in the
+// content command can see - which is the defect above. Whichever of them
+// carries rows wins, so a block the response rendered empty can never shadow a
+// populated one beside it; an empty block is still recorded as a block that was
+// decoded, which is what the recovery bound below reads. Nothing else in the
 // document is searched: the keys are the published ones, not a guess, and
 // hunting for rows anywhere in the document would invent semantics this reader
 // does not own.
@@ -54,9 +57,12 @@
 // annotation's `target`, an attachment's image list, and a whiteboard row's
 // file list all leave their row's own words readable and contribute no fields
 // of their own. A null value contributes no field, so it can never arrive as
-// the literal word "null" in a captain-facing note. A row published as a bare
-// string becomes that string's `prompt`, because a row with words in it must
-// reach a reader whatever shape it arrives in.
+// the literal word "null" in a captain-facing note. A published row that yields
+// no field at all - one that is not an object of fields, or one whose every
+// value is nested - is captain content this reader cannot interpret, and it is
+// refused out loud rather than passed over: content nobody could read has to
+// stay visible as something unread, and must never evaporate into something
+// that was never there.
 //
 // A TRUNCATED CAPTURE STILL DELIVERS WHAT SURVIVED. The runner bounds a
 // captured result (`FM_PROCEVENT_MAX_OUTPUT_BYTES`), so a long review can
@@ -83,12 +89,14 @@
 // the captain to read himself - rather than reported as empty, because empty is
 // the one answer that looks exactly like the captain having said nothing.
 //
-// That refusal is what bounds the recovery, and it is checked on the RESULT, not
-// on which step produced it: a read that ends with no rows while the captured
-// text declares a top-level content block has recovered by throwing away the one
-// block that matters, so it is refused too. Lavish's own poll never produces
-// that document; a cut capture or a malformed one does, and both are things to
-// report rather than to read as an empty review.
+// That refusal is what bounds the recovery, and it is checked on what the read
+// DECODED rather than on how many rows came out of it: a read that recovered no
+// published block at all while the captured text declares one has thrown away
+// the one block that matters, so it is refused too. A block that did decode and
+// is genuinely empty is the other thing entirely - a board the captain closed
+// without saying anything - and it reads as empty. Lavish's own poll never
+// produces the first document; a cut capture or a malformed one does, and both
+// are things to report rather than to read as an empty review.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -124,27 +132,36 @@ function scalarField(value) {
   return undefined;
 }
 
+// A row's own scalar fields, or undefined for a row whose shape yields none -
+// which its caller refuses rather than passes over.
 function rowFields(row) {
-  if (typeof row === 'string') return { prompt: row };
   if (row === null || typeof row !== 'object' || Array.isArray(row)) return undefined;
   const fields = {};
   for (const [name, value] of Object.entries(row)) {
     const scalar = scalarField(value);
     if (scalar !== undefined) fields[name] = scalar;
   }
-  return fields;
+  return Object.keys(fields).length > 0 ? fields : undefined;
 }
 
 // The published block, under either of the two names the response vocabulary
-// uses for it. A key that is present but is not an array of rows is not that
-// block and is passed over, so a scalar `feedback: none` cannot shadow a real
-// `prompts` block beside it.
+// uses for it, reported as `{ decoded, rows }` so an empty block stays
+// distinguishable from no block at all. A key that is present but is not an
+// array of rows is not that block and is passed over, so a scalar
+// `feedback: none` cannot shadow a real `prompts` block beside it; neither can
+// an empty array, because the populated block is preferred over it.
 function publishedRows(document) {
-  if (document === null || typeof document !== 'object' || Array.isArray(document)) return [];
-  for (const key of ['prompts', 'feedback']) {
-    if (Array.isArray(document[key])) return document[key];
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    return { decoded: false, rows: [] };
   }
-  return [];
+  let decoded = false;
+  for (const key of ['prompts', 'feedback']) {
+    const value = document[key];
+    if (!Array.isArray(value)) continue;
+    if (value.length > 0) return { decoded: true, rows: value };
+    decoded = true;
+  }
+  return { decoded, rows: [] };
 }
 
 // Steps 1 and 2 of the header's recovery ladder over one prefix: decode it, then
@@ -211,17 +228,24 @@ try {
 const document = readDocument(decode, text);
 if (document === undefined) fail(`result file is not readable TOON: ${path}`);
 
-const rows = [];
-for (const row of publishedRows(document)) {
-  const fields = rowFields(row);
-  if (fields !== undefined) rows.push(fields);
+const published = publishedRows(document);
+
+// The recovery bound described in the header: a content block the captured text
+// declares but no read recovered was dropped rather than read, and dropping it
+// silently is the defect this reader exists to end.
+if (!published.decoded && DECLARED_CONTENT_BLOCK.test(text)) {
+  fail(`result file declares a content block this decoder could not read: ${path}`);
 }
 
-// The recovery bound described in the header: a declared content block that
-// produced no row was dropped rather than read, and dropping it silently is the
-// defect this reader exists to end.
-if (rows.length === 0 && DECLARED_CONTENT_BLOCK.test(text)) {
-  fail(`result file declares a content block this decoder could not read: ${path}`);
+const rows = [];
+for (const row of published.rows) {
+  const fields = rowFields(row);
+  // A row this reader cannot interpret is refused for the same reason: reporting
+  // it as absent is the one answer that looks like the captain saying nothing.
+  if (fields === undefined) {
+    fail(`result file carries a published row this reader could not read: ${path}`);
+  }
+  rows.push(fields);
 }
 
 process.stdout.write(`${JSON.stringify(rows)}\n`);

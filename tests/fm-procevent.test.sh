@@ -2142,9 +2142,9 @@ assert_contains "$out" "this badge runs past its border" \
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" "ship-it	yes	Ship it" \
   "one row's object field took the keyed answer beside it down with the frame"
 
-# What bounds reading the response with the format's own decoder: a result that
-# DECLARES a content block and yields no row from it has not been read, whatever
-# the reason, and answering that as an empty review is the one answer
+# What bounds reading the response with the format's own decoder: a result whose
+# DECLARED content block no read could recover has not been read, whatever the
+# reason, and answering that as an empty review is the one answer
 # indistinguishable from the captain having said nothing. Here the capture was
 # cut inside the block's own header, so nothing below it can be attributed to a
 # field and the whole block is unreadable - while a cut that lands inside a ROW
@@ -2158,9 +2158,91 @@ EOF
 msg_rc=0
 "$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" >/dev/null 2>&1 || msg_rc=$?
 [ "$msg_rc" -eq 3 ] \
-  || fail "a declared content block that yielded no row answered $msg_rc instead of the read-failure exit"
+  || fail "a declared content block no read recovered answered $msg_rc instead of the read-failure exit"
 [ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null)" ] \
   || fail "a content block that could not be read still minted a keyed answer"
+
+# The other side of that bound, which is a different result entirely: a content
+# block the decoder DID read and that is genuinely empty is a board the captain
+# closed without saying anything - the same shape the silence seam above calls
+# present-but-empty - so it reads as empty and may never reach him as a result
+# that could not be read.
+printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\nprompts[0]{tag,text}:\n' > "$MSGS"
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 0 ] \
+  || fail "a content block that decoded empty answered $msg_rc instead of reading as empty"
+[ -z "$msg_out" ] || fail "an empty board close reported prose that was never written: $msg_out"
+ans_rc=0
+ans_out=$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null) || ans_rc=$?
+[ "$ans_rc" -eq 0 ] \
+  || fail "a content block that decoded empty answered $ans_rc from the keyed-answer command"
+[ -z "$ans_out" ] || fail "an empty content block minted a keyed answer: $ans_out"
+
+# An empty block never shadows a populated one beside it: `prompts: []` is how the
+# serializer renders an empty array, and the captain's words in the block's other
+# published name have to arrive through both commands regardless.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+prompts: []
+feedback[2]{uid,prompt,selector,tag,text}:
+  f8,"hold the release until Thursday","",message,"Freeform message"
+  f9,"Context data: {\"question\":\"ship-it\",\"answer\":\"yes\"}","",choice,"Ship it"
+EOF
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" \
+  "hold the release until Thursday" \
+  "an empty published block shadowed the populated one carrying the captain's message"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" "ship-it	yes	Ship it" \
+  "an empty published block shadowed the populated one carrying the keyed answer"
+
+# A published row whose shape yields no field at all is captain content this
+# reader cannot interpret, and it is refused out loud for the same reason the
+# bound above exists: unread content must stay visible as unread, never
+# evaporate into content that was never there.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+prompts[1]:
+  - target:
+      type: mermaid-node
+      id: n1
+EOF
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "a published row this reader cannot read answered $msg_rc instead of the read-failure exit"
+[ -z "$msg_out" ] \
+  || fail "a row that could not be read was reported as though it carried words: $msg_out"
+ans_rc=0
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null)" ] \
+  || fail "a row that could not be read still minted a keyed answer"
+"$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" >/dev/null 2>&1 || ans_rc=$?
+[ "$ans_rc" -eq 1 ] \
+  || fail "a row that could not be read answered $ans_rc from the keyed-answer command"
+
+# The captain writes Spanish, and this is the only channel his words arrive
+# through, so the row's BYTES have to survive the frame reader and this adapter's
+# own decode of it: a decode that re-reads them as characters mints no decision
+# key at all and puts latin-1 where the captain note needs UTF-8.
+UTF8_LABEL=$(printf 'Opci\303\263n B')
+printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  choice,"%s","Context data: {\\"question\\":\\"ship-it\\",\\"answer\\":\\"s\303\255\\"}"\n' \
+  "$UTF8_LABEL" > "$MSGS"
+utf8_answers=$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")
+case "$utf8_answers" in
+  "ship-it	"*"	$UTF8_LABEL") : ;;
+  '') fail "an accented keyed answer minted no decision key at all" ;;
+  *) fail "an accented keyed answer lost the bytes of its label: $utf8_answers" ;;
+esac
+printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  message,ctx,"mant\303\251n la revisi\303\263n"\n' > "$MSGS"
+utf8_messages=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
+assert_contains "$utf8_messages" "$(printf 'mant\303\251n la revisi\303\263n')" \
+  "an accented captain message did not arrive as the UTF-8 bytes it was written in"
+printf '%s' "$utf8_messages" | perl -MEncode -e \
+  'my $b = do { local $/; <STDIN> }; eval { Encode::decode("UTF-8", $b, Encode::FB_CROAK); 1 } or exit 1' \
+  || fail "a captain message reached the note channel as bytes that are not valid UTF-8"
 
 # The decoder that reads the frame is a dependency, and a dependency that is not
 # there must be refused rather than answered as an empty review - the frame
