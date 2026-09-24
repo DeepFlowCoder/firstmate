@@ -4,8 +4,8 @@ Audience: maintainer verification.
 
 This record supports one active guarantee: `bin/fm-pr-merge.sh` refuses to merge a pull request that is not technically fit, and the fields it reads to decide that are the fields GitHub actually serves.
 
-[`bin/fm-pr-merge.sh`](../../bin/fm-pr-merge.sh)'s header owns the gate's contract, the reading, the staleness warning, and the captain override.
-[`bin/fm-pr-fitness-lib.sh`](../../bin/fm-pr-fitness-lib.sh) owns the verdict.
+[`bin/fm-pr-merge.sh`](../../bin/fm-pr-merge.sh)'s header owns the gate's contract, the reading's grammar and the framing lines around each record, the staleness warning, and the captain override.
+[`bin/fm-pr-fitness-lib.sh`](../../bin/fm-pr-fitness-lib.sh) owns the verdict and, in `FM_PR_FITNESS_RECORD_JQ`, the one expression that renders each record for both readers.
 [`docs/architecture.md`](../architecture.md) owns the mechanism boundary.
 
 The portable regression in `tests/fm-pr-merge.test.sh` pins the verdict logic with a mocked `gh`, because CI has no GitHub credentials.
@@ -359,8 +359,6 @@ Read the transport precisely: the rollup array above is the forge's, served by `
 Pull request 17 is merged and 112 is closed, so the `gh pr list --state open` call the board makes cannot return either one.
 The measured array was injected through the test harness's fake `gh`, which fabricates the surrounding pull request object around it.
 The check data is real; the pull request wrapped around it and the transport that delivered it are not, and there is no way to put a merged pull request back on the board's own path to close that gap:
-
-
 
 ```
 === DeepFlowCoder/firstmate#17 ===
