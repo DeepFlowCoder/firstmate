@@ -469,16 +469,33 @@ lavish_rows_json() {  # <result-file>
 # shellcheck disable=SC2016 # Perl owns every $ expression in this literal program.
 PROMPT_ROWS_PL='
 use strict; use warnings;
+use Encode ();
 sub lavish_prompt_rows {
   my $json = do { local $/; <STDIN> };
   return undef unless defined $json && length $json;
   # Decoded WITHOUT the UTF-8 layer, so every string stays the bytes the reader
-  # printed: the captain writes accented Spanish, the keyed-answer probe below
-  # decodes its `Context data:` block as UTF-8 bytes, and a note this prints must
-  # reach him as the UTF-8 it arrived as.
+  # printed: the captain writes accented Spanish, and a note this prints must
+  # reach him as the UTF-8 it arrived as. The keyed-answer probe below decodes
+  # its `Context data:` block a second time and DOES take the UTF-8 layer there,
+  # so that block alone comes back as characters and is re-encoded at the point
+  # it is read; everything else on the row is already bytes and must not be.
   my $rows = eval { JSON::PP->new->decode($json) };
   return undef unless ref($rows) eq "ARRAY";
   return $rows;
+}
+# The one owner of every decoration field cut to the 512-byte bound: the label
+# beside a keyed answer and the context beside a captain message, which are cut
+# rather than refused when they overrun. A value already within the bound comes
+# back byte-identical; past it, only whole characters survive, because the cut
+# is taken on the decoded text and re-encoded rather than on the raw bytes. So
+# no field this bounds can leave holding half of a multi-byte sequence, which is
+# the one way a cut alone could put bytes no UTF-8 reader accepts into the
+# durable record of a captain decision.
+sub lavish_bounded_field {
+  my ($value) = @_;
+  return $value if length($value) <= 512;
+  my $cut = substr($value, 0, 512);
+  return Encode::encode("UTF-8", Encode::decode("UTF-8", $cut, Encode::FB_QUIET));
 }
 sub lavish_keyed_answer {
   my ($f) = @_;
@@ -497,10 +514,21 @@ sub lavish_keyed_answer {
     $mode = $data->{close};
   }
   return undef unless $key =~ /\A[A-Za-z0-9._-]{1,128}\z/;
+  # The `decode_json` above resolves the UTF-8 bytes of that block - and any
+  # \uXXXX escape in it - into CHARACTERS, while every caller here prints to a
+  # byte handle. So the answer is encoded back to UTF-8 right here, or it reaches
+  # the durable record of a captain decision as latin-1: one byte \355 for an
+  # accented i, which is not valid UTF-8, on the same row whose label arrived
+  # correct because it never left the bytes the reader printed. Strict "UTF-8" is
+  # what makes that unconditional - no input to it can come back an ill-formed
+  # sequence - rather than merely correct for the inputs measured. This encode is
+  # also what puts the bound below in bytes; see the `answers` header for the
+  # units of that cap and what choosing them costs.
+  $answer = Encode::encode("UTF-8", $answer);
   return undef unless length $answer && length($answer) <= 512;
   my $label = defined $f->{text} ? $f->{text} : "";
   s/[\x00-\x1f\x7f]/ /g for ($answer, $label);
-  $label = substr($label, 0, 512);
+  $label = lavish_bounded_field($label);
   return { key => $key, answer => $answer, label => $label, mode => $mode };
 }
 '
@@ -518,6 +546,22 @@ sub lavish_keyed_answer {
 # The question cap is 128 so any task id fits, including the long legacy
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
+#
+# The answer cap is 512 BYTES, and the encode in the predicate above is what
+# makes it so. Bytes is the unit the record this feeds already measures in: the
+# decision file bin/fm-captain-hold.sh writes the captain's words into is bounded
+# with `LC_ALL=C wc -c`, and the label capped beside the answer here has always
+# counted bytes, so counting the answer in characters would leave one measure in
+# the chain bounding something nobody stores. It would also not bound much: 512
+# characters of four-byte emoji is 2048 bytes, four times the declared figure.
+#
+# What that costs is the captain's, and it is not nothing. He answers in Spanish,
+# where every accent spends a second byte, so the same 512 admits fewer of his
+# characters than of plain ASCII - measured at 486 characters for accented
+# Spanish prose, 26 short of what a character cap would have taken. The bound
+# bites soonest on exactly the writing this channel exists to carry, and that is
+# the side of the trade being accepted: a cap that really bounds the durable
+# record, paid for with about five percent of one answer's length.
 cmd_answers() {
   local file=${1-} rows
   [ -n "$file" ] || usage
@@ -578,7 +622,7 @@ cmd_messages() {
       s/\A\s+//, s/\s+\z// for ($prompt, $text);
       my ($message, $context) = length $prompt ? ($prompt, $text) : ($text, "");
       next unless length $message;
-      $context = substr($context, 0, 512);
+      $context = lavish_bounded_field($context);
       print "$message\t$context\n";
     }
   ' || exit 3

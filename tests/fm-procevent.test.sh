@@ -2388,29 +2388,106 @@ rm -f "${CUTROW%.result}.truncated"
 # own decode of it: a decode that re-reads them as characters mints no decision
 # key at all and puts latin-1 where the captain note needs UTF-8.
 UTF8_LABEL=$(printf 'Opci\303\263n B')
-# The answer column pins the bytes this command MEASURABLY emits today, not
-# correct ones: the accented i of `sí` arrives as the single byte \355, because
-# the keyed-answer intake decodes the row's own `Context data:` block as UTF-8
-# characters. That is base behaviour left deliberately at parity here and owned by
-# separate follow-up work, so this assertion is EXPECTED to fail and to be updated
-# to the UTF-8 bytes when that follow-up lands. It is pinned rather than globbed
-# so the change cannot pass unnoticed.
-UTF8_ANSWER_TODAY=$(printf 's\355')
-printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  choice,"%s","Context data: {\\"question\\":\\"ship-it\\",\\"answer\\":\\"s\303\255\\"}"\n' \
-  "$UTF8_LABEL" > "$MSGS"
+# The answer column is checked for what it must BE - the UTF-8 the captain wrote,
+# and nothing a UTF-8 reader would reject - rather than pinned to whatever bytes
+# the command happens to emit. It once had to be pinned, to hold a known-wrong
+# byte visible while the encoding was still base behaviour; the intake now
+# decodes the row's own `Context data:` block into characters and encodes it back,
+# so both columns of one row leave in the same encoding and the case can assert
+# the property instead of the symptom.
+lavish_result_with_answer() {  # <result-file> <answer-bytes> [<label-bytes>]
+  printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  choice,"%s","Context data: {\\"question\\":\\"ship-it\\",\\"answer\\":\\"%s\\"}"\n' \
+    "${3-$UTF8_LABEL}" "$2" > "$1"
+}
+assert_valid_utf8() {  # <bytes> <message>
+  printf '%s' "$1" | perl -MEncode -e \
+    'my $b = do { local $/; <STDIN> }; eval { Encode::decode("UTF-8", $b, Encode::FB_CROAK); 1 } or exit 1' \
+    || fail "$2"
+}
+lavish_result_with_answer "$MSGS" "$(printf 's\303\255')"
 utf8_answers=$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")
-case "$utf8_answers" in
-  "ship-it	$UTF8_ANSWER_TODAY	$UTF8_LABEL") : ;;
-  '') fail "an accented keyed answer minted no decision key at all" ;;
-  *) fail "an accented keyed answer's bytes are no longer the ones pinned here: $utf8_answers" ;;
-esac
+[ -n "$utf8_answers" ] || fail "an accented keyed answer minted no decision key at all"
+assert_valid_utf8 "$utf8_answers" \
+  "an accented keyed answer reached the captain's durable record as bytes that are not valid UTF-8"
+[ "$utf8_answers" = "$(printf 'ship-it\ts\303\255\t%s' "$UTF8_LABEL")" ] \
+  || fail "an accented keyed answer did not arrive as the UTF-8 the captain wrote: $utf8_answers"
+
+# That bound counts BYTES, so an accented answer spends it faster than its
+# character count suggests. These graze it from both sides: exactly 512 bytes
+# survives, one byte more does not, and 512 CHARACTERS of accented Spanish - 768
+# bytes - does not either, which is precisely the answer a character cap would
+# have let through. The byte lengths are asserted first so a drifting fixture
+# cannot turn the whole case vacuous, and each refusal is confirmed to be the
+# bound rather than a row that never parsed: `messages` owns every row `answers`
+# refuses, so a refused answer the note channel also cannot see would mean the
+# frame reader, not the cap, did the rejecting.
+cap_answer_fits=$(perl -e 'print "\xc3\xad" x 200, "a" x 112')
+cap_answer_over=$(perl -e 'print "\xc3\xad" x 200, "a" x 113')
+cap_answer_chars=$(perl -e 'print "\xc3\xad" x 256, "a" x 256')
+cap_byte_len() { printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '; }
+[ "$(cap_byte_len "$cap_answer_fits")" = 512 ] \
+  && [ "$(cap_byte_len "$cap_answer_over")" = 513 ] \
+  && [ "$(cap_byte_len "$cap_answer_chars")" = 768 ] \
+  || fail "the answer-cap fixtures are no longer the byte lengths this case depends on"
+lavish_result_with_answer "$MSGS" "$cap_answer_fits"
+cap_out=$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")
+[ -n "$cap_out" ] \
+  || fail "an accented answer of exactly 512 bytes was refused by a bound that stops at 512"
+assert_valid_utf8 "$cap_out" "an answer grazing the bound left as bytes that are not valid UTF-8"
+[ "$cap_out" = "$(printf 'ship-it\t%s\t%s' "$cap_answer_fits" "$UTF8_LABEL")" ] \
+  || fail "an accented answer of exactly 512 bytes did not arrive whole, so the bound cut it instead of admitting it"
+for cap_case in over chars; do
+  case "$cap_case" in
+    over)  cap_answer=$cap_answer_over;  cap_why="an answer of 513 bytes passed a bound that stops at 512" ;;
+    chars) cap_answer=$cap_answer_chars; cap_why="512 characters of accented Spanish passed the bound, so it counts characters and not bytes" ;;
+  esac
+  lavish_result_with_answer "$MSGS" "$cap_answer"
+  [ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" ] || fail "$cap_why"
+  [ -n "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" ] \
+    || fail "the $cap_case answer was refused by the frame reader, not the byte bound, so that case proves nothing"
+done
+
+# The decoration fields beside those values - the label on a keyed answer, the
+# context on a message - are CUT at the same 512 bytes rather than refused, and
+# a cut is the other way a row could leave holding bytes no UTF-8 reader
+# accepts. These pin that the cut falls on a character boundary: a label whose
+# 512th byte lands inside an accented character loses that whole character
+# rather than half of it, and a value already within the bound is handed over
+# untouched. Byte lengths are asserted first so neither case can go vacuous.
+cut_split=$(perl -e 'print "a" x 511, "\xc3\xb3"')
+cut_kept=$(perl -e 'print "a" x 511')
+cut_fits=$(perl -e 'print "b" x 512')
+[ "$(cap_byte_len "$cut_split")" = 513 ] \
+  && [ "$(cap_byte_len "$cut_fits")" = 512 ] \
+  || fail "the boundary-cut fixtures are no longer the byte lengths these cases depend on"
+lavish_result_with_answer "$MSGS" ok "$cut_split"
+cut_label_out=$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")
+assert_valid_utf8 "$cut_label_out" \
+  "a label cut at the bound reached the captain's durable record as bytes that are not valid UTF-8"
+[ "$cut_label_out" = "$(printf 'ship-it\tok\t%s' "$cut_kept")" ] \
+  || fail "a label cut at the bound kept half of the character it split: $cut_label_out"
+lavish_result_with_answer "$MSGS" ok "$cut_fits"
+[ "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" = "$(printf 'ship-it\tok\t%s' "$cut_fits")" ] \
+  || fail "a label of exactly 512 bytes did not survive the bound unchanged"
+lavish_result_with_message() {  # <result-file> <context-bytes>
+  printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  message,"%s","revisa"\n' \
+    "$2" > "$1"
+}
+lavish_result_with_message "$MSGS" "$cut_split"
+cut_context_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
+assert_valid_utf8 "$cut_context_out" \
+  "a context cut at the bound reached the note channel as bytes that are not valid UTF-8"
+[ "$cut_context_out" = "$(printf 'revisa\t%s' "$cut_kept")" ] \
+  || fail "a context cut at the bound kept half of the character it split: $cut_context_out"
+lavish_result_with_message "$MSGS" "$cut_fits"
+[ "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" = "$(printf 'revisa\t%s' "$cut_fits")" ] \
+  || fail "a context of exactly 512 bytes did not survive the bound unchanged"
 printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  message,ctx,"mant\303\251n la revisi\303\263n"\n' > "$MSGS"
 utf8_messages=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
 assert_contains "$utf8_messages" "$(printf 'mant\303\251n la revisi\303\263n')" \
   "an accented captain message did not arrive as the UTF-8 bytes it was written in"
-printf '%s' "$utf8_messages" | perl -MEncode -e \
-  'my $b = do { local $/; <STDIN> }; eval { Encode::decode("UTF-8", $b, Encode::FB_CROAK); 1 } or exit 1' \
-  || fail "a captain message reached the note channel as bytes that are not valid UTF-8"
+assert_valid_utf8 "$utf8_messages" \
+  "a captain message reached the note channel as bytes that are not valid UTF-8"
 
 # The decoder that reads the frame is a dependency, and a dependency that is not
 # there must be refused rather than answered as an empty review - the frame
