@@ -263,6 +263,17 @@ function rowFields(row) {
 // recovery bound below reads. A `prompts` key that is present but is not an
 // array of rows is not that block, so it is passed over here and refused by that
 // bound rather than read for something it is not.
+//
+// READING `prompts` ALONE IS DELIBERATE, and it INVERTS what this run's intent
+// record asserts for the `feedback`-framed face: that record has a
+// `feedback[N]{...}` capture delivering the captain's message and minting a keyed
+// answer, while this reader takes no rows from that name, so the declared-block
+// bound below turns such a capture into a refusal instead. The acceptance
+// criterion behind that record was RETIRED by measurement, not met and not
+// weakened - docs/verification/process-event-sources.md owns the measurement, the
+// retirement, and the reversal, and a reader who lands here should go there rather
+// than reconcile the two alone. This has been re-found from the frozen intent more
+// than once, which is why the pointer sits at the code and not only in the record.
 function publishedRows(document) {
   if (document === null || typeof document !== 'object' || Array.isArray(document)) {
     return { decoded: false, rows: [] };
@@ -335,6 +346,10 @@ if (!cut && read.repaired) {
 
 if (DECLARED_CONTENT_BLOCK.test(text)) {
   const declared = declaredRowCount(text);
+  // The first of these is what a `feedback`-framed capture hits, because
+  // `publishedRows` takes rows from `prompts` alone: see the note there for why
+  // that inverts this run's intent record, and
+  // docs/verification/process-event-sources.md for the measurement behind it.
   if (!published.decoded) {
     fail(`result file declares a content block this decoder could not read: ${path}`);
   }
