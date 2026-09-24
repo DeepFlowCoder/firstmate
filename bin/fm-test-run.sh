@@ -518,6 +518,10 @@ list_portable_serial() {
 # only: the shard partition stays complete and disjoint whatever they say, so a
 # stale hint costs balance rather than coverage. That doc owns the refresh
 # procedure.
+# One exception, stated because an unmarked entry would read as CI-measured:
+# tests/fm-lane-degradation.test.sh is a local macOS measurement (one serial run,
+# macOS 15.7.5 with git 2.54.0 on an idle machine), not a runner artifact. It
+# stands until the next wholesale refresh measures it on the runners like the rest.
 portable_serial_weight_hints() {
   cat <<'EOF'
 tests/fm-afk-inject-e2e.test.sh 35778
@@ -572,6 +576,7 @@ tests/fm-herdr-version-floor-live-e2e.test.sh 21
 tests/fm-inactive-reconcile.test.sh 41567
 tests/fm-kimi-harness.test.sh 14881
 tests/fm-kimi-trust-live-e2e.test.sh 21
+tests/fm-lane-degradation.test.sh 60440
 tests/fm-lint-workflows.test.sh 612
 tests/fm-merge-local.test.sh 2682
 tests/fm-muse-harness.test.sh 28675
