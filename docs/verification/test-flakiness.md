@@ -41,7 +41,7 @@ probe2 7: appeared=1 reads=232530 EMPTY_READS=0
 probe2 8: appeared=1 reads=233946 EMPTY_READS=0
 ```
 
-Two runs in eight observed the present-but-empty state, at roughly one empty read per 240,000 samples.
+Two runs in eight observed the present-but-empty state: 2 empty reads across 1,896,266 samples, so roughly one empty read per 950,000 samples.
 A probe that stops at the first value never sees it at all, because the first value is the one `fm_lock_prepare_owner` left and the truncate comes after.
 
 Fix: landed on `main` in PR [105](https://github.com/DeepFlowCoder/firstmate/pull/105), carrying the content of commit `5b4260e0`.
@@ -53,6 +53,7 @@ The bound itself is measured safe here and is kept, because the cap is spent in 
 What was wrong was the reason the case gave for it, and the finer finding is how that reason got there: the comment BORROWED its justification from the neighbouring case in the same file, and a borrowed reason cannot tell the two apart, because both loops poll with `sleep` and so pay a fork per pass.
 The comment now states the reason that actually holds here, a deterministic failure-path bound, and flags itself as a deliberate departure from the rule [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development) owns.
 Correcting that comment alone would not prevent the next migration, which is why the distinction between bounding a wait and measuring a duration now sits in CONTRIBUTING's own clause rather than only in the case that got it wrong.
+Completing that clause was directed after this run's intent was frozen, and it is completion rather than expansion: the rule already existed and stated only the half about bounding a case's own wait, and that one-sidedness is what let a valid justification be borrowed from a neighbouring case, which is the defect this delivery measured.
 
 Verified after the fix: 20 isolated runs, 20 passed, at load average 307.
 
@@ -81,9 +82,9 @@ NOCROSSED: fail=0 pass=27
 Every crossing failed, with exactly the message CI reported, and no run failed without one.
 That is the cause established rather than suspected.
 
-This measurement is evidence for the iteration-count rule, and it should be read next to case A's second change above.
+Case B has no poll loop of its own - the budget that expired is production code and the skip is `nm_run`'s own guard - so it is not an instance of the iteration-count rule, only of the fact that rule rests on.
 Under load the real work stretched - 136-189 ms from setting the deadline to the first budget read - while the fixed whole-second boundary it was judged against did not stretch at all, and that mismatch is precisely what spent the budget before the first call.
-An iteration-counted loop grows with the machine; a wall-clock budget does not.
+That a bound counted in iterations does grow with the machine is measured on this page by case A's 4000-iteration figures below, not by anything here.
 
 Fix: landed on `main` in PR [103](https://github.com/DeepFlowCoder/firstmate/pull/103).
 The case pins `date +%s` for the read under test, so the budget stops depending on clock phase, while elapsed time is still measured on the real clock in the case's own shell.
