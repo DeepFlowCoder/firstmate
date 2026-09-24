@@ -89,14 +89,18 @@
 // the captain to read himself - rather than reported as empty, because empty is
 // the one answer that looks exactly like the captain having said nothing.
 //
-// That refusal is what bounds the recovery, and it is checked on what the read
-// DECODED rather than on how many rows came out of it: a read that recovered no
-// published block at all while the captured text declares one has thrown away
-// the one block that matters, so it is refused too. A block that did decode and
-// is genuinely empty is the other thing entirely - a board the captain closed
-// without saying anything - and it reads as empty. Lavish's own poll never
-// produces the first document; a cut capture or a malformed one does, and both
-// are things to report rather than to read as an empty review.
+// That refusal is what bounds the recovery, and it is measured against what the
+// captured text itself DECLARES rather than against what came back, because an
+// honestly empty block and a discarded one are two different states of the world
+// that the decoded rows cannot be told apart by. Two reads are therefore refused:
+// one that recovered no published block at all while the text declares one, and
+// one whose text declares a block of N rows while not one of those rows arrived.
+// A block that declares no row and yields none is the other thing entirely - a
+// board the captain closed without saying anything - and it reads as empty; so
+// does a cut that still delivered some of the rows its header announced, because
+// delivering what survived is the whole point of the ladder above. Lavish's own
+// poll never produces a refused document; a cut capture or a malformed one does,
+// and both are things to report rather than to read as an empty review.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -113,6 +117,12 @@ const MAX_RETREAT_BLOCKS = 32;
 // content header nor hide behind one.
 const DECLARED_CONTENT_BLOCK = /^(?:prompts|feedback)\b/m;
 
+// The row count such a header announces, found the same way and used for nothing
+// else: rows a header announced and no read delivered were discarded, which the
+// decoded array alone cannot be distinguished from a block that is honestly
+// empty. Detection only - every field and row still comes from the decoder.
+const DECLARED_ROW_COUNT = /^(?:prompts|feedback)\[(\d+)\]/gm;
+
 // Declared counts are advisory here: a cut capture's last block legitimately
 // holds fewer rows than its header announced, and refusing it would drop the
 // rows that did arrive.
@@ -123,6 +133,14 @@ const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 function fail(message) {
   process.stderr.write(`error: ${message}\n`);
   process.exit(1);
+}
+
+function declaredRowCount(text) {
+  let most = 0;
+  for (const match of text.matchAll(DECLARED_ROW_COUNT)) {
+    most = Math.max(most, Number(match[1]));
+  }
+  return most;
 }
 
 function scalarField(value) {
@@ -231,10 +249,16 @@ if (document === undefined) fail(`result file is not readable TOON: ${path}`);
 const published = publishedRows(document);
 
 // The recovery bound described in the header: a content block the captured text
-// declares but no read recovered was dropped rather than read, and dropping it
-// silently is the defect this reader exists to end.
-if (!published.decoded && DECLARED_CONTENT_BLOCK.test(text)) {
-  fail(`result file declares a content block this decoder could not read: ${path}`);
+// declares but no read recovered, and rows a declared block announced but no read
+// delivered, were both dropped rather than read - and dropping them silently is
+// the defect this reader exists to end.
+if (DECLARED_CONTENT_BLOCK.test(text)) {
+  if (!published.decoded) {
+    fail(`result file declares a content block this decoder could not read: ${path}`);
+  }
+  if (published.rows.length === 0 && declaredRowCount(text) > 0) {
+    fail(`result file declares content rows this decoder could not read: ${path}`);
+  }
 }
 
 const rows = [];

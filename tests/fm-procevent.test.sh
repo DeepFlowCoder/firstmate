@@ -2162,11 +2162,50 @@ msg_rc=0
 [ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null)" ] \
   || fail "a content block that could not be read still minted a keyed answer"
 
+# A block whose header DECLARES rows and from which not one of them arrived is the
+# same loss wearing a shape the non-strict decode accepts: cut immediately after
+# the header, it comes back as an empty array, and reading three discarded rows as
+# an empty review is the one answer this reader exists never to give.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+prompts[3]{uid,prompt,selector,tag,text}:
+EOF
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "a declared block whose rows were all discarded answered $msg_rc instead of the read-failure exit"
+[ -z "$msg_out" ] || fail "a block whose rows were discarded reported prose anyway: $msg_out"
+ans_rc=0
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null)" ] \
+  || fail "a block whose rows were all discarded still minted a keyed answer"
+"$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" >/dev/null 2>&1 || ans_rc=$?
+[ "$ans_rc" -eq 1 ] \
+  || fail "a block whose rows were all discarded answered $ans_rc from the keyed-answer command"
+
+# PARTIAL recovery still delivers, which is the guarantee the bound above may not
+# cost: the same header declaring three rows, cut after the first, delivers that
+# first row's words at exit 0 rather than refusing the whole capture.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+prompts[3]{uid,prompt,selector,tag,text}:
+  p1,"hold the release until Thursday","",message,"Freeform message"
+EOF
+msg_rc=0
+msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" 2>/dev/null) || msg_rc=$?
+[ "$msg_rc" -eq 0 ] \
+  || fail "a cut that delivered one of three declared rows answered $msg_rc instead of delivering it"
+assert_contains "$msg_out" "hold the release until Thursday" \
+  "the row that survived a cut was refused along with the rows that did not"
+
 # The other side of that bound, which is a different result entirely: a content
-# block the decoder DID read and that is genuinely empty is a board the captain
-# closed without saying anything - the same shape the silence seam above calls
-# present-but-empty - so it reads as empty and may never reach him as a result
-# that could not be read.
+# block the decoder DID read, whose header declares no row and yields none, is a
+# board the captain closed without saying anything - the same shape the silence
+# seam above calls present-but-empty - so it reads as empty and may never reach
+# him as a result that could not be read.
 printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\nprompts[0]{tag,text}:\n' > "$MSGS"
 msg_rc=0
 msg_out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" 2>/dev/null) || msg_rc=$?
@@ -2228,13 +2267,21 @@ ans_rc=0
 # own decode of it: a decode that re-reads them as characters mints no decision
 # key at all and puts latin-1 where the captain note needs UTF-8.
 UTF8_LABEL=$(printf 'Opci\303\263n B')
+# The answer column pins the bytes this command MEASURABLY emits today, not
+# correct ones: the accented i of `sí` arrives as the single byte \355, because
+# the keyed-answer intake decodes the row's own `Context data:` block as UTF-8
+# characters. That is base behaviour left deliberately at parity here and owned by
+# separate follow-up work, so this assertion is EXPECTED to fail and to be updated
+# to the UTF-8 bytes when that follow-up lands. It is pinned rather than globbed
+# so the change cannot pass unnoticed.
+UTF8_ANSWER_TODAY=$(printf 's\355')
 printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  choice,"%s","Context data: {\\"question\\":\\"ship-it\\",\\"answer\\":\\"s\303\255\\"}"\n' \
   "$UTF8_LABEL" > "$MSGS"
 utf8_answers=$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")
 case "$utf8_answers" in
-  "ship-it	"*"	$UTF8_LABEL") : ;;
+  "ship-it	$UTF8_ANSWER_TODAY	$UTF8_LABEL") : ;;
   '') fail "an accented keyed answer minted no decision key at all" ;;
-  *) fail "an accented keyed answer lost the bytes of its label: $utf8_answers" ;;
+  *) fail "an accented keyed answer's bytes are no longer the ones pinned here: $utf8_answers" ;;
 esac
 printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{tag,text,prompt}:\n  message,ctx,"mant\303\251n la revisi\303\263n"\n' > "$MSGS"
 utf8_messages=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
