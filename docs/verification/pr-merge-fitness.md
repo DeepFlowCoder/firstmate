@@ -15,6 +15,7 @@ What a mock cannot prove is that the query itself still returns those fields in 
 
 Recorded 2026-08-29 on Darwin 24.6.0 (arm64) with gh 2.90.0 (2026-04-16) and ShellCheck 0.11.0 (the version `bin/fm-lint.sh` pins).
 The rendered reading and the fold sections below were re-recorded 2026-09-01 on the same host with the same gh, when the reading gained the check-count record and the per-record start time.
+When the reading gained its identity field on 2026-09-23 no live call could be made - see the open item under the fold - so no output below was re-recorded that day; the before-and-after fold measurement added to the portable regression was run then, against the classifier alone, which needs no credential.
 Queries name `--repo` explicitly: this repo's private mirror and its upstream share pull request numbering, so a bare number is ambiguous.
 
 ## The verdict fields exist and are selectable
@@ -80,13 +81,17 @@ gh pr view 141762 --repo kubernetes/kubernetes \
 pr OPEN MERGEABLE BLOCKED
 base master 5e1a29fc9d94e8b3ddf5cfae9b76858fd9e49ff1
 checks 21
-check FAILURE CONTEXT 1788289214 degraded pull-kubernetes-cmd
-check FAILURE CONTEXT 1788290505 degraded pull-kubernetes-verify
-check PENDING CONTEXT 1788288716 degraded pull-kubernetes-e2e-gce
-check PENDING CONTEXT 1788288745 degraded tide
-check SUCCESS CONTEXT 1788288719 degraded EasyCLA
+check FAILURE CONTEXT 1788289214 pull-kubernetes-cmd
+check FAILURE CONTEXT 1788290505 pull-kubernetes-verify
+check PENDING CONTEXT 1788288716 pull-kubernetes-e2e-gce
+check PENDING CONTEXT 1788288745 tide
+check SUCCESS CONTEXT 1788288719 EasyCLA
 ...
 ```
+
+That block is the output the command returned on 2026-09-01 and is left exactly as it was returned rather than transcribed forward.
+The renderer has since gained the identity field the fold section below describes, and on the `StatusContext` branch that field is the literal `degraded` for every record, so the same reading renders `check FAILURE CONTEXT 1788289214 degraded pull-kubernetes-cmd` today.
+That is a statement about the renderer, not a re-recording: the live reading has not been re-taken under the current renderer, and the open item in the next section says what that leaves unmeasured.
 
 That pull request is refused by the gate, and it also settles which field carries a legacy commit status's start time: `gh` serialises `startedAt` for a `StatusContext` as well as for a `CheckRun`, so the expression reads `startedAt` on both branches rather than the `createdAt` the GraphQL `StatusContext` type also exposes.
 
@@ -101,9 +106,23 @@ gh pr view 141762 --repo kubernetes/kubernetes --json statusCheckRollup \
 
 There is no `createdAt` key in that serialisation at all, so an expression reading it would have rendered `0` for every legacy status and left them all unorderable.
 
-The renderer marks every `StatusContext` as `degraded` because that object has no workflow identity.
-The classifier never folds two degraded records together: that can preserve an obsolete red status, but it fails closed instead of letting two distinct same-context statuses collapse into a false green.
-For a `CheckRun`, the same `statusCheckRollup` object supplies `workflowName`; the renderer base64-encodes it into one whitespace-free `workflow=<base64>` field, and the classifier folds only records whose workflow field and check name both match.
+### What the identity field carries, and what it cannot
+
+Which records the renderer marks `degraded` is a decision, not a leftover: it is every record GitHub gives no Actions workflow identity, and that is two populations rather than one.
+Every `StatusContext` is one, since a legacy commit status has no workflow at all.
+Every `CheckRun` whose `workflowName` is empty is the other - the check runs a third-party app raises rather than a workflow, the kind the permanently queued `cursor` check suite recorded further down belongs to.
+Degraded records never fold, in either direction.
+The cost of that lands on the third-party population rather than on legacy statuses, because GitHub's combined-status API already keeps one status per context: an app that re-runs its check on one head leaves a red record no later green supersedes, and `--captain-override-red` is the deliberate act that clears it.
+The side not taken is the one a merge guard cannot have: a degraded key that collapsed two records the gate cannot tell apart would let a live red leave with the record it was folded into.
+
+For a `CheckRun` an Actions workflow ran, the renderer reads `workflowName` off the same `statusCheckRollup` object, so the pair costs no second query; it base64-encodes that name into one whitespace-free `workflow=<base64>` field, and the classifier folds only records whose workflow field and check name both match.
+That pair is narrower than the check name alone, and it is still not an identity: GitHub does not require a workflow's display name to be unique across workflow files, so two workflows both named `CI`, each rendering a check of the same name, form one fold key here and the later record still supersedes the earlier one.
+That is the only remaining population in this reading where distinct things share a fold key, and the reading carries no workflow path or id to narrow it.
+
+**Open item, unmeasured as of 2026-09-23.** That `gh pr view --json statusCheckRollup` serves `workflowName` as a flat key is the one link in this record with no reading behind it: `gh` on this host resolves its token through the system credential store, which the environment that added the field could not reach, so no live call was made.
+What closes it is one `gh pr view` against a pull request carrying Actions check runs, showing a `check ... workflow=<base64> <name>` line.
+If the key is absent, or nested only under `checkSuite.workflowRun.workflow.name`, then `(.workflowName // "")` renders `degraded` for every check run, nothing folds, and this repository's normal route to green - the two runs of `PR must be raised via no-mistakes` recorded below, the first of them red - refuses every pull request until `--captain-override-red`.
+That is the fail-closed direction rather than a false green, but it is an outage, so this record does not yet claim the CheckRun half of the fold is proven end to end.
 
 A `CheckRun` that has not finished carries an empty `conclusion` rather than a null one, which is why the expression tests for the empty string rather than relying on jq's `//` operator.
 The start time is guarded rather than left to `//`, because a start time the parser rejects does not degrade quietly - it aborts the whole expression:
@@ -161,7 +180,7 @@ One record the parser cannot date now renders `0` and is left unordered, and eve
 
 ## One check, several runs, and why no forge verdict answers it
 
-The reading lists one record per check RUN, so a check that ran twice against one head appears twice under one name.
+The reading lists one record per check RUN, so a check that ran twice against one head appears twice under one workflow-and-name identity.
 Measured on the head of `DeepFlowCoder/firstmate#17`, `b02c7192173a21000fdf113008c45368f4726d57`, which carried exactly that pair:
 
 ```sh
@@ -240,7 +259,7 @@ So the fold is computed from the records, and `bin/fm-pr-merge.sh`'s header reco
 The recency key is the run's own start time, rendered as epoch seconds, because the rollup is not returned in chronological order.
 The `kubernetes/kubernetes` reading recorded above shows that directly: its start times run 1788289214, 1788290505, 1788288716, 1788288745, 1788288719, so the third record starts earlier than the second and the reading's own order carries no chronology to read.
 Start time rather than completion time, so a re-run still in progress, which has no completion at all, supersedes the finished run it replaced instead of losing to it.
-Records of one name reporting the same start time are left unordered and the worst of them survives.
+Records of one identity reporting the same start time are left unordered and the worst of them survives.
 
 ## Staleness is measurable without depending on a repository setting
 
@@ -370,7 +389,7 @@ The gate deliberately does not refuse on that, because a pull request legitimate
 bash tests/fm-pr-merge.test.sh
 ```
 
-The gate's own cases, out of the ninety the file runs:
+The gate's own cases, out of the ninety-one the file runs:
 
 ```
 ok - fm-pr-merge refuses a PR with a failed check and changes no state
@@ -397,6 +416,8 @@ ok - fm-pr-merge refuses a reading whose check name forged a second pull request
 ok - fm-pr-merge merges when the current run of a twice-run check passed
 ok - fm-pr-merge still refuses when the current run of a twice-run check failed
 ok - fm-pr-merge refuses a check that ran once and failed, with nothing to supersede it
+ok - fm-pr-merge keeps same-name checks from distinct workflows independent
+ok - fm-pr-merge fails closed for legacy statuses without workflow identity
 ok - fm-pr-merge keeps the worst of two check records it cannot order
 ok - fm-pr-merge never orders away a check record the forge left undated
 ok - fm-pr-merge refuses a reading whose check name spilled an empty record
@@ -407,7 +428,7 @@ ok - fm-pr-merge refuses a reading carrying more check records than it declared
 Nineteen of the first twenty-one fail against the pre-gate script.
 The two that do not, the `SKIPPED`/`NEUTRAL` case and the no-PR-CI case, assert that the gate does *not* refuse, so they pass before the change by construction; they guard the gate against becoming noisy enough to be worked around.
 
-Four of the eight fold cases - `superseded-red`, `superseded-green`, `unorderable-records`, and `rerun-running` - were measured against two deliberately wrong folds, because a fold pinned in one direction only cannot be told apart from a gate that has learned to ignore reds.
+Four of the ten fold cases - `superseded-red`, `superseded-green`, `unorderable-records`, and `rerun-running` - were measured against two deliberately wrong folds, because a fold pinned in one direction only cannot be told apart from a gate that has learned to ignore reds.
 Each variant was built by editing only the fold in a copy of `bin/fm-pr-fitness-lib.sh`, leaving the record format and every other check intact, so what fails is the fold and not the parse.
 
 With no fold at all, the suite exits 1 on the case the defect was reported for:
@@ -439,6 +460,50 @@ current fm-pr-fitness-lib.sh      undated-record -> failing   blank-record -> un
 
 Both readings were accepted before the fix, which is the defect in each case: the undated red was ordered away by its dated green, and the blank line was skipped so the declared count still balanced.
 Both refuse after it.
+
+The two identity cases, `same-name-distinct-workflows` and `degraded-legacy-status`, are regressions for the false-green window the name-only fold left open, so they were measured the same way: against the classifier as it stood at commit `9914d62e`, driven through `fm_pr_fitness_classify` directly, on the SAME semantic head rendered in each version's own record format.
+A green proves nothing about this defect, since the defect is that everything looks green, so each pair below is one head the earlier classifier accepted and the current one refuses.
+
+```sh
+git show 9914d62e:bin/fm-pr-fitness-lib.sh > /tmp/base-fitness-lib.sh
+verdict() {  # <lib> <label> <check-record> <check-record> <head>
+  bash -c '. "$1"; fm_pr_fitness_classify <<< "pr OPEN MERGEABLE UNSTABLE
+base main abcabcabcabcabcabcabcabcabcabcabcabcabca
+checks 2
+$3
+$4"; printf "%-24s %-30s %-11s failing=%s\n" "$2" "$5" "$FM_PR_FITNESS_VERDICT" "$FM_PR_FITNESS_FAILING"' _ "$@"
+}
+verdict /tmp/base-fitness-lib.sh '9914d62e name-only' \
+  'check COMPLETED FAILURE 1788277535 Shared check' \
+  'check COMPLETED SUCCESS 1788277590 Shared check' 'two workflows, one name'
+verdict bin/fm-pr-fitness-lib.sh 'current workflow+name' \
+  'check COMPLETED FAILURE 1788277535 workflow=V29ya2Zsb3cgQQ== Shared check' \
+  'check COMPLETED SUCCESS 1788277590 workflow=V29ya2Zsb3cgQg== Shared check' 'two workflows, one name'
+verdict bin/fm-pr-fitness-lib.sh 'current workflow+name' \
+  'check COMPLETED FAILURE 1788277535 workflow=V29ya2Zsb3cgQQ== Shared check' \
+  'check COMPLETED SUCCESS 1788277590 workflow=V29ya2Zsb3cgQQ== Shared check' 'one workflow, re-run'
+verdict /tmp/base-fitness-lib.sh '9914d62e name-only' \
+  'check FAILURE CONTEXT 1788277535 inherited-status' \
+  'check SUCCESS CONTEXT 1788277590 inherited-status' 'legacy status, one context'
+verdict bin/fm-pr-fitness-lib.sh 'current degraded' \
+  'check FAILURE CONTEXT 1788277535 degraded inherited-status' \
+  'check SUCCESS CONTEXT 1788277590 degraded inherited-status' 'legacy status, one context'
+verdict bin/fm-pr-fitness-lib.sh 'current degraded' \
+  'check COMPLETED FAILURE 1788277535 degraded app-check' \
+  'check COMPLETED SUCCESS 1788277590 degraded app-check' 'app check run, no workflow'
+```
+
+```
+9914d62e name-only       two workflows, one name        ok          failing=
+current workflow+name    two workflows, one name        failing     failing=Shared check
+current workflow+name    one workflow, re-run           ok          failing=
+9914d62e name-only       legacy status, one context     ok          failing=
+current degraded         legacy status, one context     failing     failing=inherited-status
+current degraded         app check run, no workflow     failing     failing=app-check
+```
+
+Recorded 2026-09-23 on the host named under Environment. Three readings each, and the middle row of the first three is what makes the first row a measurement of the key rather than of a fold that stopped folding: the only difference between those two readings is the workflow field, and the head whose two records share a workflow is still folded to `ok`.
+The last row is the third-party population the degraded scope also covers, measured rather than assumed: a check run with no workflow identity behaves exactly like a legacy status here, red retained.
 
 The single-red case and the declared-count case guard the two paths the fold must not disturb: a check that ran once still refuses with nothing to supersede it, and a reading carrying more check records than it declared refuses as unmeasurable rather than letting a forged record supersede a real failing one.
 

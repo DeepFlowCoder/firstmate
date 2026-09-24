@@ -16,11 +16,14 @@
 #
 # The reading lists one record per check RUN, so a check that ran twice against
 # this head leaves both runs on it and only the later one says what that check
-# reports now. CheckRun records are therefore folded by workflow and check name,
-# and the verdict is taken over the current record of each identity. Legacy
-# commit statuses have no workflow identity and are deliberately never folded,
-# so an ambiguous legacy red fails closed instead of being hidden. Without the
-# CheckRun fold a red left behind by a superseded run refuses a pull
+# reports now. A check run an Actions workflow raised is therefore folded by
+# workflow and check name, and the verdict is taken over the current record of
+# each identity; two workflows sharing one display name are the residue that key
+# still cannot separate. Every record GitHub gives no workflow identity - a
+# legacy commit status, and equally a check run raised by a third-party app -
+# is deliberately never folded, so a red one of those left behind stays red
+# rather than being hidden by a green this gate cannot prove replaced it.
+# Without the fold a red left behind by a superseded run refuses a pull
 # request every later signal calls ready, and this repository reaches that shape
 # by design - its Require no-mistakes check reads the pull request body from its
 # own event payload, so a run that fired before the body was attested is

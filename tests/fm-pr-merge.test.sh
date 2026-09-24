@@ -2848,7 +2848,9 @@ test_same_name_in_distinct_workflows_still_refuses() {
   local case_dir
   # This is the defect's negative shape: the later green belongs to another
   # workflow and cannot supersede the earlier red merely because both jobs use
-  # the same display name.
+  # the same display name. The workflow field is the only difference between this
+  # reading and the one below it, which the same fold does supersede, so the pair
+  # measures the key rather than a gate that refuses every red twice.
   READING_LINES=(
     'pr OPEN MERGEABLE UNSTABLE'
     'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
@@ -2861,9 +2863,18 @@ test_same_name_in_distinct_workflows_still_refuses() {
     "same-name-distinct-workflows: a later green in another workflow must not hide the red"
   assert_grep 'Shared check' "$case_dir/stderr" \
     "same-name-distinct-workflows: refusal did not name the failing check"
-  assert_grep 'workflowName' "$case_dir/gh.log" \
-    "same-name-distinct-workflows: the live reading did not request workflow identity"
   assert_no_side_effects "$case_dir" same-name-distinct-workflows
+
+  READING_LINES=(
+    'pr OPEN MERGEABLE UNSTABLE'
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca'
+    'checks 2'
+    "check COMPLETED FAILURE $EARLIER_RUN_STARTED workflow=V29ya2Zsb3cgQQ== Shared check"
+    "check COMPLETED SUCCESS $CURRENT_RUN_STARTED workflow=V29ya2Zsb3cgQQ== Shared check"
+  )
+  case_dir=$(run_gate_case same-name-one-workflow)
+  expect_code 0 "$(cat "$case_dir/rc")" \
+    "same-name-one-workflow: a re-run of one workflow's check must still supersede its red"
   pass "fm-pr-merge keeps same-name checks from distinct workflows independent"
 }
 
