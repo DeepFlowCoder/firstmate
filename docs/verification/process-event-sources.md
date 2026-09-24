@@ -87,6 +87,7 @@ One thing the old reader could do is worse than losing a message: the hand parse
 
 `bin/fm-lavish-rows.mjs` now owns the frame and decodes it with `@toon-format/toon` 4.1.1, vendored verbatim under `vendor/toon/` (MIT, zero runtime dependencies, one published module; sha256 `34bf8dce99dccd5632b19f6dc7eb4278502f81f327208de4ea0454d4c1ee4871`, measured with `shasum -a 256`).
 Its header owns the refresh commands and the trailing-cut repair that keeps a bound-cut capture delivering the rows that survived.
+The adapter keeps every Lavish-specific rule it already had - which rows are prose, which are keyed answers, which machine-shaped tags are still reported, and what each field is capped at - so this changed what reads the frame and nothing about what the rows mean.
 
 ### The producer encodes with a different major - OPEN ASSUMPTION, not verified
 
@@ -129,6 +130,9 @@ all row kinds together               first-attempt OK   declared 5  delivered 5
 Zero of the eleven needed repair, and every one delivered exactly its declared count.
 The four responses that carry no content block - `ended`, `waiting`, missing-session and interrupted-poll - were measured the same way, also first-attempt with no repair.
 That is a MEASUREMENT of eleven shapes, never a proof: it is what makes "repair without a cut means damage" a fact rather than an assumption, and the refusal rests on precisely that and nothing wider.
+So on a capture the runner recorded as complete, a repair that ran means damage - full stop, without needing an argument about which step produced it.
+If a future build emits something this decoder must repair, this refusal fires on a valid document: this section is where to look for why, and the eleven shapes above are what to re-measure.
+The refusal is deliberately wider than the damage it can name, which is the intended direction - a false refusal reaches the captain as a note telling him to read the result himself and gets fixed, while one of his rows lost in silence is never visible.
 
 ### The one-line repair window, derived and confirmed rather than chosen
 
@@ -140,12 +144,6 @@ Narrowing it surfaced one thing neither the principle nor a truncation sweep sho
 That is a correction to the repair, not a margin on the bound - the window is still exactly one line.
 WHAT WOULD INVALIDATE IT, named in advance: if that output bound ever changes to keep the TAIL instead of the head, or to cut anywhere but the end, the derivation collapses and 1 is no longer justified - re-measure before widening it, and do not restore a margin on top of a derived bound, because a margin nobody can justify is how the 8 got here.
 The consequence is intended: a document needing more than one repair line refuses as damaged instead of being reconstructed line by line.
-
-Zero of the twelve needed repair, and every content-carrying one delivered exactly its declared count.
-So on a capture the runner recorded as complete, a repair that ran means damage - full stop, without needing an argument about which step produced it.
-That is twelve measured shapes, not a proof over every response the producer can emit: if a future build emits something this decoder must repair, this refusal fires on a valid document, and this section is where to look for why and what to re-measure.
-The refusal is deliberately wider than the damage it can name, which is the intended direction - a false refusal reaches the captain as a note telling him to read the result himself and gets fixed, while one of his rows lost in silence is never visible.
-The adapter keeps every Lavish-specific rule it already had - which rows are prose, which are keyed answers, which machine-shaped tags are still reported, and what each field is capped at - so this changed what reads the frame and nothing about what the rows mean.
 
 ## The published Lavish poll interface the adapter wraps
 
