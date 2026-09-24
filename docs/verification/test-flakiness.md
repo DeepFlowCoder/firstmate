@@ -50,7 +50,7 @@ No bound was widened to make it pass.
 
 That same commit carried a second, separate change bundled into the same diff: it replaced the case's 4000-iteration poll bound with one counted against the suite's own `STARTUP_POLL_CAP_MS` wall clock.
 The bound itself is measured safe here and is kept, because the cap is spent in full only on the failure path: the real claim wait is 187-227 ms idle and 1897-3409 ms at load average 133-296, roughly 9x headroom under the 30 s cap.
-What was wrong was the reason the case gave for it, and the finer finding is how that reason got there: a valid justification MIGRATED from the neighbouring case in the same file, which genuinely measures a duration in milliseconds and for which a wall clock is correct, to this one, which only waits and for which it is not.
+What was wrong was the reason the case gave for it, and the finer finding is how that reason got there: the comment BORROWED its justification from the neighbouring case in the same file, and a borrowed reason cannot tell the two apart, because both loops poll with `sleep` and so pay a fork per pass.
 The comment now states the reason that actually holds here, a deterministic failure-path bound, and flags itself as a deliberate departure from the rule [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development) owns.
 Correcting that comment alone would not prevent the next migration, which is why the distinction between bounding a wait and measuring a duration now sits in CONTRIBUTING's own clause rather than only in the case that got it wrong.
 
@@ -99,14 +99,14 @@ Both entries above are the same family - a temporal race that gets worse exactly
    A case that needs the whole amount must pin the clock, not widen the number.
 - Poll for the value the case needs, never for the path that will hold it.
    A file that exists is not a file that has been written, and a writer that rewrites one truncates it first.
-- The choice between an iteration-counted bound and a wall-clock one is owned by line 123 of [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development), which now carries both halves of it; read it there, because this page deliberately keeps no copy of it to drift against.
+- The choice between an iteration-counted bound and a wall-clock one is owned by [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development), in the sentence beginning "Where a case's assertion is not about the timeout itself", which now carries both halves of it.
    An assertion that is genuinely about a timeout still measures the machine as well as the code, so state its margin and re-measure it under load rather than trusting it: shrinking headroom is the warning, and a bound raised to turn a red green is not a fix, it hides the race and buys the same failure back on a busier day.
 
 Neither fix on this page made its case pass by widening a bound, and that is the point of recording them together.
 Case A's bound was replaced rather than simply raised or lowered, and the comparison is now measured: 4000 iterations cost 20.9-28.6 s on an idle 8-core machine and 40.1-42.2 s under moderate load, against a flat 30 s cap, so the change tightened the bound under load and loosened it when idle.
 
 That rule was already in writing before either of today's failures, and neither of the two tickets that hit them cited it.
-The gap was that an existing rule was not found when it was needed, not that the rule was missing, and that is itself worth recording: it is the reason this register points at [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development) instead of carrying its own competing version of the same rule.
+The gap was that an existing rule was not found when it was needed, not that the rule was missing, and that is itself worth recording: it is the reason this register points at [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development) as the rule's owner.
 
 ## Wall-clock assertions still standing, with their measured headroom
 
