@@ -342,13 +342,31 @@ PR_NL='
 # UNKNOWN, and classifies failing - here exactly as at the merge gate, rather
 # than green here and refused there.
 #
-# One divergence from the merge gate is left open deliberately, and it is in this
-# framing rather than in the record: a check NAME containing a newline. @tsv
-# escapes it, so the record stays one line and classifies normally, while at the
-# gate the raw newline adds a line and the count guard reports unmeasurable.
-# Closing it would have to change what the gate does with such a name, and the
-# gate's verdict is frozen, so the two surfaces still disagree on that one shape.
-# It is recorded in docs/verification/pr-merge-fitness.md as an open residual.
+# One divergence from the merge gate is OPEN, left so on purpose by firstmate:
+# a check whose NAME contains a newline. The board reports that pull request's
+# checks as passing; the merge gate refuses it with unmeasurable. So the board
+# can announce a delivery ready for a head the gate will not merge. What it
+# cannot do is hide a red: measured, a red carrying such a name reads failing
+# here, and a red sitting beside such a green reads failing here too. The wrong
+# conclusion available is "green and ready" for something unmergeable, not a
+# disappearing red.
+#
+# The defect is not in this framing and not in the classifier. Measured in three
+# stages on one such entry: the shared RENDERER emits TWO lines for ONE check
+# record, because the grammar is one record per line and has no escaping rule for
+# a name containing the record separator - that is where it breaks. This
+# function's @tsv then re-escapes the newline, the line count returns to one, and
+# the framing is intact, so the transport accidentally REPAIRS the writer's
+# breakage; that is the only reason the board looks immune, and it is not a
+# property of the record. The classifier is correct on both inputs it is handed:
+# it refuses the two written lines and classifies the one transported line.
+#
+# It stays open because closing it here would add a SECOND place that judges
+# whether a record is valid, which is the very thing this path exists to remove.
+# A new, open-ended source of divergence bought to close one bounded case is not
+# a fix. The layer that owns it is the renderer and the record grammar, and a
+# separate card starts from the measurement above, recorded in full in
+# docs/verification/pr-merge-fitness.md.
 pr_checks_reading() {  # <gh pr list JSON array>
   printf '%s' "${1:-[]}" | jq -r '
     def reading: '"$FM_PR_FITNESS_RECORD_JQ"';

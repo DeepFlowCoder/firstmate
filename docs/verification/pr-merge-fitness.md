@@ -426,9 +426,25 @@ All three now render context form, read `UNKNOWN`, and classify `failing` on bot
 Those three shapes are CONSTRUCTED, not measured, and the distinction matters: the forge reading above shows all 57 rollup nodes carrying `__typename`, so no untyped entry occurs on this repository at all.
 They are held by the regressions in `tests/fm-bearings-snapshot.test.sh`, which label themselves as constructed, and a real instance stays unmeasured here for the same reason the degraded population does.
 
-One divergence is left OPEN deliberately: a check NAME containing a newline.
-It lives in the transport rather than in the record - the board's `@tsv` escapes the newline, so the record stays one line and classifies normally, while at the gate the raw newline adds a line and the count guard reports `unmeasurable`.
-Closing it would have to change what the merge gate does with such a name, and the gate's verdict was frozen for this change, so the two surfaces still answer that one shape differently and the board is the more permissive of the two.
+### The open divergence: a check name containing a newline
+
+One divergence is OPEN. It was not overlooked, not unnoticed, and is not pending investigation: firstmate decided to leave it open, for the reason stated below.
+
+**What diverges.** A check whose NAME contains a newline. The board reports that pull request's checks as `passing`; the merge gate refuses the same head with `unmeasurable`, reason "the reading from GitHub contained an unrecognised record".
+
+**What wrong conclusion a reader can draw.** The board announces a pull request's checks as green, and therefore the delivery as ready, while the merge gate will refuse to merge it. What bounds the severity is that this case does NOT hide a red, and that was measured too: a red check carrying such a name reads `failing` on both paths, and a red sitting beside such a green reads `failing` on both. The wrong conclusion available here is "green and ready" for something unmergeable, not a red that disappears.
+
+**Where the defect actually is.** Measured 2026-09-24 in three stages, on one rollup entry whose check name contains a newline (`Bui\nld`, COMPLETED/SUCCESS):
+
+| stage | what happens |
+| --- | --- |
+| WRITE | the shared renderer emits TWO lines for ONE check record (the same entry with a plain name emits one). The record grammar is one record per line and has no escaping rule for a name that contains the record separator. **This is where it breaks.** |
+| TRANSPORT | the board's `@tsv` re-escapes the newline into the two-character sequence `\n`, the line count returns to one, and the framing is intact. The transport accidentally REPAIRS the writer's breakage. This is the only reason the board looks immune, and it is not a property of the record. |
+| READ | the classifier is correct on both inputs it is handed. Given the two written lines it refuses - `unmeasurable`, "the reading from GitHub contained an unrecognised record". Given the one transported line it classifies normally and the rollup returns `passing`. |
+
+So the defect belongs to the WRITER and the record grammar, not to the reader and not to the board. A separate card is opened against the layer that owns it, and this measurement is what lets it start without measuring again.
+
+**Why it stays open.** Not because the merge gate constrains it - the board could refuse such a record on its own side with the gate's verdict and rendered text never moving on any input. The reason is that doing so would add a SECOND place that judges whether a record is valid, and removing exactly that is what this delivery is for: one owner of the check verdict, not two that agree. Creating a new source of divergence, open-ended and applying to every future case, in order to close one known and bounded case, is not a fix. A fix that contradicts the principle of the delivery containing it is not a fix.
 
 The degraded population could NOT be measured against this forge, and the reason is that it does not occur here:
 
