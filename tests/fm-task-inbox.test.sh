@@ -34,9 +34,11 @@
 #      record's arrival and that re-ring - and one that DID pass a boundary still
 #      escalates, naming that evidence rather than an idle pane it never read. A
 #      task with no turn-end wiring at all keeps escalating too, and so does an
-#      instrumented harness whose busy record merely happens to be absent, with
-#      its wording unchanged: the correction never trades a false deafness signal
-#      for a missing one, for anyone.
+#      instrumented harness whose busy record merely happens to be absent and an
+#      adapter nobody measured: both keep the unchanged escalation, and they say
+#      the working state went unread rather than claim a pane this poll never
+#      classified. The correction never trades a false deafness signal for a
+#      missing one, for anyone.
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
@@ -797,12 +799,12 @@ test_watcher_escalates_codex_after_a_turn_boundary() {
   pass "watcher: a passed turn boundary still escalates, naming that evidence instead of an idle pane"
 }
 
-# The other side of the same line. `unknown` is also what a FULLY instrumented
-# harness reports when its busy record is merely absent at this poll - right
-# after a relaunch, say - and that is a transient gap in a contract that can
-# establish a working state, not an adapter that never reports one. Detection
-# and wording are unchanged for it; only the no-verified-source adapters above
-# reach the new arms.
+# The middle case. `unknown` is also what a FULLY instrumented harness reports
+# when its busy record is merely absent at this poll - right after a relaunch,
+# say - which is a transient gap in a contract that does report a working state,
+# not an adapter that reports none. The escalation, the ladder and the routing
+# are unchanged for it, and it never reaches the hold; what changes is that a
+# poll which read nothing may not go on to call the pane idle.
 test_watcher_escalates_instrumented_harness_with_no_busy_record() {
   local dir state out log pid rec queue
   dir=$(setup_watch_case_harness claude-no-busy-record claude)
@@ -821,10 +823,44 @@ test_watcher_escalates_instrumented_harness_with_no_busy_record() {
   grep -qF 'unread firstmate instruction' <<<"$queue" \
     || fail "detection must not shrink for a harness whose record is merely absent:"$'\n'"$queue"
   grep -qF 'with an idle pane' <<<"$queue" \
-    || fail "a harness that can establish a working state keeps its existing wording:"$'\n'"$queue"
+    && fail "a poll that read nothing must not claim it classified the pane idle:"$'\n'"$queue"
+  grep -qF 'no reading of whether the worker is working at this poll' <<<"$queue" \
+    || fail "the escalation should name the state of knowledge it actually has:"$'\n'"$queue"
   grep -qF 'never reports whether it is working' <<<"$queue" \
     && fail "an instrumented harness was described as one that reports nothing:"$'\n'"$queue"
-  pass "watcher: an absent busy record on an instrumented harness escalates exactly as before"
+  pass "watcher: an unreadable busy record escalates unchanged, without claiming an idle pane"
+}
+
+# Kimi is instrumented in the trust table but classifies unknown until a
+# semantic source is live-verified, so from the outside it looks exactly like
+# the adapter above that takes the turn-boundary arms. It is deliberately out of
+# that set for lack of measurement, which means its unread-instruction
+# escalation must keep firing: this fixture gives it the shape that WOULD be
+# held - a turn boundary that predates the watcher's re-ring - and requires the
+# escalation anyway.
+test_watcher_escalates_unmeasured_kimi_rather_than_holding() {
+  local dir state out log pid rec queue
+  dir=$(setup_watch_case_harness kimi-unmeasured kimi)
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "that report landed early")
+  age_path "$rec"
+  seed_turn_end "$state" t1 202001010500
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_TASK_INBOX_RING_MAX=1
+  pid=$!
+  wait_watcher_gone "$pid" \
+    || { kill "$pid" 2>/dev/null; fail "an unmeasured adapter was pulled into the turn-boundary hold"; }
+  queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
+  grep -qF 'unread firstmate instruction' <<<"$queue" \
+    || fail "detection must not shrink for an adapter nobody measured:"$'\n'"$queue"
+  grep -qF "no turn boundary since the watcher's first re-ring" <<<"$queue" \
+    && fail "an unmeasured adapter reached the hold this delivery measured for codex:"$'\n'"$queue"
+  grep -qF 'with an idle pane' <<<"$queue" \
+    && fail "a poll that read nothing must not claim it classified the pane idle:"$'\n'"$queue"
+  grep -qF 'no reading of whether the worker is working at this poll' <<<"$queue" \
+    || fail "the escalation should name the state of knowledge it actually has:"$'\n'"$queue"
+  pass "watcher: an adapter nobody measured keeps escalating instead of reaching the hold"
 }
 
 test_write_is_durable_and_exact
@@ -849,3 +885,4 @@ test_watcher_holds_codex_when_the_boundary_predates_the_rering
 test_watcher_escalates_codex_after_a_turn_boundary
 test_watcher_escalates_codex_without_turn_end_wiring
 test_watcher_escalates_instrumented_harness_with_no_busy_record
+test_watcher_escalates_unmeasured_kimi_rather_than_holding

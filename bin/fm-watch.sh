@@ -107,23 +107,26 @@
 #                          recheck below instead, because it cannot acknowledge a
 #                          record before its next turn boundary and its ladder is
 #                          left intact so the real escalation fires the moment it
-#                          stops executing. The reason names the evidence it
-#                          actually has: an established idle pane, or - for a
-#                          harness whose working state is never established -
-#                          either a turn boundary that passed after the
-#                          watcher's first recorded re-ring or the absence of
-#                          any boundary measurable from that re-ring. Every
-#                          interval here is counted from that re-ring, which is
-#                          a delivery grace or more after the doorbell fm-send
-#                          typed at write time and never records, so each wake
-#                          says it understates the silence rather than rounding
-#                          the gap away
+#                          stops executing. The reason names the evidence this
+#                          poll actually read: an idle pane that was classified
+#                          as one; or, when the harness reports a working state
+#                          but nothing readable was there this poll, that the
+#                          working state went unread; or - for a harness
+#                          measured to establish none at all - either a turn
+#                          boundary that passed after the watcher's first
+#                          recorded re-ring or the absence of any boundary
+#                          measurable from that re-ring. Every interval here is
+#                          counted from that re-ring, which is a delivery grace
+#                          or more after the doorbell fm-send typed at write
+#                          time and never records, so each wake says it
+#                          understates the silence rather than rounding the gap
+#                          away
 #   stale: <window> (firstmate instruction ... queued behind a running command)
 #                          the bounded recheck for that case
 #   stale: <window> (firstmate instruction ... no turn boundary since the watcher's first re-ring)
-#                          the bounded recheck for a harness whose working state
-#                          is never established and which has not reached a turn
-#                          boundary since that re-ring - the record's own arrival
+#                          the bounded recheck for a harness measured to
+#                          establish no working state and which has not reached
+#                          a turn boundary since that re-ring - the record's own arrival
 #                          is one grace earlier and buys the worker no chance to
 #                          read anything - so an unacknowledged record cannot
 #                          tell a worker that stopped reading from one still
@@ -375,11 +378,12 @@ hash_pane() {
 # window_busy_state: this window's semantic busy-state word - busy, idle,
 # unknown, or dead - from the contract in bin/fm-busy-lib.sh. Callers that only
 # gate on provable activity use window_is_busy below; a caller that must not
-# claim an established idle pane reads the word itself, and asks the harness
-# (fm_busy_harness_has_semantic_source) whether an unknown means the adapter
-# establishes nothing at all or merely has no record this instant - the reason
-# word is deliberately discarded here, because that question belongs to the
-# contract rather than to a string match on its verdict.
+# claim an established idle pane reads the word itself, because only an exact
+# idle earns that claim. An unknown means this poll established nothing, and
+# whether the adapter could ever have established it is a separate question, put
+# to fm_busy_harness_measured_without_semantic_source rather than to a string
+# match: the reason word is deliberately discarded here, because the contract
+# owns that question and its verdict is not a place to parse it out of.
 # <tail40> is the same bounded capture already read for hashing and is
 # consumed only by the Grok-scoped fallback inside the contract.
 window_busy_state() {  # <window> <tail40>
@@ -592,8 +596,8 @@ turn_boundary_since() {  # <task> <epoch>
 # blocking. Runs for secondmates
 # too: their pane-staleness exemption is about quiet panes being healthy,
 # while an unacknowledged instruction past the ladder is a stuck steer.
-# The escalation only ever claims what the busy contract can establish for that
-# harness; the escalate branch below owns that distinction and why it matters.
+# The escalation only ever claims what the busy contract actually established at
+# this poll; the escalate branch below owns that distinction and why it matters.
 inbox_steer_check() {  # <window> <task>
   local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor busy_state
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
@@ -708,25 +712,33 @@ inbox_steer_check() {  # <window> <task>
         return 0
       fi
       # What the escalation is allowed to SAY about the pane. "with an idle
-      # pane" is a claim, and it is only true for a harness whose working state
-      # the busy contract can establish AT ALL. That is a question about the
-      # adapter, not about the verdict word: unknown is the same word for "this
-      # adapter never reports a working state" and "this instrumented adapter's
-      # record is absent or stale right now", so fm_busy_harness_has_semantic_source
-      # (bin/fm-busy-lib.sh) is asked instead, and a harness that CAN establish a
-      # state keeps this wording and this escalation unchanged whatever its
-      # record happens to be doing this poll. Codex establishes none, so on that
-      # adapter the ladder runs on wall clock alone, spends its whole budget
-      # inside a single long turn, and used to name a worker that was working as
-      # an idle one to inspect. Measured 2026-09-23 on two codex crewmates: one
-      # acknowledged its record normally, the other was mid-battery with a
-      # branch and edits in place when the third ring escalated it.
+      # pane" is a claim, and it is earned only when THIS poll actually read an
+      # idle verdict; a poll with no datum is not a datum. Three cases, and the
+      # ladder, the routing and the timing are identical in all of them:
+      #   idle, or dead - the verdict was read, so the claim stands unchanged
+      #   unknown on an instrumented harness - its record is absent, stale or
+      #     unreadable right now, so the escalation fires exactly as before but
+      #     says the working state went unread instead of naming a pane nobody
+      #     looked at; the reason code is the contract's business, not the
+      #     operator's
+      #   a harness MEASURED to establish nothing at all
+      #     (fm_busy_harness_measured_without_semantic_source, bin/fm-busy-lib.sh)
+      #     - the turn-boundary arms below, because that is the only evidence
+      #     there is
+      # Codex is that last case, so on it the ladder runs on wall clock alone,
+      # spends its whole budget inside a single long turn, and used to name a
+      # worker that was working as an idle one to inspect. Measured 2026-09-23
+      # on two codex crewmates: one acknowledged its record normally, the other
+      # was mid-battery with a branch and edits in place when the third ring
+      # escalated it.
       # This is the gap the wording has to be honest about, because "inspect the
       # worker" is the entry to stuck-crewmate-recovery, whose repertoire ends in
       # replacing the worker.
       evidence="with an idle pane"
       if [ "$busy_state" = unknown ] \
-        && ! fm_busy_harness_has_semantic_source "$(window_harness "$w")"; then
+        && ! fm_busy_harness_measured_without_semantic_source "$(window_harness "$w")"; then
+        evidence="with no reading of whether the worker is working at this poll, so nothing established the pane as idle"
+      elif [ "$busy_state" = unknown ]; then
         # Measured from the earliest delivery the ladder RECORDS - its first
         # re-ring - never from the record's arrival, which is a full grace
         # earlier and offered the worker nothing. That anchor is later still
