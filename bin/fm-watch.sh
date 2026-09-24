@@ -110,14 +110,17 @@
 #                          stops executing. The reason names the evidence it
 #                          actually has: an established idle pane, or - for a
 #                          harness whose working state is never established -
-#                          either a turn boundary that passed after the record
-#                          arrived or the absence of any completed turn on record
+#                          either a turn boundary that passed after the doorbell
+#                          first rang or the absence of usable turn-boundary
+#                          evidence to measure at all
 #   stale: <window> (firstmate instruction ... queued behind a running command)
 #                          the bounded recheck for that case
-#   stale: <window> (firstmate instruction ... no turn boundary since it arrived)
+#   stale: <window> (firstmate instruction ... no turn boundary since its doorbell first rang)
 #                          the bounded recheck for a harness whose working state
 #                          is never established and which has not reached a turn
-#                          boundary since the record was written, so an
+#                          boundary since the doorbell was actually typed - the
+#                          record's own arrival is one grace earlier and buys the
+#                          worker no chance to read anything - so an
 #                          unacknowledged record cannot tell a worker that
 #                          stopped reading from one still inside its turn
 #   stale: <window> (steering-inbox ladder bookkeeping unwritable: ...)
@@ -367,9 +370,11 @@ hash_pane() {
 # window_busy_state: this window's semantic busy-state word - busy, idle,
 # unknown, or dead - from the contract in bin/fm-busy-lib.sh. Callers that only
 # gate on provable activity use window_is_busy below; a caller that must not
-# confuse "this pane is established idle" with "this harness never establishes
-# a working state at all" reads the word itself, because that difference is the
-# whole content of an unknown.
+# claim an established idle pane reads the word itself, and asks the harness
+# (fm_busy_harness_has_semantic_source) whether an unknown means the adapter
+# establishes nothing at all or merely has no record this instant - the reason
+# word is deliberately discarded here, because that question belongs to the
+# contract rather than to a string match on its verdict.
 # <tail40> is the same bounded capture already read for hashing and is
 # consumed only by the Grok-scoped fallback inside the contract.
 window_busy_state() {  # <window> <tail40>
@@ -438,8 +443,9 @@ window_label() {
 # `_` so a window name is usable as a filename suffix. Every per-window file the
 # watcher keeps is named by it (.hash-, .count-, .stale-, .stale-since-,
 # .wedge-escalations-, .paused-*, .writing-*, .working-*, .running-*,
-# .command-sig-*, .steer-running-resurfaced-), and live homes hold those markers on
-# disk under the current format, so the format lives here alone: a second copy is
+# .command-sig-*, .steer-running-resurfaced-, .steer-unturned-resurfaced-), and live
+# homes hold those markers on disk under the current format, so the format lives
+# here alone: a second copy is
 # how a future change to it silently orphans a window's markers instead of clearing
 # them. The helpers below take the derived key rather than re-deriving it, so one
 # poll of one window derives it once.
@@ -536,29 +542,32 @@ command_window_too_young() {  # <marker>
   [ "$(age_of "$1")" -lt "$(fm_task_inbox_grace_secs)" ]
 }
 
-# Did <task> reach a turn boundary at or after <path> was written? A worker only
-# reads its composer between turns, so this answers the one question an
-# unacknowledged steering record cannot answer by itself: did the worker ever
-# get a chance to read the doorbell? The per-task turn-end marker is the
-# harness-neutral signal every verified harness's turn-end hook touches
-# (busy_turn_over_age owns the same file).
-#   0  a completed turn is recorded at or after <path>
-#   1  the marker predates <path>: no boundary since the record arrived
-#   2  no usable turn-end evidence at all
+# Did <task> reach a turn boundary at or after <epoch>? A worker only reads its
+# composer between turns, so this answers the one question an unacknowledged
+# steering record cannot answer by itself: did the worker ever get a chance to
+# read the doorbell? The per-task turn-end marker is the harness-neutral signal
+# every verified harness's turn-end hook touches (busy_turn_over_age owns the
+# same file).
+#   0  a completed turn is recorded at or after <epoch>
+#   1  the marker predates <epoch>: no boundary since the doorbell rang
+#   2  no usable evidence: no turn-end marker, or no <epoch> to measure from
+# <epoch> must be the first attempt that ACTUALLY typed the doorbell
+# (fm_task_inbox_first_ring_epoch), never the record's own arrival: the ladder
+# waits a full grace before ringing at all, so a boundary that fell between the
+# two proves the worker went idle, not that it was offered anything to read.
 # Deliberately NO spawn-record stand-in here, unlike busy_turn_over_age. That
 # file never moves, so on a task whose harness writes no turn-end marker at all
 # - a codex secondmate carries no notify hook - it would read as "still in the
 # first turn" forever and hold this escalation out of existence. A 2 keeps the
 # escalation, and the caller is what says the evidence was missing.
-turn_boundary_since() {  # <task> <path>
-  local task=$1 path=$2 f mt pt
+turn_boundary_since() {  # <task> <epoch>
+  local task=$1 since=$2 f mt
+  case "$since" in ''|*[!0-9]*) return 2 ;; esac
   f="$STATE/$task.turn-ended"
   [ -e "$f" ] || return 2
   mt=$(stat_mtime "$f")
-  pt=$(stat_mtime "$path")
   case "$mt" in ''|*[!0-9]*) return 2 ;; esac
-  case "$pt" in ''|*[!0-9]*) return 2 ;; esac
-  [ "$mt" -ge "$pt" ]
+  [ "$mt" -ge "$since" ]
 }
 
 # Steering-inbox loss detection, one cheap check per recorded window per poll.
@@ -575,10 +584,10 @@ turn_boundary_since() {  # <task> <path>
 # blocking. Runs for secondmates
 # too: their pane-staleness exemption is about quiet panes being healthy,
 # while an unacknowledged instruction past the ladder is a stuck steer.
-# The escalation only ever claims what the busy contract established for that
+# The escalation only ever claims what the busy contract can establish for that
 # harness; the escalate branch below owns that distinction and why it matters.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor busy_state
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -591,7 +600,12 @@ inbox_steer_check() {  # <window> <task>
       ;;
   esac
   tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || tail40=
-  if window_is_busy "$w" "$tail40"; then
+  # Classified ONCE per poll and reused below for the escalation's wording. Two
+  # reads either side of the ps sample and the liveness probe could disagree,
+  # and a verdict that flipped to busy in that gap would be worded as an idle
+  # pane - the same false claim this branch exists to remove.
+  busy_state=$(window_busy_state "$w" "$tail40")
+  if [ "$busy_state" = busy ]; then
     return 0
   fi
   case "$verb" in
@@ -637,7 +651,7 @@ inbox_steer_check() {  # <window> <task>
         wake "$reason"
         return 0
       fi
-      if ! fm_task_inbox_record_ring "$STATE" "$task" "$rec"; then
+      if ! fm_task_inbox_record_ring "$STATE" "$task" "$rec" "$ring_rc"; then
         if [ ! -f "$rec" ]; then
           fm_task_inbox_due_action "$STATE" "$task" >/dev/null || true
           return 0
@@ -687,9 +701,13 @@ inbox_steer_check() {  # <window> <task>
       fi
       # What the escalation is allowed to SAY about the pane. "with an idle
       # pane" is a claim, and it is only true for a harness whose working state
-      # the busy contract actually establishes. Codex establishes none - it
-      # classifies unknown unconditionally until a semantic source is verified
-      # (fm_busy_codex_semantic_source in bin/fm-busy-lib.sh) - so on that
+      # the busy contract can establish AT ALL. That is a question about the
+      # adapter, not about the verdict word: unknown is the same word for "this
+      # adapter never reports a working state" and "this instrumented adapter's
+      # record is absent or stale right now", so fm_busy_harness_has_semantic_source
+      # (bin/fm-busy-lib.sh) is asked instead, and a harness that CAN establish a
+      # state keeps this wording and this escalation unchanged whatever its
+      # record happens to be doing this poll. Codex establishes none, so on that
       # adapter the ladder runs on wall clock alone, spends its whole budget
       # inside a single long turn, and used to name a worker that was working as
       # an idle one to inspect. Measured 2026-09-23 on two codex crewmates: one
@@ -698,30 +716,35 @@ inbox_steer_check() {  # <window> <task>
       # This is the gap the wording has to be honest about, because "inspect the
       # worker" is the entry to stuck-crewmate-recovery, whose repertoire ends in
       # replacing the worker.
-      case "$(window_busy_state "$w" "$tail40")" in
-        unknown)
-          turn_boundary_since "$task" "$rec" && boundary=0 || boundary=$?
-          case "$boundary" in
-            1)
-              # No turn has ended since the record arrived, so the worker has had
-              # no boundary at which to read the doorbell, and its silence is not
-              # evidence of anything. Same treatment as the running-command arm:
-              # ladder untouched, bounded recheck so it cannot rot invisibly, and
-              # the pane's own wedge timer keeps running independently, so a
-              # genuinely stuck worker is still caught - by the route that can
-              # actually establish it.
-              resurface_absorbed "$w" "$STATE/.steer-unturned-resurfaced-$key" \
-                "$(status_idle_age "$task")" \
-                "stale: $w (firstmate instruction ${rec##*/} unacknowledged with no turn boundary since it arrived; this harness never reports whether it is working, so this cannot tell a worker that stopped reading from one still inside its turn - rechecked on a long cadence not a wedge)"
-              triage_log "absorbed steer-inbox escalation (busy state unestablished and no turn boundary since ${rec##*/} arrived): $w"
-              return 0
-              ;;
-            0) evidence="and a turn boundary passed after it arrived, on a harness that never reports whether it is working" ;;
-            *) evidence="on a harness that never reports whether it is working and with no completed turn on record, so this cannot tell a worker that stopped reading from one still inside its turn" ;;
-          esac
-          ;;
-        *) evidence="with an idle pane" ;;
-      esac
+      evidence="with an idle pane"
+      if [ "$busy_state" = unknown ] \
+        && ! fm_busy_harness_has_semantic_source "$(window_harness "$w")"; then
+        # Measured from the first doorbell that was actually TYPED, never from
+        # the record's arrival: the ladder holds a full grace before ringing, so
+        # a boundary in that window is a worker that went idle with nothing yet
+        # offered to it. No anchor means no delivery evidence, so the question
+        # cannot be answered and the escalation stands, saying so.
+        anchor=$(fm_task_inbox_first_ring_epoch "$STATE" "$task" "$rec") || anchor=
+        turn_boundary_since "$task" "$anchor" && boundary=0 || boundary=$?
+        case "$boundary" in
+          1)
+            # No turn has ended since the doorbell rang, so the worker has had
+            # no boundary at which to read it, and its silence is not evidence
+            # of anything. Same treatment as the running-command arm: ladder
+            # untouched, bounded recheck so it cannot rot invisibly, and the
+            # pane's own wedge timer keeps running independently, so a genuinely
+            # stuck worker is still caught - by the route that can actually
+            # establish it.
+            resurface_absorbed "$w" "$STATE/.steer-unturned-resurfaced-$key" \
+              "$(status_idle_age "$task")" \
+              "stale: $w (firstmate instruction ${rec##*/} unacknowledged with no turn boundary since its doorbell first rang; this harness never reports whether it is working, so this cannot tell a worker that stopped reading from one still inside its turn - rechecked on a long cadence not a wedge)"
+            triage_log "absorbed steer-inbox escalation (busy state unestablished and no turn boundary since ${rec##*/} first rang): $w"
+            return 0
+            ;;
+          0) evidence="and a turn boundary passed after its doorbell first rang, on a harness that never reports whether it is working" ;;
+          *) evidence="on a harness that never reports whether it is working and with no usable turn-boundary evidence, so this cannot tell a worker that stopped reading from one still inside its turn" ;;
+        esac
+      fi
       reason="stale: $w (unread firstmate instruction: $rec still unhandled after $count doorbell delivery attempts $evidence; inspect the worker)"
       fm_wake_append stale "$w" "$reason" || exit 1
       if ! fm_task_inbox_record_escalated "$STATE" "$task" "$rec"; then

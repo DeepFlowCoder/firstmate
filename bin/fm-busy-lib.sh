@@ -146,6 +146,26 @@ fm_busy_codex_semantic_source() {
   fm_busy_codex_appserver_observable || fm_busy_codex_hooks_verified
 }
 
+# fm_busy_harness_has_semantic_source: 0 when SOME verified semantic source can
+# establish a working state for <harness> AT ALL. This is a question about the
+# adapter's contract, never about today's record: a harness that can establish a
+# state but whose record happens to be missing, malformed, gen-mismatched,
+# source-mismatched, or capture-failed at this instant still answers 0, because
+# that is a transient absence rather than a contract that reports nothing. Only
+# the two adapters whose whole classification is short-circuited above - Codex,
+# and standalone Kimi before verification - answer 1, and for them every
+# classification is unknown by construction, so "idle" was never established and
+# a caller must not word its alarm as though it had been. Callers that need the
+# distinction ask this, rather than reading it out of the verdict: unknown is a
+# FORM shared by both conditions, so the verdict word cannot tell them apart.
+fm_busy_harness_has_semantic_source() {  # <harness>
+  case "${1:-}" in
+    codex*) fm_busy_codex_semantic_source ;;
+    kimi*) fm_busy_kimi_verified ;;
+    *) return 0 ;;
+  esac
+}
+
 fm_busy_record_path() {  # <state-dir> <id>
   printf '%s/%s.busy-state' "$1" "$2"
 }

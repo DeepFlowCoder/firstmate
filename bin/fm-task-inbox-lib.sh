@@ -30,7 +30,17 @@
 #   <task>.inbox/handled/      the worker's `mv` here IS the acknowledgement
 #   <task>.inbox/.seq.lock     serializes sequence allocation across writers
 #                              (the session and the away daemon)
-#   <task>.inbox/.ring-state   watcher re-ring ladder: "<msg>\t<count>\t<epoch>"
+#   <task>.inbox/.ring-state   watcher re-ring ladder:
+#                              "<msg>\t<count>\t<epoch>\t<first-rang-epoch>"
+#                              where <epoch> is the LAST attempt and
+#                              <first-rang-epoch> the first attempt that
+#                              ACTUALLY typed the doorbell. The last field is
+#                              absent from a ladder written before it existed
+#                              and from one whose every attempt so far was a
+#                              skip, and it is never derived from the other
+#                              three: attempts can be skipped and the spacing is
+#                              a floor, so that arithmetic would name an instant
+#                              nobody measured
 #   <task>.inbox/.escalated    oldest-message name already surfaced as stale,
 #                              so later polls suppress another escalation
 #
@@ -368,7 +378,7 @@ fm_task_inbox_oldest_unhandled() {  # <state-dir> <task-id>
 # An empty inbox also resets the ladder bookkeeping so the next message starts
 # a fresh ladder.
 fm_task_inbox_due_action() {  # <state-dir> <task-id>
-  local dir oldest base now grace max ladder rec_base count last
+  local dir oldest base now grace max ladder rec_base count last first
   dir=$(fm_task_inbox_dir "$1" "$2")
   if ! oldest=$(fm_task_inbox_oldest_unhandled "$1" "$2"); then
     rm -f "$dir/.ring-state" "$dir/.escalated" 2>/dev/null || true
@@ -384,7 +394,7 @@ fm_task_inbox_due_action() {  # <state-dir> <task-id>
   count=0
   last=0
   ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
-  IFS=$(printf '\t') read -r rec_base count last <<EOF
+  IFS=$(printf '\t') read -r rec_base count last first <<EOF
 $ladder
 EOF
   if [ "$(cat "$dir/.escalated" 2>/dev/null || true)" = "$base" ]; then
@@ -421,22 +431,51 @@ EOF
 # A concurrently removed inbox is a successful no-op; otherwise failure means
 # the caller must surface the unwritable ladder while the record remains
 # unhandled.
-fm_task_inbox_record_ring() {  # <state-dir> <task-id> <record-path>
-  local dir base ladder rec_base count last
+# <ring-rc> is fm_task_inbox_ring's own return code, and only a 0 sets the
+# first-rang anchor: a composer-protected skip or a failed send typed nothing
+# into the endpoint, so it starts no silence a worker could be answering, even
+# though it still spends budget. Budget and anchor are different questions and
+# this is the only place that can tell them apart.
+fm_task_inbox_record_ring() {  # <state-dir> <task-id> <record-path> <ring-rc>
+  local dir base ladder rec_base count last first now rc=${4:-1}
   dir=$(fm_task_inbox_dir "$1" "$2")
   base=${3##*/}
   count=0
   ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
-  IFS=$(printf '\t') read -r rec_base count last <<EOF
+  IFS=$(printf '\t') read -r rec_base count last first <<EOF
 $ladder
 EOF
-  [ "$rec_base" = "$base" ] || count=0
+  if [ "$rec_base" != "$base" ]; then
+    count=0
+    first=
+  fi
   case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  case "$first" in *[!0-9]*) first= ;; esac
+  now=$(date +%s)
+  [ "$rc" != 0 ] || [ -n "$first" ] || first=$now
   [ -d "$dir" ] || return 0
-  if ! { printf '%s\t%s\t%s\n' "$base" "$((count + 1))" "$(date +%s)" > "$dir/.ring-state"; } 2>/dev/null; then
+  if ! { printf '%s\t%s\t%s\t%s\n' "$base" "$((count + 1))" "$now" "$first" > "$dir/.ring-state"; } 2>/dev/null; then
     [ -d "$dir" ] || return 0
     return 1
   fi
+}
+
+# The epoch of the first delivery attempt that ACTUALLY rang <record-path>'s
+# doorbell, or failure when no attempt has typed one yet. That instant, not the
+# record's own arrival, is when a worker's silence starts being evidence of
+# anything: the ladder waits a full grace before the first ring, so a worker
+# that reached a turn boundary in that window was offered nothing to read there.
+fm_task_inbox_first_ring_epoch() {  # <state-dir> <task-id> <record-path>
+  local dir base ladder rec_base count last first
+  dir=$(fm_task_inbox_dir "$1" "$2")
+  base=${3##*/}
+  ladder=$(cat "$dir/.ring-state" 2>/dev/null || true)
+  IFS=$(printf '\t') read -r rec_base count last first <<EOF
+$ladder
+EOF
+  [ "$rec_base" = "$base" ] || return 1
+  case "$first" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$first"
 }
 
 # Mark the current oldest as escalated after its stale wake is durably queued,
