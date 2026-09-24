@@ -76,17 +76,12 @@
 # AUTHORS irrespective of extension, so desynchronising costs one unnecessary
 # expensive review instead of one unreviewed governance change.
 #
-# A GUARD THAT CANNOT EVALUATE ITS INPUT MUST REFUSE, NOT CONTINUE MORE WEAKLY.
-# This is also a constraint on what may be added here later. Seven guards in the
-# delivery that landed this policy took an input they could not read - a path
-# git had quoted, a line that would not split, a commit with no parent, a file
-# they could not open, a change with no text in it at all - and carried on with
-# a weaker check or none, in silence. tests/fm-lane-degradation.test.sh hunts
-# that family mechanically and its header owns the invariant; the rule for
-# writing a new guard is in .agents/skills/firstmate-coding-guidelines/SKILL.md,
-# "Guards that cannot evaluate their input", and is meant to be read BEFORE the
-# guard is written. Two shorthands carry most of it: absent and unreadable are
-# different answers, and absence of signal is not signal of absence.
+# Anything added here that reads an input must refuse rather than continue more
+# weakly when it cannot evaluate it, because a guard in THIS file that stops
+# protecting in silence reads exactly like one that protected:
+# tests/fm-lane-degradation.test.sh owns the contract and the mechanical check,
+# and .agents/skills/firstmate-coding-guidelines/SKILL.md, "Guards that cannot
+# evaluate their input", owns the rule for writing one.
 #
 # WEAKENING IS NEVER PORTABLE. STRENGTHENING IS. A local file may raise ITS OWN
 # project's rigor; nothing local may lower it for anyone else. If a repair appears

@@ -128,15 +128,14 @@ deg_home() {  # <name> -> a home for the record these cases append to
 # here - `git add -A` unstages a gitlink whose path is not a real repository in
 # the worktree, so the submodule row measured an empty commit and proved
 # nothing - so the fixture refuses an empty commit rather than reporting one.
-commit_all() {  # <repo> <message> -> the new sha
-  local repo=$1 message=$2 before after
+commit_all() {  # <repo> <message> -> COMMIT_SHA
+  local repo=$1 message=$2 before
   before=$(git -C "$repo" rev-parse HEAD 2>/dev/null || printf 'none')
   git -C "$repo" add -A
   git -C "$repo" commit --quiet -m "$message" >/dev/null 2>&1 || true
-  after=$(git -C "$repo" rev-parse HEAD)
-  [ "$after" != "$before" ] \
+  COMMIT_SHA=$(git -C "$repo" rev-parse HEAD)
+  [ "$COMMIT_SHA" != "$before" ] \
     || fail "the fixture commit '$message' in $repo changed nothing, so the case built on it would assert over an empty range"
-  printf '%s\n' "$after"
 }
 
 # --template= skips the sample-hook copy, which is pure cost repeated across
@@ -222,18 +221,18 @@ build_degradation_fixture() {
   git -C "$repo" commit --quiet -m base
 
   printf '# guide, revised\n' > "$repo/docs/guide.md"
-  DEG_C1=$(commit_all "$repo" prose)
+  commit_all "$repo" prose; DEG_C1=$COMMIT_SHA
   printf 'value = 2\n' > "$repo/src/thing.py"
-  DEG_C2=$(commit_all "$repo" code)
+  commit_all "$repo" code; DEG_C2=$COMMIT_SHA
   printf 'value = 1\n' > "$repo/src/thing.py"
-  DEG_C3=$(commit_all "$repo" undo-the-code)
+  commit_all "$repo" undo-the-code; DEG_C3=$COMMIT_SHA
   printf 'value = 3\n' > "$repo/src/thing.py"
   printf 'other, revised\n' > "$repo/docs/other.md"
-  DEG_C4=$(commit_all "$repo" two-files)
+  commit_all "$repo" two-files; DEG_C4=$COMMIT_SHA
   printf 'value = 1\n' > "$repo/src/thing.py"
-  DEG_C5=$(commit_all "$repo" undo-only-one)
+  commit_all "$repo" undo-only-one; DEG_C5=$COMMIT_SHA
   printf 'closing balance\n' > "$repo/ledger/book.txt"
-  DEG_C6=$(commit_all "$repo" the-declared-surface)
+  commit_all "$repo" the-declared-surface; DEG_C6=$COMMIT_SHA
   DEG_REPO=$repo
 
   # A second repository for the parentless case, so the lookup of a root
@@ -250,7 +249,7 @@ build_degradation_fixture() {
   [ -z "$(git -C "$repo" rev-parse --verify --quiet "$DEG_ROOT^" 2>/dev/null)" ] \
     || fail "the fixture's claimed root commit has a parent"
   rm "$repo/a.md"
-  DEG_ROOT_PARTIAL=$(commit_all "$repo" remove-only-one)
+  commit_all "$repo" remove-only-one; DEG_ROOT_PARTIAL=$COMMIT_SHA
   DEG_ROOT_REPO=$repo
 
   DEG_HOME=$(deg_home reads)
@@ -376,7 +375,7 @@ test_a_channel_that_cannot_be_read_is_refused_out_loud() {
   git -C "$repo" add -A
   git -C "$repo" commit --quiet -m base
   printf 'value = 2\n' > "$repo/src/thing.py"
-  commit_all "$repo" edit > /dev/null
+  commit_all "$repo" edit
 
   run_decide "$home" '' decide chan-base --project proj --repo "$repo" --range HEAD~1..HEAD
   assert_contains "$DECIDE_OUT" "reason=critical-surface" \
@@ -480,29 +479,29 @@ shape_add_gitlink()      {
 }
 shape_delete_executable() {
   printf 'x\n' > "$1/docs/tool.md"; chmod +x "$1/docs/tool.md"
-  commit_all "$1" add-the-executable > /dev/null
+  commit_all "$1" add-the-executable
   git -C "$1" rm --quiet "docs/tool.md"
 }
 shape_delete_symlink() {
   ln -s guide.md "$1/docs/link.md"
-  commit_all "$1" add-the-symlink > /dev/null
+  commit_all "$1" add-the-symlink
   git -C "$1" rm --quiet "docs/link.md"
 }
 shape_modify_executable() {
   printf 'x\n' > "$1/docs/tool.md"; chmod +x "$1/docs/tool.md"
-  commit_all "$1" add-the-executable > /dev/null
+  commit_all "$1" add-the-executable
   printf 'y\n' > "$1/docs/tool.md"
 }
 shape_modify_symlink() {
   ln -s guide.md "$1/docs/link.md"
-  commit_all "$1" add-the-symlink > /dev/null
+  commit_all "$1" add-the-symlink
   rm "$1/docs/link.md"; ln -s other.md "$1/docs/link.md"
 }
 shape_flip_exec()        { chmod +x "$1/docs/guide.md"; }
 shape_flip_symlink()     { rm "$1/docs/guide.md"; ln -s other.md "$1/docs/guide.md"; }
-shape_prose_location()   { printf 'import os\nprint(os)\n' > "$1/docs/conf.py"; commit_all "$1" add-conf > /dev/null; printf 'import sys\nprint(sys)\n' > "$1/docs/conf.py"; }
-shape_prose_makefile()   { printf 'all:\n\techo build\n' > "$1/docs/Makefile"; commit_all "$1" add-make > /dev/null; printf 'all:\n\techo rebuild\n' > "$1/docs/Makefile"; }
-shape_prose_manifest()   { printf 'sphinx\n' > "$1/docs/requirements.txt"; commit_all "$1" add-reqs > /dev/null; printf 'sphinx\nfuro\n' > "$1/docs/requirements.txt"; }
+shape_prose_location()   { printf 'import os\nprint(os)\n' > "$1/docs/conf.py"; commit_all "$1" add-conf; printf 'import sys\nprint(sys)\n' > "$1/docs/conf.py"; }
+shape_prose_makefile()   { printf 'all:\n\techo build\n' > "$1/docs/Makefile"; commit_all "$1" add-make; printf 'all:\n\techo rebuild\n' > "$1/docs/Makefile"; }
+shape_prose_manifest()   { printf 'sphinx\n' > "$1/docs/requirements.txt"; commit_all "$1" add-reqs; printf 'sphinx\nfuro\n' > "$1/docs/requirements.txt"; }
 
 test_a_prose_name_never_carries_a_non_prose_object_to_the_cheap_lane() {
   local row name builder guarded repo home out n=0
@@ -529,7 +528,7 @@ test_a_prose_name_never_carries_a_non_prose_object_to_the_cheap_lane() {
   repo="$TMP_ROOT/shapes/control"
   shape_base "$repo"
   shape_control "$repo"
-  commit_all "$repo" control > /dev/null
+  commit_all "$repo" control
   run_decide "$home" '' decide shape-control --project proj --repo "$repo" \
     --range HEAD~1..HEAD --class docs-only
   assert_contains "$(lane_line "$DECIDE_OUT")" "lane=direct-PR" \
@@ -543,7 +542,7 @@ test_a_prose_name_never_carries_a_non_prose_object_to_the_cheap_lane() {
     repo="$TMP_ROOT/shapes/$name"
     shape_base "$repo"
     "$builder" "$repo"
-    commit_all "$repo" "$name" > /dev/null
+    commit_all "$repo" "$name"
 
     run_decide "$home" '' decide "shape-$name-class" --project proj --repo "$repo" \
       --range HEAD~1..HEAD --class docs-only
@@ -606,9 +605,9 @@ test_a_hostile_path_spelling_is_still_matched_as_itself() {
     git -C "$repo" add -A
     git -C "$repo" commit --quiet -m base
     printf 'ordinary notes, revised\n' > "$repo/${deco}dir/notes.md"
-    commit_all "$repo" touch-the-ordinary-file > /dev/null
+    commit_all "$repo" touch-the-ordinary-file
     printf 'agent instructions, revised\n' > "$repo/${deco}dir/AGENTS.md"
-    commit_all "$repo" touch-the-surface > /dev/null
+    commit_all "$repo" touch-the-surface
 
     run_decide "$home" '' decide "spell-$label-plain" --project proj --repo "$repo" \
       --range HEAD~2..HEAD~1
@@ -664,7 +663,7 @@ test_a_catalog_record_that_cannot_be_parsed_is_refused_never_skipped() {
   git -C "$repo" add -A
   git -C "$repo" commit --quiet -m base
   printf 'value = 2\n' > "$repo/src/thing.py"
-  commit_all "$repo" edit > /dev/null
+  commit_all "$repo" edit
 
   run_decide "$home" '' decide cat-base --project proj --repo "$repo" --range HEAD~1..HEAD
   assert_contains "$DECIDE_OUT" "reason=critical-surface" \
