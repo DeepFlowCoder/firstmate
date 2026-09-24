@@ -1,0 +1,20 @@
+name: Fold key collision B
+on:
+  push:
+    branches:
+      - fm-collision-evidence-head
+permissions:
+  contents: read
+jobs:
+  delay:
+    name: Collision B delay
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start the second same-name check later than the first
+        run: sleep 150
+  shared:
+    name: Shared collision check
+    needs: delay
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'

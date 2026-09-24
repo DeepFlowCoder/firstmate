@@ -1,0 +1,14 @@
+name: Fold key collision A
+on:
+  push:
+    branches:
+      - fm-collision-evidence-head
+permissions:
+  contents: read
+jobs:
+  shared:
+    name: Shared collision check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail on purpose so this head carries a red record
+        run: exit 1
