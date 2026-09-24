@@ -13,7 +13,10 @@ The family under verification is the one where a guard that cannot evaluate its 
 
 ## Non-vacuity result
 
-Verified 2026-09-23 on macOS 15.7.5 with git 2.54.0 and GNU bash 5.3.9.
+Measured 2026-09-23 on macOS 15.7.5 with git 2.54.0 and GNU bash 5.3.9, against the branch content as it stood BEFORE any pipeline review fix on this branch, so it does not cover the head being shipped.
+Two fix commits changed the matrix after that measurement: 25219c81 rewrote `commit_all` from a command-substitution return to a `COMMIT_SHA` global, so its refusal aborts the run instead of exiting a subshell, and d4fa8956 removed the shim's stderr diagnostic line.
+Every further fix commit on this branch is in the same position.
+For the shipped head this result is UNMEASURED.
 
 Method, per case: copy `bin/` and `tests/` into a scratch tree, restore exactly one defect to its pre-fix shape in that copy, run `bash <copy>/tests/fm-lane-degradation.test.sh`, and require a non-zero exit.
 The copy is what keeps the working tree untouched; no defect is ever reintroduced into tracked code.

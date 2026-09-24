@@ -89,10 +89,11 @@ REAL_GIT=$(command -v git) || fail "no git on PATH"
 lane_line() { printf '%s\n' "$1" | grep '^lane=' | head -n 1; }
 
 # assert_never_silently_cheap <label> <exit-code> <output>
-# The one outcome the family forbids. Three answers are acceptable and one is
-# not: a loud refusal, the expensive lane, or nothing at all - but never the
-# cheap lane, and never a refusal that says nothing, because a guard that
-# declines in silence is read from outside exactly like one that passed.
+# The one outcome the family forbids. Two answers are acceptable - a loud refusal
+# or the expensive lane - and every other one fails under the reason it failed:
+# the cheap lane, a refusal that says nothing, or a run that succeeded without
+# deciding a lane out loud, because a guard that declines in silence is read from
+# outside exactly like one that passed.
 assert_never_silently_cheap() {
   local label=$1 code=$2 out=$3
   if [ "$code" -ne 0 ]; then
@@ -101,6 +102,7 @@ assert_never_silently_cheap() {
   fi
   case "$(lane_line "$out")" in
     lane=no-mistakes\ *) return 0 ;;
+    "") fail "$label: exited 0 without printing a lane line, so which lane it chose cannot be told"$'\n'"--- output ---"$'\n'"$out" ;;
   esac
   fail "$label: reached the cheap lane with an input it could not evaluate"$'\n'"--- output ---"$'\n'"$out"
 }
@@ -151,7 +153,8 @@ commit_all() {  # <repo> <message> -> COMMIT_SHA
   before=$(git -C "$repo" rev-parse HEAD 2>/dev/null || printf 'none')
   git -C "$repo" add -A
   git -C "$repo" commit --quiet -m "$message" >/dev/null 2>&1 || true
-  COMMIT_SHA=$(git -C "$repo" rev-parse HEAD)
+  COMMIT_SHA=$(git -C "$repo" rev-parse HEAD) \
+    || fail "the HEAD of $repo could not be read after the fixture commit '$message', so whether it committed anything cannot be established"
   [ "$COMMIT_SHA" != "$before" ] \
     || fail "the fixture commit '$message' in $repo changed nothing, so the case built on it would assert over an empty range"
 }
