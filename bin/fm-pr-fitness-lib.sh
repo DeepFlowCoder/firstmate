@@ -17,8 +17,11 @@
 #   pr <state> <mergeable> <mergeStateStatus>
 #   base <baseRefName> <headRefOid>
 #   checks <count>                                    (how many check records follow)
-#   check <status> <conclusion> <started> <name>      (a CheckRun)
-#   check <state> CONTEXT <started> <name>            (a legacy commit status)
+#   check <status> <conclusion> <started> workflow=<base64> <name>
+#                                       (a CheckRun an Actions workflow raised)
+#   check <status> <conclusion> <started> degraded <name>
+#                        (a CheckRun no workflow identifies - a third-party app)
+#   check <state> CONTEXT <started> degraded <name>   (a legacy commit status)
 # <started> is epoch seconds, or 0 when the forge reported no start time this
 # reading could date - an absent one, and equally the placeholder string GitHub
 # serialises an unset timestamp as - which the fold below treats as unorderable
@@ -45,12 +48,15 @@
 # the network lives.
 #
 # GitHub renders one record per check RUN, not per check. A check that ran twice
-# against one head - a re-run, or a second workflow run raised by a later event -
-# contributes two records under one name, and only the later one describes that
-# check now. So the records are folded by name and the verdict is taken over the
-# current record of each name; two records of one name are not two checks. The
-# whole fold is documented at fm_pr_fitness_classify's loop, including why the
-# forge's own verdicts cannot answer this and what an unorderable pair does.
+# against one head contributes two records under one workflow-and-name identity,
+# and only the later one describes that check now. The reading's degraded scope
+# marks every record GitHub gives no workflow identity - a legacy commit status,
+# and equally a check run raised by a third-party app rather than by an Actions
+# workflow - and a degraded record is never folded with any other. That retains
+# a red such a record left behind even after a green successor; what it buys is
+# that two records of that kind cannot collapse into one and take the red with
+# them. Both sides of that tradeoff are stated at fm_pr_fitness_classify's loop,
+# including what a workflow name still cannot tell apart.
 #
 # Enum values are GitHub's own, read from the live GraphQL schema rather than
 # from memory (CheckConclusionState, CheckStatusState, StatusState,
@@ -171,7 +177,7 @@ fm_pr_fitness_context() {
 # written - was reported to the captain as passing, which is the one direction a
 # check summary must not be wrong in.
 #
-# The summary is deliberately NOT folded by check name the way
+# The summary is deliberately NOT folded by record identity the way
 # fm_pr_fitness_classify is. A red left behind by a run that a later run
 # superseded still reaches this verdict, so the summary can read failing for a
 # check that is green now. That is the direction this fold is allowed to be
@@ -220,14 +226,14 @@ fm_pr_fitness_rollup() {
 # the two states no override can help: GitHub itself refuses those merges, so
 # reporting anything else would send the reader to fix the wrong thing.
 fm_pr_fitness_classify() {
-  local kind f1 f2 f3 name verdict
+  local kind f1 f2 f3 scope name verdict
   local state='' mergeable='' merge_state='' saw_pr=0 saw_base=0
   local declared='' failing='' running=''
   # Parallel arrays rather than one keyed by name: stock macOS Bash is 3.2,
   # which has no associative arrays, and .github/workflows/ci.yml holds this
   # tree to parsing under it.
   local records=0 i=0 j=0 keep=0
-  local -a chk_name chk_rank chk_time chk_order
+  local -a chk_name chk_key chk_rank chk_time chk_order
 
   FM_PR_FITNESS_VERDICT=
   FM_PR_FITNESS_REASON=
@@ -241,7 +247,7 @@ fm_pr_fitness_classify() {
   FM_PR_FITNESS_HEAD=
   FM_PR_FITNESS_MERGE_STATE=
 
-  while IFS=' ' read -r kind f1 f2 f3 name || [ -n "$kind" ]; do
+  while IFS=' ' read -r kind f1 f2 f3 scope name || [ -n "$kind" ]; do
     case "$kind" in
       # A legitimate reading carries exactly one pr and one base record. A
       # second of either can only come from a value that contained a newline -
@@ -257,7 +263,7 @@ fm_pr_fitness_classify() {
         # Every fixed-width record is refused when it carries more than its own
         # fields, for the same reason a repeat of one is: the surplus can only
         # come from a value that contained a newline.
-        if [ -n "$name" ]; then
+        if [ -n "$scope" ] || [ -n "$name" ]; then
           FM_PR_FITNESS_VERDICT=unmeasurable
           FM_PR_FITNESS_REASON="the reading from GitHub carried a pull request record with unexpected trailing content"
           return 0
@@ -273,7 +279,7 @@ fm_pr_fitness_classify() {
           FM_PR_FITNESS_REASON="the reading from GitHub carried more than one base record"
           return 0
         fi
-        if [ -n "$f3" ] || [ -n "$name" ]; then
+        if [ -n "$f3" ] || [ -n "$scope" ] || [ -n "$name" ]; then
           FM_PR_FITNESS_VERDICT=unmeasurable
           FM_PR_FITNESS_REASON="the reading from GitHub carried a base record with unexpected trailing content"
           return 0
@@ -295,7 +301,7 @@ fm_pr_fitness_classify() {
             return 0
             ;;
         esac
-        if [ -n "$f2" ] || [ -n "$f3" ] || [ -n "$name" ]; then
+        if [ -n "$f2" ] || [ -n "$f3" ] || [ -n "$scope" ] || [ -n "$name" ]; then
           FM_PR_FITNESS_VERDICT=unmeasurable
           FM_PR_FITNESS_REASON="the reading from GitHub carried a check-count record with unexpected trailing content"
           return 0
@@ -318,6 +324,23 @@ fm_pr_fitness_classify() {
           verdict=$(fm_pr_fitness_checkrun "$f1" "$f2")
         fi
         chk_name[records]=$name
+        # The fold key is this record's identity, and it is the only thing that
+        # decides what folds: a degraded record is given a key no other record
+        # can carry - its own index, which no workflow name can produce because
+        # a workflow key always holds a base64 field and a space.
+        case "$scope" in
+          workflow=?*)
+            chk_key[records]="${scope#workflow=} $name"
+            ;;
+          degraded)
+            chk_key[records]="degraded-$records"
+            ;;
+          *)
+            FM_PR_FITNESS_VERDICT=unmeasurable
+            FM_PR_FITNESS_REASON="the reading from GitHub carried a check record with no declared identity scope"
+            return 0
+            ;;
+        esac
         case "$verdict" in
           failing) chk_rank[records]=2 ;;
           running) chk_rank[records]=1 ;;
@@ -370,7 +393,9 @@ fm_pr_fitness_classify() {
     return 0
   fi
 
-  # Fold the records by check name and judge only the current record of each.
+  # Fold the records by the identity each one declared - a workflow-and-name
+  # pair, or the degraded scope below - and judge only the current record of
+  # each identity.
   #
   # GitHub renders one record per check RUN. A check that ran twice against this
   # head leaves both runs on the reading, so a red left behind by an earlier run
@@ -395,24 +420,44 @@ fm_pr_fitness_classify() {
   # in progress supersedes the completed run it replaced instead of losing to a
   # completion the replaced run has and it does not yet.
   #
-  # Records of one name reporting the SAME start time carry no evidence of which
-  # is current, so the worst of them survives: an ordering that cannot be
+  # Records of one identity reporting the SAME start time carry no evidence of
+  # which is current, so the worst of them survives: an ordering that cannot be
   # measured refuses rather than picking the convenient record. A record the
   # renderer could not date - the forge reported no start time for it, or
   # reported one no date parse accepts - is unorderable in the same way and for
-  # the same reason, so it neither supersedes a sibling of its name nor is
+  # the same reason, so it neither supersedes a sibling of its identity nor is
   # superseded by one, and its own severity always reaches the verdict. Reading
   # an undated record as time zero instead would sort it below every dated
   # sibling, so a re-run GitHub reported no start time for could order a red
   # away - failing OPEN, which is the one direction a merge guard cannot fail.
-  # An unnamed record is never folded in either direction either, because
-  # nothing identifies it with any other record.
+  # An unnamed record is never folded in either direction either, because nothing
+  # identifies it with any other record.
+  #
+  # Which records enter the degraded scope is a decision rather than a leftover.
+  # It is every record GitHub gives no workflow identity, and that is two
+  # populations, not one: a legacy commit status, which has no workflow at all,
+  # and a check run raised by a third-party app rather than by an Actions
+  # workflow, which reports an empty workflow name. Both are given a key nothing
+  # else shares, so they never fold in either direction. That takes the
+  # fail-closed side of a tradeoff with no free option: a red one of these
+  # records left behind stays red after a green re-run - a third-party app that
+  # re-runs its check on one head is the case that actually pays this, and
+  # --captain-override-red is the deliberate act that clears it - while the side
+  # not taken would let two records this classifier cannot tell apart collapse
+  # into one and carry a live red away with them, which is the failure a merge
+  # guard cannot have.
+  #
+  # What the workflow key does NOT close: GitHub does not require a workflow's
+  # display name to be unique across workflow files, so two workflows both named
+  # e.g. CI, each rendering the same check name, still form one identity here and
+  # the later record still supersedes the earlier one. The reading carries no
+  # workflow path or id to narrow that further.
   while [ "$i" -lt "$records" ]; do
     keep=1
     if [ -n "${chk_name[$i]}" ] && [ "${chk_time[$i]}" -ne 0 ]; then
       j=0
       while [ "$j" -lt "$records" ]; do
-        if [ "${chk_name[$j]}" = "${chk_name[$i]}" ] && [ "${chk_time[$j]}" -ne 0 ] \
+        if [ "${chk_key[$j]}" = "${chk_key[$i]}" ] && [ "${chk_time[$j]}" -ne 0 ] \
           && { [ "${chk_order[$j]}" -gt "${chk_order[$i]}" ] \
             || { [ "${chk_order[$j]}" -eq "${chk_order[$i]}" ] && [ "$j" -lt "$i" ]; }; }; then
           keep=0
