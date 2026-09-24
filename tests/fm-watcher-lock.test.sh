@@ -328,12 +328,16 @@ test_claimed_lock_without_a_first_beat_is_detected() {
   # is momentarily empty. This poll starts at the instant the watcher starts, so
   # it is aimed squarely at that window - reading the path once it exists and
   # calling an empty read "never claimed" is how this case failed on a CI runner
-  # while the watcher had in fact claimed. The bound is the suite's own
-  # wall-clock cap rather than an iteration count, for the reason the startup
-  # measurement below already states: a count is a different amount of time on
-  # every host, and it is spent in full only when the claim genuinely never
-  # comes. SECONDS is the shell's own clock, so the bound costs no fork per poll
-  # and needs no timing library this case does not otherwise use.
+  # while the watcher had in fact claimed. The wall-clock bound below is a
+  # deliberate departure from the rule CONTRIBUTING.md owns for bounding a
+  # case's own wait by iteration count, and it is not the general form. The
+  # reason it holds here is the failure path, which is the only path that ever
+  # spends this cap in full: a flat 30s spends it deterministically, where 4000
+  # iterations cost 20.9-28.6s idle and 40.1-42.2s under moderate load on 8
+  # cores. The passing path never approaches it - the real claim wait measured
+  # 187-227ms idle and 1897-3409ms at load average 133-296, roughly 9x headroom.
+  # SECONDS is the shell's own clock, so the bound costs no fork per poll and
+  # needs no timing library this case does not otherwise use.
   live=
   started=$SECONDS
   while [ $(( SECONDS - started )) -lt $(( STARTUP_POLL_CAP_MS / 1000 )) ]; do

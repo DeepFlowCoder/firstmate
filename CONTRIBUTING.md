@@ -109,6 +109,7 @@ tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVE
 Its header and `--help` own the flags, family labels, lanes, and changed-file map; this section only documents the entry points.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
 Portable shard balance evidence lives in `docs/fm-test-portable-shards.md`.
+Cases already measured to be flaky, each one's cause and where its fix landed, live in [`docs/verification/test-flakiness.md`](docs/verification/test-flakiness.md); read it before diagnosing an intermittent red, and add an entry when you find a new one rather than widening a bound to make it pass.
 Local no-mistakes Test stays intent-targeted and must not wire `commands.test` to `--all` or a `tests/*.test.sh` walk.
 Family selection is the ordinary local path; `--all` is deliberate full regression only.
 CI owns broad regression across required portable parallel shards, the portable serial lane's separate-runner shards, the Herdr lane, lint, invariants, the coverage guard, and stock macOS Bash compatibility in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
@@ -119,7 +120,7 @@ Source those instead of copying a fake toolchain into a new suite.
 A suite that drives a `direct-PR` ship spawn or scout promotion authorizes it first with `fm_authorize_cheap_lane` from `tests/lib.sh`, whose header owns the contract: the review-lane gate refuses the cheap lane with no recorded decision behind it.
 Stop a background process with the shared `reap` from `tests/lib.sh`, whose header owns its bound, never with a local `kill` followed by an unbounded `wait` that a worker which swallows the signal can hang forever.
 A fixture may shorten a production timeout to keep a failure path prompt, but never below what the real work inside that window costs on a loaded machine: a fork, an exec, a lock acquisition, a beacon publication, or a first-poll check.
-Where a case's assertion is not about the timeout itself, give that window headroom over the measured loaded cost, and bound the test's own waiting with iteration-counted poll loops, which stretch under load where a wall-clock budget does not.
+Where a case's assertion is not about the timeout itself, give that window headroom over the measured loaded cost, and bound the test's own waiting with iteration-counted poll loops, which stretch under load where a wall-clock budget does not, while a case that measures a duration rather than waiting one out bounds itself by wall clock instead, because a clock is the only thing that measures time.
 Tests that need a real optional backend or an explicit opt-in (real herdr/zellij/cmux smoke tests, the live Pi regression) skip themselves and print the tool or environment gate needed to enable them, so the portable suite remains safe on machines without those tools.
 The [Herdr backend guide](docs/herdr-backend.md#destructive-lab-safety) owns the lane's isolation boundary, while [runtime backend verification](docs/verification/runtime-backends.md#herdr) owns active empirical evidence; live harness credential tests remain opt-in.
 

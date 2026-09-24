@@ -493,6 +493,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/test-flakiness.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/trace-context.md",
       "audience": "maintainer-verification"
     },
