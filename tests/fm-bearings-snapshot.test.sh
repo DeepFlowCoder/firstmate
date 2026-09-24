@@ -1423,13 +1423,22 @@ EOF
 
 # FORGE-MEASURED CASES
 # The four cases below are the same question - did this check pass - asked of
-# the board on the record shapes the merge gate folds. They are the regression
-# for two surfaces answering it separately, which they did until the board was
-# routed through the gate's own classifier. The readings are the ones
+# the board on the record shapes the merge gate folds. The readings are the ones
 # DeepFlowCoder/firstmate actually served, recorded in
-# docs/verification/pr-merge-fitness.md, and each one is a shape where taking the
-# worst raw record and folding by identity give DIFFERENT answers, so a case
-# that stopped separating them would stop testing anything.
+# docs/verification/pr-merge-fitness.md. They guard two different things, and
+# only one of the two is the regression for the surfaces answering separately:
+#
+# firstmate#17 is that regression, and the only case of the four that separates
+# the two readings. Worst-raw says failing, folding by identity says passing, and
+# the test asserts passing - so it fails against any reader that stopped folding.
+#
+# The degraded, unnamed, and workflow-collision cases all assert failing, which
+# is also what the pre-change worst-raw reader returned for each (measured). They
+# therefore do NOT distinguish the old approach from the new one, and claiming
+# they do would be claiming a property they lack. What they pin is the STRICT
+# answer, against a future fold made too permissive: key degraded records by name,
+# or fold an empty name, or drop workflow identity from the key, and the case at
+# hand flips to passing.
 #
 # firstmate#17 is the shape this repository reaches every time it goes green:
 # Require no-mistakes reads the pull request body from its own event payload, so
@@ -1518,8 +1527,10 @@ test_same_name_in_two_workflows_never_folds() {
 # Before the two renderers were unified, the board guessed "check run" from the
 # presence of a status or conclusion field, so an untyped entry read green here
 # and was refused at the gate. The shared renderer dispatches on __typename
-# alone, so an untyped entry now renders context form, reads UNKNOWN, and
-# classifies failing on both paths.
+# alone, so an untyped entry now renders context form on both paths and
+# classifies failing. The record it renders is `check null CONTEXT <started>
+# degraded null`, not UNKNOWN: the sentinel covers an EMPTY field, and an untyped
+# entry has no .state at all, so the string "null" interpolates instead.
 
 # A green check run with no __typename: one record, nothing to fold. The board
 # used to report this pull request passing while the gate refused it.

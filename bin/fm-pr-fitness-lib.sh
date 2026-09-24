@@ -79,12 +79,19 @@
 # The kind dispatch is __typename and nothing else: a CheckRun is a CheckRun, and
 # every other entry - a legacy commit status, and equally an entry carrying no
 # __typename at all - renders context form. That is the strict side. An entry the
-# forge typed as a check run but served without its meta-field reads UNKNOWN in
-# context form and classifies failing, rather than being read as green on the
-# strength of fields a reader guessed the meaning of.
+# forge typed as a check run but served without its meta-field has no .state, so
+# it renders `check null CONTEXT <started> degraded null` and classifies failing,
+# rather than being read as green on the strength of fields a reader guessed the
+# meaning of.
 #
-# A sentinel stands in for any status, conclusion, or state the forge left empty,
-# so no field is lost to the classifier's word split. The trailing name is
+# A sentinel stands in for any status, conclusion, or state the forge left EMPTY,
+# so no field is lost to the classifier's word split. Measured: it covers the
+# empty string only, not an absent field - `(null|tostring)` is the string "null",
+# which takes the else branch and interpolates, which is why the untyped entry
+# above reads `null` rather than UNKNOWN. The verdict is the same either way,
+# since "null" is not SUCCESS, PENDING, or EXPECTED, but the guards are what keep
+# an empty field from vanishing into the split and must not be read as redundant
+# normalisation of null. The trailing name is
 # deliberately given none: it is last, so an empty one loses no field, and the
 # classifier reads a record with no name as one nothing identifies and folds it
 # with nothing. Substituting a stand-in name would give two such records one

@@ -421,7 +421,7 @@ What each caller keeps is framing only: the gate's `pr` / `base` / `checks <coun
 The divergence the shared spelling closes is the kind dispatch.
 The gate dispatches on `__typename` alone; the board also guessed "check run" from the presence of a `status` or `conclusion` field, so a check run the forge served without its `__typename` read green on the board and was refused at the gate.
 Three shapes move as a result: an untyped green check run, an untyped green succeeding a typed red, and an untyped red followed by a typed green - the last being the one where the board was hiding a live red the gate kept.
-All three now render context form, read `UNKNOWN`, and classify `failing` on both paths.
+All three now render context form on both paths and classify `failing`. The record they render is `check null CONTEXT <started> degraded null`, not `UNKNOWN`: the renderer's sentinel fires on an EMPTY field, and an untyped entry has no `.state` at all, so `(null|tostring)` yields the string `null` and interpolates. The verdict is the same either way, since `null` is not `SUCCESS`, `PENDING`, or `EXPECTED`.
 
 Those three shapes are CONSTRUCTED, not measured, and the distinction matters: the forge reading above shows all 57 rollup nodes carrying `__typename`, so no untyped entry occurs on this repository at all.
 They are held by the regressions in `tests/fm-bearings-snapshot.test.sh`, which label themselves as constructed, and a real instance stays unmeasured here for the same reason the degraded population does.
@@ -432,7 +432,9 @@ One divergence is OPEN. It was not overlooked, not unnoticed, and is not pending
 
 **What diverges.** A check whose NAME contains a newline. The board reports that pull request's checks as `passing`; the merge gate refuses the same head with `unmeasurable`, reason "the reading from GitHub contained an unrecognised record".
 
-**What wrong conclusion a reader can draw.** The board announces a pull request's checks as green, and therefore the delivery as ready, while the merge gate will refuse to merge it. What bounds the severity is that this case does NOT hide a red, and that was measured too: a red check carrying such a name reads `failing` on both paths, and a red sitting beside such a green reads `failing` on both. The wrong conclusion available here is "green and ready" for something unmergeable, not a red that disappears.
+The two surfaces answer on different scales, and mapping one onto the other is what makes this easy to misread. The board answers in four words - `none`, `passing`, `pending`, `failing` - and everything the classifier refuses, `unmeasurable` included, maps to `failing`. The merge gate reports `FM_PR_FITNESS_VERDICT` itself, so its refusal of an unreadable reading is the distinct word `unmeasurable`, never `failing`. A refusal on each side therefore reads as a different word, and neither is the other's.
+
+**What wrong conclusion a reader can draw.** The board announces a pull request's checks as green, and therefore the delivery as ready, while the merge gate will refuse to merge it. What bounds the severity is that this case does NOT hide a red, and that was measured too: a red check carrying such a name, and a red sitting beside such a green, both make the board read `failing` and both make the gate return `unmeasurable` with the reason above. Different words, but refusals on both sides. The wrong conclusion available here is "green and ready" for something unmergeable, not a red that disappears.
 
 **Where the defect actually is.** Measured 2026-09-24 in three stages, on one rollup entry whose check name contains a newline (`Bui\nld`, COMPLETED/SUCCESS):
 

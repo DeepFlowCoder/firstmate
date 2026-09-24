@@ -338,9 +338,11 @@ PR_NL='
 # __typename is what the shared renderer dispatches on, and nothing else. A
 # legacy status context arriving without one still renders context form
 # correctly, because context form is the else branch. What that dispatch decides
-# strictly is a CHECK RUN arriving without one: it renders context form, reads
-# UNKNOWN, and classifies failing - here exactly as at the merge gate, rather
-# than green here and refused there.
+# strictly is a CHECK RUN arriving without one: it renders context form, and
+# having no .state it reads `check null CONTEXT <started> degraded null` - the
+# renderer's sentinel covers an empty field, not an absent one - which classifies
+# failing here exactly as at the merge gate, rather than green here and refused
+# there.
 #
 # One divergence from the merge gate is OPEN, left so on purpose by firstmate:
 # a check whose NAME contains a newline. The board reports that pull request's
