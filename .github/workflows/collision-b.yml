@@ -1,0 +1,30 @@
+name: Fold key collision B
+
+# DISPOSABLE, the green half of the same evidence head. Its own check carries
+# the SAME display name as the one in Fold key collision A, and the delay job
+# in front of it makes it start later, so a fold keyed on the name alone treats
+# this green as the later run of the red one and supersedes it.
+on:
+  pull_request:
+    branches: [fm-collision-base-v2]
+
+permissions:
+  contents: read
+
+jobs:
+  delay:
+    name: Collision B delay
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Hold so the shared check below starts later
+        run: sleep 150
+
+  shared:
+    name: Shared collision check
+    needs: delay
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Pass on purpose
+        run: echo "disposable fold-key evidence: this job exists to be the later green one"

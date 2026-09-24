@@ -1,0 +1,24 @@
+name: Fold key collision A
+
+# DISPOSABLE. This workflow exists only on the throwaway evidence branch
+# fm-collision-head-v2 and is never merged anywhere. It renders one check named
+# "Shared collision check" and fails on purpose, so a head can carry two
+# genuinely distinct checks that share one display name across two workflows.
+# The base filter keeps it off main and off every delivery branch.
+on:
+  pull_request:
+    branches: [fm-collision-base-v2]
+
+permissions:
+  contents: read
+
+jobs:
+  shared:
+    name: Shared collision check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail on purpose
+        run: |
+          echo "disposable fold-key evidence: this job exists to be the red one"
+          exit 1
