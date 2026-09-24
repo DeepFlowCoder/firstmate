@@ -27,4 +27,5 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Pass on purpose
-        run: echo "disposable fold-key evidence: this job exists to be the later green one"
+        run: |
+          echo "disposable fold-key evidence: this job exists to be the later green one"
