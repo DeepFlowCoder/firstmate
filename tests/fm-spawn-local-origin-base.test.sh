@@ -161,6 +161,10 @@ test_base_choice_is_not_keyed_on_delivery_mode() {
     if [ "$contract" = scout ]; then
       out=$(run_spawn "$id" --scout)
     else
+      # A direct-PR dispatch needs its lane decision on record first; that
+      # contract has its own suite (tests/fm-lane-policy.test.sh).
+      [ "$contract" != direct-PR ] \
+        || fm_authorize_cheap_lane "$HOME_DIR" "$id" "$(basename "$PROJECT_DIR")"
       out=$(run_spawn "$id" --mode "$contract" --yolo off)
     fi
     status=$?

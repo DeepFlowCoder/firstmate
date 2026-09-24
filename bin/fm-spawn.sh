@@ -318,6 +318,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 # shellcheck source=bin/fm-disk-space-lib.sh
 . "$SCRIPT_DIR/fm-disk-space-lib.sh"
+# shellcheck source=bin/fm-lane-lib.sh
+. "$SCRIPT_DIR/fm-lane-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1852,6 +1854,13 @@ if [ "$KIND" = ship ]; then
   if [ -n "$STANDING_MODE" ] && [ "$STANDING_MODE" != no-mistakes-prod-only ] \
      && [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
+  fi
+  # Lane routing (bin/fm-lane-lib.sh). The cheap lane needs a recorded decision
+  # that authorizes it; the expensive lane never does. A relaunch or recovery
+  # reuses the mode already recorded for this task, so it neither re-gates nor
+  # records a second dispatch for one delivery.
+  if [ "$REUSE" -eq 0 ]; then
+    fm_lane_gate_dispatch "$ID" "$PROJ_NAME" "$MODE" "$YOLO" || exit 1
   fi
 fi
 

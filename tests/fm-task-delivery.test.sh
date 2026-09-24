@@ -134,7 +134,10 @@ EOF
   assert_absent "$home/state/delivery-mismatch-b1.meta" "mismatched spawn wrote task metadata"
 
   # The agreeing case clears the check and only fails later, at the refusing tmux.
+  # A direct-PR dispatch additionally needs its lane decision on record, which is
+  # a separate contract with its own suite (tests/fm-lane-policy.test.sh).
   write_brief "$home" delivery-agree-b2 direct-PR
+  fm_authorize_cheap_lane "$home" delivery-agree-b2 proj
   out=$(run_spawn "$home" "$fakebin" delivery-agree-b2 "$proj" claude --mode direct-PR --yolo off)
   assert_not_contains "$out" "delivery mismatch" "an agreeing mode was reported as a mismatch"
 
@@ -207,7 +210,7 @@ test_promote_requires_and_records_the_delivery_contract() {
   meta="$home/state/promote-d1.meta"
 
   write_scout_meta() {
-    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+    printf 'window=fm-promote-d1\nkind=scout\nworktree=/tmp/wt\nproject=/tmp/projects/proj\n' > "$meta"
   }
 
   write_scout_meta
@@ -227,6 +230,10 @@ test_promote_requires_and_records_the_delivery_contract() {
   [ "$status" -ne 0 ] || fail "promotion on a conditional policy should exit non-zero"
   assert_contains "$out" "classify this task's surface" "promote did not refuse the conditional policy as a task mode"
 
+  # Promotion decides the delivery contract, so a cheap-lane promotion needs its
+  # lane decision on record too (tests/fm-lane-policy.test.sh owns that contract).
+  mkdir -p "$home/data"
+  fm_authorize_cheap_lane "$home" promote-d1 proj
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on 2>&1)
   status=$?
   expect_code 0 "$status" "a promotion carrying both flags should succeed"

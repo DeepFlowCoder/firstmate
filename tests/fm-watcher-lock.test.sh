@@ -258,7 +258,7 @@ run_guard() {  # <dir> [env assignments...]
 # it. Nothing reported that state; it surfaced only when the arm gave up twice.
 # The claim's own timestamp against the beacon's is what tells them apart.
 test_claimed_lock_without_a_first_beat_is_detected() {
-  local dir state dead err wpid live i
+  local dir state dead err wpid live started
   dir=$(make_case guard-no-first-beat)
   err="$dir/guard.err"
   printf 'project=x\n' > "$dir/state/task.meta"
@@ -322,13 +322,29 @@ test_claimed_lock_without_a_first_beat_is_detected() {
   PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/watch.out" 2>&1 &
   wpid=$!
-  i=0
-  while [ "$i" -lt 4000 ] && [ ! -e "$state/.watch.lock/pid" ]; do
+  # Poll for the pid VALUE, not for the path: a claim publishes the lock symlink
+  # before fm_lock_claim rewrites the owner's pid file through it
+  # (bin/fm-wake-lib.sh), so there is a window where the path exists and the file
+  # is momentarily empty. This poll starts at the instant the watcher starts, so
+  # it is aimed squarely at that window - reading the path once it exists and
+  # calling an empty read "never claimed" is how this case failed on a CI runner
+  # while the watcher had in fact claimed. The bound is the suite's own
+  # wall-clock cap rather than an iteration count, for the reason the startup
+  # measurement below already states: a count is a different amount of time on
+  # every host, and it is spent in full only when the claim genuinely never
+  # comes. SECONDS is the shell's own clock, so the bound costs no fork per poll
+  # and needs no timing library this case does not otherwise use.
+  live=
+  started=$SECONDS
+  while [ $(( SECONDS - started )) -lt $(( STARTUP_POLL_CAP_MS / 1000 )) ]; do
+    if [ -e "$state/.watch.lock/pid" ]; then
+      live=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+      [ -n "$live" ] && break
+    fi
     sleep 0.002
-    i=$((i + 1))
   done
-  live=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  [ -n "$live" ] || fail "the watcher never claimed the lock"
+  [ -n "$live" ] \
+    || fail "the watcher never claimed the lock within $(( STARTUP_POLL_CAP_MS / 1000 ))s: $(tail -n 3 "$dir/watch.out" 2>/dev/null)"
   kill -STOP "$live" 2>/dev/null || fail "could not SIGSTOP the claiming watcher"
   sleep 1.3
   run_guard "$dir" FM_GUARD_GRACE=300 FM_WATCHER_FIRST_BEAT_GRACE=1

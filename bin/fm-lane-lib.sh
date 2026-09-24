@@ -1,0 +1,566 @@
+# shellcheck shell=bash
+# fm-lane-lib.sh - the lane-routing catalog, decision procedure, durable record,
+# and dispatch gate. ONE OWNER for all four.
+#
+# A "lane" is how much review rigor a delivery gets. Firstmate has two review
+# lanes and one landing mode that sits outside the axis:
+#   no-mistakes  the expensive lane: the full pipeline reviews, tests, documents
+#                and ships the change.
+#   direct-PR    the cheap lane: push and PR with no pipeline review.
+#   local-only   a LANDING mode, not a review lane: the project has no remote,
+#                so the expensive lane is not available to it at all. See the
+#                carve-out at fm_lane_gate_dispatch.
+#
+# The routing policy implemented here replaces a hot judgment at intake with a
+# written catalog plus observable properties of the change, which is the one
+# structural difference between the published frameworks and an improvised rule
+# (ITIL's pre-authorized standard change, Chromium's Rubber-Stamper, Apache's
+# RTC surfaces, and the diff-signal tradition from Mockus & Weiss 2000 through
+# Prime Video 2026). The captain adopted it on 2026-09-23. The deferred lane -
+# land green and review afterwards - was deliberately left out of scope and
+# must not be built here.
+#
+# THE DECISION, in strict order. The first tier that answers wins.
+#
+#   1. Critical surface. Any changed path matching the catalog below routes to
+#      no-mistakes, under EVERY evidence grade, and no signal in tier 3 can pull
+#      it back out. Only the captain can, by stating that concrete change
+#      explicitly (AGENTS.md "Captain instruction precedence"), and that
+#      override is recorded rather than silent.
+#   2. Standard class. docs-only and clean-revert reach the
+#      cheap lane only when membership is DEMONSTRATED from a real diff, and
+#      only when the range carries no MODE CHANGE: a class claim over one is
+#      not evaluated at all, and the decision falls through to tier 3. A class
+#      that is claimed and cannot be demonstrated is not that class: it routes to
+#      no-mistakes with reason class-not-demonstrated. Alleging a class never
+#      earns the cheap lane, which is the whole difference between a catalog and
+#      a hot judgment.
+#   3. Diff signals. Novelty (a file added), diffusion (distinct directories),
+#      complexity (added control-flow branch points) and size each route to
+#      no-mistakes. So does a MODE CHANGE - an exec bit or a file type flipped,
+#      which leaves no lines to measure at all - and that one is more than a
+#      tier-3 signal: it is a DISQUALIFICATION from the cheap lane by any route,
+#      which is why tier 2 defers to this tier rather than answering over it.
+#      Everything left goes to direct-PR.
+#
+# EVIDENCE GRADES. Declared evidence - a list of paths the caller asserts the
+# change will touch - reaches tier 1 and stops; it never reaches tier 2 or 3.
+# So no SIGNAL and no CLASS CLAIM can produce the cheap lane on declared
+# evidence: only demonstrated evidence, computed by this library from a real
+# git range, can. Work that is not written yet therefore stays on the expensive
+# lane, which is exactly the status quo: this policy can only lower cost where
+# it can prove the change is benign. The captain's explicit --captain-override
+# is the one exception, deliberately, and it is recorded as such - so a
+# "evidence=declared lane=direct-PR" row in the record is the captain's own
+# call in their own words, and never a signal that talked its way past this.
+#
+# SIZE IS A WARNING, NOT A CAP. A large change routes to the expensive lane so
+# it gets looked at. Nothing here ever refuses a change for being large.
+#
+# WHEN TWO THINGS MUST BE COUPLED AND THE COUPLING CANNOT BE AVOIDED, IT MUST
+# FAIL CLOSED. This is a constraint on what may be added here later, not a note
+# about the past. If the two fall out of sync, the result must be MORE expensive,
+# never cheaper. A coupling that cheapens when it breaks is a trap with a date on
+# it: it will be sprung by someone doing something perfectly reasonable in
+# another file, and it will lower rigor silently when it is.
+#
+# The instance that produced the rule, so the shape is recognisable: the AUTHORS
+# route spanned three places - the prose-extension list here, the exception to
+# the *auth* glob that derives from it, and this repository's own
+# .fm-critical-surfaces, which is data and can derive nothing. While that last
+# one enumerated a spelling per extension, adding ONE extension here would have
+# made AUTHORS.<ext> prose, excepted it from the glob automatically, and left no
+# entry holding it expensive - sending a governance document to the cheap lane.
+# Had it shipped it would have been an eighth silently-degrading guard, and the
+# first one this delivery planted rather than inherited. The data side now names
+# AUTHORS irrespective of extension, so desynchronising costs one unnecessary
+# expensive review instead of one unreviewed governance change.
+#
+# WEAKENING IS NEVER PORTABLE. STRENGTHENING IS. A local file may raise ITS OWN
+# project's rigor; nothing local may lower it for anyone else. If a repair appears
+# to require relaxing something beyond this house, it is not a repair - it is a
+# FLEET DECISION, and a fleet decision is not made inside a delivery titled for
+# something else. This is the same boundary already stated for the built-in
+# catalog below, where a surface placed there is imposed silently on every
+# project, in its general form: it governs REMOVALS as much as additions, and a
+# removal is the direction no local file can undo.
+#
+# The instance that produced it: a LABEL problem in this repository's own record
+# was "fixed" by narrowing the portable authentication glob, and the
+# justification leaned on a backstop - the governing-docs entry - that exists only
+# here. src/authors.py went from critical-surface to direct-PR reason=low-signal
+# in every project the fleet routes. THE TEST THAT CATCHES THIS IS ASKING WHAT
+# THE CHANGE DOES IN A PROJECT THAT DECLARES NOTHING OF ITS OWN, which is why the
+# suite now pins that case directly rather than only this house's behaviour.
+#
+# THE RECORD. Every decision, every ship dispatch and every defect found after
+# landing appends one row to data/lane-log.tsv. Nobody has published the curve
+# "escaped defects vs time saved" for routing LLM review of agent-written
+# changes, so without this record the policy is not reviewable and cannot be
+# corrected with data. A dispatch that cannot be recorded is refused rather than
+# run unmeasured.
+#
+# Row format, tab-separated, append-only, 11 columns:
+#   ts  event  task  project  lane  evidence  reason  class  critical  signals  note
+# event    decide | dispatch | escape
+# lane     no-mistakes | direct-PR | local-only | -
+# evidence demonstrated | declared | -
+# class    the class claim this decision EVALUATED, or - when it evaluated none.
+#          A decision that never reached the class tier - a captain override, or
+#          a critical surface deciding first - records -, even when --class was
+#          passed, because an unevaluated claim is not a fact about the change.
+#          The reason column says what the evaluation concluded: standard-class
+#          when the claim was demonstrated, class-not-demonstrated when it was
+#          not. The value is <class>, or <class>:<identifier> naming what
+#          demonstrated it: clean-revert:<resolved commit sha>. docs-only
+#          carries no identifier because what demonstrates it is the changed
+#          path set AS A WHOLE rather than a single input like a commit id, so
+#          there is no identifier to name. The paths themselves are not in the
+#          record: the signals column holds counts plus the measured tree and
+#          range, so on DEMONSTRATED evidence the path set is recoverable from
+#          repo= and range=, and a DECLARED row records neither and does not
+#          name the paths the claim was made about at all. Identifiers only,
+#          never free text, or the column becomes prose with a column heading.
+# critical comma-separated surface names, or -
+# signals  k=v,k=v, or -. It names the TREE that was measured in its repo=
+#          entry, resolved physically, so a decision made against the wrong
+#          clone is no longer byte-indistinguishable from a correct one, and on
+#          DEMONSTRATED evidence the RANGE it measured in its range= entry, both
+#          sides resolved to full commit ids for the same reason. A declared
+#          decision has no range and carries no range= entry at all.
+#          A comma inside a value is escaped \, and a backslash \\, so the k=v
+#          split survives a path that contains the separator. That is a SECOND
+#          escaping layer, applied before the field escaping below, so reversing
+#          it takes THREE steps in this order:
+#            1. un-escape the field itself (\\ -> \, \t -> tab, \n -> newline);
+#            2. split on commas NOT preceded by a backslash;
+#            3. inside each value, un-escape \, -> , and \\ -> \.
+#          Stopping after step 2 returns a path with its backslashes still
+#          doubled, which is not the tree that was measured.
+# Absent values are "-". Tabs, newlines and backslashes inside a value are
+# escaped (\t, \n, \\), so one row is always one physical line, and each field
+# is capped so the whole row stays one atomic append (FM_LANE_FIELD_MAX).
+#
+# A dispatch row records an AUTHORISED DISPATCH, not a completed launch. It is
+# written before the backend launch, so a spawn that dies afterwards still
+# leaves a row, and a retry leaves a second one for the same delivery. The
+# concrete consequence: anyone computing an escape rate must NOT treat dispatch
+# rows as deliveries. This is a DECLARED ASYMMETRY, not a defect - writing
+# before launching is what "a dispatch that cannot be recorded is refused rather
+# than run unmeasured" requires, and the two cannot both be satisfied. A
+# declared asymmetry misleads nobody; a silent one does.
+#
+# Mechanics - exact flags and commands - are owned by bin/fm-lane.sh --help.
+
+# --- record primitives ------------------------------------------------------
+
+fm_lane_log_path() {
+  local home data
+  home=${FM_HOME:-}
+  [ -n "$home" ] || home=${FM_ROOT:-.}
+  data=${FM_DATA_OVERRIDE:-$home/data}
+  printf '%s\n' "$data/lane-log.tsv"
+}
+
+# The per-field cap. Ten capped fields plus the timestamp keep a whole row
+# comfortably inside the 4096-byte pipe buffer, which is what makes the single
+# append below one atomic write: two homes or two dispatches writing at the same
+# moment interleave whole rows rather than halves of one.
+FM_LANE_FIELD_MAX=400
+
+# fm_lane_escape_field <value> -> the value with \, tab and newline escaped, cut
+# to the field cap. A cut value is marked, never silently shortened.
+fm_lane_escape_field() {
+  local v=$1
+  v=${v//\\/\\\\}
+  v=${v//$'\t'/\\t}
+  v=${v//$'\n'/\\n}
+  if [ "${#v}" -gt "$FM_LANE_FIELD_MAX" ]; then
+    v="${v:0:$((FM_LANE_FIELD_MAX - 3))}..."
+  fi
+  printf '%s' "$v"
+}
+
+fm_lane_now() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+# fm_lane_append <event> <task> <project> <lane> <evidence> <reason> <class> <critical> <signals> <note>
+# Fails closed: an unwritable log is a refusal, because an unrecorded delivery
+# is an unmeasurable one and the record is the point of the policy.
+fm_lane_append() {
+  local log dir row field
+  log=$(fm_lane_log_path)
+  dir=$(dirname "$log")
+  mkdir -p "$dir" 2>/dev/null || {
+    echo "error: cannot create the lane record directory $dir" >&2
+    return 1
+  }
+  row=$(fm_lane_now)
+  for field in "$@"; do
+    [ -n "$field" ] || field=-
+    row+=$'\t'$(fm_lane_escape_field "$field")
+  done
+  printf '%s\n' "$row" >>"$log" || {
+    echo "error: cannot append to the lane record $log" >&2
+    return 1
+  }
+  return 0
+}
+
+# fm_lane_last_decision <log> <task-id> -> that task's most recent decide row, or
+# nothing. A later decision supersedes an earlier one EXCEPT where the earlier
+# one bound: see fm_lane_binding_decision. Re-deciding a task after its change
+# took a different shape is the supported way to correct a lane rather than
+# editing the record, but correcting it downwards takes a real diff.
+fm_lane_last_decision() {
+  local log=$1 task=$2
+  [ -f "$log" ] || return 0
+  awk -F'\t' -v t="$task" '$2=="decide" && $3==t { last=$0 } END { if (last != "") print last }' "$log"
+}
+
+# fm_lane_binding_decision <log> <task-id> <project> -> the most recent decide
+# row for that task and project that BOUND the cheap lane, or nothing. A row
+# binds when it names a critical surface, or when it was expensive on
+# DEMONSTRATED evidence.
+#
+# It exists because a binding a later command can step on was never binding.
+# Declared evidence always lands in the advisory branch below, so re-running
+# decide in its intake shape - the very spelling this gate's own refusal text
+# recommends - erased an earlier critical-surface decision and let the cheap
+# dispatch through, with no captain override anywhere. Only a later DEMONSTRATED
+# decision may lift a binding, which keeps the honest correction path open: the
+# change genuinely no longer touches the surface, re-measured from a real diff.
+#
+# A captain override CLEARS any binding before it, because the captain's
+# explicit instruction is the one deliberate exception and must not be undone by
+# a row that predates it.
+fm_lane_binding_decision() {
+  local log=$1 task=$2 project=$3
+  [ -f "$log" ] || return 0
+  awk -F'\t' -v t="$task" -v p="$project" '
+    $2=="decide" && $3==t && $4==p {
+      if ($7=="captain-override") { last="" }
+      else if ($7=="critical-surface" || ($5=="no-mistakes" && $6=="demonstrated")) { last=$0 }
+      else if ($6=="demonstrated") { last="" }
+    }
+    END { if (last != "") print last }' "$log"
+}
+
+# --- the accepted prose extensions ------------------------------------------
+
+# THE SINGLE OWNER of the extensions this policy accepts as prose markup. TWO
+# places read it and both DERIVE rather than restate: the docs-only name test in
+# bin/fm-lane.sh, and the AUTHORS exception to the *auth* glob below. Extending
+# this list therefore extends both at once, which is the point.
+#
+# EVERY TIME A LIST THAT ALREADY EXISTS SOMEWHERE IS WRITTEN OUT BY HAND, IT
+# CREATES A SECOND OWNER, AND THE SECOND OWNER FALLS BEHIND THE DAY SOMEONE
+# EXTENDS THE FIRST. If there is a list, DERIVE FROM IT; do not copy it. The
+# exception below was once written as three hand-listed basenames while this list
+# accepted four extensions, and AUTHORS.rst was mislabelled for exactly that
+# reason.
+#
+# The third reader is DATA and cannot derive: this repository's own
+# .fm-critical-surfaces names AUTHORS irrespective of extension, deliberately, so
+# that it can never fall behind this list in the cheap direction. Widening a glob
+# in a LOCAL file is the safe way to be out of step; narrowing the portable rule
+# to match it is not, and that is the rule stated at the head of this file.
+fm_lane_prose_extensions() {
+  printf '%s\n' md markdown rst adoc
+}
+
+# --- critical-surface catalog ----------------------------------------------
+
+# The built-in surfaces the captain named as always-expensive, plus the two that
+# protect this policy itself: the file that routes work (AGENTS.md) and the
+# policy code. Patterns are shell globs matched case-insensitively against the
+# repo-relative path. They are deliberately broad: a false match costs one
+# expensive review, a false miss costs an unreviewed change on a safety surface.
+fm_lane_builtin_surfaces() {
+  cat <<'EOF'
+*merge*	merge-routes
+*teardown*	teardown-and-discard
+*discard*	teardown-and-discard
+*destroy*	teardown-and-discard
+*auth*	authentication
+*credential*	authentication
+*secret*	authentication
+*password*	authentication
+*keychain*	authentication
+*token*	authentication
+*guard*	security-guards
+*security*	security-guards
+*permission*	security-guards
+*sandbox*	security-guards
+AGENTS.md	routing-policy
+*/AGENTS.md	routing-policy
+bin/fm-lane.sh	routing-policy
+bin/fm-lane-lib.sh	routing-policy
+.fm-critical-surfaces	routing-policy
+*/.fm-critical-surfaces	routing-policy
+EOF
+}
+
+# A project may ADD surfaces in a tracked .fm-critical-surfaces file at its root,
+# one "<glob> <surface-name>" per line, # comments and blank lines ignored. The
+# file is additive only: it can never remove a built-in surface, so a project
+# cannot weaken the catalog, only widen it. A malformed line is a refusal rather
+# than a skipped line, because a silently dropped pattern is a silently lost
+# surface.
+#
+# It is read from the repository's current working tree, so a delivery that
+# trimmed it would be routed against the trimmed list - which is why the file is
+# itself a built-in critical surface above. Widening the catalog stays free;
+# narrowing it is a change that takes the expensive lane like any other change
+# to how work is routed.
+#
+# NOT BEING ABLE TO READ THE FILE IS AN ERROR, NEVER AN EMPTINESS. It used to be
+# interpreted as absent, so a permissions problem, a directory left in its place
+# or a dangling symlink silently erased EVERY critical surface that project
+# declares at once, and the decision was made against the built-in catalog alone
+# while reading as "this project declares none". That guard did not degrade, it
+# switched off. Absent and unreadable are different answers and are now answered
+# differently: absent is the legitimate "declares no surfaces of its own".
+#
+# BEING UNABLE TO DETERMINE SOMETHING IS NOT THE SAME AS DETERMINING IT IS NOT
+# THERE. That is the general rule, written here because this invariant has now
+# leaked one level up twice: stating it for the FILE left it false for the
+# DIRECTORY, where a root that is present and stat-able but not searchable made
+# every existence test answer no and every declared surface vanish just the same.
+# Only a positively established absence - the directory could be searched and
+# the file is genuinely not there - may take the "declares none" path. An
+# existence test that could not run is not evidence of non-existence.
+fm_lane_project_surfaces() {
+  local repo=$1 file line glob name rest
+  file="$repo/.fm-critical-surfaces"
+  if [ ! -d "$repo" ] || [ ! -r "$repo" ] || [ ! -x "$repo" ]; then
+    echo "error: $repo cannot be searched, so whether it declares critical surfaces cannot be determined." >&2
+    echo "       Refusing rather than answering absent: an existence test that cannot run is not an answer of no." >&2
+    return 1
+  fi
+  if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+    return 0
+  fi
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    echo "error: $file exists but is not a readable regular file, so this project's declared critical surfaces cannot be read." >&2
+    echo "       Refusing rather than reading it as absent: not being able to read the list is not the same answer as the list being empty." >&2
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    read -r glob name rest <<<"$line"
+    case "$glob" in
+      ''|'#'*) continue ;;
+    esac
+    if [ -z "$glob" ] || [ -z "$name" ] || [ -n "$rest" ]; then
+      echo "error: $file: malformed line (expected \"<glob> <surface-name>\"): $line" >&2
+      return 1
+    fi
+    case "$name" in
+      *,*)
+        echo "error: $file: surface name may not contain a comma, which is what separates names in the record's critical column: $line" >&2
+        return 1
+        ;;
+    esac
+    printf '%s\t%s\n' "$glob" "$name"
+  done <"$file" || return 1
+  return 0
+}
+
+# fm_lane_catalog <repo-dir> -> the effective catalog for that repo.
+fm_lane_catalog() {
+  local repo=${1:-}
+  fm_lane_builtin_surfaces
+  [ -z "$repo" ] || fm_lane_project_surfaces "$repo" || return 1
+  return 0
+}
+
+# fm_lane_critical_hits <catalog-file> <path>... -> the distinct surface names
+# the paths touch, one per line, in catalog order.
+#
+# An entry that does not yield BOTH a glob and a surface name is refused here,
+# for the same reason fm_lane_project_surfaces refuses a malformed project line:
+# a silently dropped pattern is a silently lost surface. This is where the rule
+# reaches the built-in catalog too, whose entries are tab-separated and would
+# otherwise collapse into the glob field - and vanish - if anything ever
+# de-tabbed them.
+#
+# ONE NAMED EXCEPTION, and it is an exception to a GLOB, not to a surface.
+# *auth* is a rule BY SHAPE, and shape leaks: it also swallows the prose file
+# AUTHORS, so a contributors list was recorded as an AUTHENTICATION surface. It
+# leaked toward the safe side here - one unnecessary expensive review - but it
+# leaked, and a record that names the wrong surface does not measure, it
+# decorates. Exactly ONE NAME is excepted, and only in the spellings this policy
+# accepts as PROSE - no extension, .txt, or one of the accepted prose extensions,
+# derived from their owner above rather than written out again. Nothing broader:
+# oauth, authn, authz, auth/ and user_auth.py all still match, and so does
+# src/authors.py, so the security surface itself is unchanged.
+#
+# THE RESIDUAL IS ACCEPTED, and it is recorded here so the next reader does not
+# "fix" it the way it was once fixed. A spelling of AUTHORS outside the accepted
+# prose list - AUTHORS.org - is still recorded under authentication ALONGSIDE
+# governing-docs, and one of those two names is not true of it. That costs one
+# expensive review and an imprecise surface name in a rare row.
+#
+# The alternative was measured and cost more. Excepting authors.<anything> to
+# tidy that label removed the authentication surface from every path basenamed
+# authors.<ext> IN EVERY PROJECT THE FLEET ROUTES: src/authors.py went from
+# critical-surface to direct-PR reason=low-signal, and lib/oauth/authors.py with
+# it. The net believed to hold them - the governing-docs entry - exists only in
+# THIS house's .fm-critical-surfaces, so everywhere else there was nothing
+# behind it. A record that labels oddly is worth more than a fleet with one guard
+# fewer. FIX THE LABEL, NOT THE ROUTING - and if the label cannot be fixed
+# without touching portable routing, it stays as it is.
+fm_lane_authors_spelling() {
+  local base=$1 ext
+  case "$base" in
+    authors|authors.txt) return 0 ;;
+  esac
+  for ext in $(fm_lane_prose_extensions); do
+    [ "$base" != "authors.$ext" ] || return 0
+  done
+  return 1
+}
+
+fm_lane_critical_hits() {
+  local catalog=$1 path glob name lglob hits=""
+  local lpaths=()
+  shift
+  for path in "$@"; do
+    lpaths+=("$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')")
+  done
+  while IFS=$'\t' read -r glob name; do
+    [ -n "$glob" ] || continue
+    if [ -z "$name" ]; then
+      echo "error: critical-surface catalog entry has no surface name (expected \"<glob><tab><surface-name>\"): $glob" >&2
+      return 1
+    fi
+    case ",$hits," in
+      *",$name,"*) continue ;;
+    esac
+    lglob=$(printf '%s' "$glob" | tr '[:upper:]' '[:lower:]')
+    for path in ${lpaths[@]+"${lpaths[@]}"}; do
+      # shellcheck disable=SC2254  # lglob is catalog data and must expand as a pattern
+      case "$path" in
+        $lglob)
+          if [ "$lglob" = '*auth*' ] && fm_lane_authors_spelling "${path##*/}"; then
+            continue
+          fi
+          hits="${hits:+$hits,}$name"
+          printf '%s\n' "$name"
+          break
+          ;;
+      esac
+    done
+  done <"$catalog"
+}
+
+# --- the dispatch gate ------------------------------------------------------
+
+# fm_lane_gate_dispatch <task-id> <project> <mode> <yolo>
+# Called by every fresh ship dispatch (bin/fm-spawn.sh, bin/fm-promote.sh).
+# Records the dispatch, and refuses the ones the policy binds. Returns non-zero
+# on refusal; the caller must not launch.
+#
+# THE GATE IS ADVISORY FOR FRESH INTAKE, AND BINDING ON A MEASURED CHANGE. At
+# intake there is no diff yet, so the only evidence a decision can carry is
+# DECLARED - a path list nobody has produced a change for. Refusing the cheap
+# lane there would abolish direct-PR dispatch of fresh work and so move the
+# delivery posture the captain registered per project, which is a decision of
+# its own and not this policy's to take. So on declared evidence the gate
+# computes, explains and RECORDS the disagreement, then follows the registered
+# posture. Every disagreement is one row, which is exactly the measurement that
+# can later say whether the gate should become binding.
+#
+# It binds in exactly two cases, and the evidence grade of the recorded decision
+# is what tells them apart:
+#   - a critical surface, under BOTH evidence grades, because that is the tier
+#     the captain kept absolute;
+#   - any expensive decision made from DEMONSTRATED evidence, because there the
+#     policy looked at a real diff and said expensive; that is not fresh intake.
+#
+# A MISSING RECORD IS ASYMMETRIC. On the cheap lane it means the critical-surface
+# check never happened, so rigor is at stake and the dispatch is refused; the fix
+# is one decide command, after which the dispatch proceeds on whatever mode the
+# registered posture says. On the expensive lane and local-only it costs the
+# signals half of one delivery's measurement and no rigor at all, so it warns and
+# proceeds: a guard that stops the fleet over a lost datum costs more than it
+# protects. A failed record write splits the same way.
+#
+# local-only carve-out: a local-only project has no remote, so the expensive
+# lane does not exist for it and demanding a cheap-lane authorization would be
+# a demand that can never be met. Its review rigor is the captain's standing
+# registry posture, unchanged by this policy. It is recorded and never gated.
+fm_lane_gate_dispatch() {
+  local task=$1 project=$2 mode=$3 yolo=$4
+  local log row binding lane evidence reason decided_project dispatch_reason
+
+  case "$mode" in
+    no-mistakes|direct-PR|local-only) ;;
+    *)
+      echo "error: fm_lane_gate_dispatch got an unknown delivery mode: $mode" >&2
+      return 1
+      ;;
+  esac
+
+  log=$(fm_lane_log_path)
+  row=$(fm_lane_last_decision "$log" "$task")
+  decided_project=
+  [ -z "$row" ] || decided_project=$(printf '%s\n' "$row" | cut -f4)
+
+  if [ -n "$row" ] && [ "$decided_project" != "$project" ]; then
+    if [ "$mode" = direct-PR ]; then
+      echo "error: the recorded lane decision for $task is for project $decided_project, not $project; a decision never authorizes another project's change." >&2
+      return 1
+    fi
+    echo "warning: the recorded lane decision for $task is for project $decided_project, not $project, so it says nothing about this delivery." >&2
+    row=
+  fi
+
+  if [ -n "$row" ] && [ "$(printf '%s\n' "$row" | cut -f6)" != demonstrated ] \
+    && [ "$(printf '%s\n' "$row" | cut -f7)" != captain-override ]; then
+    binding=$(fm_lane_binding_decision "$log" "$task" "$project")
+    [ -z "$binding" ] || row=$binding
+  fi
+
+  if [ -z "$row" ]; then
+    if [ "$mode" = direct-PR ]; then
+      echo "error: $task has no recorded lane decision, so the cheap lane (direct-PR) is not authorized." >&2
+      echo "       Run bin/fm-lane.sh decide $task --project $project --repo <dir> --paths <path>... first; with no record the critical-surface check never happened." >&2
+      return 1
+    fi
+    echo "warning: $task has no recorded lane decision, so this $mode delivery is measured without the signals that would have decided its lane." >&2
+    echo "         Run bin/fm-lane.sh decide $task --project $project --repo <dir> --paths <path>... before the dispatch to complete the record." >&2
+    fm_lane_append dispatch "$task" "$project" "$mode" - "yolo=$yolo" - - - - \
+      || echo "warning: the dispatch for $task could not be recorded, so this delivery is missing from the measurement." >&2
+    return 0
+  fi
+
+  lane=$(printf '%s\n' "$row" | cut -f5)
+  evidence=$(printf '%s\n' "$row" | cut -f6)
+  reason=$(printf '%s\n' "$row" | cut -f7)
+  dispatch_reason="yolo=$yolo"
+
+  if [ "$mode" = direct-PR ]; then
+    if [ "$lane" = direct-PR ]; then
+      dispatch_reason="$dispatch_reason;authorized-by=$reason"
+    elif [ "$reason" = critical-surface ]; then
+      echo "error: the recorded lane decision for $task is $lane ($reason), so direct-PR is not authorized." >&2
+      echo "       A critical surface binds under every evidence grade; ship $lane, or carry the captain's own words in --captain-override." >&2
+      return 1
+    elif [ "$evidence" = demonstrated ]; then
+      echo "error: the recorded lane decision for $task is $lane ($reason), measured from a real diff, so direct-PR is not authorized." >&2
+      echo "       Ship $lane, or record a new decision once the change can be shown benign." >&2
+      return 1
+    else
+      echo "advisory: the lane policy computed $lane ($reason) for $task from declared evidence, and this project's registered posture is $mode." >&2
+      echo "          There is no diff to measure at intake, so the posture is followed and the disagreement is recorded." >&2
+      dispatch_reason="$dispatch_reason;advisory=$lane:$reason"
+    fi
+  fi
+
+  fm_lane_append dispatch "$task" "$project" "$mode" - "$dispatch_reason" - - - - && return 0
+  [ "$mode" != direct-PR ] || return 1
+  echo "warning: the dispatch for $task could not be recorded, so this delivery is missing from the measurement." >&2
+  return 0
+}

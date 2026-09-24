@@ -38,7 +38,7 @@ Hard rules, in priority order:
    If work failed, say so plainly with the evidence.
 
 You may maintain this repo's private operational state directly.
-Shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and public `skills/`.
+Shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.fm-critical-surfaces`, `.github/workflows/`, `bin/`, `.agents/skills/`, and public `skills/`.
 When any crewmate is live, delegate changes to shared tracked material rather than competing with supervision; when the fleet is empty, firstmate may change it directly.
 This repo is a shared template, while `.env`, `data/`, `state/`, `config/`, `projects/`, and `.no-mistakes/` are captain-private and gitignored.
 Ship shared tracked changes through this repo's no-mistakes pipeline and PR path, with the same merge authority as any other project.
@@ -59,6 +59,7 @@ CONTRIBUTING.md      contributor workflow and repo conventions
 README.md            public overview and development notes
 .github/workflows/   shared CI and PR enforcement, committed
 .tasks.toml          tracked tasks-axi markdown backend config for the default backlog backend (section 10)
+.fm-critical-surfaces  this repo's own always-expensive review surfaces, committed; adds to the built-in catalog in bin/fm-lane-lib.sh and can never narrow it (section 7). Any project may carry one
 .agents/skills/      firstmate-loaded internal skills, committed; each carries metadata.internal=true for installers
 .claude/skills       symlink to .agents/skills for claude compatibility
 skills/              standalone public installer-facing skills, committed; not loaded by firstmate
@@ -90,6 +91,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
   projects.md        thin fleet navigation registry recording each project's standing delivery posture; firstmate-private, parsed for mechanical sync and seeding by fm-project-mode.sh (section 6)
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
+  lane-log.tsv       append-only record of every review-lane decision, ship dispatch and post-landing defect; firstmate-private, written only by bin/fm-lane.sh and the dispatch gate in bin/fm-lane-lib.sh, which owns its format (section 7)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
 projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception
@@ -302,6 +304,15 @@ A current explicit captain instruction wins; otherwise the project's registry en
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
 Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
+
+`no-mistakes` is the expensive review lane and `direct-PR` the cheap one, and `bin/fm-lane.sh decide` is what chooses between them: it is the written catalog that replaced a hot judgment, and its header owns the tiers, the evidence grades, and the flags.
+Run `decide` before every ship spawn or promotion, because the record of what the signals said is required for every delivery and not only the cheap ones, and a dispatch on the cheap lane is refused outright without one.
+At fresh intake there is no diff yet, so the gate informs and records rather than routes: it computes the lane, records the disagreement when the project's registered posture is cheaper than what it computed, and lets the dispatch proceed on that posture.
+It binds in exactly two cases, a critical surface and a decision made from a real diff.
+`local-only` is a landing mode rather than a review lane, because a project with no remote has no expensive lane to route to, so it is recorded but never gated and its rigor stays whatever the captain registered.
+Three facts survive with the script unread: a change touching a critical surface routes to `no-mistakes` no matter what every other signal says, a standard class earns the cheap lane only when the diff demonstrates it rather than when the task sounds like one, and a large change is routed to be looked at and never refused for its size.
+Only the captain's own explicit instruction reaches the cheap lane past a critical surface, through `--captain-override` carrying their words.
+When a defect turns up in work that already landed, record it with `bin/fm-lane.sh escape`: nobody has measured escaped defects against rigor skipped for agent-written changes, so that record is the only thing that can correct this policy with data.
 
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
