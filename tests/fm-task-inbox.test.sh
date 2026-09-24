@@ -23,6 +23,14 @@
 #      pane, stays silent on a healthy/empty inbox, surfaces unwritable ladder
 #      bookkeeping only while its record remains unhandled, and emits exactly
 #      one stale wake once the ring budget is spent.
+#   6. The escalation claims only what the busy contract established for that
+#      harness. On one whose working state is never established, a worker that
+#      acknowledges is never called deaf, an unacknowledged record with no turn
+#      boundary since it arrived is rechecked instead of routed to the
+#      stuck-worker procedure, and one that DID pass a turn boundary still
+#      escalates - naming that evidence rather than an idle pane it never read.
+#      A task with no turn-end wiring at all keeps escalating too, so the
+#      correction never trades a false deafness signal for a missing one.
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
@@ -125,6 +133,34 @@ wait_watcher_gone() {  # <pid> [limit-ticks]
 
 age_path() {  # <path>  (set mtime well past any grace under test)
   touch -t 202001010000 "$1"
+}
+
+# A worker whose harness writes no turn-end marker at all - a codex secondmate
+# carries no notify hook - must keep escalating. Detection is what the false
+# deafness signal cost, and removing it for the same adapter would only trade
+# one silence for another; the wake says instead which two states it cannot
+# tell apart.
+test_watcher_escalates_codex_without_turn_end_wiring() {
+  local dir state out log pid rec queue
+  dir=$(setup_watch_case_codex codex-no-turnend-wiring)
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "reconcile that handoff")
+  age_path "$rec"
+  [ ! -e "$state/t1.turn-ended" ] || fail "this case requires a task with no turn-end marker"
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_TASK_INBOX_RING_MAX=1
+  pid=$!
+  wait_watcher_gone "$pid" \
+    || { kill "$pid" 2>/dev/null; fail "a harness with no turn-end wiring stopped escalating entirely"; }
+  queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
+  grep -qF 'unread firstmate instruction' <<<"$queue" \
+    || fail "the escalation must survive a task with no turn-end evidence:"$'\n'"$queue"
+  grep -qF 'no completed turn on record' <<<"$queue" \
+    || fail "the escalation should name the missing turn evidence:"$'\n'"$queue"
+  grep -qF 'with an idle pane' <<<"$queue" \
+    && fail "the escalation claimed an idle pane on a harness that establishes none:"$'\n'"$queue"
+  pass "watcher: a harness with no turn-end wiring keeps escalating, naming the evidence it lacks"
 }
 
 test_write_is_durable_and_exact() {
@@ -352,6 +388,33 @@ setup_watch_case() {  # <name> -> echoes case dir; state in <dir>/state
   printf '%s\n' "$dir"
 }
 
+# The same fixture on a harness whose busy contract establishes NO working
+# state. Grok above classifies idle from its own rendered tail; codex
+# classifies unknown unconditionally, which is the whole point of these cases:
+# the ladder must not turn an unestablished state into a claim about the pane.
+setup_watch_case_codex() {  # <name> -> echoes case dir; state in <dir>/state
+  local name=$1 dir
+  dir="$TMP_ROOT/$name"
+  mkdir -p "$dir/state"
+  make_watch_stubs "$dir" >/dev/null
+  fm_write_meta "$dir/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=codex"
+  printf '%s\n' "$dir"
+}
+
+# Give <task> a turn-end marker with an optional touch stamp, and pre-seed the
+# watcher's seen marker through the production signature helpers so the fixture
+# answers the turn-boundary question without ALSO arriving as a fresh signal.
+seed_turn_end() {  # <state> <task> [touch-stamp]
+  local state=$1 task=$2 stamp=${3:-} f sig marker
+  f="$state/$task.turn-ended"
+  : > "$f"
+  [ -z "$stamp" ] || touch -t "$stamp" "$f"
+  sig=$(inbox_lib "$state" fm_wake_signal_sig "$f") || fail "could not sign the turn-end marker"
+  marker=$(inbox_lib "$state" fm_wake_signal_seen_path "$state" "$f") \
+    || fail "could not resolve the turn-end seen marker"
+  printf '%s' "$sig" > "$marker"
+}
+
 idle_capture() {  # <dir>
   printf '╭────╮\n│    │\n╰────╯\n' > "$1/idle.capture"
   printf '%s\n' "$1/idle.capture"
@@ -527,7 +590,100 @@ test_watcher_escalates_once_after_budget() {
   [ "$(grep -cF 'unread firstmate instruction' "$state/.wake-queue")" = 1 ] \
     || fail "the escalation must fire exactly once:"$'\n'"$(cat "$state/.wake-queue")"
   grep -qF 'stale:' "$out" || fail "the watcher should exit through the ordinary stale wake:"$'\n'"$(cat "$out")"
+  # Grok's contract establishes idle from its own rendered tail, so naming an
+  # idle pane here is a claim the watcher actually earned. The codex cases below
+  # pin the other side of that line.
+  grep -qF 'with an idle pane' "$state/.wake-queue" \
+    || fail "an established-idle harness should still name the idle pane:"$'\n'"$(cat "$state/.wake-queue")"
   pass "watcher: a spent ring budget emits exactly one ordinary stale wake for recovery"
+}
+
+# The captain's case: an instruction reaches a worker on the adapter with no
+# busy state, the worker complies, and nothing calls it deaf.
+test_watcher_codex_acknowledgement_never_escalates() {
+  local dir state out log pid rec i=0
+  dir=$(setup_watch_case_codex codex-ack)
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "stop that preflight run")
+  age_path "$rec"
+  # A turn boundary HAS passed since the record arrived, so nothing but the
+  # acknowledgement itself is holding the escalation back.
+  seed_turn_end "$state" t1
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_ACK_RECORD="$rec" FM_TASK_INBOX_RING_MAX=1
+  pid=$!
+  while [ "$i" -lt 100 ]; do
+    [ -f "$state/t1.inbox/handled/001.msg" ] && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -f "$state/t1.inbox/handled/001.msg" ] \
+    || { kill "$pid" 2>/dev/null; fail "the doorbell stub did not acknowledge the record"; }
+  sleep 2
+  kill -0 "$pid" 2>/dev/null \
+    || fail "an acknowledged instruction woke firstmate anyway:"$'\n'"$(cat "$out")"
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "an acknowledged instruction queued a wake:"$'\n'"$(cat "$state/.wake-queue")"
+  pass "watcher: a worker on a harness with no busy state that acknowledges is never called deaf"
+}
+
+# No turn has ended since the record arrived, so the worker has had no point at
+# which to read the doorbell, and on this harness nothing else establishes what
+# it is doing. The wake must say that instead of sending anyone to inspect it.
+test_watcher_holds_codex_with_no_turn_boundary() {
+  local dir state out log pid rec queue
+  dir=$(setup_watch_case_codex codex-no-boundary)
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  seed_turn_end "$state" t1 202001010000
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "that report landed early")
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_TASK_INBOX_RING_MAX=1 FM_PAUSE_RESURFACE_SECS=0
+  pid=$!
+  wait_watcher_gone "$pid" \
+    || { kill "$pid" 2>/dev/null; fail "the bounded recheck never surfaced:"$'\n'"$(cat "$out")"; }
+  queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
+  grep -qF 'unread firstmate instruction' <<<"$queue" \
+    && fail "a worker with no turn boundary since the record arrived was called deaf:"$'\n'"$queue"
+  grep -qF 'inspect the worker' <<<"$queue" \
+    && fail "an unestablished working state must not route to the stuck-worker procedure:"$'\n'"$queue"
+  grep -qF 'with an idle pane' <<<"$queue" \
+    && fail "the watcher claimed an idle pane on a harness that establishes none:"$'\n'"$queue"
+  grep -qF 'no turn boundary since it arrived' <<<"$queue" \
+    || fail "the recheck should name the missing turn boundary:"$'\n'"$queue"
+  grep -qF 'never reports whether it is working' <<<"$queue" \
+    || fail "the recheck should name which two states it cannot tell apart:"$'\n'"$queue"
+  [ -f "$rec" ] || fail "the held record must stay durable and unhandled"
+  pass "watcher: an unacknowledged record with no turn boundary is rechecked, never called deaf"
+}
+
+# A turn DID end after the record arrived and it is still unacknowledged, so the
+# worker had its chance: this one escalates, and detection is unchanged. What it
+# may not do is borrow the idle-pane wording it never earned.
+test_watcher_escalates_codex_after_a_turn_boundary() {
+  local dir state out log pid rec queue
+  dir=$(setup_watch_case_codex codex-boundary-passed)
+  state="$dir/state"; out="$dir/watch.out"; log="$dir/send.log"; : > "$log"
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "that report landed early")
+  age_path "$rec"
+  seed_turn_end "$state" t1
+  watch_bg "$state" "$dir/fakebin" "$out" \
+    FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+    FM_TASK_INBOX_RING_MAX=1
+  pid=$!
+  wait_watcher_gone "$pid" \
+    || { kill "$pid" 2>/dev/null; fail "a worker that passed a turn boundary unacknowledged never escalated"; }
+  queue=$(cat "$state/.wake-queue" 2>/dev/null || true)
+  grep -qF 'unread firstmate instruction' <<<"$queue" \
+    || fail "the escalation should still fire once the worker had its turn boundary:"$'\n'"$queue"
+  grep -qF 'turn boundary passed after it arrived' <<<"$queue" \
+    || fail "the escalation should name the evidence it actually has:"$'\n'"$queue"
+  grep -qF 'with an idle pane' <<<"$queue" \
+    && fail "the escalation claimed an idle pane on a harness that establishes none:"$'\n'"$queue"
+  pass "watcher: a passed turn boundary still escalates, naming that evidence instead of an idle pane"
 }
 
 test_write_is_durable_and_exact
@@ -545,3 +701,7 @@ test_watcher_quiet_on_healthy_inbox
 test_watcher_ack_silences_unwritable_ladder
 test_watcher_surfaces_unwritable_ladder
 test_watcher_escalates_once_after_budget
+test_watcher_codex_acknowledgement_never_escalates
+test_watcher_holds_codex_with_no_turn_boundary
+test_watcher_escalates_codex_after_a_turn_boundary
+test_watcher_escalates_codex_without_turn_end_wiring
