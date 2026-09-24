@@ -19,10 +19,12 @@
 // than one way: a single row carrying a nested value switches the whole block
 // from the tabular frame to the LIST frame, and a reader that recognized only the
 // tabular one made a captain message vanish with exit 0, indistinguishable from
-// the captain having said nothing. That was patched by hand once already. A
-// decoder that implements the whole format ends the class of defect instead of
-// administering it, so the format's own decoder is vendored under vendor/toon/
-// and this is the only reader of the frame.
+// the captain having said nothing. That rendering was already patched by hand
+// before this reader existed, so this closes no loss that is live today: what a
+// decoder implementing the whole format buys is prospective, ending the class of
+// defect instead of administering it one rendering at a time. So the format's own
+// decoder is vendored under vendor/toon/ and this is the only reader of the
+// frame.
 //
 // VENDORED DECODER. vendor/toon/index.mjs is @toon-format/toon 4.1.1's
 // published `dist/index.mjs`, byte for byte, with its MIT LICENSE beside it.
@@ -70,24 +72,19 @@
 // A TRUNCATED CAPTURE STILL DELIVERS WHAT SURVIVED. The runner bounds a
 // captured result (`FM_PROCEVENT_MAX_OUTPUT_BYTES`), so a long review can
 // arrive cut mid-row, and the words that did arrive must still be delivered.
-// Decoding the whole document is what buys the frame back, and its cost is that
-// damage anywhere would otherwise hide intact rows earlier in the file, so three
-// bounded recoveries stand behind the strict read, each one only ever decoding a
-// PREFIX of what really arrived:
+// Strict decoding refuses a cut document outright, so two bounded recoveries
+// stand behind the strict read, each one only ever decoding a PREFIX of what
+// really arrived:
 //
 //   1. the decoder's own non-strict mode, which stops enforcing declared array
 //      lengths and tabular row counts - a cut block legitimately holds fewer
 //      rows than its header announced;
 //   2. a repair of the trailing cut itself - close an unterminated string on the
 //      last line, else drop that line - over at most MAX_REPAIR_LINES lines,
-//      because a cut damages the end of a document and not its middle;
-//   3. retreat by whole top-level blocks, up to MAX_RETREAT_BLOCKS of them, so a
-//      block this decoder will not read cannot take the readable blocks before
-//      it down with it. A top-level key starts at column zero, which is the
-//      format's own indentation rule rather than anything specific to Lavish.
+//      because the output bound cuts the end of a capture and never its middle.
 //
-// Every one of those still yields a document this decoder accepts, so no row is
-// ever reconstructed by hand. A capture none of them reads is refused out loud -
+// Both still yield a document this decoder accepts, so no row is ever
+// reconstructed by hand. A capture neither of them reads is refused out loud -
 // `messages` exit 3, which the runner turns into a note naming the result for
 // the captain to read himself - rather than reported as empty, because empty is
 // the one answer that looks exactly like the captain having said nothing.
@@ -110,10 +107,6 @@ import { dirname, join } from 'node:path';
 
 // Truncation is a trailing-line defect, so the repair is bounded to the tail.
 const MAX_REPAIR_LINES = 8;
-
-// A response carries a handful of top-level blocks, so retreating past this many
-// is not recovering from one unreadable block; it is guessing.
-const MAX_RETREAT_BLOCKS = 32;
 
 // A content block the captured text declares, anchored at column zero because
 // every payload line is indented: captain-supplied text can neither forge a
@@ -179,9 +172,10 @@ function publishedRows(document) {
   return { decoded: true, rows };
 }
 
-// Steps 1 and 2 of the header's recovery ladder over one prefix: decode it, then
-// repair the trailing cut. Returns undefined when neither reads it.
-function readLines(decode, lines) {
+// Both recoveries from the header, over the captured text: decode it, then repair
+// the trailing cut. Returns undefined when neither reads it.
+function readDocument(decode, text) {
+  const lines = text.split('\n');
   const attempt = (candidate) => {
     try {
       return decode(candidate.join('\n'), DECODE_OPTIONS);
@@ -198,27 +192,6 @@ function readLines(decode, lines) {
     if (document !== undefined) return document;
     document = attempt(head.slice(0, -1));
     if (document !== undefined) return document;
-  }
-  return undefined;
-}
-
-// The whole document, else step 3: the same read over the document with its last
-// top-level block dropped, then the one before that, and so on. Returns
-// undefined when no prefix of whole top-level blocks reads.
-function readDocument(decode, text) {
-  const lines = text.split('\n');
-  let end = lines.length;
-  for (let retreats = 0; retreats <= MAX_RETREAT_BLOCKS; retreats++) {
-    const document = readLines(decode, lines.slice(0, end));
-    if (document !== undefined) return document;
-    // The line that opens the last top-level block, which is where this prefix
-    // is cut back to. A document with none left has nothing further to retreat.
-    let start = -1;
-    for (let at = end - 1; at > 0; at--) {
-      if (/^[^\s]/.test(lines[at])) { start = at; break; }
-    }
-    if (start < 0) return undefined;
-    end = start;
   }
   return undefined;
 }

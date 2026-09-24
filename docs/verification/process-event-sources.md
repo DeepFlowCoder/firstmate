@@ -35,7 +35,7 @@ So reading that format is not a choice, and the only choice ever available was w
 
 Reading it by hand cost a silent loss once already.
 A review round on 2026-08-30 found the hand reader blind to the LIST rendering - which one row carrying an object field switches the whole block into, and an annotation, a whiteboard edit and a layout-warnings row all carry one - so the captain's words reached no reader at all while the command exited 0, which is indistinguishable from the captain having said nothing.
-That face was then patched by hand, and patching renderings one at a time is the pattern this delivery ends rather than a loss it repairs: by this fork's base commit the LIST rendering was already read.
+That face was then patched by hand, and patching renderings one at a time is the pattern this delivery ends rather than a loss it repairs: by this fork's base commit the LIST rendering was already read, so there is no live loss here to close.
 
 Which block carries the rows was RE-READ in the installed 0.1.52, because an earlier round of this delivery recorded a second block name as measured fact and that was an assumption, not a measurement:
 
@@ -50,8 +50,27 @@ That one builder has one call site, and its only branch carrying content - `stat
 So `prompts` is the one name a poll response can publish rows under, and the reader takes rows from that key alone.
 The `feedback[N]` name stays admitted as DETECTION only - in this reader's declared-content-block check and, separately, in the `silent` seam's line scan - because both fail toward reporting: a declared content block no rows were taken from is refused out loud rather than read as an empty review, so a block name this tool does not publish today would surface as something unread instead of as silence.
 
-What this delivery is worth, claiming nothing more: the format's own decoder replaces the hand-written analysis of the frame, so a rendering the reader has never seen can no longer become a blind spot, and three real defects were found and pinned while getting there - non-ASCII captain content mangled on its way through the adapter, verified against the base commit; a declared content block whose rows a recovery discarded being read as an empty review; and, while two keys were still read, an empty block shadowing a populated one, whose regression retired with the second key it depended on.
-A regression added in this delivery's own fix round could not fail and was rewritten to pin measured bytes.
+The before-the-fix demonstration this delivery was commissioned to produce is RETIRED, not met and not weakened.
+Its original form required demonstrating a live silent-loss face before fixing it; measurement showed there is no such live face in this tree, and a criterion that requires demonstrating a defect that does not exist cannot be satisfied.
+No demonstration was fabricated to close it.
+
+The three defects earlier recorded here as real were regressions in this delivery's own UNPUBLISHED work, caught by the pipeline before publishing: the keyed answer lost entirely, the declared-count bound's empty read, and an empty array shadowing a populated one.
+They are not product defects and are not to be recorded as such.
+The reason reaches past this delivery: counting them as product defects would corrupt the only record able to correct this house's review-lane policy with data, because a defect the process catches before publishing is the process WORKING, not a product failure.
+
+The only PRE-EXISTING defect this delivery surfaced is the keyed answer's value arriving in latin-1.
+It is deferred under its own ticket, `fm-respuesta-del-capitan-llega-en-latin1`, which stays open; this delivery leaves that behaviour at base parity deliberately.
+
+The accented-prose loss did not exist at base.
+Base read the result's raw bytes and passed them through, so accented captain prose came out as valid UTF-8, byte-identical to this tree's output.
+This is recorded plainly because the opposite was asserted twice, and the correction has to outlive the conversation that made it.
+
+What this delivery is worth, with no demonstration and claiming nothing more: against base, on shapes the real 0.1.52 can produce, it closes NO live loss of captain messages.
+What it does is what the captain deliberately bought on 2026-08-30 when he chose the vendored copy of the decoder - in his own words in the record, it "eliminates the entire failure mode instead of administering it".
+Its value is PROSPECTIVE by design, not retrospective: an unrecognized rendering can no longer become a silent blind spot.
+Plus the hardening: content the decoder cannot read now refuses out loud where base read it as empty.
+
+One thing the old reader could do is worse than losing a message: the hand parser could SCRAPE a damaged block and emit fabricated separate utterances nobody ever wrote, and inventing words the captain never said leaves no trace that they were invented.
 
 `bin/fm-lavish-rows.mjs` now owns the frame and decodes it with `@toon-format/toon` 4.1.1, vendored verbatim under `vendor/toon/` (MIT, zero runtime dependencies, one published module; sha256 `34bf8dce99dccd5632b19f6dc7eb4278502f81f327208de4ea0454d4c1ee4871`).
 Its header owns the refresh commands and the recovery ladder that keeps a bound-cut capture delivering the rows that survived.

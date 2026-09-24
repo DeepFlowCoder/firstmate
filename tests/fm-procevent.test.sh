@@ -992,12 +992,19 @@ CUT2_BIN=$(fm_fakebin "$TMP_ROOT/lavish-cut2-stub")
 cat > "$CUT2_BIN/lavish-axi" <<'SH'
 #!/usr/bin/env bash
 # Stand-in for `lavish-axi poll <file>` on a board whose first row is the
-# captain's message and whose later rows run past the bound.
+# captain's message and whose second row runs past the bound, in the key order
+# the published poll emits: session, dom_snapshot, the prompts block, next_step.
+# The bound lands inside the second row's own text, so the capture arrives with
+# an unterminated value on its last line and fewer rows than its header declares.
 printf 'session:\n  file: /cut2.html\n  status: feedback\n  session_ended: true\n  ended_by: user\n'
-printf 'prompts[1]{uid,prompt,selector,tag,text}:\n'
+printf 'dom_snapshot: ""\n'
+printf 'prompts[3]{uid,prompt,selector,tag,text}:\n'
 printf '  "",hold the release until Thursday,"",message,Freeform message\n'
-printf 'notes:\n'
-awk 'BEGIN { for (i = 0; i < 200; i++) print "  a queued row past the captain block" }'
+printf '  p2,"the second half of my review: '
+awk 'BEGIN { for (i = 0; i < 120; i++) printf "the gateway box has to move before the auth box; " }'
+printf '","",message,"Freeform message"\n'
+printf '  p3,"and only then ship it","",message,"Freeform message"\n'
+printf 'next_step: stop polling and deliver the rest in this conversation\n'
 SH
 chmod +x "$CUT2_BIN/lavish-axi"
 CUT2_ART="$TMP_ROOT/cut2-board.html"
@@ -1012,6 +1019,8 @@ wait_for_notes "$HCUT2" 1 \
   || fail "a cut capture carrying surviving words routed no note at all"
 assert_contains "$(note_bodies "$HCUT2")" "hold the release until Thursday" \
   "the words that survived the bound were dropped along with the ones that did not"
+assert_contains "$(note_bodies "$HCUT2")" "the second half of my review" \
+  "the surviving text of the row the bound cut in half was not delivered"
 assert_contains "$(note_bodies "$HCUT2")" "Part of this result was discarded" \
   "surviving words were presented as the whole of what the captain said"
 pass "a cut capture delivers the words that survived and still says content was discarded"
