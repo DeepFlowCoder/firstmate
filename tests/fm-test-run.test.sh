@@ -138,6 +138,14 @@ init_changed_fixture_repo() {
   mkdir -p "$repo/tests/assets"
   : >"$repo/tests/assets/probe-harness.mjs"
   printf '# tests/assets/probe-harness.mjs\n' >>"$repo/tests/fm-control-herdr-smoke.test.sh"
+  # A vendored third-party copy, keyed on its DIRECTORY: its module and its
+  # license text are one copy and must select the same coverage, and a copy no
+  # test names has no mapping at all rather than a quietly empty one.
+  mkdir -p "$repo/vendor/probe" "$repo/vendor/unnamed"
+  : >"$repo/vendor/probe/index.mjs"
+  : >"$repo/vendor/probe/LICENSE"
+  : >"$repo/vendor/unnamed/index.mjs"
+  printf '# vendor/probe\n' >>"$repo/tests/fm-daemon.test.sh"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
@@ -258,6 +266,22 @@ test_changed_dependency_selection_and_unmapped_failure() {
   git -C "$repo" add .agents/skills/harness-adapters/SKILL.md
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm harness-adapter-router-change
 
+  # A vendored copy resolves through the suite that names its DIRECTORY, so its
+  # license text selects the same coverage its module does; the license is the
+  # leg that matters, because it is the file nothing would think to map.
+  printf '\n' >>"$repo/vendor/probe/LICENSE"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-daemon.test.sh" \
+    "a vendored copy's license text selects the coverage that names the copy"
+  git -C "$repo" add vendor/probe/LICENSE
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm vendor-license-change
+  printf '\n' >>"$repo/vendor/probe/index.mjs"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-daemon.test.sh" \
+    "a vendored copy's module selects the coverage that names the copy"
+  git -C "$repo" add vendor/probe/index.mjs
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm vendor-module-change
+
   printf '\n' >>"$repo/src/unmapped.ts"
   set +e
   (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
@@ -266,6 +290,20 @@ test_changed_dependency_selection_and_unmapped_failure() {
   [ "$rc" -eq 2 ] || fail "unmapped changed source must fail with exit 2, got $rc"
   grep -Fq 'no changed-test mapping for source path: src/unmapped.ts' "$tmp/err" \
     || fail "unmapped changed source failure is not actionable: $(cat "$tmp/err")"
+  git -C "$repo" add src/unmapped.ts
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm unmapped-source-change
+
+  # A vendored copy no test names is unmapped, not quietly empty, for the same
+  # reason: a selection that silently skipped it would run nothing for a change
+  # to third-party code the fleet executes.
+  printf '\n' >>"$repo/vendor/unnamed/index.mjs"
+  set +e
+  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "an unnamed vendored copy must fail with exit 2, got $rc"
+  grep -Fq 'no changed-test mapping for source path: vendor/unnamed/index.mjs' "$tmp/err" \
+    || fail "an unnamed vendored copy's failure is not actionable: $(cat "$tmp/err")"
   rm -rf "$tmp"
   pass "changed selection covers dependents and fails closed for unmapped source"
 }

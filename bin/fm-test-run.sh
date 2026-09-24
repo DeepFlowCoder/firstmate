@@ -1101,7 +1101,7 @@ families_for_unmapped_bin() {
 # Conservative path → family map. Over-selects rather than under-selects.
 # Never expands to the complete suite.
 families_for_changed_path() {
-  local path=$1 fixture_ref
+  local path=$1 fixture_ref vendor_ref
   case "$path" in
     tests/fm-backend-herdr-eventwait.test.py)
       printf '%s\n' real-herdr-gated
@@ -1371,6 +1371,19 @@ families_for_changed_path() {
       # make every retirement branch unable to select its changed tests.
       if [ -e "$path" ]; then
         families_for_unmapped_bin "$path" \
+          || printf '%s\n' "__unmapped__:$path"
+      fi
+      ;;
+    vendor/*/*)
+      # A verbatim third-party copy is never exercised on its own, so it belongs
+      # to whichever suite names its directory - the same reference scan the
+      # fixture case uses, and keyed on the directory for the same reason: every
+      # file of one copy, its license text included, selects one set of suites.
+      # A removed copy has no consuming suite left to select.
+      vendor_ref=${path#vendor/}
+      vendor_ref=${vendor_ref%%/*}
+      if [ -d "vendor/$vendor_ref" ]; then
+        families_for_test_reference "vendor/$vendor_ref" \
           || printf '%s\n' "__unmapped__:$path"
       fi
       ;;

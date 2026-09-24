@@ -118,6 +118,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-procevent.sh`        | Generic process-to-event runner: supervise a registered long-polling child and turn completed results into normalized durable wakes |
 | `fm-procevent-lib.sh`    | Shared identity, ownership, capture, and publication rules for the generic process-to-event runner |
 | `fm-procevent-lavish.sh` | Lavish adapter for the generic process-to-event runner                               |
+| `fm-lavish-rows.mjs`     | Read a captured Lavish result's published rows with the response format's own vendored decoder |
 | `fm-gate-refuse-lib.sh`  | Shared no-mistakes gate-context refusal for fleet lifecycle entrypoints               |
 | `fm-watch-arm.sh`        | Verified home-scoped watcher arm wrapper with loud cycle endings and bounded lifecycle ledger |
 | `fm-watch-checkpoint.sh` | Run one bounded foreground watcher checkpoint for Codex-style supervision            |

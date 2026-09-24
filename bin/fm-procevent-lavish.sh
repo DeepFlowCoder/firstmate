@@ -94,25 +94,19 @@
 #
 # Both commands read their rows through ONE frame reader, because a row either
 # command cannot see is a row the other cannot see either, and that is exactly
-# the loss above. The published block is always keyed `prompts` - a feedback
-# response is one object whose only key carrying captain rows is `prompts`, and a
-# block is named after its key - but it arrives in either of the two renderings
-# the serializer chooses between. When every row is flat it is TABULAR,
-# `prompts[N]{field,...}:` with one CSV row per prompt. When ANY row carries a
-# nested value the whole block is a LIST instead, `prompts[N]:` with `- ` opening
-# each row and one `field: value` per line. A nested value is ordinary, not
-# exotic: an element annotation, an image attachment, and every
-# `layout-warnings` or `whiteboard` row all carry one, and a single such row
-# switches the whole block, taking every plain message beside it out of the
-# tabular shape too. Nested values inside a row are skipped rather than read, and
-# scalars are unquoted and unescaped identically in both renderings, so the two
-# frames yield the same fields and neither command can be blind to a shape the
-# other can see.
-#
-# The `feedback[N]` alternative the `silent` seam's content check accepts is
-# deliberately over-broad DETECTION, not a third frame - that check fails toward
-# announcing, so admitting a frame that never arrives costs nothing, while
-# reading rows out of it here would report utterances the poll never published.
+# the loss above. That reader is bin/fm-lavish-rows.mjs, which decodes the
+# response with the response format's OWN decoder, vendored under vendor/toon/,
+# and its header owns the frame contract: which block is read, what a row
+# becomes, and how a capture the output bound cut still delivers what survived.
+# Nothing here parses the frame, which is deliberate. Reading the frame by hand
+# cost two rounds of one defect wearing different faces - the response is one
+# object the serializer may render several ways, and every rendering a hand
+# reader did not recognize made the captain's words vanish at exit 0 - so the
+# frame layer is the decoder's and this adapter keeps only what is specific to
+# Lavish: which rows are prose, which are keyed answers, and what each is capped
+# at. The `silent` seam's own content check stays a separate, deliberately
+# over-broad line scan, because it decides only whether a result carries any
+# content block at all and must keep failing toward announcing.
 #
 # Two published rows are machine-shaped rather than typed prose - a
 # `layout-warnings` tag carrying queued layout issues, and a `whiteboard` tag
@@ -171,7 +165,7 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,159p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,153p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
 # session on the realpath of the artifact, so two names for one file are one
@@ -441,105 +435,30 @@ cmd_silent() {
   [ "$content_rc" -eq 1 ]
 }
 
-# The one reader for the published `prompts` block, shared by both content
-# commands so they can never disagree about which rows a result contains; see
-# the frame note in the header for the two renderings and why either can arrive.
-# `lavish_prompt_rows` returns one field map per row, or undef when the result
-# could not be read at all.
-#
-# The header is anchored at column ZERO in both renderings, and every payload
-# line is indented, so captain-supplied text can never forge - or hide behind - a
-# content header. The declared row count bounds what is read, the block ends at
-# the first unindented line, and a row's nested values are skipped rather than
-# descended into, so a nested block header is never mistaken for a field. The
-# serializer quotes and escapes any scalar that would otherwise be ambiguous, so
-# one row is always one set of single-line fields.
+# Decode a captured result's published rows through the one frame reader, whose
+# own header owns the frame contract. Prints that reader's JSON row array; exits
+# nonzero, and prints nothing on stdout, when the result could not be read at
+# all. Both content commands go through here so they can never disagree about
+# which rows a result contains.
+lavish_rows_json() {  # <result-file>
+  "$SCRIPT_DIR/fm-lavish-rows.mjs" "$1"
+}
+
+# The Lavish-specific half of reading a result, holding everything the frame
+# reader deliberately does not: which rows are keyed answers, which are prose,
+# and what each is capped at. `lavish_prompt_rows` takes the decoded row array
+# on stdin and returns one field map per row, or undef when that array did not
+# arrive - which is how a read failure upstream stays distinguishable here from
+# a result that simply carried no rows.
 # shellcheck disable=SC2016 # Perl owns every $ expression in this literal program.
 PROMPT_ROWS_PL='
 use strict; use warnings;
-sub lavish_unescape {
-  my ($s) = @_;
-  $s =~ s/\\(.)/$1 eq "n" ? "\n" : $1 eq "t" ? "\t" : $1 eq "r" ? "\r" : $1/ge;
-  return $s;
-}
-sub lavish_scalar {
-  my ($v) = @_;
-  return "" unless defined $v;
-  $v =~ s/\s+\z//;
-  return lavish_unescape($1) if $v =~ /\A"((?:[^"\\]|\\.)*)"\z/;
-  return $v;
-}
-sub lavish_list_field {
-  my ($row, $text) = @_;
-  return unless $text =~ /\A([A-Za-z_][A-Za-z0-9_.-]*)(?:\[\d+\](?:\{[^}]*\})?)?:[ \t]*(.*)\z/;
-  $row->{$1} = lavish_scalar($2);
-}
-sub lavish_table_rows {
-  my ($want, $fields, $body) = @_;
-  my @rows;
-  for my $line (@$body) {
-    last if @rows >= $want;
-    my $rest = $line;
-    $rest =~ s/\A\s+//;
-    my @vals;
-    while (length $rest) {
-      if ($rest =~ s/\A"((?:[^"\\]|\\.)*)"//) {
-        push @vals, lavish_unescape($1);
-      } else {
-        $rest =~ s/\A([^,]*)//;
-        push @vals, $1;
-      }
-      last unless $rest =~ s/\A,//;
-    }
-    my %f;
-    $f{$fields->[$_]} = $vals[$_] for 0 .. $#$fields;
-    push @rows, \%f;
-  }
-  return \@rows;
-}
-sub lavish_list_rows {
-  my ($want, $body) = @_;
-  my (@rows, $field_indent, $row);
-  for my $line (@$body) {
-    if ($line =~ /\A([ \t]*)-[ \t]+(\S.*)\z/) {
-      my $at = length $1;
-      $field_indent = $at + 2 unless defined $field_indent;
-      next unless $at + 2 == $field_indent;
-      $row = {};
-      push @rows, $row;
-      lavish_list_field($row, $2);
-      next;
-    }
-    next unless defined $row;
-    next unless $line =~ /\A([ \t]*)(\S.*)\z/;
-    next unless length($1) == $field_indent;
-    lavish_list_field($row, $2);
-  }
-  splice(@rows, $want) if @rows > $want;
-  return \@rows;
-}
 sub lavish_prompt_rows {
-  my ($path) = @_;
-  open my $fh, "<", $path or return undef;
-  my ($frame, $want, @fields, @body);
-  while (my $line = <$fh>) {
-    if (!defined $frame) {
-      if ($line =~ /^prompts\[(\d+)\]\{([^}]*)\}:\s*$/) {
-        ($want, @fields) = ($1, split /,/, $2);
-        $frame = "table";
-      } elsif ($line =~ /^prompts\[(\d+)\]:\s*$/) {
-        ($want, $frame) = ($1, "list");
-      }
-      next;
-    }
-    last unless $line =~ /^\s/;
-    chomp $line;
-    push @body, $line;
-  }
-  close $fh;
-  return [] unless defined $frame;
-  return lavish_table_rows($want, \@fields, \@body) if $frame eq "table";
-  return lavish_list_rows($want, \@body);
+  my $json = do { local $/; <STDIN> };
+  return undef unless defined $json && length $json;
+  my $rows = eval { JSON::PP::decode_json($json) };
+  return undef unless ref($rows) eq "ARRAY";
+  return $rows;
 }
 sub lavish_keyed_answer {
   my ($f) = @_;
@@ -580,12 +499,12 @@ sub lavish_keyed_answer {
 # `<origin>-decision-<key>` identities pre-collapse decks still carry; the
 # security property is the slug SHAPE, which is unchanged.
 cmd_answers() {
-  local file=${1-}
+  local file=${1-} rows
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
-  perl -MJSON::PP -e "$PROMPT_ROWS_PL" -e '
-    my ($path) = @ARGV;
-    my $rows = lavish_prompt_rows($path);
+  rows=$(lavish_rows_json "$file") || exit 1
+  printf '%s' "$rows" | perl -MJSON::PP -e "$PROMPT_ROWS_PL" -e '
+    my $rows = lavish_prompt_rows();
     defined $rows or exit 1;
     my %seen;
     my @out;
@@ -598,15 +517,15 @@ cmd_answers() {
       push @out, length $mode ? "$key\t$answer\t$label\t$mode" : "$key\t$answer\t$label";
     }
     print "$_\n" for grep { defined } @out;
-  ' "$file"
+  '
 }
 
 # Print `message<TAB>context` for every row of a captured result the keyed-answer
 # intake did not consume; see the complementarity note in the header for why the
 # two commands partition the rows on that and not on the tag, and why this one
 # fails toward reporting. It reads the shared row map and the shared keyed-answer
-# predicate, so it sees every row `answers` sees in either published rendering
-# and keeps precisely the ones `answers` left. Control characters are flattened, so one captain
+# predicate, so it sees every row `answers` sees, whatever frame the response
+# used, and keeps precisely the ones `answers` left. Control characters are flattened, so one captain
 # message is always one record and a multi-line message can never split into
 # rows that read as separate utterances. The message itself is never truncated -
 # losing the captain's words is the defect this exists to close, and the runner
@@ -617,15 +536,15 @@ cmd_answers() {
 # contract in the header: 0 once the result has been read, 3 for every way this
 # can fail to read it, including an interpreter that never ran.
 cmd_messages() {
-  local file=${1-}
+  local file=${1-} rows
   [ -n "$file" ] || usage
   if [ ! -f "$file" ] || [ -L "$file" ]; then
     printf 'error: result file does not exist: %s\n' "$file" >&2
     exit 3
   fi
-  perl -MJSON::PP -e "$PROMPT_ROWS_PL" -e '
-    my ($path) = @ARGV;
-    my $rows = lavish_prompt_rows($path);
+  rows=$(lavish_rows_json "$file") || exit 3
+  printf '%s' "$rows" | perl -MJSON::PP -e "$PROMPT_ROWS_PL" -e '
+    my $rows = lavish_prompt_rows();
     defined $rows or exit 1;
     for my $r (@$rows) {
       my %f = %$r;
@@ -642,7 +561,7 @@ cmd_messages() {
       $context = substr($context, 0, 512);
       print "$message\t$context\n";
     }
-  ' "$file" || exit 3
+  ' || exit 3
 }
 
 case "${1-}" in

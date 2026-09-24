@@ -637,9 +637,18 @@ done
   || fail "an ended review kept being polled: $(cat "$LAVISH_POLL_COUNT") polls for one Send & End"
 [ "$(count_results "$HLT" "$lavish_id")" = 1 ] \
   || fail "one Send & End produced $(count_results "$HLT" "$lavish_id") captured results"
-[ "$(wake_payloads "$HLT" | sort -u | grep -c .)" = 1 ] \
-  || fail "one Send & End produced more than one distinct event: $(wake_payloads "$HLT" | sort -u)"
+# What must stay exactly one is the CAPTURE announcement: the defect this
+# regression pins was a source that kept being restarted, so a second
+# `procevent lavish` payload is the shape it took. The captain's own words in
+# that same result legitimately arrive as their own note wake beside it, which
+# is the established shape for a result carrying prose, so counting every
+# distinct payload instead would have this pass only while those words were
+# being dropped.
+[ "$(wake_payloads "$HLT" | grep -F "procevent lavish" | sort -u | grep -c .)" = 1 ] \
+  || fail "one Send & End produced more than one capture event: $(wake_payloads "$HLT" | sort -u)"
 assert_contains "$(wake_payloads "$HLT")" "procevent lavish $lavish_id 1" "the human's final feedback is announced"
+assert_contains "$(note_bodies "$HLT")" "ship it" \
+  "the human's words in a feedback-framed close reached the captain"
 assert_absent "$HLT/state/procevent/$lavish_id.source" "the ended review source retires automatically"
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/$lavish_id.claim" "the ended review releases its owned claim"
 LAVISH_RESULT=$(first_result "$HLT" "$lavish_id" || true)
@@ -1063,15 +1072,23 @@ LAVISH_COUNT="$TMP_ROOT/retry-count"; LAVISH_SCRIPT="interrupt interrupt feedbac
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" FM_HOME="$HRETRY" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$RETRY_ART" >/dev/null
 PATH="$LAVISH_SCRIPTED_BIN:$PATH" pe "$HRETRY" reconcile >/dev/null
-wait_for "$HRETRY/state/.wake-queue" || fail "feedback after interrupted polls produced no wake"
+# The delivered feedback carries the captain's words, so it publishes both its
+# own capture wake and the note wake those words earn; the note is written first,
+# so waiting only for the queue to exist would read it mid-sequence.
+wait_for_lines "$HRETRY/state/.wake-queue" 2 \
+  || fail "feedback after interrupted polls produced no wake"
 [ "$(cat "$LAVISH_COUNT")" = 3 ] \
   || fail "the interrupted listener was polled $(cat "$LAVISH_COUNT") times, not the two quiet retries plus the delivering poll"
 [ "$(count_results "$HRETRY" "$retry_id")" = 1 ] \
   || fail "a retried interruption produced $(count_results "$HRETRY" "$retry_id") captured results instead of one"
-[ "$(wake_payloads "$HRETRY" | sort -u | grep -c .)" = 1 ] \
+# What the retries must not do is announce themselves, so what is counted is the
+# distinct CAPTURE payloads: three polls, one capture event.
+[ "$(wake_payloads "$HRETRY" | grep -F "procevent lavish" | sort -u | grep -c .)" = 1 ] \
   || fail "a retried interruption woke the fleet: $(wake_payloads "$HRETRY" | sort -u)"
 assert_contains "$(wake_payloads "$HRETRY")" "procevent lavish $retry_id 1" \
   "feedback arriving after quiet retries is captured and announced"
+assert_contains "$(note_bodies "$HRETRY")" "ship it" \
+  "the words in the feedback that ended the retries reached the captain"
 assert_grep 'ship it' "$(first_result "$HRETRY" "$retry_id")" \
   "the announced result is the captain's feedback, not the interruption"
 pass "a transient Lavish poll interruption is retried quietly and never announced"
@@ -2064,6 +2081,118 @@ out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
 [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ] \
   || fail "captain text spelling out list rows split into more than one record: $out"
 assert_contains "$out" "line one line two" "the flattened message lost its own words"
+
+# The block under the response's other published name. Twice in a row a reader
+# that recognized only some of the shapes the serializer emits made the captain's
+# words vanish at exit 0 - first this name, then the rendering below - so both
+# faces of that one defect are pinned here, and each is pinned in BOTH renderings
+# rather than only in the one that was reported.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+  session_ended: true
+  ended_by: user
+feedback[2]{uid,prompt,selector,tag,text}:
+  f1,"hold the release until Thursday","",message,"Freeform message"
+  f2,"Context data: {\"question\":\"ship-it\",\"answer\":\"yes\"}","",choice,"Ship it"
+EOF
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")" \
+  "hold the release until Thursday" \
+  "a message in the block's other published name was lost in silence"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" "ship-it	yes	Ship it" \
+  "a keyed answer in the block's other published name was lost in silence"
+
+# The list rendering of that same name, which is what one row carrying an object
+# field does to the whole block - and the row that forces it is ordinary: an
+# element annotation, an attachment, a layout-warnings or whiteboard row all
+# carry one, and a single one of them takes every plain message beside it out of
+# the tabular shape too.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+  session_ended: true
+  ended_by: user
+feedback[3]:
+  - uid: f3
+    prompt: hold the release until Thursday
+    selector: ""
+    tag: message
+    text: Freeform message
+  - uid: f4
+    prompt: "Context data: {\"question\":\"ship-it\",\"answer\":\"yes\"}"
+    selector: ""
+    tag: choice
+    text: Ship it
+  - uid: f5
+    prompt: this badge runs past its border
+    selector: .badge
+    tag: annotation
+    text: Element note
+    target:
+      selector: .badge
+      text: SHIPPED
+EOF
+out=$("$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS")
+assert_contains "$out" "hold the release until Thursday" \
+  "one row's object field took the plain message beside it down with the frame"
+assert_contains "$out" "this badge runs past its border" \
+  "the annotation row that forced the list rendering was dropped instead of reported"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS")" "ship-it	yes	Ship it" \
+  "one row's object field took the keyed answer beside it down with the frame"
+
+# What bounds reading the response with the format's own decoder: a result that
+# DECLARES a content block and yields no row from it has not been read, whatever
+# the reason, and answering that as an empty review is the one answer
+# indistinguishable from the captain having said nothing. Here the capture was
+# cut inside the block's own header, so nothing below it can be attributed to a
+# field and the whole block is unreadable - while a cut that lands inside a ROW
+# still delivers the rows above it, which the bound-cut regressions above pin.
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+prompts[3]{uid,pro
+EOF
+msg_rc=0
+"$ROOT/bin/fm-procevent-lavish.sh" messages "$MSGS" >/dev/null 2>&1 || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "a declared content block that yielded no row answered $msg_rc instead of the read-failure exit"
+[ -z "$("$ROOT/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null)" ] \
+  || fail "a content block that could not be read still minted a keyed answer"
+
+# The decoder that reads the frame is a dependency, and a dependency that is not
+# there must be refused rather than answered as an empty review - the frame
+# reader carries the adapter's authority over what the captain said, so losing it
+# is exactly the case that may not pass in silence. Driven by running the real
+# adapter from a tree whose vendored copy is missing.
+NOVENDOR="$TMP_ROOT/novendor"
+mkdir -p "$NOVENDOR/bin"
+for f in "$ROOT"/bin/*.sh; do ln -sf "$f" "$NOVENDOR/bin/$(basename "$f")"; done
+# A real file, not a link: node resolves a linked module back to its own tree,
+# which would find the vendored copy this case exists to remove.
+cp "$ROOT/bin/fm-lavish-rows.mjs" "$NOVENDOR/bin/fm-lavish-rows.mjs"
+cat > "$MSGS" <<'EOF'
+session:
+  file: /board.html
+  status: feedback
+prompts[1]{uid,prompt,tag}:
+  f7,"hold the release until Thursday",message
+EOF
+msg_rc=0
+"$NOVENDOR/bin/fm-procevent-lavish.sh" messages "$MSGS" >/dev/null 2>&1 || msg_rc=$?
+[ "$msg_rc" -eq 3 ] \
+  || fail "a missing frame decoder answered $msg_rc instead of the read-failure exit"
+[ -z "$("$NOVENDOR/bin/fm-procevent-lavish.sh" answers "$MSGS" 2>/dev/null)" ] \
+  || fail "a missing frame decoder still produced keyed answers"
+# The decoder is the only difference between those two answers, which is what
+# keeps this case from passing for some unrelated reason about the copied tree.
+mkdir -p "$NOVENDOR/vendor/toon"
+cp "$ROOT/vendor/toon/index.mjs" "$NOVENDOR/vendor/toon/index.mjs"
+assert_contains "$("$NOVENDOR/bin/fm-procevent-lavish.sh" messages "$MSGS")" \
+  "hold the release until Thursday" \
+  "the same tree still could not read the message once its decoder was there"
 
 # Failing to read a result and reading one that said nothing are different
 # answers, so they are reported apart: only the second may pass in silence.

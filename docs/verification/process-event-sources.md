@@ -10,6 +10,45 @@ Generic keyed-answer feed verified on 2026-08-16 on the same platform, against t
 Cross-origin keyed-answer feed verified on 2026-08-19 through the real runner and Lavish adapter interface.
 Captain-message feed verified on 2026-08-30 through the real runner and Lavish adapter interface, against both renderings the published response uses for its `prompts` block.
 Cut-capture answer refusal verified on 2026-09-12 through the real runner and the same bound fixture channel, with the output bound as the only difference between its two legs; like the completeness marker it reads, this one is suite evidence and was not run against a real board.
+Frame reading moved onto the response format's own decoder on 2026-09-24 with `lavish-axi` 0.1.52 installed, after the section below measured that no machine-readable alternative to that format exists.
+
+## Why the response's frame is decoded rather than parsed
+
+Re-measured on 2026-09-24 against the installed 0.1.52 build, because the whole reason to carry a decoder is that the response format is not optional.
+Three readings, and all three agree that `lavish-axi` publishes no machine-readable alternative:
+
+```text
+$ lavish-axi --help | grep -c -- '--format\|--json'
+0
+$ lavish-axi poll --help | head -1
+Usage: lavish-axi poll <html-file> [--agent-reply "..."]
+$ lavish-axi poll --format json 2>&1 | head -2
+error: "ENOENT: no such file or directory, realpath '<cwd>/json'"
+code: UNKNOWN
+$ lavish-axi poll <a-file-with-no-session> --json 2>&1 | tail -2
+error: No active Lavish Editor session for this file
+code: NOT_FOUND
+```
+
+Neither help text documents a format flag; `--format json` is proof the option does not exist, because `json` is consumed as a positional path; and `--json` is accepted and changes nothing, with the response still arriving in the same format.
+So reading that format is not a choice, and the only choice ever available was whether to read it by hand.
+
+Reading it by hand cost the same defect twice.
+Two consecutive review rounds on 2026-08-30 found one hand reader blind to a shape the serializer really emits - first the block published under the name `feedback`, then the LIST rendering, which one row carrying an object field switches the whole block into - and in both cases the captain's words reached no reader at all and the command exited 0, which is indistinguishable from the captain having said nothing.
+Measured on 2026-09-24 against the pre-change adapter and the same two fixtures the regressions now carry, both under the `feedback` name:
+
+```text
+                  BEFORE                AFTER
+tabular  messages  exit=0 (nothing)      exit=0 hold the release until Thursday
+tabular  answers   exit=0 (nothing)      exit=0 ship-it<TAB>yes<TAB>Ship it
+list     messages  exit=0 (nothing)      exit=0 hold the release until Thursday
+                                                this badge runs past its border
+list     answers   exit=0 (nothing)      exit=0 ship-it<TAB>yes<TAB>Ship it
+```
+
+`bin/fm-lavish-rows.mjs` now owns the frame and decodes it with `@toon-format/toon` 4.1.1, vendored verbatim under `vendor/toon/` (MIT, zero runtime dependencies, one published module; sha256 `34bf8dce99dccd5632b19f6dc7eb4278502f81f327208de4ea0454d4c1ee4871`).
+Its header owns the refresh commands and the recovery ladder that keeps a bound-cut capture delivering the rows that survived.
+The adapter keeps every Lavish-specific rule it already had - which rows are prose, which are keyed answers, which machine-shaped tags are still reported, and what each field is capped at - so this changed what reads the frame and nothing about what the rows mean.
 
 ## The published Lavish poll interface the adapter wraps
 
@@ -101,7 +140,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | adapter-owned application of a captured result | a remote-secondmate reply captured through the real relay in an isolated home reaches that secondmate's local status mirror, settles its correlated pending-reply expectation, re-arms the next cursor-anchored source, and is acknowledged, with no handler step or duplicate `check` wake; its new mirrored bytes remain visible to the watcher's signal gate, while a cursor-loss whole-log recapture that adds no bytes is acknowledged quietly; for an already-escalated request, the same path closes the exact decision so the open-decision fold clears and remains clear; a capture whose adapter application fails because local storage for a referenced remote document is obstructed is left unacknowledged and receives the fallback `check` wake, and the handler's own `handle` still applies it in full after storage recovers |
 | generic keyed-answer feed | `tests/fm-captain-hold-lifecycle.test.sh` drives a bound source through the real runner with a fixture adapter that only prints keyed lines, proving any bound channel reaches the one keyed-answer intake: named captain-held tasks close at capture time, a card-declared release mode frees held work, keys naming no captain-held task skip, freeform prose forges nothing, matching answer-and-mode replays are idempotent while mode mismatches refuse, an unbound source closes nothing, and capture remains independent of the handler wake. |
 | cut capture feeds no keyed answer | the same suite drives one board the captain answered twice - `gold-only`, then `everyone` - through the real runner twice, with `FM_PROCEVENT_MAX_OUTPUT_BYTES` the only difference: cut partway through his last row, the adapter can still read the superseded `gold-only`, and the runner records nothing, leaves the call held with no resolution block and no `gold-only` anywhere in it, and appends one `check` wake naming the stored result; run whole, the same board still closes the call with `Answer: everyone`, `Resolution mode: answered`, and no refusal wake at all |
-| generic captain-message feed | an armed Lavish source driven against a stand-in poll whose `Send & End` response carries the captain's freeform message queues that message into the captain inbox as its own note and its own `check` wake, in both published renderings of the `prompts` block, and that note survives `fm-procevent.sh handled` on the capture; the opposite direction holds too - repeat `reconcile` writes no second note and restarts no retired source, an empty board close and a choice-only close write none at all, a `choice` row the keyed-answer intake could not key is reported as prose while still minting no decision key, an adapter whose `messages` read fails routes that report through the same durable channel, and the `remote-reply` and `when` adapters, which implement no `messages` command, route nothing |
+| generic captain-message feed | an armed Lavish source driven against a stand-in poll whose `Send & End` response carries the captain's freeform message queues that message into the captain inbox as its own note and its own `check` wake, in both published renderings of the content block and under both names the response publishes it under, and that note survives `fm-procevent.sh handled` on the capture; the opposite direction holds too - repeat `reconcile` writes no second note and restarts no retired source, an empty board close and a choice-only close write none at all, a `choice` row the keyed-answer intake could not key is reported as prose while still minting no decision key, an adapter whose `messages` read fails routes that report through the same durable channel, and the `remote-reply` and `when` adapters, which implement no `messages` command, route nothing |
 | adapter-owned silence verdict | an armed Lavish source driven against a stand-in poll that returns an empty ended session captures its result, records it durably handled, appends no wake, and stays silent through a later `reconcile` that would otherwise republish it, while still retiring its ended source; the same real path with a `Send & End` response carrying the captain's choice still publishes its `check` wake and is left unacknowledged for the handler |
 | silence fails closed | the adapter's published `silent` command suppresses only an `ended` session with no queued content block, and announces a real answer, freeform prose, any recognized content block regardless of its declared count, a malformed top-level content header, a `waiting` or `missing` session, a server error, an unreadable result, and indented payload text imitating an empty content block; the `remote-reply` and `when` adapters, which implement no `silent` command, announce every result |
 | terminal retirement preserves the result | the retired source's captured output, its announced event, its handled acknowledgement, and later explicit `retire` all still behave normally |
@@ -133,6 +172,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | argv integrity | an argument containing spaces survives as one argument, a shell-looking argument is passed literally with no interpretation, and an unrepresentable newline is rejected at registration |
 | bounded output | output beyond `FM_PROCEVENT_MAX_OUTPUT_BYTES` is drained while only the bound is staged, then truncated and captured |
 | a bound-cut capture is never read as an empty one | the suite proves a cut capture commits the completeness marker with its result, a capture that fits records as whole and clears any marker an earlier rolled-back capture left at that generation, and a cut capture is refused the silence verdict, stays unsilenced across a later reconcile, and routes a note saying content was discarded while still delivering the words that survived; this row is suite evidence only, with no dated verification run against a real board behind it |
+| a declared content block is read or refused, never reported empty | the same suite proves a capture cut inside the content block's own header - which leaves nothing below it attributable to a field - answers the read-failure exit and mints no keyed answer, while a cut landing inside a ROW still delivers every row above it, so the reader's recovery can never buy an empty review by discarding the one block that carried the captain's words |
 | condition->action single-fire and trust | `tests/fm-procevent-when.test.sh` drives the public `when` adapter and generic runner with real commands, proving stable true fires once, a claimed fire restarts as ambiguous without a second action, concurrent arms publish one complete watch, and mutated specs or action executables are refused before execution |
 | condition->action terminal outcomes | the same suite proves flapping true polls do not fire, action failure, condition error budget, deadline expiry, and a true poll completing after its deadline each produce the expected terminal captured result without an unsafe action |
 | condition->action process bounds | the same suite proves action timeout terminates descendants and command-output staging remains within `FM_WHEN_OUTPUT_TAIL_BYTES` while the command runs |
