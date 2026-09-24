@@ -465,16 +465,21 @@ EOF
 # The epoch of the first WATCHER re-ring that actually typed <record-path>'s
 # doorbell, or failure when no re-ring has typed one yet.
 #
-# This is the earliest delivery this ladder RECORDS, and it is deliberately not
-# the earliest delivery that happened. bin/fm-send.sh and the remote steer leg
-# in bin/fm-remote-secondmate-control.sh each ring once at write time and
-# neither advances this ladder, and fm_task_inbox_due_action then stays quiet
-# until the record is a full grace old, so this anchor is at minimum one grace
-# LATER than the doorbell the worker was first offered. Any interval measured
-# from it therefore UNDERSTATES how long the worker has been silent. That is the
-# safe direction - a consumer holds and rechecks rather than accusing a working
-# worker - but it is a fact a consumer must SAY rather than round away, because
-# the point of the anchor is to name the instant the number was counted from.
+# A REPORTING anchor only. It is the earliest delivery this ladder RECORDS, and
+# deliberately not the earliest delivery that happened: bin/fm-send.sh and the
+# remote steer leg in bin/fm-remote-secondmate-control.sh each ring once at
+# write time and neither advances this ladder, and fm_task_inbox_due_action then
+# stays quiet until the record is a full grace old, so this is at minimum one
+# grace LATER than the doorbell the worker was first offered. Any interval
+# measured from it therefore UNDERSTATES how long the worker has been silent,
+# which a consumer must SAY rather than round away, because the point of an
+# anchor is to name the instant the number was counted from.
+#
+# Never route on it. "Has this worker woken at all since the instruction
+# existed?" is a different question and is answered against the record's own
+# write time, because a boundary that lands between the write-time doorbell and
+# this anchor is still a worker that woke with the instruction already waiting.
+# Deciding a hold from this value would silence exactly that worker.
 fm_task_inbox_first_rering_epoch() {  # <state-dir> <task-id> <record-path>
   local dir base ladder rec_base count last first
   dir=$(fm_task_inbox_dir "$1" "$2")

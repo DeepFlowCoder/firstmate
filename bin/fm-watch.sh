@@ -109,28 +109,29 @@
 #                          left intact so the real escalation fires the moment it
 #                          stops executing. The reason names the evidence this
 #                          poll actually read: an idle pane that was classified
-#                          as one; or, when the harness reports a working state
-#                          but nothing readable was there this poll, that the
-#                          working state went unread; or - for a harness
+#                          as one; or that nothing readable established a
+#                          working state at this poll; or - for a harness
 #                          measured to establish none at all - either a turn
-#                          boundary that passed after the watcher's first
-#                          recorded re-ring or the absence of any boundary
-#                          measurable from that re-ring. Every interval here is
-#                          counted from that re-ring, which is a delivery grace
-#                          or more after the doorbell fm-send typed at write
-#                          time and never records, so each wake says it
-#                          understates the silence rather than rounding the gap
-#                          away
+#                          boundary that passed after the record was written or
+#                          the absence of any turn-boundary evidence. A passed
+#                          boundary is evidence and not proof, because the
+#                          acknowledgement is moved only after the instruction
+#                          is carried out, and the wake says so. The silence it
+#                          reports is a separate datum counted from the
+#                          watcher's first recorded re-ring, a delivery grace or
+#                          more after the doorbell fm-send typed at write time
+#                          and never records, so each wake says it understates
+#                          rather than rounding the gap away
 #   stale: <window> (firstmate instruction ... queued behind a running command)
 #                          the bounded recheck for that case
-#   stale: <window> (firstmate instruction ... no turn boundary since the watcher's first re-ring)
+#   stale: <window> (firstmate instruction ... no turn boundary at all since it was written)
 #                          the bounded recheck for a harness measured to
 #                          establish no working state and which has not reached
-#                          a turn boundary since that re-ring - the record's own arrival
-#                          is one grace earlier and buys the worker no chance to
-#                          read anything - so an unacknowledged record cannot
-#                          tell a worker that stopped reading from one still
-#                          inside its turn
+#                          ANY turn boundary since the record was written, so an
+#                          unacknowledged record cannot tell a worker that
+#                          stopped reading from one still inside its turn. A
+#                          boundary anywhere after that instant is not held,
+#                          however late the first re-ring was
 #   stale: <window> (steering-inbox ladder bookkeeping unwritable: ...)
 #                          an unhandled record's ladder cannot advance; quiet
 #                          successful attempts never wake firstmate
@@ -558,15 +559,18 @@ command_window_too_young() {  # <marker>
 # every verified harness's turn-end hook touches (busy_turn_over_age owns the
 # same file).
 #   0  a completed turn is recorded at or after <epoch>
-#   1  the marker predates <epoch>: no boundary since that re-ring
+#   1  the marker predates <epoch>: no boundary at all since then
 #   2  no usable evidence: no turn-end marker, or no <epoch> to measure from
-# <epoch> must be the ladder's first recorded re-ring
-# (fm_task_inbox_first_rering_epoch), never the record's own arrival, which is a
-# full grace earlier and buys the worker no chance to read anything. That anchor
-# is itself LATER than the doorbell fm-send already typed at write time, which
-# this ladder never records, so a 1 can mean a worker that did read and then
-# wedged. The wake wording carries that understatement to the reader rather than
-# hiding it; nothing here reconstructs an instant nobody measured.
+# <epoch> is the ROUTING reference, and its one correct value is the record's
+# own write time. The question being decided is whether the worker ever woke at
+# all while this instruction existed, and any completed turn at or after that
+# instant answers yes - including one that lands before the ladder's first
+# re-ring, which is precisely the worker that finishes its turn seconds after
+# the doorbell is typed and then freezes. Passing a later delivery anchor here
+# would hold that worker out of the escalation forever, which is the deaf worker
+# this whole route exists to catch. HOW LONG the silence has lasted is a
+# different datum, reported by the caller from fm_task_inbox_first_rering_epoch,
+# and it is never allowed to decide whether the escalation holds.
 # Deliberately NO spawn-record stand-in here, unlike busy_turn_over_age. That
 # file never moves, so on a task whose harness writes no turn-end marker at all
 # - a codex secondmate carries no notify hook - it would read as "still in the
@@ -599,7 +603,7 @@ turn_boundary_since() {  # <task> <epoch>
 # The escalation only ever claims what the busy contract actually established at
 # this poll; the escalate branch below owns that distinction and why it matters.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor busy_state
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc why key evidence boundary anchor silence busy_state
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -739,34 +743,42 @@ inbox_steer_check() {  # <window> <task>
         && ! fm_busy_harness_measured_without_semantic_source "$(window_harness "$w")"; then
         evidence="with no reading of whether the worker is working at this poll, so nothing established the pane as idle"
       elif [ "$busy_state" = unknown ]; then
-        # Measured from the earliest delivery the ladder RECORDS - its first
-        # re-ring - never from the record's arrival, which is a full grace
-        # earlier and offered the worker nothing. That anchor is later still
-        # than the write-time doorbell nothing records, so every interval below
-        # understates the silence and each wake says so. No anchor means no
-        # recorded delivery, so the question cannot be answered and the
-        # escalation stands, saying that instead of naming an interval.
+        # Two questions, deliberately kept apart because collapsing them into
+        # one datum is how a real detection gets traded for a tidier number.
+        # ROUTING - did this worker ever wake at all while the instruction
+        # existed? Answered against the RECORD'S OWN WRITE TIME, so a turn that
+        # ends seconds after the doorbell is typed and is followed by a freeze
+        # still escalates. Only a task with no completed turn whatsoever since
+        # the record was written is held.
+        # REPORTED SILENCE - how long has it been quiet? A separate datum,
+        # measured from the first re-ring the ladder actually recorded, which is
+        # a delivery grace or more after the doorbell fm-send typed at write
+        # time and never recorded. It therefore understates, and says so; it
+        # never decides the hold.
+        turn_boundary_since "$task" "$(stat_mtime "$rec")" && boundary=0 || boundary=$?
         anchor=$(fm_task_inbox_first_rering_epoch "$STATE" "$task" "$rec") || anchor=
-        turn_boundary_since "$task" "$anchor" && boundary=0 || boundary=$?
+        if [ -n "$anchor" ]; then
+          silence="silent for $(( $(date +%s) - anchor ))s counted from the watcher's first recorded re-ring, which is a delivery grace or more after the doorbell fm-send already typed, so it understates the silence"
+        else
+          silence="with no recorded re-ring to count its silence from"
+        fi
         case "$boundary" in
           1)
-            # No turn has ended since the recorded re-ring, so this worker has
-            # had no boundary at which to read THAT doorbell, and its silence is
-            # not evidence of anything. Same treatment as the running-command
-            # arm: ladder untouched, bounded recheck so it cannot rot invisibly,
-            # and the pane's own wedge timer keeps running independently, so a
-            # genuinely stuck worker is still caught - by the route that can
-            # actually establish it, which matters here because the understated
-            # anchor means this arm can also absorb a worker that read the
-            # write-time doorbell and then wedged.
+            # No turn has ended at all since the record was written, so this
+            # worker has had no boundary at which to read anything, and its
+            # silence is not evidence of anything. Same treatment as the
+            # running-command arm: ladder untouched, bounded recheck so it
+            # cannot rot invisibly, and the pane's own wedge timer keeps running
+            # independently, so a genuinely stuck worker is still caught by the
+            # route that can actually establish it.
             resurface_absorbed "$w" "$STATE/.steer-unturned-resurfaced-$key" \
               "$(status_idle_age "$task")" \
-              "stale: $w (firstmate instruction ${rec##*/} unacknowledged with no turn boundary since the watcher's first re-ring of it; that re-ring is one delivery grace or more after the doorbell fm-send already typed, so this understates how long the worker has been silent; this harness never reports whether it is working, so it cannot tell a worker that stopped reading from one still inside its turn - rechecked on a long cadence not a wedge)"
-            triage_log "absorbed steer-inbox escalation (busy state unestablished and no turn boundary since the first recorded re-ring of ${rec##*/}): $w"
+              "stale: $w (firstmate instruction ${rec##*/} unacknowledged with no turn boundary at all since it was written, $silence; this harness never reports whether it is working, so it cannot tell a worker that stopped reading from one still inside its turn - rechecked on a long cadence not a wedge)"
+            triage_log "absorbed steer-inbox escalation (busy state unestablished and no turn boundary since ${rec##*/} was written): $w"
             return 0
             ;;
-          0) evidence="and a turn boundary passed after the watcher's first re-ring of it, on a harness that never reports whether it is working; that re-ring is one delivery grace or more after the doorbell fm-send already typed, so this understates how long the worker has been silent" ;;
-          *) evidence="on a harness that never reports whether it is working and with no turn boundary measurable from the watcher's first re-ring, so this cannot tell a worker that stopped reading from one still inside its turn" ;;
+          0) evidence="and a turn boundary passed after it was written while the record stayed unacknowledged, on a harness that never reports whether it is working; the acknowledgement is moved only after the instruction is carried out, so this is evidence and not proof that the worker stopped reading - a worker still working through it looks the same; $silence" ;;
+          *) evidence="on a harness that never reports whether it is working and with no turn-boundary evidence at all, so this cannot tell a worker that stopped reading from one still inside its turn; $silence" ;;
         esac
       fi
       reason="stale: $w (unread firstmate instruction: $rec still unhandled after $count doorbell delivery attempts $evidence; inspect the worker)"
