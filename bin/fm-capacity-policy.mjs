@@ -171,6 +171,39 @@
 //      quota-axi is reporting fresh, known headroom is a fault on a source this
 //      lane is not using.
 //
+// REPEAT SUPPRESSION COVERS BOTH ARMS, LANES AND BALANCE, and that scope is the
+// point rather than an implementation detail. The guard's whole value is that
+// the captain still reads it at three in the morning, so a line repeated on an
+// unchanged fleet costs more than the turn it takes: it teaches the captain to
+// skip the section that will one day carry the real warning. Each arm therefore
+// carries its own key of the SHAPE it last reported - the lane arm its per-lane
+// inventory, the balance arm its cause - and each is withheld only against its
+// own key, so a change in one arm never re-publishes the other and a poll blind
+// to one arm never erases the other's memory.
+//
+// Inside the lane arm the same rule reaches one level further down, to the lane:
+// a lane THIS POLL COULD NOT MEASURE keeps the entry the last reported key
+// carried for it, because "not measured" is the absence of a verdict and not a
+// new one. Measured on the live fleet the night of 2026-09-24/25, when claude's
+// quota endpoint flickered between answering and rate-limiting and woke the
+// captain more than fifteen times with an identical fleet. Both readings of that
+// flicker then read as the shape already known, so neither re-fires.
+//
+// That carrying is only as good as the memory it carries from, which is why the
+// lane arm's key survives a poll that said nothing. "The alarm did not fire" is
+// not the same fact as "the fleet recovered": a lane running out beside one
+// healthy spare alarms nobody yet and is still a shape the next poll has to be
+// compared against. The one shape that IS forgotten is a fleet with every lane
+// live and none running out, because there is nothing about it a later poll
+// could be suppressed against.
+//
+// What the suppression may never do is buy that quiet by muting a real change.
+// A key holds a SHAPE and not a moment, so a lane that genuinely falls, a
+// signature that appears, a spent window, or a balance that runs out all differ
+// from what was stored and all still wake somebody the FIRST time, every time. A
+// repeated warning costs a turn; a lost one costs the fleet, so where the two
+// pull against each other this file speaks.
+//
 // Input:  quota-axi's default `--json` (schemaVersion 5) on stdin, plus the
 //         optional balance reading history in the FM_CAPACITY_BALANCE_READINGS
 //         environment variable. Both arrive as values, so this file opens no
@@ -906,6 +939,15 @@ export function verdict(
   const lanes = snapshot.providers.map(classifyProvider);
   const dispatchable = lanes.filter((lane) => lane.cause === "dispatchable");
   const unmeasured = lanes.filter((lane) => lane.cause === "unmeasured");
+  const reportedLanes = reported.lanes ?? "";
+  const reportedBalance = reported.balance ?? "";
+  // THE SHAPE THE CAPTAIN HAS BEEN TOLD, one entry per lane: this poll's verdict
+  // for every lane it could measure, and for a lane it could not, the entry the
+  // last reported key carried - when that entry was itself a measured verdict.
+  // Both halves of the lane arm read from this one list, the alarm predicate
+  // below and the suppression key alike, so a reading that flickers cannot make
+  // them disagree about what the fleet looks like.
+  const told = lastToldShape(lanes, reportedLanes);
 
   // 0 is the captain's own off switch, the same shape config/disk-space-min-gb
   // uses, and it retires the WHOLE guard - both arms - rather than making it
@@ -969,9 +1011,20 @@ export function verdict(
   // lane this poll could not measure carries the entry the last reported key
   // held for it (see laneDigest), so a flicker between answering and not
   // answering reads as the shape already told rather than as a new fleet.
-  const reportedLanes = reported.lanes ?? "";
-  const reportedBalance = reported.balance ?? "";
-  const laneKey = laneFires ? laneDigest(lanes, reportedLanes) : "";
+  //
+  // THE ARM DID NOT FIRE IS NOT THE SAME FACT AS THE FLEET RECOVERED, and
+  // reading them as one is what let the flicker back in by a second road. A
+  // lane running out beside one healthy spare alarms nobody yet, but it is not
+  // a fleet with nothing to say about it either: forgetting its shape meant the
+  // very next poll that could not read the spare had nothing to compare against
+  // and published the whole degraded inventory - then forgot it again on the
+  // readable poll, and published it again on the next flip. So the lane arm
+  // forgets exactly one shape, the one no later poll can be suppressed against
+  // wrongly: every lane live and none of them running out. Anything else is
+  // remembered whether or not it was worth saying, which is what lets a lane
+  // that merely went unreadable be recognised as the shape already known.
+  const recovered = told.every((entry) => entry.endsWith(":live:ok"));
+  const laneKey = laneFires || !recovered ? laneDigest(told, lanes.length) : "";
   const balanceKey = balanceClause === "" ? "" : balance.cause;
   const recordLanes = lanesUnreadable ? reportedLanes : laneKey;
   const recordBalance = balance === null ? reportedBalance : balanceKey;
@@ -1062,8 +1115,7 @@ export function verdict(
  * falls, a signature that appears, a spent window - still differs from the
  * carried entry and still wakes somebody the first time.
  *
- * It is asked for only when the lane inventory was actually reported. The
- * balance's own half is its CAUSE and nothing else, for the same reason: the
+ * The balance's own half is its CAUSE and nothing else, for the same reason: the
  * projected seconds move on every poll, while "the runway went from long enough
  * to shorter than a validation" is exactly the transition worth waking somebody
  * about a second time.
@@ -1085,31 +1137,36 @@ function laneEntry(lane) {
  * next poll reports once and writes a key this parser can read.
  */
 function reportedEntries(key) {
-  if (typeof key !== "string" || key === "") return null;
-  const space = key.indexOf(" ");
-  if (space === -1 || !key.startsWith("lanes=")) return null;
+  if (typeof key !== "string" || !key.startsWith("lanes=")) return null;
   const entries = new Map();
-  for (const entry of key.slice(space + 1).split(" ")) {
+  for (const entry of key.split(" ").slice(1)) {
     const colon = entry.indexOf(":");
     if (colon > 0) entries.set(entry.slice(0, colon), entry);
   }
   return entries;
 }
 
-function laneDigest(lanes, reportedKey = null) {
+function lastToldShape(lanes, reportedKey) {
   const previous = reportedEntries(reportedKey);
-  const parts = lanes.map((lane) => {
+  return lanes.map((lane) => {
     const fresh = laneEntry(lane);
     if (previous === null || !fresh.startsWith(`${lane.id}:unmeasured`)) return fresh;
     const carried = previous.get(lane.id);
     if (carried === undefined || carried.startsWith(`${lane.id}:unmeasured`)) return fresh;
     return carried;
   });
-  // The count comes from the merged entries, so the headline half of the key
+}
+
+function laneDigest(told, total) {
+  // The count comes from the told entries, so the headline half of the key
   // stays as stable as the per-lane half: a lane whose last told entry was
   // live still counts as live on a poll that merely could not read it.
-  const live = parts.filter((entry) => entry.includes(":live:")).length;
-  return `lanes=${live}/${lanes.length} ${parts.sort().join(" ")}`;
+  const live = told.filter((entry) => entry.includes(":live:")).length;
+  // Joined as one list rather than a prefix plus a body, because a fleet with
+  // no lanes at all has a body of nothing: a separator emitted anyway left a
+  // trailing space the reader trims off, so the key never matched the one it
+  // had just written and an empty fleet re-published on every single poll.
+  return [`lanes=${live}/${total}`, ...[...told].sort()].join(" ");
 }
 
 function main(argv, env) {

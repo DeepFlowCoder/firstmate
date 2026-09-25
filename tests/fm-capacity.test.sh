@@ -847,6 +847,66 @@ out=$(run_guard "$home" 2 "$home/snap-dead.json" check)
 [ -z "$out" ] || fail "an unchanged genuinely-fallen fleet must not re-report, got: $out"
 pass "a lane flickering between measured and unmeasured does not re-report the fleet"
 
+# THE SAME FLICKER REACHED BY A SECOND ROAD: a spare that cannot be READ.
+#
+# A healthy spare drops out of "every dispatchable lane is projected to run out"
+# on the poll nobody can read it, so the one finite lane beside it becomes the
+# whole dispatchable fleet and the alarm fires - then the readable poll is quiet
+# again, then the next flip fires again. The carried entry cannot help here
+# unless there is something to carry FROM: the quiet polls used to forget the
+# fleet's shape entirely, because the arm not firing was read as the fleet
+# having recovered. A dying lane beside a healthy spare has not recovered, so
+# its shape is remembered and the unreadable poll recognises it.
+home=$(fresh_home flicker-on-the-spare)
+snapshot "$home/snap-spare.json" \
+  "$(finite_provider claude 5)" \
+  "$(healthy_provider codex 60)"
+snapshot "$home/snap-flicker.json" \
+  "$(finite_provider claude 5)" \
+  "$(rate_limited_provider codex)"
+out=$(run_guard "$home" 2 "$home/snap-spare.json" check)
+[ -z "$out" ] || fail "a finite lane beside a healthy spare must stay silent, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-flicker.json" check)
+[ -z "$out" ] || fail "a spare that merely could not be read must not raise the runway alarm, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-spare.json" check)
+[ -z "$out" ] || fail "the readable poll after the flicker must stay silent, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-flicker.json" check)
+[ -z "$out" ] || fail "the second flicker poll must stay silent too, got: $out"
+# And none of that silence may be bought by an alarm that stopped working: the
+# moment the spare is MEASURED and is itself running out, the fleet fires.
+snapshot "$home/snap-both-finite.json" \
+  "$(finite_provider claude 5)" \
+  "$(finite_provider codex 4)"
+out=$(run_guard "$home" 2 "$home/snap-both-finite.json" check)
+assert_contains "$out" "every dispatchable lane is projected to run out" \
+  "a measured fleet that is entirely finite must still fire"
+# As does a spare that genuinely FALLS rather than merely going unread.
+snapshot "$home/snap-fallen.json" \
+  "$(finite_provider claude 5)" \
+  "$(credential_provider codex)"
+out=$(run_guard "$home" 2 "$home/snap-fallen.json" check)
+assert_contains "$out" "codex sign-in required" "a spare that genuinely fell must still report"
+pass "a spare that could not be read does not toggle the runway alarm"
+
+# A FLEET WITH NO LANES AT ALL IS A SHAPE LIKE ANY OTHER, and it has to be
+# suppressible. An empty `providers[]` is a real quota-axi answer - a different
+# fact from a report that never arrived - so it fires, and then it is remembered
+# by the same key every other shape is remembered by.
+home=$(fresh_home empty-fleet)
+snapshot "$home/snap.json"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+assert_contains "$out" "0 of 0 provider lanes dispatchable" "a fleet with no lanes at all must fire"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+[ -z "$out" ] || fail "an unchanged empty fleet must not re-report, got: $out"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+[ -z "$out" ] || fail "the third poll of an unchanged empty fleet must not re-report either, got: $out"
+# And a lane appearing is news, so the emptiness cannot have been remembered as
+# a shape that swallows everything.
+snapshot "$home/snap-one.json" "$(credential_provider grok)"
+out=$(run_guard "$home" 2 "$home/snap-one.json" check)
+assert_contains "$out" "0 of 1 provider lanes dispatchable" "a lane appearing must report"
+pass "a fleet with no lanes at all is reported once, not on every poll"
+
 # === a record that cannot be written ========================================
 #
 # Suppression rests entirely on the record landing, so a write that fails and
