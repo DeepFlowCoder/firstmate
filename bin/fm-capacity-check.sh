@@ -832,12 +832,23 @@ record_write() {
   return 0
 }
 
-# One sentence for both surfaces, so a write failure reads the same whether
-# session start or the watcher hit it. It names the consequence rather than the
-# syscall, because what the reader has to act on is the repetition, not the mv.
+# The same failure on both surfaces, so it reads the same whether session start
+# or the watcher hit it, and it names the consequence rather than the syscall,
+# because what the reader has to act on is the repetition and not the mv.
+#
+# It says which thing went unrecorded, because the guard also records shapes it
+# said nothing about: claiming a warning that was never printed sends the reader
+# looking for a line that is not there, and a guard caught inventing one is a
+# guard whose real warnings get discounted. Either way the consequence is the
+# same repetition, and either way it is said out loud.
 record_write_problem() {
-  printf 'capacity guard could not record this warning at %s - it will repeat until that write succeeds\n' \
-    "$RECORD"
+  if [ -n "$VERDICT_LINE" ]; then
+    printf 'capacity guard could not record this warning at %s - it will repeat until that write succeeds\n' \
+      "$RECORD"
+  else
+    printf 'capacity guard could not record the fleet shape it just judged at %s - a warning may repeat until that write succeeds\n' \
+      "$RECORD"
+  fi
 }
 
 record_clear() {

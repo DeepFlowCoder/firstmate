@@ -931,6 +931,51 @@ out=$(run_guard "$home" 3 "$home/snap.json" check)
 [ -z "$out" ] || fail "an unchanged fleet under the raised threshold must not repeat, got: $out"
 pass "a raised lane threshold wakes the watcher once, not never and not always"
 
+# A LANE PROVEN LOST WAKES THE CAPTAIN EVEN IF A SIBLING WAS UNREADABLE FIRST.
+#
+# The key cannot tell a lane that was MEASURED from one merely carried forward:
+# `alpha:credential` reads the same either way. So a poll that recorded a shape
+# while alpha was unreadable could match - and mute - the later poll on which
+# alpha was proven signed out and the fleet had genuinely fallen below the
+# threshold. The rule that closes it is about what may be REMEMBERED: a poll
+# that left any lane unmeasured records nothing, so it can never become the
+# thing a later poll is suppressed against.
+#
+# The three silent polls below are correct silence, not suppression - an
+# unreadable lane still counts toward the tolerance, so the fleet is not yet
+# proven short. Only the fourth poll proves it, and it must speak.
+home=$(fresh_home proven-loss-after-a-blind-stretch)
+snapshot "$home/snap-p0.json" \
+  "$(credential_provider alpha)" \
+  "$(healthy_provider bravo 70)" \
+  "$(healthy_provider charlie 60)"
+snapshot "$home/snap-p1.json" \
+  "$(rate_limited_provider alpha)" \
+  "$(healthy_provider bravo 70)" \
+  "$(healthy_provider charlie 60)"
+snapshot "$home/snap-p2.json" \
+  "$(rate_limited_provider alpha)" \
+  "$(healthy_provider bravo 70)" \
+  "$(credential_provider charlie)"
+snapshot "$home/snap-p3.json" \
+  "$(credential_provider alpha)" \
+  "$(healthy_provider bravo 70)" \
+  "$(credential_provider charlie)"
+out=$(run_guard "$home" 2 "$home/snap-p0.json" check)
+[ -z "$out" ] || fail "one signed-out lane with two healthy spares must stay silent, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-p1.json" check)
+[ -z "$out" ] || fail "a lane that merely went unreadable must not fire, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-p2.json" check)
+[ -z "$out" ] || fail "an unreadable lane still counts toward the tolerance, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-p3.json" check)
+assert_contains "$out" "1 of 3 provider lanes dispatchable" "a fleet proven short must wake the captain the first time"
+assert_contains "$out" "alpha sign-in required" "the lane whose proof arrived must be named"
+assert_contains "$out" "charlie sign-in required" "the lane that fell while its sibling was unread must be named too"
+# And the suppression is intact the moment the whole fleet can be read again.
+out=$(run_guard "$home" 2 "$home/snap-p3.json" check)
+[ -z "$out" ] || fail "the proven-short fleet must not repeat once it has been told, got: $out"
+pass "a blind stretch cannot mute the poll that proves the fleet is short"
+
 # === a record that cannot be written ========================================
 #
 # Suppression rests entirely on the record landing, so a write that fails and
@@ -973,6 +1018,24 @@ else
   out=$(run_guard "$home" 2 "$home/snap.json" report)
   assert_not_contains "$out" "could not record this warning" "session start must not announce a write that landed either"
   pass "a record write that lands stays silent"
+
+  # The guard also records shapes it said NOTHING about, so the failure sentence
+  # must name what actually went unrecorded. Claiming a warning that was never
+  # printed sends the reader looking for a line that is not there, and a guard
+  # caught inventing one is a guard whose real warnings get discounted. The
+  # fleet below is silent - one lane running out beside a healthy spare alarms
+  # nobody - and its shape is still remembered, so the write is still attempted.
+  home=$(fresh_home record-unwritable-quiet-poll)
+  snapshot "$home/snap.json" \
+    "$(finite_provider claude 5)" \
+    "$(healthy_provider codex 60)"
+  chmod 0500 "$home/state"
+  out=$(run_guard "$home" 2 "$home/snap.json" check)
+  assert_not_contains "$out" "provider lanes dispatchable" "a fleet with a healthy spare must still be silent"
+  assert_contains "$out" "could not record the fleet shape it just judged" "a failed write must still be said out loud"
+  assert_not_contains "$out" "could not record this warning" "the guard must not claim a warning it never printed"
+  chmod 0700 "$home/state"
+  pass "a write that fails on a silent poll says what it actually failed to record"
 fi
 
 # === the threshold ==========================================================

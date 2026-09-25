@@ -197,6 +197,36 @@
 // live and none running out, because there is nothing about it a later poll
 // could be suppressed against.
 //
+// A POLL THAT SAID NOTHING AND COULD NOT READ THE WHOLE FLEET REMEMBERS
+// NOTHING. Recording a shape the captain was never told is what makes the rule
+// above dangerous, so it is allowed only from a COMPLETE reading: if a silent
+// poll left any lane unmeasured, the lane arm writes no key and the record
+// stays exactly as it was. A poll that PUBLISHED still records what it
+// published, unmeasured lanes and all - that key is the guard's memory of a
+// sentence the captain actually received, and it is what keeps a steadily
+// unreadable lane from waking somebody on every poll.
+//
+// The root cause it closes is that a key cannot tell a lane that was MEASURED
+// from one that was merely UNREAD: `alpha:credential` reads the same whether
+// quota-axi examined alpha's credential or the entry was carried forward from
+// the last reading. So a silent poll that recorded a shape while alpha was
+// unreadable could match - and mute - the later poll on which alpha was PROVEN
+// signed out and the fleet genuinely fell below the threshold. Measured on this
+// guard: alpha signed out, then unreadable, then charlie falls while alpha is
+// still unread, then alpha readable again - the fleet is one lane short and the
+// captain was never told, on that poll or any poll after it. The remedy is a
+// rule about what may be REMEMBERED rather than one more test bolted onto the
+// comparison, so the hard limit below holds BY CONSTRUCTION: a half-blind
+// silent poll leaves nothing behind that a later proof could collide with.
+//
+// THE COST IS ACCEPTED AND IS NOT TO BE OPTIMIZED AWAY. Through a stretch where
+// some lane cannot be read, the quiet polls teach the guard nothing, so a fleet
+// that changed during that stretch can repeat its warning once when the reading
+// comes back. That is the right way round: a repeated warning costs the captain
+// a turn, a lost one costs the fleet. A later round that "tightens" this into
+// recording a partial silent reading would be reopening the hole, not closing
+// waste.
+//
 // What the suppression may never do is buy that quiet by muting a real change.
 // A key holds a SHAPE and not a moment, so a lane that genuinely falls, a
 // signature that appears, a spent window, or a balance that runs out all differ
@@ -1036,7 +1066,11 @@ export function verdict(
   const recovered = told.every((entry) => entry.endsWith(":live:ok"));
   const laneKey = laneFires || !recovered ? laneDigest(told, lanes.length, minLanes) : "";
   const balanceKey = balanceClause === "" ? "" : balance.cause;
-  const recordLanes = lanesUnreadable ? reportedLanes : laneKey;
+  // A POLL THAT SAID NOTHING AND COULD NOT READ THE WHOLE FLEET REMEMBERS
+  // NOTHING. See this file's header for the rule, its reason, and the repeat it
+  // deliberately buys.
+  const halfBlind = !laneFires && unmeasured.length > 0;
+  const recordLanes = lanesUnreadable || halfBlind ? reportedLanes : laneKey;
   const recordBalance = balance === null ? reportedBalance : balanceKey;
 
   // Suppression is per arm too, and it is the CALLER's surface that asks for it:
