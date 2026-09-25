@@ -907,6 +907,30 @@ out=$(run_guard "$home" 2 "$home/snap-one.json" check)
 assert_contains "$out" "0 of 1 provider lanes dispatchable" "a lane appearing must report"
 pass "a fleet with no lanes at all is reported once, not on every poll"
 
+# RAISING THE CAPTAIN'S THRESHOLD IS ITSELF NEWS, because the same fleet means
+# something different underneath it. The fleet below sits quietly at 2 and is
+# remembered anyway - it is not recovered, one lane is signed out - so unless
+# the threshold the shape was judged against travels in the key with it, the
+# very poll that starts firing because the captain raised the bar reads as the
+# shape already told, and the first warning of a fleet now judged too thin is
+# the one that never arrives. Raising it because the fleet looks thin is
+# exactly when that warning matters.
+home=$(fresh_home threshold-raised)
+snapshot "$home/snap.json" \
+  "$(credential_provider alpha)" \
+  "$(healthy_provider bravo 70)" \
+  "$(healthy_provider charlie 60)"
+out=$(run_guard "$home" 2 "$home/snap.json" check)
+[ -z "$out" ] || fail "a fleet that meets the threshold must stay silent, got: $out"
+out=$(run_guard "$home" 3 "$home/snap.json" check)
+assert_contains "$out" "2 of 3 provider lanes dispatchable" "a raised threshold must wake the watcher the first time"
+assert_contains "$out" "below 3" "the warning must name the threshold it was judged against"
+# And the suppression itself survives the raise: the news is the change, not
+# the threshold being high.
+out=$(run_guard "$home" 3 "$home/snap.json" check)
+[ -z "$out" ] || fail "an unchanged fleet under the raised threshold must not repeat, got: $out"
+pass "a raised lane threshold wakes the watcher once, not never and not always"
+
 # === a record that cannot be written ========================================
 #
 # Suppression rests entirely on the record landing, so a write that fails and

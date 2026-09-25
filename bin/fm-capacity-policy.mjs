@@ -944,9 +944,12 @@ export function verdict(
   // THE SHAPE THE CAPTAIN HAS BEEN TOLD, one entry per lane: this poll's verdict
   // for every lane it could measure, and for a lane it could not, the entry the
   // last reported key carried - when that entry was itself a measured verdict.
-  // Both halves of the lane arm read from this one list, the alarm predicate
-  // below and the suppression key alike, so a reading that flickers cannot make
-  // them disagree about what the fleet looks like.
+  //
+  // This list feeds the SUPPRESSION half of the lane arm only - the key below
+  // and the recovered test beside it. The alarm predicates keep reading this
+  // poll's own classifications and nothing else, because whether the fleet is
+  // in trouble is a question about the fleet now, while whether that trouble is
+  // NEWS is a question about what has already been said.
   const told = lastToldShape(lanes, reportedLanes);
 
   // 0 is the captain's own off switch, the same shape config/disk-space-min-gb
@@ -1009,7 +1012,7 @@ export function verdict(
   // arm changed while it was unreadable the next good reading differs and warns
   // anyway. The same rule applies per lane inside the lane arm's own key: a
   // lane this poll could not measure carries the entry the last reported key
-  // held for it (see laneDigest), so a flicker between answering and not
+  // held for it (see lastToldShape), so a flicker between answering and not
   // answering reads as the shape already told rather than as a new fleet.
   //
   // THE ARM DID NOT FIRE IS NOT THE SAME FACT AS THE FLEET RECOVERED, and
@@ -1023,8 +1026,15 @@ export function verdict(
   // wrongly: every lane live and none of them running out. Anything else is
   // remembered whether or not it was worth saying, which is what lets a lane
   // that merely went unreadable be recognised as the shape already known.
+  //
+  // THE THRESHOLD THE SHAPE WAS JUDGED AGAINST RIDES IN THE KEY, because the
+  // captain can move it and the same fleet then means something else. A fleet
+  // sitting quietly at the old threshold is remembered by the rule above, so
+  // without the threshold in the key the poll that starts firing purely because
+  // the captain raised it would read as the shape already told - and the first
+  // warning of a fleet now judged too thin would be the one that never arrived.
   const recovered = told.every((entry) => entry.endsWith(":live:ok"));
-  const laneKey = laneFires || !recovered ? laneDigest(told, lanes.length) : "";
+  const laneKey = laneFires || !recovered ? laneDigest(told, lanes.length, minLanes) : "";
   const balanceKey = balanceClause === "" ? "" : balance.cause;
   const recordLanes = lanesUnreadable ? reportedLanes : laneKey;
   const recordBalance = balance === null ? reportedBalance : balanceKey;
@@ -1130,7 +1140,7 @@ function laneEntry(lane) {
 /**
  * The per-lane entries of a previously reported key, as id -> entry.
  *
- * The key is this file's own format (`lanes=<n>/<m>` then one
+ * The key is this file's own format (`lanes=<n>/<m>/min<t>` then one
  * space-separated entry per lane; entries never contain spaces), parsed back
  * so a poll can carry the last told shape forward per lane. A key that does
  * not parse - an older or foreign format - yields nothing to carry, and the
@@ -1157,16 +1167,19 @@ function lastToldShape(lanes, reportedKey) {
   });
 }
 
-function laneDigest(told, total) {
+function laneDigest(told, total, minLanes) {
   // The count comes from the told entries, so the headline half of the key
   // stays as stable as the per-lane half: a lane whose last told entry was
-  // live still counts as live on a poll that merely could not read it.
+  // live still counts as live on a poll that merely could not read it. The
+  // threshold rides here rather than in an entry of its own, because it is a
+  // fact about the whole fleet and not about any one lane - and it sits past
+  // the first space, where reportedEntries has never looked.
   const live = told.filter((entry) => entry.includes(":live:")).length;
   // Joined as one list rather than a prefix plus a body, because a fleet with
   // no lanes at all has a body of nothing: a separator emitted anyway left a
   // trailing space the reader trims off, so the key never matched the one it
   // had just written and an empty fleet re-published on every single poll.
-  return [`lanes=${live}/${total}`, ...[...told].sort()].join(" ");
+  return [`lanes=${live}/${total}/min${minLanes}`, ...[...told].sort()].join(" ");
 }
 
 function main(argv, env) {
