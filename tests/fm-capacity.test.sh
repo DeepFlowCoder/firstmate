@@ -142,6 +142,20 @@ unmeasured_provider() {
 EOF
 }
 
+# rate_limited_provider <id> - the live fleet's own flicker shape, captured on
+# 2026-09-25: the vendor's quota endpoint answered with a rate limit, so the
+# lane reads stale with no headroom established. It is the reading that
+# alternated with a live one all night on 2026-09-24/25 and re-published the
+# unchanged degraded fleet on every flip.
+rate_limited_provider() {
+  cat <<EOF
+{"provider":"$1",
+ "state":{"status":"stale","stale":true,"error":"$1 quota endpoint rate limited"},
+ "windows":[],
+ "quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
+EOF
+}
+
 # store_unread_provider <id> <percent> - the measured incident's own shape: the
 # credential STORE could not be opened, so quota-axi asks for access to it while
 # the vendor has already answered for this provider's headroom. This guard runs
@@ -787,6 +801,51 @@ snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider cla
 out=$(run_guard "$home" 2 "$home/snap.json" check)
 [ -z "$out" ] || fail "a blind session start must not make the third poll repeat the same shape, got: $out"
 pass "three polls of one unchanged degraded shape wake the captain once, blind session start included"
+
+# A LANE THAT FLICKERS BETWEEN MEASURED AND UNMEASURED IS NOT A NEW FLEET.
+#
+# This is the defect behind the 2026-09-24/25 night of repeated wakes, found by
+# falsifying the brief's balance-arm hypothesis: claude's quota endpoint
+# flickered between answering and rate-limiting, the digest alternated between
+# `claude:live:finite` and `claude:unmeasured:upstream`, and every flip
+# re-published the unchanged degraded fleet - the captain woken by the same two
+# sentences, alternating, for hours. "Not measured" is the absence of a reading,
+# not a verdict about the lane, so the digest must keep the last told shape
+# across the flicker in BOTH directions. A measured verdict that genuinely
+# changed must still report, or silence is being bought with a mute guard.
+home=$(fresh_home reading-flicker)
+snapshot "$home/snap-good.json" \
+  "$(finite_provider claude 5)" \
+  "$(finite_provider codex 4)" \
+  "$(credential_provider copilot)"
+snapshot "$home/snap-flicker.json" \
+  "$(rate_limited_provider claude)" \
+  "$(finite_provider codex 4)" \
+  "$(credential_provider copilot)"
+out=$(run_guard "$home" 2 "$home/snap-good.json" check)
+assert_contains "$out" "2 of 3 provider lanes dispatchable" "the degraded fleet must report the first time"
+out=$(run_guard "$home" 2 "$home/snap-flicker.json" check)
+[ -z "$out" ] || fail "a lane that merely became unreadable must not re-report the fleet, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-good.json" check)
+[ -z "$out" ] || fail "a lane that became readable again must not re-report the fleet, got: $out"
+# Twice more, because the defect was an alternation: a fix that merely delays
+# the repeat by one poll would still pass a single round trip.
+out=$(run_guard "$home" 2 "$home/snap-flicker.json" check)
+[ -z "$out" ] || fail "the second flicker poll must stay quiet too, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-good.json" check)
+[ -z "$out" ] || fail "the second recovered poll must stay quiet too, got: $out"
+# The other direction, so none of that silence can be bought by a guard that
+# simply went mute: a lane that genuinely FALLS still wakes somebody the first
+# time, right through the carried entry.
+snapshot "$home/snap-dead.json" \
+  "$(credential_provider claude)" \
+  "$(finite_provider codex 4)" \
+  "$(credential_provider copilot)"
+out=$(run_guard "$home" 2 "$home/snap-dead.json" check)
+assert_contains "$out" "claude sign-in required" "a lane that genuinely fell must still report"
+out=$(run_guard "$home" 2 "$home/snap-dead.json" check)
+[ -z "$out" ] || fail "an unchanged genuinely-fallen fleet must not re-report, got: $out"
+pass "a lane flickering between measured and unmeasured does not re-report the fleet"
 
 # === a record that cannot be written ========================================
 #
@@ -1751,6 +1810,32 @@ snapshot "$home/snap.json" "$(credential_provider grok)" "$(credential_provider 
 out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1021600 check)
 assert_contains "$out" "0 of 2 provider lanes dispatchable" "a genuinely worse fleet must still report"
 pass "an unchanged fleet and an unchanged balance warning wake the captain once between them"
+
+# A CHANGE IN ONE ARM MUST NOT RE-PUBLISH THE OTHER.
+#
+# This is the regression the 2026-09-25 brief demanded in its own words: two
+# polls with the same lane shape and a balance arm that moves between them must
+# not publish the lane warning twice. The lane inventory is withheld from a
+# line the lane arm did not ask for, so a balance-only poll reports the balance
+# and nothing else. The balance hypothesis the brief proposed turned out not to
+# be the cause of the measured night - replaying the real balance history
+# against a stable lane shape produced exactly one wake - but this isolation is
+# what that hypothesis would have broken, so it is pinned rather than assumed.
+home=$(fresh_home balance-change-does-not-republish-lanes)
+snapshot "$home/snap.json" "$(credential_provider grok)" "$(healthy_provider claude 70)"
+balance_body "$home/bal-full.json" 40.00 true
+balance_body "$home/bal-low.json" 0.40 true
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-full.json" 1000000 check)
+assert_contains "$out" "1 of 2 provider lanes dispatchable" "the lane arm must report its own shape once"
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1003600 check)
+assert_contains "$out" "balance runs out in" "the balance arm must report its own change"
+assert_not_contains "$out" "provider lanes dispatchable" \
+  "a balance change must not re-publish the unchanged lane warning"
+# And the balance's own repeat suppression stays intact beside it, so the case
+# above cannot be satisfied by an arm that forgot how to remember.
+out=$(run_balance "$home" "$home/snap.json" "$MARGIN" "$home/bal-low.json" 1007200 check)
+[ -z "$out" ] || fail "an unchanged balance warning must not re-report either, got: $out"
+pass "a balance-arm change publishes the balance, never the unchanged lane shape"
 
 # The same defect reached from the arm that was withheld: while quota-axi is
 # down, a balance warning that genuinely CHANGES must still arrive, and it must

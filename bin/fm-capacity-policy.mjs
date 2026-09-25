@@ -338,8 +338,10 @@ function usage() {
     "prints the line and stays silent otherwise.",
     "--only-unreported withholds an arm whose key has not changed since the key",
     "handed back in, so an unchanged degraded fleet is reported once rather than",
-    "on every poll. Without it every arm worth reporting is reported, which is",
-    "what a new observer needs.",
+    "on every poll. A lane a poll could not measure keeps the entry the previously",
+    "reported key carried for it, so a reading that flickers between answering",
+    "and rate-limiting stays the shape the captain was already told. Without it",
+    "every arm worth reporting is reported, which is what a new observer needs.",
     "",
     "The FM_CAPACITY_BALANCE_READINGS environment variable carries the",
     "prepaid-balance history the validation provider is drained from, oldest first,",
@@ -963,11 +965,14 @@ export function verdict(
   // preserves that arm's key rather than replacing it with the other arm's.
   // Preserving loses nothing: a key holds a SHAPE and not a moment, so if the
   // arm changed while it was unreadable the next good reading differs and warns
-  // anyway.
-  const laneKey = laneFires ? laneDigest(lanes, dispatchable) : "";
-  const balanceKey = balanceClause === "" ? "" : balance.cause;
+  // anyway. The same rule applies per lane inside the lane arm's own key: a
+  // lane this poll could not measure carries the entry the last reported key
+  // held for it (see laneDigest), so a flicker between answering and not
+  // answering reads as the shape already told rather than as a new fleet.
   const reportedLanes = reported.lanes ?? "";
   const reportedBalance = reported.balance ?? "";
+  const laneKey = laneFires ? laneDigest(lanes, reportedLanes) : "";
+  const balanceKey = balanceClause === "" ? "" : balance.cause;
   const recordLanes = lanesUnreadable ? reportedLanes : laneKey;
   const recordBalance = balance === null ? reportedBalance : balanceKey;
 
@@ -1042,20 +1047,69 @@ export function verdict(
  * whether a live lane's runway has turned finite - which is itself the
  * transition worth a second warning.
  *
+ * A LANE THIS POLL COULD NOT MEASURE KEEPS THE ENTRY THE LAST REPORTED KEY
+ * CARRIED FOR IT, whenever that entry was a measured verdict. The digest is a
+ * record of what the captain has been TOLD, and "not measured" is not a new
+ * verdict about the lane - it is the absence of one, the same rule the
+ * lanes-unreadable path applies to the whole snapshot. Measured on the live
+ * fleet the night of 2026-09-24/25: claude's quota endpoint flickered between
+ * answering and rate-limiting, the digest alternated between
+ * `claude:live:finite` and `claude:unmeasured:upstream`, and every flip
+ * re-published the unchanged degraded fleet - the captain woken by the same two
+ * sentences, alternating, for hours. Carrying the last measured entry forward
+ * makes both directions of the flicker read as the shape already told, so
+ * neither re-fires; a measured verdict that actually CHANGED - a lane that
+ * falls, a signature that appears, a spent window - still differs from the
+ * carried entry and still wakes somebody the first time.
+ *
  * It is asked for only when the lane inventory was actually reported. The
  * balance's own half is its CAUSE and nothing else, for the same reason: the
  * projected seconds move on every poll, while "the runway went from long enough
  * to shorter than a validation" is exactly the transition worth waking somebody
  * about a second time.
  */
-function laneDigest(lanes, dispatchable) {
+function laneEntry(lane) {
+  if (lane.cause === "dispatchable") return `${lane.id}:live:${lane.finite ? "finite" : "ok"}`;
+  if (lane.cause === "window") return `${lane.id}:window:${lane.resetsAt}`;
+  if (lane.cause === "unmeasured") return `${lane.id}:unmeasured:${lane.subcause}`;
+  return `${lane.id}:${lane.cause}`;
+}
+
+/**
+ * The per-lane entries of a previously reported key, as id -> entry.
+ *
+ * The key is this file's own format (`lanes=<n>/<m>` then one
+ * space-separated entry per lane; entries never contain spaces), parsed back
+ * so a poll can carry the last told shape forward per lane. A key that does
+ * not parse - an older or foreign format - yields nothing to carry, and the
+ * next poll reports once and writes a key this parser can read.
+ */
+function reportedEntries(key) {
+  if (typeof key !== "string" || key === "") return null;
+  const space = key.indexOf(" ");
+  if (space === -1 || !key.startsWith("lanes=")) return null;
+  const entries = new Map();
+  for (const entry of key.slice(space + 1).split(" ")) {
+    const colon = entry.indexOf(":");
+    if (colon > 0) entries.set(entry.slice(0, colon), entry);
+  }
+  return entries;
+}
+
+function laneDigest(lanes, reportedKey = null) {
+  const previous = reportedEntries(reportedKey);
   const parts = lanes.map((lane) => {
-    if (lane.cause === "dispatchable") return `${lane.id}:live:${lane.finite ? "finite" : "ok"}`;
-    if (lane.cause === "window") return `${lane.id}:window:${lane.resetsAt}`;
-    if (lane.cause === "unmeasured") return `${lane.id}:unmeasured:${lane.subcause}`;
-    return `${lane.id}:${lane.cause}`;
+    const fresh = laneEntry(lane);
+    if (previous === null || !fresh.startsWith(`${lane.id}:unmeasured`)) return fresh;
+    const carried = previous.get(lane.id);
+    if (carried === undefined || carried.startsWith(`${lane.id}:unmeasured`)) return fresh;
+    return carried;
   });
-  return `lanes=${dispatchable.length}/${lanes.length} ${parts.sort().join(" ")}`;
+  // The count comes from the merged entries, so the headline half of the key
+  // stays as stable as the per-lane half: a lane whose last told entry was
+  // live still counts as live on a poll that merely could not read it.
+  const live = parts.filter((entry) => entry.includes(":live:")).length;
+  return `lanes=${live}/${lanes.length} ${parts.sort().join(" ")}`;
 }
 
 function main(argv, env) {
