@@ -976,6 +976,75 @@ out=$(run_guard "$home" 2 "$home/snap-p3.json" check)
 [ -z "$out" ] || fail "the proven-short fleet must not repeat once it has been told, got: $out"
 pass "a blind stretch cannot mute the poll that proves the fleet is short"
 
+# A HALF-BLIND QUIET POLL MAY NOT DEFEND A SHAPE IT CAN SEE IS STALE.
+#
+# Not writing its own shape down is right - the captain was never told it. But
+# the record it is holding on to is a claim about the fleet too, and a poll that
+# can read enough to CONTRADICT that claim has no business protecting it: the
+# fleet recovers unseen, degrades back to the shape that was last published, and
+# the stale key suppresses a fall that genuinely happened. Forgetting instead
+# can cost at most one repeated warning; preserving costs the warning itself.
+home=$(fresh_home stale-record-after-unseen-recovery)
+snapshot "$home/snap-short.json" \
+  "$(credential_provider alpha)" \
+  "$(credential_provider bravo)" \
+  "$(healthy_provider charlie 60)"
+snapshot "$home/snap-recovered-blind.json" \
+  "$(healthy_provider alpha 80)" \
+  "$(healthy_provider bravo 70)" \
+  "$(rate_limited_provider charlie)"
+out=$(run_guard "$home" 2 "$home/snap-short.json" check)
+assert_contains "$out" "1 of 3 provider lanes dispatchable" "the short fleet must report the first time"
+out=$(run_guard "$home" 2 "$home/snap-recovered-blind.json" check)
+[ -z "$out" ] || fail "a recovered fleet with one unread lane must stay silent, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-short.json" check)
+assert_contains "$out" "1 of 3 provider lanes dispatchable" "a fall back to the last published shape must report again"
+pass "a fleet that recovers unseen and falls back still wakes the captain"
+
+# The same defect on the runway arm rather than the count, so the fix cannot be
+# one that only understands lanes being signed out.
+home=$(fresh_home stale-record-after-unseen-runway-recovery)
+snapshot "$home/snap-finite.json" \
+  "$(finite_provider claude 5)" \
+  "$(finite_provider codex 4)"
+snapshot "$home/snap-eased-blind.json" \
+  "$(healthy_provider claude 70)" \
+  "$(rate_limited_provider codex)"
+out=$(run_guard "$home" 2 "$home/snap-finite.json" check)
+assert_contains "$out" "every dispatchable lane is projected to run out" "an entirely finite fleet must report the first time"
+out=$(run_guard "$home" 2 "$home/snap-eased-blind.json" check)
+[ -z "$out" ] || fail "a fleet whose runway eased with one unread lane must stay silent, got: $out"
+out=$(run_guard "$home" 2 "$home/snap-finite.json" check)
+assert_contains "$out" "every dispatchable lane is projected to run out" "a runway that turned finite again must report"
+pass "an unseen runway recovery does not mute the next finite fleet"
+
+# AND THE CASE THAT MAKES THE SECOND HALF NON-OPTIONAL: a lane can be unreadable
+# forever. A locked credential store reads as `not measured`, and this guard
+# runs quota-axi without --allow-keychain-prompt on purpose, so every quiet poll
+# on such a fleet is half-blind. A rule that only ever preserved would freeze
+# the record at the last published shape for good, and no later fall below the
+# threshold would ever be announced again - not late, never.
+home=$(fresh_home permanently-half-blind-fleet)
+snapshot "$home/snap-short.json" \
+  "$(store_unread_blind_provider gemini)" \
+  "$(credential_provider alpha)" \
+  "$(credential_provider bravo)" \
+  "$(healthy_provider charlie 60)"
+snapshot "$home/snap-whole.json" \
+  "$(store_unread_blind_provider gemini)" \
+  "$(healthy_provider alpha 80)" \
+  "$(healthy_provider bravo 70)" \
+  "$(healthy_provider charlie 60)"
+out=$(run_guard "$home" 3 "$home/snap-short.json" check)
+assert_contains "$out" "1 of 4 provider lanes dispatchable, 1 not measured" "the short fleet must report beside its locked lane"
+out=$(run_guard "$home" 3 "$home/snap-whole.json" check)
+[ -z "$out" ] || fail "a fleet back above the threshold must stay silent, got: $out"
+out=$(run_guard "$home" 3 "$home/snap-short.json" check)
+assert_contains "$out" "1 of 4 provider lanes dispatchable, 1 not measured" "a fleet with a permanently locked lane must still report a later fall"
+out=$(run_guard "$home" 3 "$home/snap-short.json" check)
+[ -z "$out" ] || fail "and it must still not repeat that report, got: $out"
+pass "a permanently unreadable lane does not freeze the record for good"
+
 # === a record that cannot be written ========================================
 #
 # Suppression rests entirely on the record landing, so a write that fails and
