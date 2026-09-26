@@ -54,7 +54,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-test-run.sh`         | Behavior-test runner: selection, portable lanes, bounded concurrency, budgets, coverage guard, timing/JSON |
 | `fm-test-isolation-proof.sh` | Concurrent isolation harness and portable candidate set owner |
 | `fm-lint.sh`             | Single owner of firstmate's lint definition: one exact ShellCheck version and bounded execution for the canonical file set |
-| `fm-lint-workflows.sh`   | Owner of firstmate's GitHub workflow lint: run pinned actionlint on every .github/workflows file |
+| `fm-lint-workflows.sh`   | Owner of firstmate's GitHub workflow lint: pinned actionlint over every .github/workflows file, plus refusal of an undeclared `continue-on-error` |
 | `fm-install-actionlint.sh` | Install CI's pinned, verified actionlint build                                       |
 | `fm-install-shellcheck.sh` | Install CI's pinned, verified ShellCheck build                                       |
 | `fm-install-bash.sh`    | Install CI's pinned, SHA-256-verified bash floor for the behavior-suite lanes        |
