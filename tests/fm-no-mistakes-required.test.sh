@@ -13,26 +13,35 @@ command -v ruby >/dev/null 2>&1 \
   || fail "ruby is required to read no-mistakes-required.yml as YAML"
 # Read the ref out of the steps that actually call the action. A scan of the
 # whole file answers about prose too, and this workflow discusses its own pin.
+# Call sites are selected by the action path alone, so a step carrying a moving
+# ref - or no ref at all - is a collected call site that gets refused by name,
+# not one that drops out of the agreement check unseen.
 # shellcheck disable=SC2016
 ACTION_REF=$(ruby -ryaml -e '
 action = "kunchenguid/no-mistakes/.github/actions/require-no-mistakes"
 doc = YAML.load_file(ARGV[0])
-refs = []
-(doc["jobs"] || {}).each_value do |job|
+sites = []
+(doc["jobs"] || {}).each do |job_id, job|
   next unless job.is_a?(Hash)
-  (job["steps"] || []).each do |step|
+  (job["steps"] || []).each_with_index do |step, index|
     next unless step.is_a?(Hash)
-    uses = step["uses"].to_s
-    next unless uses.start_with?("#{action}@")
-    refs << uses.split("@", 2).last
+    path, ref = step["uses"].to_s.split("@", 2)
+    next unless path == action
+    label = step["id"].to_s.empty? ? "#{job_id} step #{index + 1}" : step["id"].to_s
+    sites << [label, ref.to_s]
   end
 end
-abort "no step calls #{action}" if refs.empty?
-pinned = refs.uniq
-abort "its call sites disagree on the ref: #{pinned.join(", ")}" if pinned.length != 1
-ref = pinned.first
-abort "the pinned ref is not a 40-character commit: #{ref}" unless ref =~ /\A[0-9a-f]{40}\z/
-puts ref
+describe = lambda do |pairs|
+  pairs.map { |label, ref| "#{label} carries #{ref.empty? ? "no ref" : ref}" }.join("; ")
+end
+abort "no step calls #{action}" if sites.empty?
+moving = sites.reject { |_label, ref| ref =~ /\A[0-9a-f]{40}\z/ }
+unless moving.empty?
+  abort "not every call site is pinned to a 40-character commit: #{describe.call(moving)}"
+end
+refs = sites.map { |_label, ref| ref }.uniq
+abort "its call sites disagree: #{describe.call(sites)}" if refs.length != 1
+puts refs.first
 ' "$GATE_WORKFLOW") || fail \
   "no-mistakes-required.yml must pin require-no-mistakes to exactly one 40-character commit at every call site"
 TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)

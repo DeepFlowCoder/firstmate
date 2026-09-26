@@ -82,12 +82,32 @@ When the earlier one judged the head before the pipeline had written the attesta
 The recovery is to re-run the obsolete run rather than push, because a push moves the head past the attestation and orphans it.
 That recovery only works if the verifier re-reads the pull request: GitHub replays a rerun's event payload from the run's original trigger, so a verifier reading that payload reproduces its own stale verdict with a fresh timestamp.
 
-The pinned verifier, asked to judge with no explicit inputs and nothing available for a live lookup, refuses instead of falling back:
+The reading that separates the two pins needs a cached payload that is a clean pass on its own, so that certifying it is a verdict and not the absence of one.
+An empty payload cannot do that: both pins exit 1 on it and differ only in the wording of the refusal.
+This fixture therefore carries the signature line plus a v1 attestation whose `head_sha` is the payload's own `head.sha`:
 
 ```sh
-curl -fsSL "https://raw.githubusercontent.com/kunchenguid/no-mistakes/f6441c96c352a18b9cadcaef6b6c7017e9ac3970/.github/actions/require-no-mistakes/verify.py" -o verify.py
-env -u PR_BODY -u PR_HEAD_SHA -u GITHUB_EVENT_PATH -u GITHUB_TOKEN -u GITHUB_REPOSITORY \
-  PR_AUTHOR=maintainer PR_NUMBER=0 python3 verify.py; echo "rc=$?"
+cat > event.py <<'PY'
+import json
+head = "6d94a462a3e00e60e7d6924e8c9bd65c76d848d3"
+sig = "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
+steps = [{"step": s, "status": "completed"} for s in ("review", "test", "document")]
+body = sig + "\n<!-- no-mistakes-pipeline-attestation:v1 " + json.dumps({"head_sha": head, "steps": steps}) + " -->"
+json.dump({"pull_request": {"number": 17, "body": body,
+    "head": {"sha": head, "ref": "fm/stale-red"}, "user": {"login": "maintainer"}}},
+    open("event.json", "w"))
+PY
+python3 event.py
+```
+
+`PR_BODY` and `PR_HEAD_SHA` are unset so no explicit input short-circuits the live lookup, and `GITHUB_TOKEN` and `GITHUB_REPOSITORY` are unset so the live lookup cannot succeed.
+The archived payload is then the only source left, and it would pass.
+The pinned verifier refuses it:
+
+```sh
+curl -fsSL "https://raw.githubusercontent.com/kunchenguid/no-mistakes/f6441c96c352a18b9cadcaef6b6c7017e9ac3970/.github/actions/require-no-mistakes/verify.py" -o verify-f6441c96.py
+env -u PR_BODY -u PR_HEAD_SHA -u PR_AUTHOR -u PR_NUMBER -u GITHUB_TOKEN -u GITHUB_REPOSITORY \
+  GITHUB_EVENT_PATH=event.json python3 verify-f6441c96.py; echo "rc=$?"
 ```
 
 ```
@@ -99,11 +119,22 @@ PR author: maintainer
 rc=1
 ```
 
-The previous pin, `32d396ac0f29135daf7fcb9964aba9d5f4e796d6`, answered the same invocation by judging the empty cached payload and reporting a missing signature instead:
+The previous pin, `32d396ac0f29135daf7fcb9964aba9d5f4e796d6`, certifies that same payload as compliant:
+
+```sh
+curl -fsSL "https://raw.githubusercontent.com/kunchenguid/no-mistakes/32d396ac0f29135daf7fcb9964aba9d5f4e796d6/.github/actions/require-no-mistakes/verify.py" -o verify-32d396ac.py
+env -u PR_BODY -u PR_HEAD_SHA -u PR_AUTHOR -u PR_NUMBER -u GITHUB_TOKEN -u GITHUB_REPOSITORY \
+  GITHUB_EVENT_PATH=event.json python3 verify-32d396ac.py; echo "rc=$?"
+```
 
 ```
-::error::This PR was not raised through no-mistakes.
+Found no-mistakes signature in PR #17 body.
+Found structurally compliant pipeline step attestation.
+::warning::PR-body attestation is author-editable and is not cryptographic proof that no-mistakes produced it.
+rc=0
 ```
 
+The verdicts differ, not the wording: rc=0 from the old pin against rc=1 from the new one, on an input where a rerun would be replaying exactly this payload.
 That is why the pin moved and why the workflow now grants `pull-requests: read`: without the permission the live read is denied and the pinned verifier refuses the whole gate rather than certifying from the payload.
-`tests/fm-no-mistakes-required.test.sh` pins both halves - the refusal above, and the workflow's permission - and reads the pinned commit out of the workflow so the two cannot drift.
+`tests/fm-no-mistakes-required.test.sh` builds a payload of this shape in `write_compliant_event_payload` and drives the pinned verifier with it in `test_pinned_verifier_refuses_the_cached_event_payload`, asserting the non-zero exit rather than the message, and pins the workflow's `pull-requests: read` beside it.
+It reads the pinned commit out of the workflow, and refuses a call site carrying a moving ref or no ref by name, so the two cannot drift.
