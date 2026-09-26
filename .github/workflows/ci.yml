@@ -471,13 +471,27 @@ jobs:
             herdr session list --json || true
             exit 1
           }
-      - name: Upload Herdr timing and diagnostics
+      # One path, so the artifact's root is the directory holding the JSON and
+      # the file lands at the root under the name the aggregate looks up. A
+      # second path under another parent would root the artifact at the least
+      # common ancestor and nest the JSON one directory down, where the
+      # aggregate's flat lookup cannot see it. Diagnostics therefore travel in
+      # their own artifact below, not alongside the timing JSON.
+      - name: Upload Herdr timing
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fm-test-timing-herdr
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-herdr.json
+          if-no-files-found: warn
+      # Named outside the fm-test-timing-* family on purpose: the aggregate
+      # downloads that pattern, and these files are for a human reading the run.
+      - name: Upload Herdr diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-herdr-diagnostics
           path: |
-            ${{ runner.temp }}/fm-test/fm-test-timing-herdr.json
             ${{ runner.temp }}/fm-herdr/sessions-before.json
             ${{ runner.temp }}/fm-herdr/default-server.log
           if-no-files-found: warn

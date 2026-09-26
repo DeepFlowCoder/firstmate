@@ -885,16 +885,35 @@ EOF
 }
 
 # Render every timing artifact ci.yml actually PUBLISHES, expanding the serial
-# matrix the way the workflow does, and assert each one publishes a file named
-# after itself. The aggregate job is excluded: it consumes this set and
-# republishes one summary, so counting its own upload would let the consumer
-# satisfy its own expectation.
+# matrix the way the workflow does, and assert each one puts a file named after
+# itself AT THE ARTIFACT ROOT. The root is what the aggregate's flat lookup
+# resolves against, and actions/upload-artifact@v4 derives it from the search
+# paths rather than from the name, so the layout - not just the name - is the
+# half of the contract the consumer depends on. The aggregate job is excluded:
+# it consumes this set and republishes one summary, so counting its own upload
+# would let the consumer satisfy its own expectation.
 render_ci_timing_producers() {
   local workflow=$1
   # Single quotes are required: the body is a Ruby program whose ${{ ... }}
   # patterns must reach Ruby unexpanded by the shell.
   # shellcheck disable=SC2016
   ruby -ryaml -e '
+# actions/upload-artifact@v4 roots a single-path artifact at the parent
+# directory of that path, and a multi-path artifact at the least common
+# ancestor of its search paths. Everything below the root is preserved inside
+# the artifact, so a second path under another parent nests the first one.
+def artifact_root(search_paths)
+  return File.dirname(search_paths.first) if search_paths.length == 1
+  split = search_paths.map { |p| p.split("/") }
+  common = []
+  split.first.each_index do |i|
+    seg = split.first[i]
+    break unless split.all? { |parts| parts[i] == seg }
+    common << seg
+  end
+  common.join("/")
+end
+
 doc = YAML.load_file(ARGV[0])
 names = []
 doc.fetch("jobs").each do |job_id, job|
@@ -915,8 +934,14 @@ doc.fetch("jobs").each do |job_id, job|
         rendered_path = rendered_path.gsub(/\$\{\{\s*matrix\.shard\s*\}\}/, shard.to_s)
       end
       raise "unexpanded workflow expression in artifact name #{rendered}" if rendered.include?("${{")
-      unless rendered_path.include?("#{rendered}.json")
-        raise "artifact #{rendered} does not publish #{rendered}.json: #{rendered_path}"
+      search_paths = rendered_path.split("\n").map(&:strip).reject(&:empty?)
+      root = artifact_root(search_paths)
+      unless search_paths.include?("#{root}/#{rendered}.json")
+        raise "artifact #{rendered} does not put #{rendered}.json at its root. " \
+          "upload-artifact roots this artifact at #{root} (from search paths " \
+          "#{search_paths.join(", ")}), so the consumer looks up " \
+          "#{rendered}.json and finds nothing there. Publish the timing JSON " \
+          "as the only path of its own upload."
       end
       names << rendered
     end
