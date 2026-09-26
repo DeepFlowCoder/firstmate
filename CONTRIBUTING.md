@@ -55,6 +55,8 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, pinned shellcheck version, and pinned actionlint workflow lint), and both CI and the no-mistakes pre-push gate run its no-argument full-analysis path.
   Its header and `--help` output own the exact local lint modes and flags.
   A malformed `.github/workflows/*.yml`, including a self-broken `ci.yml`, fails that local lint path before merge because a broken workflow cannot report its own breakage.
+  So does an undeclared `continue-on-error`, whatever its value: a job or step carrying it keeps reporting and stops gating, and the intended uses are named one by one in `NON_GATING_ALLOWED` in `bin/fm-lint-workflows.sh`.
+  That check reads the workflows as YAML and needs `ruby` on `PATH`, which is all it uses ruby for.
   It pins one exact shellcheck version and one exact actionlint version and refuses to run under any other.
   Print the shellcheck pin with `bin/fm-lint.sh --required-version` and the actionlint pin with `bin/fm-lint-workflows.sh --required-version`.
   Use `bin/fm-install-shellcheck.sh` and `bin/fm-install-actionlint.sh` to install those exact builds locally; each installer's header owns its destination usage and supported platforms.
