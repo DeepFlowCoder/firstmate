@@ -22,6 +22,7 @@
 #   fm-test-run.sh --list-concurrent-safe-families
 #   fm-test-run.sh --concurrent-safe-family-jobs-max <name>
 #   fm-test-run.sh --list-lanes
+#   fm-test-run.sh --list-timing-artifacts
 #   fm-test-run.sh --check-coverage
 #
 # Aggregation (no suite execution):
@@ -368,6 +369,28 @@ list_known_lanes() {
     i=$((i + 1))
   done
   printf '%s\n' real-herdr-gated
+}
+
+# The exact set of per-lane timing artifacts a complete CI run produces, one
+# base name per line and in no particular order of importance.
+#
+# This exists so the aggregate consumer in .github/workflows/ci.yml has a
+# producer set to compare what arrived against, instead of aggregating whatever
+# happened to show up. The shard count is the only variable part of that set and
+# it already belongs here, so this stays with it rather than being re-spelled in
+# the workflow. Each name is both the uploaded artifact's name and, with
+# ".json", the file inside it; tests/fm-test-run.test.sh holds ci.yml's upload
+# steps to exactly this list.
+list_ci_timing_artifacts() {
+  local i
+  printf '%s\n' fm-test-timing-portable-parallel-1
+  printf '%s\n' fm-test-timing-portable-parallel-2
+  i=1
+  while [ "$i" -le "$PORTABLE_SERIAL_SHARDS" ]; do
+    printf 'fm-test-timing-portable-serial-%s\n' "$i"
+    i=$((i + 1))
+  done
+  printf '%s\n' fm-test-timing-herdr
 }
 
 # Exact proven-isolated candidate set (same paths as
@@ -1695,6 +1718,10 @@ while [ "$#" -gt 0 ]; do
     --list-lanes)
       LIST_LANES=1
       shift
+      ;;
+    --list-timing-artifacts)
+      list_ci_timing_artifacts
+      exit 0
       ;;
     --check-coverage)
       CHECK_COVERAGE=1

@@ -483,6 +483,33 @@ jobs:
           if-no-files-found: warn
 
   # Aggregate per-lane timing into one summary artifact for critical-path review.
+  #
+  # WHAT THIS LANE IS A VERDICT ABOUT, because the two halves are different and
+  # conflating them is what produced the hole below. It is NOT a verdict about
+  # the suites: a failing test is reported by the lane that ran it, and this job
+  # says nothing about it. It IS a verdict about its own producer/consumer
+  # contract - every lane that uploads a timing artifact has one downloaded and
+  # aggregated here. That half gates, and it gates out loud.
+  #
+  # It used to do neither. The aggregate step globbed whatever arrived and
+  # exited 0 on an empty glob with a `::warning::`, so the job was green after
+  # aggregating one lane of eleven, and green again after aggregating none at
+  # all - indistinguishable, from outside, from a complete aggregate. The
+  # consumer had no producer set to compare against, so a renamed or unuploaded
+  # artifact silently shrank the data instead of failing. The cost is not
+  # hypothetical: the shard-3 comment above records a wholesale shard rebalance
+  # still blocked on one timing artifact that went missing, noticed only by a
+  # human reading logs.
+  #
+  # bin/fm-test-run.sh --list-timing-artifacts is that producer set, held there
+  # with PORTABLE_SERIAL_SHARDS rather than re-spelled here, and
+  # tests/fm-test-run.test.sh holds this file's upload steps to it.
+  #
+  # A lane cancelled by its own cap uploads nothing, so this job reds too,
+  # naming the missing lane next to the lane's own red. That is a second report
+  # of one problem, accepted deliberately: the alternative is a rule that
+  # exempts missing artifacts whenever any lane is unhealthy, which is exactly
+  # when a real naming break would hide inside the exemption.
   tests-timing-aggregate:
     name: Behavior timing aggregate
     runs-on: ubuntu-latest
@@ -500,14 +527,18 @@ jobs:
           pattern: fm-test-timing-*
           path: ${{ runner.temp }}/fm-test-aggregate
           merge-multiple: true
-      - name: Build aggregate timing summary
+      # Aggregates what arrived and fails only on an artifact it cannot read.
+      # Which lanes were owed is the next step's question, so a partial run
+      # still publishes the partial summary below before that verdict lands.
+      - name: Build aggregate timing summary from the artifacts that arrived
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
           shopt -s nullglob
           inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json)
           if [ "${#inputs[@]}" -eq 0 ]; then
-            echo "::warning::no per-lane timing JSON found to aggregate"
+            echo "No per-lane timing JSON arrived; the completeness check below"
+            echo "names every lane that owed one."
             exit 0
           fi
           bin/fm-test-run.sh --aggregate-json \
@@ -520,6 +551,39 @@ jobs:
           name: fm-test-timing-aggregate
           path: ${{ runner.temp }}/fm-test/fm-test-timing-aggregate.json
           if-no-files-found: warn
+      # The gating half. Runs even when the step above failed, so a corrupt
+      # artifact and a missing one are both named in the same job.
+      - name: Require a timing artifact from every lane
+        if: always()
+        run: |
+          set -eu
+          # An expected set this step could not establish is not an empty
+          # expected set: refuse rather than pass over every lane at once.
+          expected=$(bin/fm-test-run.sh --list-timing-artifacts)
+          [ -n "$expected" ] || {
+            echo "::error::bin/fm-test-run.sh --list-timing-artifacts named no" \
+              "lane, so this step cannot tell a complete aggregate from an" \
+              "empty one. Fix the runner before trusting this lane."
+            exit 1
+          }
+          missing=0
+          while IFS= read -r artifact; do
+            [ -n "$artifact" ] || continue
+            if [ ! -f "$RUNNER_TEMP/fm-test-aggregate/$artifact.json" ]; then
+              echo "::error::lane timing artifact $artifact.json never arrived"
+              missing=$((missing + 1))
+            fi
+          done <<EOF
+          $expected
+          EOF
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::$missing lane timing artifact(s) missing. A red lane" \
+              "above is the usual cause and is reported there; a green fleet" \
+              "with a missing artifact means a producer and this consumer" \
+              "disagree about the name."
+            exit 1
+          fi
+          echo "Every lane named by --list-timing-artifacts contributed timing."
 
   macos-stock-bash:
     name: Stock macOS Bash snapshot compatibility
