@@ -282,6 +282,37 @@ test_v2_tolerates_a_recorded_date_that_is_not_a_date() {
   pass "a recorded value that is not a date is tolerated, but generated is not"
 }
 
+# `generated` is strict in a second way too: shape alone is not enough. A
+# well-formed day the calendar does not have ("2026-02-30") would leave the
+# template's date verdict no reference to measure from, which is the one
+# inversion the honest-dates contract exists to prevent. The snapshot produces
+# the stamp from the real clock, so refusing it costs no hand-edited row.
+test_v2_refuses_a_generated_day_the_calendar_does_not_have() {
+  local home data board rc
+  home=$(make_home impossible-generated)
+  board="$home/.lavish/bearings-board.html"
+  data="$home/payload.json"
+
+  write_valid_payload "$data"
+  jq '.generated = "2026-02-30T00:00Z"' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; run_board "$home" build "$data" >/dev/null 2>&1; rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "a generated stamp naming February 30th was accepted"
+  assert_absent "$board" "a refused payload still produced a board"
+
+  write_valid_payload "$data"
+  jq '.generated = "2026-13-01T00:00Z"' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; run_board "$home" build "$data" >/dev/null 2>&1; rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "a generated stamp naming a thirteenth month was accepted"
+  assert_absent "$board" "a refused payload still produced a board"
+
+  # a leap day the calendar does have stays accepted
+  write_valid_payload "$data"
+  jq '.generated = "2024-02-29T00:00Z"' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  run_board "$home" build "$data" >/dev/null \
+    || fail "a real leap day was refused as the reference stamp"
+  pass "generated must name a day the calendar has, not just be shaped like one"
+}
+
 # `charted_more` is a FLEET count and names no project, so a lane whose rows all
 # fell past a bound had nothing to disclose and read as launched-and-quiet, or
 # never appeared at all. `lanes_more` is that same disclosure per lane, and the
@@ -550,6 +581,7 @@ test_path_is_stable_and_home_scoped
 test_build_refuses_malformed_payloads_before_touching_the_board
 test_v2_refuses_rows_the_yard_could_not_read
 test_v2_tolerates_a_recorded_date_that_is_not_a_date
+test_v2_refuses_a_generated_day_the_calendar_does_not_have
 test_v2_refuses_lane_omissions_the_board_could_not_stand_behind
 test_charted_kind_is_optional_and_accepts_both_values
 test_build_injects_binds_then_arms

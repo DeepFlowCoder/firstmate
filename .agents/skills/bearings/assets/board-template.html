@@ -746,8 +746,16 @@ __FM_BEARINGS_BOARD_DATA__
      velocity or a change since yesterday. It states only the two ages the
      records actually carry: how long queued work has waited, and how recently
      something launched. Both are read against `generated`, the payload's own
-     date, so the page never depends on the reader's clock. */
+     date, so the page never depends on the reader's clock.
+
+     Every date the board reads is asked ONE question - is it usable as
+     evidence: a day the calendar has, and one the snapshot could have seen?
+     `usableDay` owns the answer, and everything downstream - the ages, the
+     stage sort, the recency reductions - consumes that verdict instead of
+     asking again its own way, so a refusal cannot hold in one place while
+     lapsing in another. */
   var DAY_MS = 86400000;
+  /* The calendar half of the verdict: a real day, or null. */
   function dayNumber(text) {
     if (typeof text !== "string") return null;
     var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
@@ -765,26 +773,41 @@ __FM_BEARINGS_BOARD_DATA__
     return Math.floor(n / DAY_MS);
   }
   var todayNumber = dayNumber(data.generated);
-  function daysBefore(text) {
+  /* The visibility half completes the verdict: a record the calendar places
+     AFTER the snapshot is a typo, not a tempo - one wrong digit in the year
+     would otherwise read as filed today, and a launch dated ahead would crown
+     its lane as the yard's most recent. `generated` is validated calendar-real
+     before the board is built, so a missing reference should be unreachable;
+     if it ever happens, nothing is usable rather than everything, because
+     accepting every date with nothing to measure against is exactly the
+     inversion the verdict exists to prevent. */
+  function usableDay(text) {
+    if (todayNumber === null) return null;
     var d = dayNumber(text);
-    if (d === null || todayNumber === null) return null;
-    return todayNumber - d;
+    if (d === null || d > todayNumber) return null;
+    return d;
   }
+  /* An age in days off the verdict: an unusable date has no age, and a usable
+     one is never ahead of the snapshot, so this difference never runs
+     backwards. */
+  function daysBefore(text) {
+    var d = usableDay(text);
+    return d === null ? null : todayNumber - d;
+  }
+  /* n reaches here only from the verdict, so it is a non-negative age by
+     construction and this is a formatter, not a second guard - duplicating the
+     refusal here is how the one question drifted into three answers. */
   function agoDays(n) {
     if (n === null) return null;
-    /* A record the calendar places AFTER the snapshot is a typo, not a tempo:
-       one wrong digit in the year would otherwise read as filed today, and a
-       launch dated ahead would crown its lane as the yard's most recent. An age
-       that runs backwards is not an age, so it gets the same no-age answer an
-       unparseable value and an impossible day already get. */
-    if (n < 0) return null;
     if (n === 0) return "today";
     if (n === 1) return "yesterday";
     return n + " days ago";
   }
   function agoText(text) { return agoDays(daysBefore(text)); }
+  /* The recency reductions below carry only verdict-passed day numbers, so a
+     lane or yard last-launch figure renders exactly like a row's own date. */
   function agoDay(n) {
-    return n === null || todayNumber === null ? null : agoDays(todayNumber - n);
+    return n === null ? null : agoDays(todayNumber - n);
   }
   /* The only date a queued row records is when the ORDER was filed, so both
      queued stages say exactly that. Neither says how long the row has been
@@ -805,15 +828,6 @@ __FM_BEARINGS_BOARD_DATA__
   function isAged(text) {
     var n = daysBefore(text);
     return n !== null && n >= AGED_DAYS;
-  }
-  /* A date the snapshot cannot yet have seen is not a position in time the
-     board may sort by, so it is treated as undated here exactly as it is when
-     an age is rendered. */
-  function usableDay(text) {
-    var d = dayNumber(text);
-    if (d === null) return null;
-    if (todayNumber !== null && d > todayNumber) return null;
-    return d;
   }
   /* Oldest first in the queued stages, newest first among launches. The order
      matters beyond taste: a deep stage keeps only its first rows in view, so
@@ -928,10 +942,9 @@ __FM_BEARINGS_BOARD_DATA__
        snapshot cannot yet have seen must not be eligible to win it: otherwise a
        single mistyped year takes the crown, renders no age of its own, and hides
        the real launch beside it - and through yardLastLaunch it would drop the
-       recency line for the whole fleet. `usableDay` is that same rule, shared
-       with the sort so a launch can never be ranked by a date it is refused an
-       age for. With no usable `generated` there is nothing to compare against,
-       so every launch stays eligible rather than none. */
+       recency line for the whole fleet. `usableDay` is the one date verdict,
+       shared with the sort and the ages, so a launch can never be ranked or
+       crowned by a date it is refused an age for. */
     l.lastLaunch = l.launched.reduce(function (best, t) {
       var d = usableDay(t.landed_on);
       if (d === null) return best;
@@ -981,7 +994,7 @@ __FM_BEARINGS_BOARD_DATA__
      did not say, never that nothing was omitted. */
   var oldestWait = chartedWork.reduce(function (best, t) {
     var n = daysBefore(t.since);
-    if (n === null || n < 0) return best;
+    if (n === null) return best;
     return best === null || n > best ? n : best;
   }, null);
 

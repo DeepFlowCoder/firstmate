@@ -104,16 +104,21 @@
 #
 # Three v2 invariants exist so the board cannot silently fall back to reading
 # like a flat checklist:
-#   - `generated` carries a YYYY-MM-DD prefix. It is the reference the template
-#     measures both ages against, so the page never depends on the reader's
-#     clock, and the snapshot produces it, so the requirement is strict.
+#   - `generated` carries a YYYY-MM-DD prefix naming a day the calendar HAS.
+#     It is the reference the template measures both ages against, so the page
+#     never depends on the reader's clock, and the snapshot produces it, so the
+#     requirement is strict - strict about the calendar, not only the shape: a
+#     well-formed day that does not exist ("2026-02-30") would leave the
+#     template's date verdict no reference to measure from, which is exactly
+#     what turns its refusals off.
 #     Every charted `since` and landed `landed_on` carries either a value or an
 #     explicit null for "this row records no date". A row that simply omits the
 #     field is refused, the same deliberate-marker discipline `repo` already
 #     uses, because a missing date and an unrecorded date must not look alike.
 #     The value itself is NOT required to be a date: it comes from hand-edited
 #     backlog markdown, so the board tolerates whatever the record holds and
-#     renders an age only for a value it can parse.
+#     renders an age only for a value its date verdict accepts: a day the
+#     calendar has, no later than `generated`.
 #   - a queued row that is NOT dispatchable and is not a warning must carry a
 #     non-empty `reason`. Dry dock is only distinguishable from the stage of
 #     orders clear to start if the board can say what holds it.
@@ -199,13 +204,26 @@ validate_payload() {  # <data.json>
     def nonempty_string: type == "string" and length > 0;
     def slug($max): type == "string" and test("^[A-Za-z0-9._-]{1," + ($max | tostring) + "}$");
     def repo_marker: has("repo") and (.repo == null or (.repo | type == "string"));
-    def date_prefixed: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}");
+    # `generated` is the stamp the snapshot itself produces, so it must name a
+    # day the calendar HAS, not only be shaped like one: an impossible day
+    # ("2026-02-30") rolls over when measured, which would leave the date
+    # verdict in the template no reference and invert its refusals. The
+    # round-trip goes through `mktime | gmtime` because that is what normalizes
+    # an impossible day into the real one it lands on: `strftime` alone only
+    # reprints the fields it was handed on jq 1.7, so the comparison would be
+    # the stamp against itself. strptime errors on an out-of-range month, so
+    # catch keeps that a validation failure instead of a jq crash.
+    def date_prefixed:
+      type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")
+      and ((try (.[0:10] | strptime("%Y-%m-%d") | mktime | gmtime | strftime("%Y-%m-%d"))
+            catch null) == .[0:10]);
     # Same deliberate-marker discipline as repo_marker: the field is always
     # present, and null is how the composer says "this row records no date".
     # The VALUE is not required to be a date. These come from hand-edited
     # backlog markdown, where "(since the pivot)" is an ordinary note, and
     # refusing the whole build over one would leave the captain with no board
-    # at all. The template renders an age only when the value parses.
+    # at all. The template renders an age only when its date verdict accepts
+    # the value - a calendar-real day no later than `generated`.
     def date_marker($name):
       has($name) and (.[$name] == null or (.[$name] | type == "string"));
     def optional_string($name): (has($name) | not) or (.[$name] | type == "string");
