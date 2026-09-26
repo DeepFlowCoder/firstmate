@@ -606,6 +606,11 @@ jobs:
             '@AGENTS.md' >"$tmp"
           cmp -s CLAUDE.md "$tmp" || { echo "::error::CLAUDE.md must be the canonical @AGENTS.md pointer"; exit 1; }
           [ "$(readlink .claude/skills)" = "../.agents/skills" ] || { echo "::error::.claude/skills must be a symlink to ../.agents/skills"; exit 1; }
+      # The toolbelt reference is a list a reader trusts, and nothing used to
+      # hold it to bin/: it had already lost a row by the time this step was
+      # written. Single owner of the row contract and of what counts as drift.
+      - name: The bin/ toolbelt reference must match bin/
+        run: bin/fm-scripts-inventory-check.sh
       - name: Personal fleet paths must not be tracked
         run: |
           set -eu
