@@ -16,8 +16,14 @@ command -v ruby >/dev/null 2>&1 \
 # Call sites are selected by the action path alone, so a step carrying a moving
 # ref - or no ref at all - is a collected call site that gets refused by name,
 # not one that drops out of the agreement check unseen.
-# shellcheck disable=SC2016
-ACTION_REF=$(ruby -ryaml -e '
+#
+# Prints the single pinned commit, or explains the refusal on stderr and exits
+# non-zero. Takes the workflow path so a case can drive it with a doctored copy.
+render_gate_action_ref() {
+  # Single quotes are required: the body is a Ruby program the shell must not
+  # expand.
+  # shellcheck disable=SC2016
+  ruby -ryaml -e '
 action = "kunchenguid/no-mistakes/.github/actions/require-no-mistakes"
 doc = YAML.load_file(ARGV[0])
 sites = []
@@ -42,7 +48,10 @@ end
 refs = sites.map { |_label, ref| ref }.uniq
 abort "its call sites disagree: #{describe.call(sites)}" if refs.length != 1
 puts refs.first
-' "$GATE_WORKFLOW") || fail \
+' "$1"
+}
+
+ACTION_REF=$(render_gate_action_ref "$GATE_WORKFLOW") || fail \
   "no-mistakes-required.yml must pin require-no-mistakes to exactly one 40-character commit at every call site"
 TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)
 VERIFY="$TMP_ROOT/verify.py"
@@ -170,6 +179,69 @@ puts perms.fetch("pull-requests", "<absent>").to_s
   [ "$permission" = read ] || fail \
     "no-mistakes-required.yml must grant 'pull-requests: read' or the pinned verifier fails the whole gate closed; found: $permission"
   pass "the gate workflow grants the permission the pinned verifier requires"
+}
+
+# render_doctored_gate_workflow <dest> <call-site-ordinal> <replacement>: copy
+# the real workflow with one call site's `@<ref>` replaced. An empty
+# replacement leaves the action named with no ref at all.
+render_doctored_gate_workflow() {
+  local dest=$1 ordinal=$2 replacement=$3
+  awk -v want="$ordinal" -v repl="$replacement" '
+    /uses:.*require-no-mistakes@/ {
+      seen++
+      if (seen == want) { sub(/@[0-9a-f]+/, repl) }
+    }
+    { print }
+  ' "$GATE_WORKFLOW" > "$dest"
+}
+
+# Every case above reads ACTION_REF, so the extractor runs once at load against
+# the real workflow and its refusal branches never execute. A half-bumped
+# workflow is the failure those branches exist for, so drive them here.
+test_gate_action_ref_refuses_a_call_site_the_gate_would_not_run() {
+  local dir out rc
+  dir="$TMP_ROOT/gate-workflows"
+  mkdir -p "$dir"
+
+  rc=0
+  out=$(render_gate_action_ref "$GATE_WORKFLOW" 2>&1) || rc=$?
+  expect_code 0 "$rc" "the real gate workflow must resolve to one pinned commit"
+  [ "$out" = "$ACTION_REF" ] || fail \
+    "the extractor resolved the real workflow to $out, not $ACTION_REF"
+
+  # head_bind moved to a tag while ancestor_bind stays pinned, then the mirror.
+  # Whichever half moved, the suite must refuse rather than certify a verifier
+  # only one call site runs.
+  local ordinal label
+  for ordinal in 1 2; do
+    case "$ordinal" in
+      1) label=head_bind ;;
+      2) label=ancestor_bind ;;
+    esac
+    render_doctored_gate_workflow "$dir/tag-$ordinal.yml" "$ordinal" @v1.81.0
+    rc=0
+    out=$(render_gate_action_ref "$dir/tag-$ordinal.yml" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "a $label call site on a moving tag was accepted"
+    assert_contains "$out" "$label carries v1.81.0" \
+      "the refusal did not name $label and the tag it carries"
+  done
+
+  # No ref at all: the call site still names the action, so it must be refused
+  # by name rather than dropping out of the agreement check unseen.
+  render_doctored_gate_workflow "$dir/unpinned.yml" 2 ''
+  rc=0
+  out=$(render_gate_action_ref "$dir/unpinned.yml" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an ancestor_bind call site with no ref was accepted"
+  assert_contains "$out" "ancestor_bind carries no ref" \
+    "the refusal did not name the call site that carries no ref"
+
+  grep -v 'require-no-mistakes@' "$GATE_WORKFLOW" > "$dir/absent.yml"
+  rc=0
+  out=$(render_gate_action_ref "$dir/absent.yml" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a workflow that never calls the action was accepted"
+  assert_contains "$out" "no step calls" \
+    "the refusal did not say that no step calls the action"
+  pass "the extractor refuses a moving, absent, or half-bumped call site by name"
 }
 
 # --- firstmate's own ancestor reconcile -------------------------------------
@@ -358,6 +430,7 @@ test_mismatched_head_fails_with_both_shas
 test_missing_head_fails
 test_pinned_verifier_refuses_the_cached_event_payload
 test_gate_workflow_grants_the_permission_the_pinned_verifier_needs
+test_gate_action_ref_refuses_a_call_site_the_gate_would_not_run
 test_ci_fix_only_delta_reconciles_and_then_passes_the_shared_action
 test_human_commit_after_the_attestation_is_refused
 test_ci_fix_subject_is_matched_in_full_not_as_a_prefix

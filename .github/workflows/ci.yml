@@ -544,12 +544,38 @@ jobs:
       # Aggregates what arrived and fails only on an artifact it cannot read.
       # Which lanes were owed is the next step's question, so a partial run
       # still publishes the partial summary below before that verdict lands.
+      #
+      # The inputs are named by the same authoritative set the next step gates
+      # on, not by a glob over the download directory. The download pattern
+      # necessarily matches this job's own `fm-test-timing-aggregate`, and a
+      # re-run of a failed attempt leaves the previous attempt's copy in that
+      # directory, so a glob would feed the published summary back in as a
+      # twelfth lane and double every count in it.
       - name: Build aggregate timing summary from the artifacts that arrived
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
-          shopt -s nullglob
-          inputs=("$RUNNER_TEMP"/fm-test-aggregate/fm-test-timing-*.json)
+          # An expected set this step could not establish is not an empty
+          # expected set: refuse rather than aggregate nothing.
+          expected=$(bin/fm-test-run.sh --list-timing-artifacts)
+          [ -n "$expected" ] || {
+            echo "::error::bin/fm-test-run.sh --list-timing-artifacts named no" \
+              "lane, so this step cannot tell which artifacts belong in the" \
+              "aggregate. Fix the runner before trusting this lane."
+            exit 1
+          }
+          inputs=()
+          while IFS= read -r artifact; do
+            [ -n "$artifact" ] || continue
+            candidate="$RUNNER_TEMP/fm-test-aggregate/$artifact.json"
+            # A lane that owed an artifact and did not deliver one is the next
+            # step's verdict, so skip it here and still publish the partial.
+            if [ -f "$candidate" ]; then
+              inputs+=("$candidate")
+            fi
+          done <<EOF
+          $expected
+          EOF
           if [ "${#inputs[@]}" -eq 0 ]; then
             echo "No per-lane timing JSON arrived; the completeness check below"
             echo "names every lane that owed one."

@@ -898,22 +898,6 @@ render_ci_timing_producers() {
   # patterns must reach Ruby unexpanded by the shell.
   # shellcheck disable=SC2016
   ruby -ryaml -e '
-# actions/upload-artifact@v4 roots a single-path artifact at the parent
-# directory of that path, and a multi-path artifact at the least common
-# ancestor of its search paths. Everything below the root is preserved inside
-# the artifact, so a second path under another parent nests the first one.
-def artifact_root(search_paths)
-  return File.dirname(search_paths.first) if search_paths.length == 1
-  split = search_paths.map { |p| p.split("/") }
-  common = []
-  split.first.each_index do |i|
-    seg = split.first[i]
-    break unless split.all? { |parts| parts[i] == seg }
-    common << seg
-  end
-  common.join("/")
-end
-
 doc = YAML.load_file(ARGV[0])
 names = []
 doc.fetch("jobs").each do |job_id, job|
@@ -935,13 +919,19 @@ doc.fetch("jobs").each do |job_id, job|
       end
       raise "unexpanded workflow expression in artifact name #{rendered}" if rendered.include?("${{")
       search_paths = rendered_path.split("\n").map(&:strip).reject(&:empty?)
-      root = artifact_root(search_paths)
-      unless search_paths.include?("#{root}/#{rendered}.json")
+      if search_paths.length != 1
+        raise "artifact #{rendered} carries #{search_paths.length} search " \
+          "paths (#{search_paths.join(", ")}). upload-artifact would root it " \
+          "at the least common ancestor of those paths and nest the timing " \
+          "JSON below the root, where the aggregate lookup cannot see it. " \
+          "Publish the timing JSON as the only path of its own upload."
+      end
+      root = File.dirname(search_paths.first)
+      unless search_paths.first == "#{root}/#{rendered}.json"
         raise "artifact #{rendered} does not put #{rendered}.json at its root. " \
-          "upload-artifact roots this artifact at #{root} (from search paths " \
-          "#{search_paths.join(", ")}), so the consumer looks up " \
-          "#{rendered}.json and finds nothing there. Publish the timing JSON " \
-          "as the only path of its own upload."
+          "upload-artifact roots a single-path artifact at #{root}, so the " \
+          "consumer looks up #{rendered}.json there and finds " \
+          "#{File.basename(search_paths.first)} instead."
       end
       names << rendered
     end
