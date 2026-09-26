@@ -185,6 +185,43 @@ test_a_row_naming_no_file_turns_the_check_red() {
   pass "a row left behind by a deleted script turns the check red"
 }
 
+test_a_script_whose_name_git_quotes_still_needs_a_row() {
+  local accented='fm-señal.sh' quoted='fm-"quoted".sh'
+  make_fixture quoted-names fm-one.sh
+
+  # git's line-delimited listing quotes both of these names, so a check reading
+  # that listing by line would never see them at all.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_REPO/bin/$accented"
+  expect_refusal "an unlisted script with a non-ASCII name" "bin/$accented has no row" \
+    "$CHECK" --root "$FIXTURE_REPO"
+
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_REPO/bin/$quoted"
+  git -C "$FIXTURE_REPO" add -A
+  expect_refusal "an unlisted script with a quote in its name" "bin/$quoted has no row" \
+    "$CHECK" --root "$FIXTURE_REPO"
+
+  write_matching_doc "$FIXTURE_REPO" fm-one.sh "$accented" "$quoted"
+  expect_pass "rows for the names git quotes" "$CHECK" --root "$FIXTURE_REPO"
+  assert_contains "$RUN_OUT" "ok scripts=3 rows=3" "the fixture's counts were not reported"
+  pass "a file whose name git quotes is inside the inventory, not silently dropped"
+}
+
+test_a_bin_name_no_row_can_spell_is_refused() {
+  local newline_name
+  make_fixture newline-name fm-one.sh
+  newline_name='fm-two'$'\n''line.sh'
+
+  # A row cannot spell this name and the comparison cannot carry it, so it is
+  # refused rather than split into two files that rows might appear to cover.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE_REPO/bin/$newline_name"
+  expect_refusal "a bin/ name holding a newline" "contains a newline" \
+    "$CHECK" --root "$FIXTURE_REPO"
+
+  rm -f "$FIXTURE_REPO/bin/$newline_name"
+  expect_pass "the fixture without it" "$CHECK" --root "$FIXTURE_REPO"
+  pass "a bin/ name no row can spell is refused rather than split across the comparison"
+}
+
 # --- 4. the row contract ----------------------------------------------------
 
 test_both_row_forms_are_read_and_a_misdirected_link_is_refused() {
@@ -300,17 +337,49 @@ test_every_input_channel_made_unevaluable_still_refuses() {
   expect_code 1 "$RUN_CODE" "the control was not refused"
 
   # git owns what is in this repository and what is ignored. A query that cannot
-  # answer must not be read as an empty bin/.
+  # answer must not be read as an empty bin/. The stub answers rev-parse so the
+  # probe reaches the listing itself rather than stopping at the repository gate,
+  # which is a different channel reported in different words.
   fakebin=$(fm_fakebin "$TMP_ROOT")
   cat > "$fakebin/git" <<'SH'
 #!/usr/bin/env bash
-exit 3
+for arg in "$@"; do
+  case $arg in
+    rev-parse) exit 0 ;;
+    ls-files) exit 3 ;;
+  esac
+done
+exit 0
 SH
   chmod +x "$fakebin/git"
   RUN_CODE=0
   RUN_OUT=$(PATH="$fakebin:$PATH" "$CHECK" --root "$repo" 2>&1) || RUN_CODE=$?
-  assert_never_silently_green "a git that cannot answer"
-  expect_code 1 "$RUN_CODE" "a git that cannot answer was not refused"
+  assert_never_silently_green "a git that cannot list bin/"
+  expect_code 1 "$RUN_CODE" "a git that cannot list bin/ was not refused"
+  assert_contains "$RUN_OUT" "could not list" \
+    "a failed listing was not named as one"
+  assert_not_contains "$RUN_OUT" "not a git repository" \
+    "a failed listing was reported as an absent repository, which is a different channel"
+  probed=$((probed + 1))
+
+  # A listing that answers with a path the check cannot place under bin/ is a
+  # record it cannot parse, and skipping one would put a file outside the check.
+  cat > "$fakebin/git" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case $arg in
+    rev-parse) exit 0 ;;
+    ls-files) printf 'elsewhere/fm-nine.sh\0'; exit 0 ;;
+  esac
+done
+exit 0
+SH
+  chmod +x "$fakebin/git"
+  RUN_CODE=0
+  RUN_OUT=$(PATH="$fakebin:$PATH" "$CHECK" --root "$repo" 2>&1) || RUN_CODE=$?
+  assert_never_silently_green "a listing naming a path outside bin/"
+  assert_contains "$RUN_OUT" "cannot place under bin/" \
+    "a record the check could not place was not named as one"
   probed=$((probed + 1))
 
   # The same shape one step further in: a query that answers with nothing.
@@ -421,6 +490,8 @@ test_an_exact_fixture_passes
 test_a_deleted_row_turns_the_check_red
 test_a_new_script_without_a_row_turns_the_check_red
 test_a_row_naming_no_file_turns_the_check_red
+test_a_script_whose_name_git_quotes_still_needs_a_row
+test_a_bin_name_no_row_can_spell_is_refused
 test_both_row_forms_are_read_and_a_misdirected_link_is_refused
 test_an_unparseable_row_is_refused_not_skipped
 test_a_table_that_cannot_be_located_is_refused

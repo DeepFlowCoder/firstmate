@@ -4,7 +4,7 @@
 #
 # Usage:
 #   bin/fm-scripts-inventory-check.sh
-#   bin/fm-scripts-inventory-check.sh --root <repo> [--doc <path>]
+#   bin/fm-scripts-inventory-check.sh --root <repo>
 #   bin/fm-scripts-inventory-check.sh --help
 #
 # Exit 0 prints one ok line carrying both counts. Exit 1 names every file that
@@ -27,7 +27,12 @@
 # THE INVENTORY is every file git reports under bin/, tracked plus untracked and
 # not ignored. Untracked files count so that a script written but not yet staged
 # is already inside the check, rather than passing locally and failing once its
-# author has committed it.
+# author has committed it. git is asked NUL-delimited, because its line-delimited
+# answer quotes any path carrying a non-ASCII byte, a quote or a backslash, and a
+# quoted record that went unread would be a file silently outside the check. A
+# record that still does not reduce to one name under bin/ - a path elsewhere, or
+# a name holding the newline the comparison and the table both use as their
+# delimiter - is named and refused, never dropped.
 #
 # REFUSING, because the entire value of this check is that nobody can trust the
 # list while it is wrong. An input it cannot evaluate must never read as no
@@ -53,7 +58,9 @@ usage() {
 }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DOC=
+
+NL='
+'
 
 while [ "$#" -gt 0 ]; do
   case $1 in
@@ -70,22 +77,14 @@ while [ "$#" -gt 0 ]; do
       ROOT=${1#--root=}
       shift
       ;;
-    --doc)
-      [ "$#" -ge 2 ] || refuse "--doc needs a path"
-      DOC=$2
-      shift 2
-      ;;
-    --doc=*)
-      DOC=${1#--doc=}
-      shift
-      ;;
     *) refuse "unknown argument: $1" ;;
   esac
 done
 
 [ -d "$ROOT" ] || refuse "repository root is not a directory: $ROOT"
 [ -x "$ROOT" ] || refuse "repository root cannot be searched: $ROOT"
-[ -n "$DOC" ] || DOC="$ROOT/docs/scripts.md"
+DOC="$ROOT/docs/scripts.md"
+DOC_LABEL=docs/scripts.md
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/$SELF.XXXXXX") || refuse "could not create a work directory"
 cleanup() { rm -rf "$TMP"; }
@@ -108,11 +107,6 @@ if [ ! -r "$DOC" ]; then
   refuse "whether the toolbelt reference exists could not be determined, because its directory cannot be read or searched: $DOC_DIR"
 fi
 [ -f "$DOC" ] || refuse "the toolbelt reference is not a regular file: $DOC"
-
-DOC_LABEL=$DOC
-case $DOC in
-  "$ROOT"/*) DOC_LABEL=${DOC#"$ROOT"/} ;;
-esac
 
 ROWS="$TMP/rows"
 : > "$ROWS"
@@ -230,17 +224,29 @@ for mode in tracked untracked; do
   out="$TMP/ls-files.$mode"
   rc=0
   if [ "$mode" = tracked ]; then
-    git -C "$ROOT" ls-files -- bin > "$out" 2> "$out.err" || rc=$?
+    git -C "$ROOT" ls-files -z -- bin > "$out" 2> "$out.err" || rc=$?
   else
-    git -C "$ROOT" ls-files --others --exclude-standard -- bin > "$out" 2> "$out.err" || rc=$?
+    git -C "$ROOT" ls-files --others --exclude-standard -z -- bin > "$out" 2> "$out.err" || rc=$?
   fi
   [ "$rc" -eq 0 ] ||
     refuse "git could not list the $mode files under bin/ (exit $rc): $(tr '\n' ' ' < "$out.err")"
-  cat "$out" >> "$FILES"
+  while IFS= read -r -d '' record; do
+    case $record in
+      bin/?*) ;;
+      *) refuse "git listed a $mode path this check cannot place under bin/: $record" ;;
+    esac
+    rel=${record#bin/}
+    case $rel in
+      *"$NL"*)
+        refuse "bin/$rel contains a newline, which no row can spell and this check cannot compare"
+        ;;
+    esac
+    printf '%s\n' "$rel" >> "$FILES"
+  done < "$out"
 done
 
 SORTED_FILES="$TMP/files.sorted"
-sed -n 's|^bin/||p' "$FILES" | LC_ALL=C sort -u > "$SORTED_FILES"
+LC_ALL=C sort -u "$FILES" > "$SORTED_FILES"
 FILE_COUNT=$(awk 'END { print NR }' "$SORTED_FILES")
 [ "$FILE_COUNT" -gt 0 ] ||
   refuse "git established no files under bin/ in $ROOT, which is not an answer this repository can have"
