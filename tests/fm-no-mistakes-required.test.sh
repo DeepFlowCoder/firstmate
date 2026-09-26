@@ -9,15 +9,32 @@ set -u
 # repeated here: a second copy of a pin is a copy that gets bumped on one side,
 # and these cases would then certify a verifier the gate does not use.
 GATE_WORKFLOW="$ROOT/.github/workflows/no-mistakes-required.yml"
-ACTION_REF=$(
-  grep -o 'kunchenguid/no-mistakes/\.github/actions/require-no-mistakes@[0-9a-f]\{40\}' \
-    "$GATE_WORKFLOW" | sed 's/.*@//' | LC_ALL=C sort -u
-)
-case "$ACTION_REF" in
-  *[!0-9a-f]*|'')
-    fail "no-mistakes-required.yml must pin require-no-mistakes to exactly one 40-character commit, found: ${ACTION_REF:-<none>}"
-    ;;
-esac
+command -v ruby >/dev/null 2>&1 \
+  || fail "ruby is required to read no-mistakes-required.yml as YAML"
+# Read the ref out of the steps that actually call the action. A scan of the
+# whole file answers about prose too, and this workflow discusses its own pin.
+# shellcheck disable=SC2016
+ACTION_REF=$(ruby -ryaml -e '
+action = "kunchenguid/no-mistakes/.github/actions/require-no-mistakes"
+doc = YAML.load_file(ARGV[0])
+refs = []
+(doc["jobs"] || {}).each_value do |job|
+  next unless job.is_a?(Hash)
+  (job["steps"] || []).each do |step|
+    next unless step.is_a?(Hash)
+    uses = step["uses"].to_s
+    next unless uses.start_with?("#{action}@")
+    refs << uses.split("@", 2).last
+  end
+end
+abort "no step calls #{action}" if refs.empty?
+pinned = refs.uniq
+abort "its call sites disagree on the ref: #{pinned.join(", ")}" if pinned.length != 1
+ref = pinned.first
+abort "the pinned ref is not a 40-character commit: #{ref}" unless ref =~ /\A[0-9a-f]{40}\z/
+puts ref
+' "$GATE_WORKFLOW") || fail \
+  "no-mistakes-required.yml must pin require-no-mistakes to exactly one 40-character commit at every call site"
 TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)
 VERIFY="$TMP_ROOT/verify.py"
 OLD_SHA=1111111111111111111111111111111111111111
@@ -90,23 +107,44 @@ test_missing_head_fails() {
 # forever. These two cases pin the halves of that property this repository
 # depends on and cannot see from the outside.
 
+# A pull_request event payload that is a clean pass ON ITS OWN: the signature
+# line plus a v1 attestation whose head_sha is the payload's own head. A
+# verifier that reads this payload certifies it, so the payload is what makes
+# the case below discriminate a live-facts verifier from a payload-reading one.
+write_compliant_event_payload() {
+  NM_BODY="$SIGNATURE
+<!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\":\"$NEW_SHA\",\"steps\":$COMPLETED_STEPS} -->" \
+    NM_SHA="$NEW_SHA" python3 -c '
+import json, os, sys
+json.dump({"pull_request": {
+    "number": 3006,
+    "body": os.environ["NM_BODY"],
+    "head": {"sha": os.environ["NM_SHA"], "ref": "fm/regression"},
+    "user": {"login": "regression"},
+}}, sys.stdout)
+' > "$1"
+}
+
 test_pinned_verifier_refuses_the_cached_event_payload() {
-  local output rc
+  local payload output rc
+  payload="$TMP_ROOT/stale-event.json"
+  write_compliant_event_payload "$payload" \
+    || fail "could not write the cached event payload fixture"
   rc=0
-  # No explicit body or head, and nothing for the live lookup to use. The
-  # verifier must refuse rather than judge from the archived payload.
+  # No explicit body or head, so nothing short-circuits the live lookup, and no
+  # token or repository, so the live lookup cannot succeed. The one source left
+  # is the archived payload, which would pass - so certifying is the failure and
+  # refusing is the property.
   output=$(
-    env -u PR_BODY -u PR_HEAD_SHA -u GITHUB_EVENT_PATH -u GITHUB_TOKEN \
+    env -u PR_BODY -u PR_HEAD_SHA -u PR_AUTHOR -u PR_NUMBER -u GITHUB_TOKEN \
       -u GITHUB_REPOSITORY \
-      PR_AUTHOR=regression PR_NUMBER=3006 python3 "$VERIFY" 2>&1
+      GITHUB_EVENT_PATH="$payload" python3 "$VERIFY" 2>&1
   ) || rc=$?
   [ "$rc" -ne 0 ] \
-    || fail "the pinned verifier judged a PR from the cached event payload"
+    || fail "the pinned verifier certified a compliant cached event payload instead of the live PR"
   assert_contains "$output" "pull-requests: read" \
     "the refusal did not name the permission this workflow must grant"
-  assert_contains "$output" "rerun" \
-    "the refusal did not explain that a rerun replays a stale payload"
-  pass "the pinned verifier refuses to judge from a rerun's cached payload"
+  pass "the pinned verifier refuses to certify a rerun's cached payload"
 }
 
 test_gate_workflow_grants_the_permission_the_pinned_verifier_needs() {
