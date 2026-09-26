@@ -117,7 +117,8 @@
 #     uses, because a missing date and an unrecorded date must not look alike.
 #     The value itself is NOT required to be a date: it comes from hand-edited
 #     backlog markdown, so the board tolerates whatever the record holds and
-#     renders an age only for a value it can parse.
+#     renders an age only for a value its date verdict accepts: a day the
+#     calendar has, no later than `generated`.
 #   - a queued row that is NOT dispatchable and is not a warning must carry a
 #     non-empty `reason`. Dry dock is only distinguishable from the stage of
 #     orders clear to start if the board can say what holds it.
@@ -218,7 +219,8 @@ validate_payload() {  # <data.json>
     # The VALUE is not required to be a date. These come from hand-edited
     # backlog markdown, where "(since the pivot)" is an ordinary note, and
     # refusing the whole build over one would leave the captain with no board
-    # at all. The template renders an age only when the value parses.
+    # at all. The template renders an age only when its date verdict accepts
+    # the value - a calendar-real day no later than `generated`.
     def date_marker($name):
       has($name) and (.[$name] == null or (.[$name] | type == "string"));
     def optional_string($name): (has($name) | not) or (.[$name] | type == "string");
