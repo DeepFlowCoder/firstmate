@@ -2,6 +2,7 @@
 
 The first mate drives these; interactive entrypoints work by hand too, while `*-lib.sh` files are sourced helpers.
 Each row is one purpose clause only: the script's own header comment is the authoritative description of its behavior, flags, and contracts, so read the header before first use.
+This table is exactly one row per file under `bin/`, and CI refuses a change that leaves it otherwise; [`fm-scripts-inventory-check.sh`](../bin/fm-scripts-inventory-check.sh)'s header owns the row contract and how it reports drift.
 If you have changed away from the firstmate home in an interactive shell, invoke these scripts by absolute path through the repo's `bin/` directory; the scripts self-locate internally after they start.
 The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarized in [architecture.md](architecture.md#no-mistakes-gate-authority-boundary), while `docs/sessionstart-nudge.md` covers the silent session-open hook use; `fm-gate-refuse-lib.sh`'s header owns its exact contract.
 
@@ -59,7 +60,9 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-install-shellcheck.sh` | Install CI's pinned, verified ShellCheck build                                       |
 | `fm-install-bash.sh`    | Install CI's pinned, SHA-256-verified bash floor for the behavior-suite lanes        |
 | `fm-mem-trace.sh`        | Whole-machine memory and time trace, streamed one sample per line, for diagnosing a lane the runner shuts down |
+| `fm-ci-timeout-overrun.sh` | Name the finished CI jobs that ENDED later than the cap GitHub says they exceeded, which no workflow setting can bound |
 | `fm-doc-audience-check.sh` | Validate the tracked documentation audience inventory's structure                    |
+| `fm-scripts-inventory-check.sh` | Refuse any drift between this file's toolbelt table and the files under `bin/`   |
 | `fm-ensure-agents-md.sh` | Ensure a project's real `AGENTS.md`, its `CLAUDE.md` `@AGENTS.md` pointer, and the canonical self-governance section |
 | `fm-gnhf-reconcile.sh`   | Report published overnight `gnhf` work for backlog tasks the book still lists as queued, without reconciling anything |
 | `fm-guard.sh`            | Warn on primary-checkout tangles, pending queued wakes, and unhealthy supervision    |
