@@ -9,11 +9,33 @@ on:
 
 permissions:
   contents: read
+  # Required, not optional: the pinned action reads this PR's LIVE body and head
+  # SHA through the API and FAILS THE WHOLE GATE CLOSED when that read is denied,
+  # rather than falling back to the workflow's own event payload. See RECOVERING
+  # A STALE RED below for what that live read buys.
+  pull-requests: read
 
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events
 # an immutable per-event group so first-time-fork approvals can never collapse
 # opened/edited checks. Keep synchronize/reopened coalescing as before.
+#
+# The cost of that immutability, stated plainly because it is the mechanism
+# behind a red check nobody can explain: an `edited` run and a `synchronize` run
+# on the SAME head sit in different groups, so neither cancels the other, and
+# both publish a check run of the same name against that commit. When the
+# earlier one judged the head before the pipeline had written the attestation,
+# its failure keeps sitting next to the later success and the PR rollup counts
+# both. Upstream carries this same expression for the same reason and has not
+# traded it away, so this file does not either.
+#
+# RECOVERING A STALE RED: RE-RUN the obsolete workflow run. Do not push a commit
+# to clear it - a push moves the head past the attestation and orphans it, which
+# is a different red. A rerun only works because the pinned action below reads
+# the PR's live body and head instead of the payload archived at the run's
+# original trigger; before that, GitHub replayed the stale payload and the rerun
+# faithfully reproduced its own stale verdict with a fresh timestamp, with no
+# recovery short of a new SHA.
 concurrency:
   group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
   cancel-in-progress: true
@@ -22,8 +44,9 @@ jobs:
   # The gate is judged twice at most, and the shared action is the only thing
   # that ever returns a compliance verdict.
   #
-  # Pass 1 binds the attestation to the exact PR head, as before. That is the
-  # whole gate whenever the pipeline's `pr` step wrote the last commit.
+  # Pass 1 binds the attestation to the exact PR head, read live from the API
+  # rather than from this run's event payload. That is the whole gate whenever
+  # the pipeline's `pr` step wrote the last commit.
   #
   # Pass 2 exists because the pipeline's `ci` phase pushes its own
   # "no-mistakes: apply CI fixes" commits without re-running `pr`, orphaning the
@@ -49,7 +72,7 @@ jobs:
       - name: Verify no-mistakes signature and pipeline attestation
         id: head_bind
         continue-on-error: true
-        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@f6441c96c352a18b9cadcaef6b6c7017e9ac3970 # v1.80.1
 
       # Everything below runs only when the exact head bind failed, so a
       # compliant PR still costs one step.
@@ -65,22 +88,68 @@ jobs:
         with:
           persist-credentials: false
 
+      # Pass 1 judges the PR's live state; passes 2 and 3 must judge the same
+      # PR or the two halves of this gate answer about different commits. On a
+      # RERUN the event payload is the one archived at the original trigger, so
+      # reading the head from it would ask the ancestry question about a commit
+      # that is no longer the head - and accepting on that basis would report
+      # green for a head this gate never examined. Read both facts live, and
+      # let the step fail rather than fall back to the payload.
+      #
+      # The body goes out through $GITHUB_OUTPUT with an unpredictable
+      # delimiter, and the step refuses if the body somehow contains it, so a
+      # crafted PR body cannot close the block early and set other outputs.
+      - name: Read the PR's live body and head
+        id: live
+        if: steps.head_bind.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO_SLUG: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/nm-gate"
+          gh api "repos/$GH_REPO_SLUG/pulls/$PR_NUMBER" \
+            > "$RUNNER_TEMP/nm-gate/pr.json"
+          head_sha=$(jq -r '.head.sha // ""' "$RUNNER_TEMP/nm-gate/pr.json")
+          case "$head_sha" in
+            *[!0-9a-f]*|'')
+              echo "::error::live PR head is not a hexadecimal commit SHA"
+              exit 1
+              ;;
+          esac
+          [ "${#head_sha}" -eq 40 ] || {
+            echo "::error::live PR head is not a 40-character commit SHA"
+            exit 1
+          }
+          jq -r '.body // ""' "$RUNNER_TEMP/nm-gate/pr.json" \
+            > "$RUNNER_TEMP/nm-gate/body.md"
+          delimiter="NM_PR_BODY_$(openssl rand -hex 16)"
+          ! grep -qxF "$delimiter" "$RUNNER_TEMP/nm-gate/body.md" || {
+            echo "::error::the PR body contains this step's output delimiter"
+            exit 1
+          }
+          {
+            printf 'head_sha=%s\n' "$head_sha"
+            printf 'pr_body<<%s\n' "$delimiter"
+            cat "$RUNNER_TEMP/nm-gate/body.md"
+            printf '\n%s\n' "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          echo "Live PR head is $head_sha."
+
       - name: Look for a pipeline-authored CI-fix delta
         id: delta
-        if: steps.head_bind.outcome == 'failure'
+        if: steps.live.outcome == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          # Expression values reach the step through the environment, never
-          # through the shell source below, so a crafted PR body cannot inject
-          # commands here.
-          NM_PR_BODY: ${{ github.event.pull_request.body }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_REPO_SLUG: ${{ github.repository }}
+          PR_HEAD_SHA: ${{ steps.live.outputs.head_sha }}
         run: |
           set -eu
           attested=$(bin/fm-nm-attestation-delta.sh \
-            --repo "$GH_REPO_SLUG" --head "$PR_HEAD_SHA")
+            --repo "$GH_REPO_SLUG" --head "$PR_HEAD_SHA" \
+            --body-file "$RUNNER_TEMP/nm-gate/body.md")
           echo "attested_head=$attested" >> "$GITHUB_OUTPUT"
           echo "Every commit since $attested is a no-mistakes CI-fix commit."
 
@@ -88,8 +157,13 @@ jobs:
         id: ancestor_bind
         if: steps.delta.outcome == 'success'
         continue-on-error: true
-        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)
+        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@f6441c96c352a18b9cadcaef6b6c7017e9ac3970 # v1.80.1
         with:
+          # Both facts are forwarded explicitly, which is what tells the action
+          # to judge this vetted ancestor instead of looking the head up live
+          # again. The body still has to be the live one for the same reason
+          # the head does.
+          pr-body: ${{ steps.live.outputs.pr_body }}
           pr-head-sha: ${{ steps.delta.outputs.attested_head }}
 
       - name: Report the gate verdict

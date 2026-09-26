@@ -5,7 +5,19 @@ set -u
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-ACTION_REF=32d396ac0f29135daf7fcb9964aba9d5f4e796d6
+# The commit the gate workflow actually runs, read from the workflow rather than
+# repeated here: a second copy of a pin is a copy that gets bumped on one side,
+# and these cases would then certify a verifier the gate does not use.
+GATE_WORKFLOW="$ROOT/.github/workflows/no-mistakes-required.yml"
+ACTION_REF=$(
+  grep -o 'kunchenguid/no-mistakes/\.github/actions/require-no-mistakes@[0-9a-f]\{40\}' \
+    "$GATE_WORKFLOW" | sed 's/.*@//' | LC_ALL=C sort -u
+)
+case "$ACTION_REF" in
+  *[!0-9a-f]*|'')
+    fail "no-mistakes-required.yml must pin require-no-mistakes to exactly one 40-character commit, found: ${ACTION_REF:-<none>}"
+    ;;
+esac
 TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)
 VERIFY="$TMP_ROOT/verify.py"
 OLD_SHA=1111111111111111111111111111111111111111
@@ -64,6 +76,53 @@ test_missing_head_fails() {
   assert_contains "$output" "structured pipeline step attestation" \
     "missing-head failure did not explain that the attestation is invalid"
   pass "shared action rejects an attestation with no head_sha"
+}
+
+# --- the live-facts property the stale-red recovery rests on ----------------
+#
+# Two suites can sit on one head - an `edited` run and a `synchronize` run get
+# different concurrency groups on purpose - and the PR rollup counts both, so a
+# failure judged before the pipeline wrote the attestation keeps sitting next to
+# the later success. The recovery is to RE-RUN the obsolete run, and that only
+# works because the pinned verifier re-derives its verdict from the PR's live
+# body and head: GitHub replays a rerun's event payload from the ORIGINAL
+# trigger, so a verifier reading that payload reproduces its own stale verdict
+# forever. These two cases pin the halves of that property this repository
+# depends on and cannot see from the outside.
+
+test_pinned_verifier_refuses_the_cached_event_payload() {
+  local output rc
+  rc=0
+  # No explicit body or head, and nothing for the live lookup to use. The
+  # verifier must refuse rather than judge from the archived payload.
+  output=$(
+    env -u PR_BODY -u PR_HEAD_SHA -u GITHUB_EVENT_PATH -u GITHUB_TOKEN \
+      -u GITHUB_REPOSITORY \
+      PR_AUTHOR=regression PR_NUMBER=3006 python3 "$VERIFY" 2>&1
+  ) || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "the pinned verifier judged a PR from the cached event payload"
+  assert_contains "$output" "pull-requests: read" \
+    "the refusal did not name the permission this workflow must grant"
+  assert_contains "$output" "rerun" \
+    "the refusal did not explain that a rerun replays a stale payload"
+  pass "the pinned verifier refuses to judge from a rerun's cached payload"
+}
+
+test_gate_workflow_grants_the_permission_the_pinned_verifier_needs() {
+  command -v ruby >/dev/null 2>&1 \
+    || fail "ruby is required to read no-mistakes-required.yml as YAML"
+  local permission
+  # shellcheck disable=SC2016
+  permission=$(ruby -ryaml -e '
+doc = YAML.load_file(ARGV[0])
+perms = doc["permissions"]
+abort "permissions is not a mapping" unless perms.is_a?(Hash)
+puts perms.fetch("pull-requests", "<absent>").to_s
+' "$GATE_WORKFLOW") || fail "could not read the gate workflow permissions"
+  [ "$permission" = read ] || fail \
+    "no-mistakes-required.yml must grant 'pull-requests: read' or the pinned verifier fails the whole gate closed; found: $permission"
+  pass "the gate workflow grants the permission the pinned verifier requires"
 }
 
 # --- firstmate's own ancestor reconcile -------------------------------------
@@ -250,6 +309,8 @@ fetch_shared_verifier
 test_matching_head_and_completed_steps_pass
 test_mismatched_head_fails_with_both_shas
 test_missing_head_fails
+test_pinned_verifier_refuses_the_cached_event_payload
+test_gate_workflow_grants_the_permission_the_pinned_verifier_needs
 test_ci_fix_only_delta_reconciles_and_then_passes_the_shared_action
 test_human_commit_after_the_attestation_is_refused
 test_ci_fix_subject_is_matched_in_full_not_as_a_prefix
