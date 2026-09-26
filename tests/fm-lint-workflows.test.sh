@@ -263,6 +263,149 @@ test_missing_actionlint_fails_closed() {
   pass "missing actionlint fails closed"
 }
 
+# A workflow whose only continue-on-error is written the way <value> spells it.
+# The job id and step id are what the refusal must name.
+write_non_gating_workflow() { # <path> <where: job|step> <value>
+  local path=$1 where=$2 value=$3
+  cat > "$path" <<YAML
+name: CI
+on: push
+jobs:
+  x:
+    runs-on: ubuntu-latest
+$([ "$where" = job ] && printf '    continue-on-error: %s\n' "$value")
+    steps:
+      - name: only step
+        id: only
+$([ "$where" = step ] && printf '        continue-on-error: %s\n' "$value")
+        run: echo ok
+YAML
+}
+
+# The three no-mistakes gate steps NON_GATING_ALLOWED names, under the basename
+# the allow-list keys on. <drop> removes one step's continue-on-error so the
+# allow-list entry for it has nothing left to name.
+write_allowed_non_gating_workflow() { # <path> [<step id to drop>]
+  local path=$1 drop=${2:-} id
+  {
+    printf '%s\n' 'name: Require no-mistakes' 'on: pull_request' 'jobs:' \
+      '  check:' '    runs-on: ubuntu-latest' '    steps:'
+    for id in head_bind delta ancestor_bind; do
+      printf '      - name: %s\n        id: %s\n' "$id" "$id"
+      [ "$id" = "$drop" ] || printf '        continue-on-error: true\n'
+      printf '        run: echo %s\n' "$id"
+    done
+  } > "$path"
+}
+
+# Every spelling of the key must be refused, because the guard never reads the
+# value: a check for `true` alone is walked past by the quoted string, by YAML
+# 1.1's yes/on, and by an expression no static reader can evaluate. `false` is
+# refused too - it is one word away from not being a no-op, and saying it is
+# meant costs an allow-list line.
+test_undeclared_continue_on_error_is_refused_whatever_the_value() {
+  local tmp out rc where value
+  for where in job step; do
+    # The workflow expression must stay literal: it is a value no static reader
+    # can evaluate, which is the case this loop exists to cover.
+    # shellcheck disable=SC2016
+    for value in 'true' 'false' '${{ github.event_name == '"'"'push'"'"' }}'; do
+      tmp=$(fm_test_tmproot fm-lint-wf-nongating)
+      mkdir -p "$tmp/.github/workflows"
+      write_non_gating_workflow "$tmp/.github/workflows/ci.yml" "$where" "$value"
+      rc=0
+      out=$("$LINT_WF" --root "$tmp" 2>&1) || rc=$?
+      [ "$rc" -ne 0 ] \
+        || fail "$where-level continue-on-error: $value passed the lint"$'\n'"$out"
+      assert_contains "$out" "reports without gating" \
+        "$where-level continue-on-error: $value was not named as non-gating"
+      case "$where" in
+        job) assert_contains "$out" "ci.yml:x sets continue-on-error" \
+          "refusal did not name the job for value $value" ;;
+        step) assert_contains "$out" "ci.yml:x:only sets continue-on-error" \
+          "refusal did not name the step for value $value" ;;
+      esac
+      assert_contains "$out" "NON_GATING_ALLOWED" \
+        "refusal did not say how to declare an intended $where-level use"
+    done
+  done
+  pass "an undeclared continue-on-error is refused however its value is written"
+}
+
+# The complement, and the reason this reads the workflow as YAML rather than
+# scanning its text: ci.yml documents its own gating rules, and a workflow that
+# only talks about the key is not one that sets it.
+test_continue_on_error_in_prose_or_a_run_body_is_not_a_finding() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-wf-prose)
+  mkdir -p "$tmp/.github/workflows"
+  cat > "$tmp/.github/workflows/ci.yml" <<'YAML'
+name: CI
+# This lane must never carry continue-on-error: true.
+on: push
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - name: explain the rule
+        run: |
+          set -eu
+          echo "continue-on-error: true is what this repo refuses"
+YAML
+  rc=0
+  out=$("$LINT_WF" --root "$tmp" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] \
+    || fail "a workflow that only mentions the key was refused"$'\n'"$out"
+  pass "continue-on-error written in a comment or a run body is not a finding"
+}
+
+# Two-sided: the declared uses pass, and an entry that no longer names anything
+# is refused, so the allow-list cannot outlive the reason it was added for.
+test_declared_non_gating_steps_pass_and_a_stale_entry_is_refused() {
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-wf-allowed)
+  mkdir -p "$tmp/.github/workflows"
+  write_allowed_non_gating_workflow \
+    "$tmp/.github/workflows/no-mistakes-required.yml"
+  rc=0
+  out=$("$LINT_WF" --root "$tmp" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "the declared non-gating steps were refused"$'\n'"$out"
+
+  tmp=$(fm_test_tmproot fm-lint-wf-stale)
+  mkdir -p "$tmp/.github/workflows"
+  write_allowed_non_gating_workflow \
+    "$tmp/.github/workflows/no-mistakes-required.yml" ancestor_bind
+  rc=0
+  out=$("$LINT_WF" --root "$tmp" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a stale allow-list entry passed the lint"$'\n'"$out"
+  assert_contains "$out" "no-mistakes-required.yml:check:ancestor_bind" \
+    "the stale-entry refusal did not name the entry"
+  assert_contains "$out" "no longer sets continue-on-error" \
+    "the stale-entry refusal did not say why it is stale"
+  pass "declared non-gating steps pass and a stale allow-list entry is refused"
+}
+
+# No parser, no verdict. Passing over the check because ruby is absent would
+# make an unprotected repo look exactly like a protected one.
+test_non_gating_check_fails_closed_without_ruby() {
+  local tmp fakebin out rc tool
+  tmp=$(fm_test_tmproot fm-lint-wf-noruby)
+  fakebin=$(fm_fakebin "$tmp")
+  mkdir -p "$tmp/.github/workflows"
+  write_valid_workflow "$tmp/.github/workflows/ci.yml"
+  for tool in bash dirname find sort awk sed actionlint; do
+    ln -s "$(command -v "$tool")" "$fakebin/$tool"
+  done
+  rc=0
+  out=$(PATH="$fakebin" "$LINT_WF" --root "$tmp" 2>&1) || rc=$?
+  [ "$rc" -eq 1 ] || fail "missing ruby expected exit 1, got $rc"$'\n'"$out"
+  assert_contains "$out" "ruby not found" \
+    "missing ruby did not name the missing parser"
+  assert_contains "$out" "continue-on-error" \
+    "missing ruby did not name the check it could not run"
+  pass "the non-gating check fails closed when it cannot parse the workflows"
+}
+
 test_pins_an_explicit_version() {
   [ -n "$REQUIRED" ] || fail "fm-lint-workflows.sh --required-version printed nothing"
   assert_contains "$REQUIRED" "1.7.12" "fm-lint-workflows.sh must pin actionlint 1.7.12"
@@ -522,6 +665,10 @@ test_empty_workflows_dir_fails
 test_explicit_broken_path_fails
 test_non_mapping_root_fails
 test_missing_actionlint_fails_closed
+test_undeclared_continue_on_error_is_refused_whatever_the_value
+test_continue_on_error_in_prose_or_a_run_body_is_not_a_finding
+test_declared_non_gating_steps_pass_and_a_stale_entry_is_refused
+test_non_gating_check_fails_closed_without_ruby
 test_rejects_wrong_actionlint_version
 test_installer_retries_transient_download_failure
 test_installer_selects_platform_archive_url_and_checksum

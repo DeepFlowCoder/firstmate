@@ -132,7 +132,9 @@ It separately verifies that the portable serial CI shards are non-empty, disjoin
 
 Portable shards, each portable serial shard, and the Herdr lane upload runner-generated timing JSON.
 `bin/fm-test-run.sh --aggregate-json` creates the combined summary artifact.
-`.github/workflows/ci.yml` owns the exact artifact names and aggregation wiring.
+`bin/fm-test-run.sh --list-timing-artifacts` names the complete set a full run owes, and the aggregate job in `.github/workflows/ci.yml` fails when one of those never arrives, so a refresh is never built from data that quietly shrank.
+That job is not a verdict about the suites themselves; the lane that ran a failing test is what reports it.
+`.github/workflows/ci.yml` owns the aggregation wiring, and `tests/fm-test-run.test.sh` holds its upload steps to that same list.
 
 ## Local entry points
 

@@ -16,8 +16,9 @@ The check settles that case by itself when the branch only moved forward and eve
 That reconciled pass certifies less than an exact one, and deliberately so - review, test, and document ran against the attested commit, not against the CI fixes layered on top of it.
 Anything else in the gap - a commit you pushed yourself, a merge, or a rebase that gives every commit a new identity - still leaves the check red until `git push no-mistakes` runs again and rewrites the attestation, and no source change clears it.
 It evaluates every PR opening and body edit independently, reruns after head synchronization or reopening, and prevents a later edit from replacing an earlier pending compliance check.
-Each evaluation reads the PR body as it stood when its own event fired, not as it stands when the job later runs, so a push whose attestation is written moments afterwards is judged against the previous body and goes red while the body on screen already names the right commit.
-That red is stale rather than a verdict on the current state, and the next event on the PR re-reads the body and settles it.
+Each evaluation reads the PR's live body and head through the GitHub API when the job runs, rather than the payload archived when its own event fired, and fails closed if that read is denied.
+An independent evaluation that judged the head before the pipeline had written the attestation can still leave its failure sitting beside a later pass on the same commit, and re-running that obsolete run is the recovery: pushing instead moves the head past the attestation and orphans it.
+[`.github/workflows/no-mistakes-required.yml`](.github/workflows/no-mistakes-required.yml) owns why both runs exist and what the rerun re-reads.
 GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
 
 ## Workflow
@@ -55,6 +56,8 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, pinned shellcheck version, and pinned actionlint workflow lint), and both CI and the no-mistakes pre-push gate run its no-argument full-analysis path.
   Its header and `--help` output own the exact local lint modes and flags.
   A malformed `.github/workflows/*.yml`, including a self-broken `ci.yml`, fails that local lint path before merge because a broken workflow cannot report its own breakage.
+  So does an undeclared `continue-on-error`, whatever its value: a job or step carrying it keeps reporting and stops gating, and the intended uses are named one by one in `NON_GATING_ALLOWED` in `bin/fm-lint-workflows.sh`.
+  That check reads the workflows as YAML and needs `ruby` on `PATH`, which is all it uses ruby for.
   It pins one exact shellcheck version and one exact actionlint version and refuses to run under any other.
   Print the shellcheck pin with `bin/fm-lint.sh --required-version` and the actionlint pin with `bin/fm-lint-workflows.sh --required-version`.
   Use `bin/fm-install-shellcheck.sh` and `bin/fm-install-actionlint.sh` to install those exact builds locally; each installer's header owns its destination usage and supported platforms.

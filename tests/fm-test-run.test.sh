@@ -884,6 +884,90 @@ EOF
   pass "ci.yml portable serial matrix and the runner's shard count agree"
 }
 
+# Render every timing artifact ci.yml actually PUBLISHES, expanding the serial
+# matrix the way the workflow does, and assert each one puts a file named after
+# itself AT THE ARTIFACT ROOT. The root is what the aggregate's flat lookup
+# resolves against, and actions/upload-artifact@v4 derives it from the search
+# paths rather than from the name, so the layout - not just the name - is the
+# half of the contract the consumer depends on. The aggregate job is excluded:
+# it consumes this set and republishes one summary, so counting its own upload
+# would let the consumer satisfy its own expectation.
+render_ci_timing_producers() {
+  local workflow=$1
+  # Single quotes are required: the body is a Ruby program whose ${{ ... }}
+  # patterns must reach Ruby unexpanded by the shell.
+  # shellcheck disable=SC2016
+  ruby -ryaml -e '
+doc = YAML.load_file(ARGV[0])
+names = []
+doc.fetch("jobs").each do |job_id, job|
+  next if job_id == "tests-timing-aggregate"
+  shards = job.dig("strategy", "matrix", "shard") || [nil]
+  (job["steps"] || []).each do |step|
+    next unless step.is_a?(Hash)
+    next unless step["uses"].to_s.start_with?("actions/upload-artifact@")
+    with = step.fetch("with")
+    name = with.fetch("name").to_s
+    next unless name.start_with?("fm-test-timing-")
+    path = with.fetch("path").to_s
+    shards.each do |shard|
+      rendered = name
+      rendered_path = path
+      unless shard.nil?
+        rendered = rendered.gsub(/\$\{\{\s*matrix\.shard\s*\}\}/, shard.to_s)
+        rendered_path = rendered_path.gsub(/\$\{\{\s*matrix\.shard\s*\}\}/, shard.to_s)
+      end
+      raise "unexpanded workflow expression in artifact name #{rendered}" if rendered.include?("${{")
+      search_paths = rendered_path.split("\n").map(&:strip).reject(&:empty?)
+      if search_paths.length != 1
+        raise "artifact #{rendered} carries #{search_paths.length} search " \
+          "paths (#{search_paths.join(", ")}). upload-artifact would root it " \
+          "at the least common ancestor of those paths and nest the timing " \
+          "JSON below the root, where the aggregate lookup cannot see it. " \
+          "Publish the timing JSON as the only path of its own upload."
+      end
+      root = File.dirname(search_paths.first)
+      unless search_paths.first == "#{root}/#{rendered}.json"
+        raise "artifact #{rendered} does not put #{rendered}.json at its root. " \
+          "upload-artifact roots a single-path artifact at #{root}, so the " \
+          "consumer looks up #{rendered}.json there and finds " \
+          "#{File.basename(search_paths.first)} instead."
+      end
+      names << rendered
+    end
+  end
+end
+raise "ci.yml publishes no timing artifact at all" if names.empty?
+puts names
+' "$workflow"
+}
+
+# The producer/consumer contract behind the aggregate lane. ci.yml downloads
+# every fm-test-timing-* artifact and then requires one file per name the runner
+# lists, so a producer renamed, added, or dropped on one side only must fail
+# here rather than silently shrinking the data the aggregate is built from.
+test_ci_timing_producers_match_the_runner_expectation() {
+  command -v ruby >/dev/null 2>&1 \
+    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+  local workflow published expected
+  workflow="$ROOT/.github/workflows/ci.yml"
+  published=$(render_ci_timing_producers "$workflow") \
+    || fail "could not render ci.yml's timing artifact producers"
+  published=$(printf '%s\n' "$published" | LC_ALL=C sort)
+  [ -z "$(printf '%s\n' "$published" | uniq -d)" ] \
+    || fail "ci.yml publishes the same timing artifact name twice: $published"
+
+  expected=$("$RUNNER" --list-timing-artifacts | LC_ALL=C sort)
+  [ -n "$expected" ] || fail "--list-timing-artifacts named no artifact"
+  [ "$published" = "$expected" ] || fail \
+    "ci.yml's timing artifacts and --list-timing-artifacts disagree.
+ci.yml publishes:
+$published
+the runner expects:
+$expected"
+  pass "ci.yml's timing producers are exactly what the aggregate expects"
+}
+
 test_jobs_requires_proven_isolated() {
   local tmp rc shard_lane
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs.XXXXXX")
@@ -1326,6 +1410,7 @@ test_portable_shard_union_and_coverage_guard
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_ci_serial_matrix_agrees_with_the_runner_shard_count
+test_ci_timing_producers_match_the_runner_expectation
 test_jobs_requires_proven_isolated
 test_jobs_admits_a_concurrent_safe_family
 test_concurrent_runs_are_ordered_longest_first
