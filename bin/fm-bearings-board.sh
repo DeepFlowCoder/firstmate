@@ -208,12 +208,15 @@ validate_payload() {  # <data.json>
     # day the calendar HAS, not only be shaped like one: an impossible day
     # ("2026-02-30") rolls over when measured, which would leave the date
     # verdict in the template no reference and invert its refusals. The
-    # round-trip is the calendar asking itself; strptime errors on an
-    # out-of-range month, so catch keeps that a validation failure instead of
-    # a jq crash.
+    # round-trip goes through `mktime | gmtime` because that is what normalizes
+    # an impossible day into the real one it lands on: `strftime` alone only
+    # reprints the fields it was handed on jq 1.7, so the comparison would be
+    # the stamp against itself. strptime errors on an out-of-range month, so
+    # catch keeps that a validation failure instead of a jq crash.
     def date_prefixed:
       type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")
-      and ((try (.[0:10] | strptime("%Y-%m-%d") | strftime("%Y-%m-%d")) catch null) == .[0:10]);
+      and ((try (.[0:10] | strptime("%Y-%m-%d") | mktime | gmtime | strftime("%Y-%m-%d"))
+            catch null) == .[0:10]);
     # Same deliberate-marker discipline as repo_marker: the field is always
     # present, and null is how the composer says "this row records no date".
     # The VALUE is not required to be a date. These come from hand-edited
