@@ -104,9 +104,13 @@
 #
 # Three v2 invariants exist so the board cannot silently fall back to reading
 # like a flat checklist:
-#   - `generated` carries a YYYY-MM-DD prefix. It is the reference the template
-#     measures both ages against, so the page never depends on the reader's
-#     clock, and the snapshot produces it, so the requirement is strict.
+#   - `generated` carries a YYYY-MM-DD prefix naming a day the calendar HAS.
+#     It is the reference the template measures both ages against, so the page
+#     never depends on the reader's clock, and the snapshot produces it, so the
+#     requirement is strict - strict about the calendar, not only the shape: a
+#     well-formed day that does not exist ("2026-02-30") would leave the
+#     template's date verdict no reference to measure from, which is exactly
+#     what turns its refusals off.
 #     Every charted `since` and landed `landed_on` carries either a value or an
 #     explicit null for "this row records no date". A row that simply omits the
 #     field is refused, the same deliberate-marker discipline `repo` already
@@ -199,7 +203,16 @@ validate_payload() {  # <data.json>
     def nonempty_string: type == "string" and length > 0;
     def slug($max): type == "string" and test("^[A-Za-z0-9._-]{1," + ($max | tostring) + "}$");
     def repo_marker: has("repo") and (.repo == null or (.repo | type == "string"));
-    def date_prefixed: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}");
+    # `generated` is the stamp the snapshot itself produces, so it must name a
+    # day the calendar HAS, not only be shaped like one: an impossible day
+    # ("2026-02-30") rolls over when measured, which would leave the date
+    # verdict in the template no reference and invert its refusals. The
+    # round-trip is the calendar asking itself; strptime errors on an
+    # out-of-range month, so catch keeps that a validation failure instead of
+    # a jq crash.
+    def date_prefixed:
+      type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")
+      and ((try (.[0:10] | strptime("%Y-%m-%d") | strftime("%Y-%m-%d")) catch null) == .[0:10]);
     # Same deliberate-marker discipline as repo_marker: the field is always
     # present, and null is how the composer says "this row records no date".
     # The VALUE is not required to be a date. These come from hand-edited
