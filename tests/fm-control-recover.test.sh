@@ -12,7 +12,10 @@
 #   2. The recovery note carries the branch, published head, and PR, and tells
 #      the replacement NOT to rebuild the change.
 #   3. Unpublished local work refuses with a clear reason before anything is
-#      mutated, and the prior durable record stays byte-identical.
+#      mutated, and the prior durable record stays byte-identical. The proof
+#      covers what this copy holds - its checked-out branch and the task's own
+#      fm/<id> branch - so an unrelated local branch in the shared clone never
+#      blocks the recovery.
 #   4. The exit verb now points a missing endpoint at recover instead of
 #      trapping the operator between exit and relaunch.
 set -u
@@ -135,13 +138,14 @@ new_case() {
   printf '%s\n' "$dir"
 }
 
-# add_ship_task <case-dir> <id> [published]: build the worktree, brief, and
-# meta. With `published`, the task branch is pushed to origin so recovery's
-# published-head proof passes; without it, the branch is local-only.
+# add_ship_task <case-dir> <id> [published] [with-pr|no-pr] [branch]: build the
+# worktree, brief, and meta. With `published`, the task branch is pushed to
+# origin so recovery's published-head proof passes; without it, the branch is
+# local-only. The branch defaults to task-<id>.
 add_ship_task() {
-  local dir=$1 id=$2 published=${3:-} pr=${4:-with-pr}
+  local dir=$1 id=$2 published=${3:-} pr=${4:-with-pr} branch=${5:-task-$2}
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
-  fm_git_worktree "$proj" "$wt" "task-$id"
+  fm_git_worktree "$proj" "$wt" "$branch"
   configure_default_upstream "$proj"
   mkdir -p "$home/data/$id"
   printf '# brief for %s\n\nDo the thing.\n' "$id" > "$home/data/$id/brief.md"
@@ -161,9 +165,25 @@ add_ship_task() {
   } > "$home/state/$id.meta"
   printf '%s' "$wt" > "$dir/fake/cwd"
   if [ -n "$published" ]; then
-    git -C "$wt" push -q -u origin "task-$id"
+    git -C "$wt" push -q -u origin "$branch"
   fi
   TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# local_commit <worktree-or-repo> <message>: one empty commit, never pushed.
+local_commit() {
+  git -C "$1" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "$2"
+}
+
+# assert_refused_unchanged <case-dir> <id> <meta-before> <brief-before> <what>
+assert_refused_unchanged() {
+  local dir=$1 id=$2 meta_before=$3 brief_before=$4 what=$5
+  [ "$(cat "$dir/home/state/$id.meta")" = "$meta_before" ] \
+    || fail "$what must leave the durable record byte-identical"
+  [ "$(cat "$dir/home/data/$id/brief.md")" = "$brief_before" ] \
+    || fail "$what must leave the instructions byte-identical"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "$what must launch nothing"
 }
 
 # add_unpublished_commit <case-dir> <id>: push the branch, then add one local
@@ -291,29 +311,59 @@ test_dirty_worktree_refuses_before_mutation() {
   pass "fm-control recover: a dirty worktree refuses before anything is mutated"
 }
 
-test_unpublished_non_task_branch_refuses_before_mutation() {
-  local dir out rc meta_before brief_before
-  dir=$(new_case recover-other-branch rc20)
+test_unrelated_local_branch_does_not_block_recovery() {
+  local dir out rc
+  dir=$(new_case recover-foreign-branch rc20)
   add_ship_task "$dir" rc20 published
-  git -C "$dir/wt" checkout -q -b local-side-work
-  git -C "$dir/wt" push -q -u origin local-side-work
-  git -C "$dir/wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
-    commit -q --allow-empty -m "unpublished side work"
-  git -C "$dir/wt" checkout -q task-rc20
-  meta_before=$(cat "$dir/home/state/rc20.meta")
-  brief_before=$(cat "$dir/home/data/rc20/brief.md")
+  # Another task's leftover branch in the shared clone: never checked out in
+  # this copy, no upstream, and carrying a commit that was never pushed.
+  git -C "$dir/proj" checkout -q -b stale-foreign-work
+  local_commit "$dir/proj" "another task's unpublished leftover"
+  git -C "$dir/proj" checkout -q -
 
-  out=$(run_control "$dir" rc20 recover --note "x"); rc=$?
-  expect_code 1 "$rc" "an unpublished non-task branch should refuse"$'\n'"$out"
-  assert_contains "$out" "local-side-work" "the refusal should identify the unpublished branch"
+  out=$(run_control "$dir" rc20 recover --note "window lost in a reboot"); rc=$?
+  expect_code 0 "$rc" "an unrelated local branch must not block a published, clean task"$'\n'"$out"
+  assert_contains "$out" "recovered rc20 harness=claude" "the recovery should succeed"
+  assert_grep "Branch: task-rc20" "$dir/home/data/rc20/brief.md" \
+    "the note should name the task's own branch, not the unrelated one"
+  pass "fm-control recover: an unrelated unpublished local branch in the shared clone does not block recovery"
+}
+
+test_unpublished_checked_out_side_branch_refuses_before_mutation() {
+  local dir out rc meta_before brief_before
+  dir=$(new_case recover-side-branch rc26)
+  add_ship_task "$dir" rc26 published with-pr "fm/rc26"
+  git -C "$dir/wt" checkout -q -b side-work
+  local_commit "$dir/wt" "unpublished side work"
+  meta_before=$(cat "$dir/home/state/rc26.meta")
+  brief_before=$(cat "$dir/home/data/rc26/brief.md")
+
+  out=$(run_control "$dir" rc26 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "an unpublished branch checked out in this copy should refuse"$'\n'"$out"
+  assert_contains "$out" "side-work" "the refusal should identify the checked-out branch"
+  assert_contains "$out" "no published head" "the refusal should name the missing published head"
+  assert_refused_unchanged "$dir" rc26 "$meta_before" "$brief_before" "a checked-out side-branch refusal"
+  pass "fm-control recover: an unpublished branch checked out in this copy refuses before mutation"
+}
+
+test_unpublished_task_branch_behind_a_published_checkout_refuses() {
+  local dir out rc meta_before brief_before
+  dir=$(new_case recover-task-branch-behind rc27)
+  add_ship_task "$dir" rc27 published with-pr "fm/rc27"
+  local_commit "$dir/wt" "unpublished task work"
+  git -C "$dir/wt" checkout -q -b side-work
+  git -C "$dir/wt" reset -q --hard "origin/fm/rc27"
+  git -C "$dir/wt" push -q -u origin side-work
+  meta_before=$(cat "$dir/home/state/rc27.meta")
+  brief_before=$(cat "$dir/home/data/rc27/brief.md")
+
+  out=$(run_control "$dir" rc27 recover --note "x"); rc=$?
+  expect_code 1 "$rc" "the task's own fm/<id> branch must stay proven while another branch is checked out"$'\n'"$out"
+  assert_contains "$out" "fm/rc27" "the refusal should identify the task's own branch"
   assert_contains "$out" "not an ancestor of its configured upstream" \
     "the refusal should name the failed ancestor proof"
-  [ "$(cat "$dir/home/state/rc20.meta")" = "$meta_before" ] \
-    || fail "a non-task branch refusal must leave the durable record byte-identical"
-  [ "$(cat "$dir/home/data/rc20/brief.md")" = "$brief_before" ] \
-    || fail "a non-task branch refusal must leave the instructions byte-identical"
-  [ -z "$(cat "$dir/fake/literal")" ] || fail "a non-task branch refusal must launch nothing"
-  pass "fm-control recover: unpublished work on any local branch refuses before mutation"
+  assert_refused_unchanged "$dir" rc27 "$meta_before" "$brief_before" "an unpublished task-branch refusal"
+  pass "fm-control recover: the task's own unpublished branch refuses even when another published branch is checked out"
 }
 
 test_recovery_note_records_missing_pr_explicitly() {
@@ -882,7 +932,9 @@ test_recover_preserves_identity_and_creates_a_new_endpoint
 test_recover_appends_the_recovery_note_without_rebuilding
 test_unpublished_local_commit_refuses_before_mutation
 test_dirty_worktree_refuses_before_mutation
-test_unpublished_non_task_branch_refuses_before_mutation
+test_unrelated_local_branch_does_not_block_recovery
+test_unpublished_checked_out_side_branch_refuses_before_mutation
+test_unpublished_task_branch_behind_a_published_checkout_refuses
 test_recovery_note_records_missing_pr_explicitly
 test_recover_without_a_note_is_refused
 test_recover_refuses_a_not_missing_endpoint
