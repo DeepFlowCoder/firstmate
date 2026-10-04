@@ -139,7 +139,8 @@ An endpoint whose recorded window is gone (agent-state `missing`, e.g. after a h
    A `kind=secondmate` task is refused, because a missing secondmate endpoint is recovered through the secondmate-liveness path, not this verb.
 2. **Prove the local work is published.**
    The worktree must be clean, because uncommitted and untracked changes are not published.
-   Every local branch - including the task branch - must be an ancestor of its configured upstream, proven with `merge-base --is-ancestor` before anything is mutated.
+   The branch checked out in this copy and the task's own `fm/<id>` branch must each be an ancestor of its configured upstream, proven with `merge-base --is-ancestor` before anything is mutated.
+   Other local branches in the shared clone never block recovery: recovery deletes no ref and only reuses this copy, so a commit on them stays in its ref, and the destructive step keeps its own landed-work test in `bin/fm-teardown.sh`.
    The configured upstream is the single publication authority; the recorded `pr_head` is metadata only and never overrides the upstream proof.
    Anything local that is not published refuses, because a re-dispatch that did not prove that could orphan a commit in one copy while the record points at another.
 3. **Record the recovery note.**
@@ -168,7 +169,7 @@ A refusal before the replacement is launched leaves the durable record byte-iden
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
-- `recover` refuses unless the recorded endpoint is positively `missing`, the worktree is clean, and every local branch (including the task branch) is an ancestor of its configured upstream.
+- `recover` refuses unless the recorded endpoint is positively `missing`, the worktree is clean, and both the checked-out branch and the task's own `fm/<id>` branch are ancestors of their configured upstreams.
   `fm-spawn --recover-missing` independently verifies the same preconditions, so a recovery can never act on a live endpoint or on unpublished local work.
 
 ## Capability matrix

@@ -373,12 +373,18 @@ fm_backend_target_of_meta() {  # <meta-file>
 # additionally requires the detached HEAD itself to be published (reachable
 # from a remote-tracking ref, e.g. an ancestor of origin/<branch>) so nothing
 # checked out is unpublished, and sets FM_RECOVER_DETACHED=1 so the caller can
-# tell the worker to check out the verified branch. On success, sets
+# tell the worker to check out the verified branch. Beyond that resolution,
+# the proof covers exactly what this copy holds: the branch checked out here
+# and the task's own refs/heads/fm/<id> must each be an ancestor of their
+# configured upstream. Other local branches in the shared clone are out of
+# scope, because recovery deletes no ref and only reuses this copy, so a
+# commit on them is never put at risk here; bin/fm-teardown.sh owns the
+# destructive step's landed-work test. On success, sets
 # FM_RECOVER_PUBLISHED and FM_RECOVER_PUBLISHED_BRANCH (the branch resolution,
 # or "detached HEAD at <head>"). On failure, prints one refusal and returns 1.
 fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
   local meta=$1 id=$2 wt=$3 branch pr_head published local_tip detached_head status_output
-  local branches local_branch local_branch_tip upstream
+  local checked_out task_ref branches local_branch local_branch_tip upstream
   FM_RECOVER_PUBLISHED=
   FM_RECOVER_PUBLISHED_BRANCH=
   FM_RECOVER_DETACHED=
@@ -392,6 +398,7 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
   fi
   pr_head=$(fm_meta_get "$meta" pr_head)
   branch=$(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null | sed 's#^refs/heads/##' || true)
+  checked_out=$branch
   if [ -z "$branch" ]; then
     FM_RECOVER_DETACHED=1
     if git -C "$wt" show-ref --verify --quiet "refs/heads/fm/$id"; then
@@ -427,14 +434,18 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
     echo "error: task $id's local work is not published: '$branch' ($local_tip) is not an ancestor of its published head ($published); push the branch before recovering so a re-dispatch cannot orphan local commits" >&2
     return 1
   fi
-  branches=$(git -C "$wt" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null) || {
-    echo "error: task $id's local branches cannot be enumerated; refusing to recover without proving every local branch is published" >&2
+  task_ref=$(git -C "$wt" for-each-ref --format='%(refname)' "refs/heads/fm/$id" 2>/dev/null) || {
+    echo "error: task $id's own branch 'fm/$id' cannot be looked up; refusing to recover without proving it is published" >&2
     return 1
   }
+  branches=$checked_out
+  if printf '%s\n' "$task_ref" | grep -qxF "refs/heads/fm/$id" && [ "$checked_out" != "fm/$id" ]; then
+    branches=$(printf '%s\n%s' "$checked_out" "fm/$id")
+  fi
   while IFS= read -r local_branch; do
     [ -n "$local_branch" ] || continue
     local_branch_tip=$(git -C "$wt" rev-parse --verify "refs/heads/$local_branch^{commit}" 2>/dev/null) || {
-      echo "error: task $id's local branch '$local_branch' cannot be read; refusing to recover without proving every local branch is published" >&2
+      echo "error: task $id's local branch '$local_branch' cannot be read; refusing to recover without proving it is published" >&2
       return 1
     }
     upstream=$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name "$local_branch@{upstream}" 2>/dev/null) || {
@@ -446,7 +457,7 @@ fm_recover_prove_published_work() {  # <meta-file> <id> <worktree>
       return 1
     fi
     if ! git -C "$wt" merge-base --is-ancestor "$local_branch_tip" "$upstream"; then
-      echo "error: task $id's local branch '$local_branch' is not published: $local_branch_tip is not an ancestor of its configured upstream '$upstream'; push every local branch before recovering" >&2
+      echo "error: task $id's local branch '$local_branch' is not published: $local_branch_tip is not an ancestor of its configured upstream '$upstream'; push it before recovering" >&2
       return 1
     fi
   done <<< "$branches"

@@ -76,9 +76,12 @@
 #              (agent-state `missing`, e.g. after a host reboot cleared the
 #              session provider's windows) without tearing the task down or
 #              minting a new id. Preserves the same task id, the same local
-#              copy, and the same branch: it proves every local commit is
-#              already published (merge-base --is-ancestor against each local
-#              branch's configured upstream), appends a
+#              copy, and the same branch: it proves the work this copy holds
+#              is already published - a clean worktree, plus the checked-out
+#              branch and the task's own fm/<id> each an ancestor of its
+#              configured upstream; other local branches in the shared clone
+#              never block it (fm_recover_prove_published_work in
+#              bin/fm-backend.sh owns the proof) - appends a
 #              recovery note to the brief, then delegates to
 #              bin/fm-spawn.sh --recover-missing, which creates a NEW endpoint
 #              and launches into the recorded worktree. Refuses cleanly when
@@ -130,7 +133,8 @@
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts.
 #   - `recover` acts only on a positively classified `missing` endpoint for a
-#     ship or scout, and only after every local commit is proven published.
+#     ship or scout, and only after the work this copy holds is proven
+#     published.
 #
 # Environment knobs (all bounded waits, seconds):
 #   FM_CONTROL_POLL              poll interval for postcondition waits (0.5)
@@ -1200,10 +1204,11 @@ do_relaunch() {
 # onto a NEW endpoint over the SAME task id, the SAME local copy, and the SAME
 # branch. It never tears the task down and never mints a new id.
 #
-# The durable safety boundary is publication: before anything is mutated, every
-# local branch must be an ancestor of its configured upstream (merge-base
+# The durable safety boundary is publication: before anything is mutated, the
+# work this copy holds must be an ancestor of its configured upstream (merge-base
 # --is-ancestor, the single publication authority; the recorded pr_head is
-# metadata only). Anything local that is not published refuses, because a
+# metadata only; fm_recover_prove_published_work owns the exact scope).
+# Anything this copy holds that is not published refuses, because a
 # re-dispatch that did not prove that could orphan a commit in one copy while
 # the record points at another. The recovery note then carries the branch,
 # published head, and PR into the instructions, with the explicit instruction
