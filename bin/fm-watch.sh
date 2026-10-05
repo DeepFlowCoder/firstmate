@@ -1563,7 +1563,17 @@ pause_state_class() {  # <window> <task>
   #     coarse branch already spells out.
   #   * handle_paused_stale still re-surfaces it once per FM_PAUSE_RESURFACE_SECS, so
   #     a declaration that outlives its reason cannot rot invisibly.
-  if [ "$class" = working ]; then
+  #
+  # An authoritative `done` corroborates the declaration the same way, on the same
+  # uncached terms: it says the work was delivered and a merge is all that remains,
+  # which refutes the live-decision-gate hazard as directly as a running step does.
+  # Undeclared, that same reading already takes the healthy-idle absorb, so sending
+  # it through the liveness gate below made declaring the wait strictly worse: a
+  # finished worker's agent is alive by design, the gate answered `none`, and every
+  # new stale hash woke firstmate for the whole merge wait (measured 2026-09-23 at
+  # gaps of 119-637s). `parked` deliberately does NOT join it - under a declared
+  # wait it means the wait ended at a live gate, which must surface.
+  if [ "$class" = working ] || [ "$class" = "done" ]; then
     rm -f "$recheck_file"
     printf 'paused'
     return
@@ -1589,12 +1599,12 @@ pause_state_class() {  # <window> <task>
   # cadence, and a forgotten hold would rot invisibly.
   #
   # A declared pause or captain hold also OUTRANKS the healthy-idle classes: parked
-  # and done both mean "a human holds the next step", which is exactly what the
-  # bounded pause cadence already owns for these two verbs, so they join `none` here
-  # rather than taking the no-cadence healthy-idle absorb and dropping the .paused-*
-  # bookkeeping this verified path depends on.
+  # means "a human holds the next step", which is exactly what the bounded pause
+  # cadence already owns for these two verbs, so it joins `none` here rather than
+  # taking the no-cadence healthy-idle absorb and dropping the .paused-* bookkeeping
+  # this verified path depends on. `done` never reaches here; it corroborated above.
   case "$class" in
-    none|parked|done) class=paused ;;
+    none|parked) class=paused ;;
   esac
   case "$class" in
     paused) date +%s > "$recheck_file" ;;
