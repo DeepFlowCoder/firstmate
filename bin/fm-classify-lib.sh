@@ -82,8 +82,9 @@ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|
 
 # The deliberate-external-wait verb. A crew (or firstmate steering it) appends
 #   paused: <reason>
-# to declare it is intentionally idling on a KNOWN external dependency - an
-# upstream release, a vendor rate-limit reset, a scheduled window. Unlike
+# to declare it is intentionally idling on a KNOWN dependency expected to clear
+# on its own - a background job the worker started itself, an upstream release,
+# a vendor rate-limit reset, a scheduled window. Unlike
 # `blocked:` (stuck, firstmate must help) an idle `paused:` pane is EXPECTED, so
 # the stale path absorbs it instead of escalating a possible wedge. It is
 # deliberately NOT in the captain-relevant set above: a pause is a "stop
