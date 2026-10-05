@@ -10,9 +10,11 @@
 # one of those missing records, and each is durable, measured, and written by
 # something other than the worker - so no absorb here can ever rest on a worker
 # remembering to declare its state. A worker's own `paused:` declaration stays
-# where it was (bin/fm-classify-lib.sh's status_is_paused_or_captain_held): it
-# still improves the recheck's wording, and it is no longer the only way a
-# legitimate wait can be told from a wedge.
+# where it was (bin/fm-classify-lib.sh's status_is_paused_or_captain_held). It
+# is no longer the only way a legitimate wait can be told from a wedge, but it is
+# still the only one for a worker gone idle on a background job it started
+# itself: nothing below reads that wait, which is why bin/fm-brief.sh's rule 8
+# requires the declaration.
 #
 # The same gap has a second, opposite face, tracked as
 # `fm-panel-quieto-con-corrida-colgada-no-escala-nunca`: a run the worker is
