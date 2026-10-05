@@ -2460,6 +2460,60 @@ test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash() {
 # FM_STALE_ESCALATE_SECS escalation - the coarse runs-list read, and a static pane
 # on the repeat-poll route - each pinned by its own test below;
 # pause_state_class's third bullet owns the full argument.
+# --- delivered work + a declared wait for the merge: no wake per pane change ----
+# Measured 2026-09-23: a worker whose PR was green declared `paused:` for the merge,
+# and was still woken for every new stale hash its live, idle pane produced (gaps of
+# 119-637s). An authoritative `done` refutes the live-gate hazard the liveness gate
+# exists for, exactly as a running step does, so it must take the pause cadence -
+# and once the state changes to a live gate on a new hash it must surface as before.
+test_paused_authoritative_done_is_not_woken_per_pane_change() {
+  local dir state fakebin out capture_file statusf window key pid round
+  dir=$(make_case paused-done-merge-wait); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/merge-wait.status"
+  window="test:fm-merge-wait"
+  printf 'delivered, idle prompt 0\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/merge-wait.meta"
+  printf 'done: PR https://example.invalid/pr/1 checks green\npaused: waiting on the merge of the delivered PR\n' > "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-merge-wait_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  # A live agent (grok in the foreground) whose pane redraws between quiet spells.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_FAKE_CREW_STATE='state: done · source: run-step · checks green: PR ready for review (still monitoring for merge/close)' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  round=1
+  while [ "$round" -le 4 ]; do
+    printf 'delivered, idle prompt %s\n' "$round" > "$capture_file"
+    if ! { wait_poll_cycle "$state" "$pid" && wait_poll_cycle "$state" "$pid" && wait_poll_cycle "$state" "$pid"; }; then
+      reap "$pid"; fail "a declared merge wait on delivered work woke on pane change $round: $(cat "$out")"
+    fi
+    round=$((round + 1))
+  done
+  reap "$pid"
+  [ ! -s "$out" ] || fail "a declared merge wait on delivered work printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "a declared merge wait on delivered work enqueued a wake"
+  [ -e "$state/.paused-$key" ] || fail "delivered work under a declared wait did not take the pause cadence"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a declared merge wait started a wedge escalation timer"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional merge-wait phase stop"
+
+  # The state changes to a live gate on a new hash: that must surface, as it does today.
+  printf 'gate prompt\n' > "$capture_file"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok \
+    FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review: 1 finding(s) (ask-user: authority decision)' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "a declared merge wait whose state changed to a live gate stayed absorbed: $(cat "$out")"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "the state change to a live gate did not print a stale wake"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the live-gate surface"
+  pass "a declared merge wait on delivered work is not woken per pane change, and still surfaces when the state changes"
+}
+
 test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate() {
   local dir state fakebin out drain_out capture_file window key pane_hash sig pid
   dir=$(make_case nonterminal-paused-recheck); state="$dir/state"; fakebin="$dir/fakebin"
@@ -4555,6 +4609,7 @@ test_secondmate_nonpaused_stale_remains_suppressed
 test_secondmate_unpause_clears_pause_tracking
 test_nonterminal_stale_pause_transitions_reclassify_unchanged_hash
 test_nonterminal_paused_recheck_surfaces_a_run_at_a_gate
+test_paused_authoritative_done_is_not_woken_per_pane_change
 test_paused_authoritative_working_takes_the_pause_cadence
 test_coarse_gated_run_read_takes_the_pause_cadence_not_the_wedge_timer
 test_repeat_poll_gated_run_takes_the_pause_cadence_not_the_wedge_timer
