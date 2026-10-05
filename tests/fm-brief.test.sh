@@ -1050,25 +1050,6 @@ test_ship_and_scout_briefs_carry_the_same_stash_warning() {
   pass "fm-brief.sh: ship and scout briefs carry one identical stash warning"
 }
 
-# A worker that reads the captain's real keychain can block on a system password
-# dialog for hours while supervision still reads it as working, and killing the
-# process does not dismiss the dialog. The prohibition therefore has to travel in
-# the brief itself: firstmate's private data/ is never read by a worker. This bit
-# twice, so every generated crewmate brief must carry the rule, name both
-# binaries in more than one reading form, offer the PATH stub as the alternative,
-# and state that an unmeasurable case is a refusal rather than a silent pass.
-# The scope is drawn by intention, not by region: what the task RUNS against the
-# real store is refused, while three things the brief itself sanctions are named
-# as never fenced - authoring credential code this task does not execute (the
-# repo's own bin/fm-notify-moshi.sh reads the Keychain by design), the PATH stub
-# this section prescribes, and the commands the brief orders. A rule that froze
-# any of them would have a literal reader block itself instead of delivering. The
-# sanctioned exemption names no command and anchors on the reader's own
-# instructions, so it cannot contradict a scaffold that forbids pushing and still
-# resolves after the section is carried into --intent. The exemptions keep their
-# limits: a sanctioned step hanging on a credential is still a block to report,
-# so that path does not become a silent workaround, and the whole section travels
-# into --intent, since enumerating parts is how the exemptions got stripped there.
 # The commonest wait in this fleet is a worker idle on a background job it
 # started itself, and nothing supervision reads can see one, so an undeclared
 # one reports as a possible wedge. Measured 2026-09-23: three healthy workers in
@@ -1096,6 +1077,9 @@ test_ship_and_scout_briefs_name_the_own_background_job_wait() {
       "$kind: wait rule does not require declaring the wait"
     assert_grep 'without the declaration your wait reports as a possible wedge' "$brief" \
       "$kind: wait rule does not say what an undeclared wait costs"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'A wait you already declared with `needs-decision`, `blocked`, or a handoff `working:`' "$brief" \
+      "$kind: wait rule asks for paused on top of a wait already declared another way"
     assert_no_grep 'courtesy, not the mechanism' "$brief" \
       "$kind: wait rule still calls the declaration a courtesy"
     assert_no_grep 'supervision does not need your' "$brief" \
@@ -1104,6 +1088,25 @@ test_ship_and_scout_briefs_name_the_own_background_job_wait() {
   pass "fm-brief.sh: ship and scout briefs name the own-background-job wait and require declaring it"
 }
 
+# A worker that reads the captain's real keychain can block on a system password
+# dialog for hours while supervision still reads it as working, and killing the
+# process does not dismiss the dialog. The prohibition therefore has to travel in
+# the brief itself: firstmate's private data/ is never read by a worker. This bit
+# twice, so every generated crewmate brief must carry the rule, name both
+# binaries in more than one reading form, offer the PATH stub as the alternative,
+# and state that an unmeasurable case is a refusal rather than a silent pass.
+# The scope is drawn by intention, not by region: what the task RUNS against the
+# real store is refused, while three things the brief itself sanctions are named
+# as never fenced - authoring credential code this task does not execute (the
+# repo's own bin/fm-notify-moshi.sh reads the Keychain by design), the PATH stub
+# this section prescribes, and the commands the brief orders. A rule that froze
+# any of them would have a literal reader block itself instead of delivering. The
+# sanctioned exemption names no command and anchors on the reader's own
+# instructions, so it cannot contradict a scaffold that forbids pushing and still
+# resolves after the section is carried into --intent. The exemptions keep their
+# limits: a sanctioned step hanging on a credential is still a block to report,
+# so that path does not become a silent workaround, and the whole section travels
+# into --intent, since enumerating parts is how the exemptions got stripped there.
 test_crewmate_briefs_forbid_reading_the_real_credential_store() {
   local home brief kind section command_name
   home="$TMP_ROOT/credential-store-home"

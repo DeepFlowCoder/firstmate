@@ -253,6 +253,8 @@ IFS= read -r -d '' WAIT_RULE <<EOF || true
    Supervision cannot see what an idle pane is waiting on, least of all a background job
    you started yourself: without the declaration your wait reports as a possible wedge,
    and firstmate spends a manual inspection of your pane to learn you were fine.
+   A wait you already declared with \`needs-decision\`, \`blocked\`, or a handoff \`working:\`
+   line that Definition of done declares needs no \`$PAUSED_VERB\` line on top of it.
 EOF
 WAIT_RULE=${WAIT_RULE%$'\n'}
 
