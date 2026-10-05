@@ -1179,6 +1179,161 @@ test_housekeeping_captain_held_stale_marker_transitions_to_pause() {
   pass "housekeeping moves a captain hold's existing stale marker to pause before wedge escalation"
 }
 
+# Away mode reads the same durable wait records as the watcher
+# (bin/fm-wait-evidence-lib.sh), so the two supervisors agree on which quiet
+# workers are waiting rather than wedged. Each case drives one fixture in BOTH
+# directions, because narrowing an alarm is only correct if it can still fire.
+#
+# The backlog's captain hold is the record that does not depend on the worker: a
+# finished worker stopped to free a lane appends nothing, so its log keeps an
+# ordinary `working:` line while the captain owns its next step. The watcher
+# already honors that hold on its idle-pane path; this pins that the daemon does
+# too, that the hold still re-surfaces once per window and ends when released,
+# and that an unheld twin with the identical log still escalates on time.
+test_backlog_captain_hold_is_a_declared_wait_in_away_mode() {
+  local dir state fakebin pane held unheld hkey ukey out reason
+  dir=$(make_supercase backlog-hold-away); state="$dir/state"; fakebin="$dir/fakebin"
+  pane="$dir/pane.txt"; held="held-b1"; unheld="unheld-b1"
+  hkey=$(printf '%s' "$held" | tr ':/.' '___'); ukey=$(printf '%s' "$unheld" | tr ':/.' '___')
+  mkdir -p "$dir/data"
+  cat > "$dir/data/backlog.md" <<BACKLOG
+# Backlog
+- [ ] $held - finished, awaiting the captain's word (repo: demo) (hold: the captain owes an answer) (hold-kind: captain)
+- [ ] $unheld - finished, nothing holds it (repo: demo)
+BACKLOG
+  for t in "$held" "$unheld"; do
+    fm_write_meta "$state/$t.meta" "window=sess:fm-$t" "backend=tmux"
+    printf 'working: delivered, stopped to free a lane\n' > "$state/$t.status"
+  done
+  printf 'idle prompt $\n' > "$pane"
+
+  out=$(FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-$held" "$state")
+  case "$out" in pause\|captain-held*) ;; *) fail "a backlog captain hold did not classify as a captain-held wait: $out" ;; esac
+  out=$(FM_STATE_OVERRIDE="$state" classify_stale "sess:fm-$unheld" "$state")
+  case "$out" in self\|transient\ stale*) ;; *) fail "the unheld twin did not stay on ordinary stale aging: $out" ;; esac
+
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-stale-$hkey"
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-stale-$ukey"
+  (
+    # shellcheck disable=SC2329 # Invoked indirectly by the function under test.
+    fm_backend_pane_command_signature() { return 0; }
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$pane" FM_STATE_OVERRIDE="$state" \
+      FM_ESCALATE_BATCH_SECS=999999 FM_STALE_ESCALATE_SECS=240 FM_PAUSE_RESURFACE_SECS=3600 \
+      housekeeping "$state"
+  )
+  [ -e "$state/.subsuper-paused-$hkey" ] || fail "a backlog captain hold did not move its stale marker to pause tracking"
+  [ ! -e "$state/.subsuper-stale-$hkey" ] || fail "a backlog captain hold stayed wedge-aged"
+  grep -F "sess:fm-$held" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    && fail "a backlog captain hold was escalated as a possible wedge: $(cat "$state/.subsuper-escalations")"
+  grep -F "possible wedge): sess:fm-$unheld" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "the unheld twin did not escalate as a possible wedge"
+
+  # Quiet is bounded: past the window the hold re-surfaces once, naming the captain.
+  : > "$state/.subsuper-escalations"
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-$hkey"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$pane" FM_STATE_OVERRIDE="$state" \
+    FM_ESCALATE_BATCH_SECS=999999 FM_PAUSE_RESURFACE_SECS=3600 housekeeping "$state"
+  grep -F "captain-held" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "a backlog captain hold did not re-surface as a captain recheck past its window"
+  grep -F "possible wedge" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    && fail "the backlog hold recheck was mislabeled a possible wedge"
+
+  # A busy pane is outside the hold's reach: an enriched busy-pane wedge for the
+  # held task still escalates, exactly as the watcher's busy-pane bound treats it.
+  : > "$state/.subsuper-escalations"
+  reason="stale: sess:fm-$held (idle 250s, possible wedge, escalation 2)"
+  LOG="$dir/daemon.log" FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=999999 \
+    handle_wake "$reason" "$state"
+  grep -F "${reason#stale: }" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "a backlog hold silenced an enriched busy-pane wedge"
+
+  # Releasing the hold ends the wait routing.
+  printf '# Backlog\n- [ ] %s - answered (repo: demo)\n' "$held" > "$dir/data/backlog.md"
+  : > "$state/.subsuper-escalations"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$pane" FM_STATE_OVERRIDE="$state" \
+    FM_ESCALATE_BATCH_SECS=999999 FM_PAUSE_RESURFACE_SECS=3600 housekeeping "$state"
+  [ ! -e "$state/.subsuper-paused-$hkey" ] || fail "a released backlog hold kept its pause tracking"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "a released backlog hold was re-surfaced as a wait"
+  pass "away mode honors the backlog captain hold on idle panes, bounded, and never on a busy-pane wedge"
+}
+
+# A worker waiting inside a blocking command - a poll on CI, a long measurement it
+# keeps in the foreground - sits on a quiet pane with no run step and no file
+# writes, and the only thing still moving is its foreground command set. The
+# watcher defers its wedge alarm on that movement; this pins the daemon's wedge
+# recheck reading the same evidence, and the controls that keep it honest: a frozen
+# set still escalates, movement without a live agent (an agent exiting) still
+# escalates, and the deferral re-surfaces once per window rather than hiding forever.
+test_running_commands_defers_the_away_mode_wedge_and_a_frozen_one_escalates() {
+  local dir state fakebin pane table alive_file task win key age
+  dir=$(make_supercase running-commands-away); state="$dir/state"; fakebin="$dir/fakebin"
+  pane="$dir/pane.txt"; table="$dir/fg.txt"; alive_file="$dir/alive"
+  task=ocr-wait-c1; win="sess:fm-$task"
+  key=$(printf '%s' "$task" | tr ':/.' '___')
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux"
+  printf 'working: measuring OCR, this takes a while\n' > "$state/$task.status"
+  printf 'idle prompt $\n' > "$pane"
+  printf '101:claude\n201:python3\n' > "$table"
+  printf 'alive' > "$alive_file"
+
+  away() {  # <cmd...> - run a daemon function against the stubbed endpoint
+    (
+      # shellcheck disable=SC2329 # Invoked indirectly by the function under test.
+      fm_backend_pane_command_signature() { cat "$table" 2>/dev/null || true; }
+      # shellcheck disable=SC2329 # Invoked indirectly by the function under test.
+      fm_backend_agent_alive() { cat "$alive_file"; }
+      PATH="$fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$pane" FM_STATE_OVERRIDE="$state" \
+        FM_ESCALATE_BATCH_SECS=999999 FM_STALE_ESCALATE_SECS=240 FM_PAUSE_RESURFACE_SECS=3600 \
+        LOG="$dir/daemon.log" "$@"
+    )
+  }
+
+  away handle_wake "stale: $win" "$state"
+  [ -e "$state/.subsuper-stale-$key" ] || fail "the first quiet sighting did not start wedge aging"
+  [ -s "$state/.subsuper-command-sig-$key" ] || fail "wedge aging started without a command-set baseline"
+
+  # Moving set, live agent: deferred, timer restarted, nothing escalated.
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+  printf '101:claude\n202:python3\n' > "$table"
+  away housekeeping "$state"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a worker running commands was escalated as a possible wedge: $(cat "$state/.subsuper-escalations")"
+  [ -e "$state/.subsuper-stale-$key" ] || fail "the deferral cancelled wedge aging instead of restarting it"
+  age=$(( $(date +%s) - $(cat "$state/.subsuper-stale-$key") ))
+  [ "$age" -lt 60 ] || fail "the deferral did not restart the wedge timer (age ${age}s)"
+
+  # Frozen set: the same fixture escalates on the unchanged schedule.
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+  away housekeeping "$state"
+  grep -F "possible wedge): $win" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "a frozen command set did not escalate as a possible wedge"
+  [ ! -e "$state/.subsuper-stale-$key" ] || fail "an escalated wedge kept its aging marker"
+
+  # Movement without a live agent is an exit, not work.
+  : > "$state/.subsuper-escalations"
+  away handle_wake "stale: $win" "$state"
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+  printf '301:zsh\n' > "$table"; printf 'dead' > "$alive_file"
+  away housekeeping "$state"
+  grep -F "possible wedge): $win" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "command movement from an exited agent deferred the wedge"
+
+  # A deferral that runs past the window re-surfaces once as a recheck.
+  : > "$state/.subsuper-escalations"; printf 'alive' > "$alive_file"
+  away handle_wake "stale: $win" "$state"
+  echo $(( $(date +%s) - 500 )) > "$state/.subsuper-stale-$key"
+  echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-running-since-$key"
+  printf '101:claude\n203:python3\n' > "$table"
+  away housekeeping "$state"
+  [ "$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')" = 1 ] \
+    || fail "a long running-commands deferral did not re-surface exactly once"
+  grep -F "running commands" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "the deferral recheck did not say the worker is running commands"
+  grep -F "possible wedge" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    && fail "the deferral recheck was mislabeled a possible wedge"
+  pass "away mode defers the wedge for a worker running commands, and a frozen or exited one still escalates"
+}
+
 test_housekeeping_pause_marker_transitions_to_clear() {
   local dir state fakebin win pane key
   dir=$(make_supercase paused-to-stale)
@@ -2645,6 +2800,8 @@ test_housekeeping_paused_unpaused_cleared
 test_housekeeping_captain_held_resolved_cleared
 test_housekeeping_stale_marker_transitions_to_pause
 test_housekeeping_captain_held_stale_marker_transitions_to_pause
+test_backlog_captain_hold_is_a_declared_wait_in_away_mode
+test_running_commands_defers_the_away_mode_wedge_and_a_frozen_one_escalates
 test_housekeeping_pause_marker_transitions_to_clear
 test_housekeeping_herdr_persistent_stale_resolves_meta
 test_housekeeping_herdr_idle_busy_record_clears_stale

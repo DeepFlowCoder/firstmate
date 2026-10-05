@@ -44,12 +44,15 @@
 #   - Bounded wedge latency: a stale pane without a declared wait is escalated
 #     only after it has been idle for STALE_ESCALATE_SECS
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
-#     within STALE_ESCALATE_SECS + a tick, never lost. A declared wait - either a
-#     paused: external wait or a verified captain-held transfer, per
-#     fm-classify-lib.sh's combined predicate - instead gets its own longer
-#     PAUSE_RESURFACE_SECS recheck, never a wedge escalation, whether its pane
-#     reads idle or busy; only a status append that stops declaring the wait
-#     ends that routing.
+#     within STALE_ESCALATE_SECS + a tick, never lost. A declared wait - a
+#     paused: external wait, a verified captain-held transfer, or the backlog's
+#     own captain hold, per daemon_wait_is_declared - instead gets its own
+#     longer PAUSE_RESURFACE_SECS recheck, never a wedge escalation, whether its
+#     pane reads idle or busy; only a status append that stops declaring the
+#     wait, or the hold's release, ends that routing. A worker whose foreground
+#     command set keeps moving with a live agent is deferred at the wedge
+#     threshold instead of escalated (stale_crew_is_running_commands), and
+#     re-surfaces on the same long cadence; a frozen call still escalates on time.
 #     Crewmates are autonomous, so a delayed stale response does not stall a
 #     healthy crewmate's own progress.
 #     Buffered escalation delivery also has a max-defer alarm: if a digest stays
@@ -182,6 +185,13 @@ WEDGE_ALARM_LOG_FN=log
 # classification predicates have exactly one definition.
 # shellcheck source=bin/fm-classify-lib.sh
 . "$FM_DAEMON_DIR/fm-classify-lib.sh"
+
+# The durable records that say a quiet worker's silence belongs to something
+# other than a wedge (fm_wait_captain_held_ids, fm_wait_command_moved). The SAME
+# library backs the watcher's stale path, so away mode and the always-on watcher
+# read one definition of a captain hold and of a worker running commands.
+# shellcheck source=bin/fm-wait-evidence-lib.sh
+. "$FM_DAEMON_DIR/fm-wait-evidence-lib.sh"
 
 # Supervisor-pane discovery (FM_SUPERVISOR_TARGET_DEFAULT,
 # FM_SUPERVISOR_BACKEND_DEFAULT, discover_supervisor_target,
@@ -402,6 +412,35 @@ classify_signal() {  # <reason-after-colon> <state>
   fi
 }
 
+# daemon_task_is_captain_held: 0 iff the captain durably owns <task>'s next
+# step, from either record that can say so - the worker's own `captain-held:`
+# status verb, or the backlog hold bin/fm-captain-hold.sh placed for the captain.
+# The hold is the record that does not depend on the worker: a worker firstmate
+# stopped to free a lane appends nothing, so the verb can be absent for a task
+# the captain demonstrably owns. bin/fm-wait-evidence-lib.sh owns what an active
+# hold is. The backlog is read from <state>'s home, because the daemon's state
+# directory is always <home>/state (_state_root). One awk pass per call, which is
+# cheap at the daemon's cadence, so no cache can outlive a released hold.
+daemon_task_is_captain_held() {  # <state> <task> <last-status-line>
+  local state=$1 task=$2 last=$3
+  status_is_captain_held "$last" && return 0
+  fm_wait_id_in_list "$task" "$(fm_wait_captain_held_ids "$(dirname "$state")" 2>/dev/null || true)"
+}
+
+# daemon_wait_is_declared: 0 iff this worker's silence is declared by one of the
+# durable records - a worker-declared `paused:`, a `captain-held:` verb, or the
+# backlog's own captain hold. Every IDLE-pane declared-wait gate in this daemon
+# reads it, matching the watcher's wait_is_declared, so a hold cannot be honored
+# by one supervisor and aged as a wedge by the other. The enriched busy-pane wedge
+# override in handle_wake deliberately keeps the status verbs alone, for the same
+# reason the watcher's busy_turn_bound_check does: a hold says the CAPTAIN owes an
+# answer, never that a still-busy worker is healthy.
+daemon_wait_is_declared() {  # <state> <task> <last-status-line>
+  local state=$1 task=$2 last=$3
+  status_is_paused_or_captain_held "$last" && return 0
+  fm_wait_id_in_list "$task" "$(fm_wait_captain_held_ids "$(dirname "$state")" 2>/dev/null || true)"
+}
+
 # classify_stale decides the WAKE itself (one-shot per distinct hash). On a
 # first sight of a non-terminal stale it returns "self" and the caller records a
 # timestamp marker; persistence is escalated by housekeeping's recheck, not here.
@@ -424,14 +463,18 @@ classify_stale() {  # <window> <state> [<span-record> <span-status>]
     printf 'escalate|stale + actionable status: %s' "$event"
     return
   fi
-  if [ -n "$last" ] && status_is_paused_or_captain_held "$last"; then
-    # A DECLARED external-wait pause or a verified captain-held transfer
-    # (fm-classify-lib.sh owns which declarations qualify): an idle pane is
-    # EXPECTED, so this is not a wedge. The caller records a pause marker (long
-    # re-surface cadence in housekeeping) rather than a wedge stale marker. Cheap:
-    # reuses the status line already read, no fm-crew-state.sh call, mirroring the
-    # daemon's existing status-log classification.
-    printf 'pause|paused (awaiting external), rechecked on a long cadence: %s' "$last"
+  if daemon_wait_is_declared "$state" "$task" "$last"; then
+    # A DECLARED external-wait pause, a verified captain-held transfer, or the
+    # backlog's own captain hold (daemon_wait_is_declared owns which records
+    # qualify): an idle pane is EXPECTED, so this is not a wedge. The caller
+    # records a pause marker (long re-surface cadence in housekeeping) rather than
+    # a wedge stale marker. Cheap: the status line already read plus one backlog
+    # scan, no fm-crew-state.sh call.
+    if daemon_task_is_captain_held "$state" "$task" "$last"; then
+      printf 'pause|captain-held (awaiting the captain), rechecked on a long cadence: %s' "${last:-backlog hold on $task}"
+    else
+      printf 'pause|paused (awaiting external), rechecked on a long cadence: %s' "$last"
+    fi
     return
   fi
   if [ -n "$last" ] && status_is_captain_relevant "$last"; then
@@ -480,17 +523,80 @@ classify_unknown() {  # <reason>
 
 _stale_key() { printf '%s' "$1" | tr ':/.' '___'; }
 
+# A stale marker carries two companions, keyed like it, that let the wedge
+# recheck read the same command-movement evidence the watcher's wedge timer
+# reads (bin/fm-wait-evidence-lib.sh owns what a change between two samples
+# means):
+#   .subsuper-command-sig-<key>    the last foreground command-set sample
+#   .subsuper-running-since-<key>  epoch the current running-commands deferral
+#                                  window began
+# The sample is taken when the marker is created, so the first recheck compares
+# against a real earlier answer instead of spending its alarm establishing one.
+# Separate from the watcher's own .command-sig-<window-key>: each sampler
+# records only when the set changes, so a shared file would let one consume the
+# movement the other needs to see.
 stale_marker_record() {  # <window> <state>  — create if absent
   local win=$1 state=$2 key marker
   key=$(_stale_key "$(window_to_task "$win" "$state")")
   marker="$state/.subsuper-stale-$key"
-  [ -e "$marker" ] || _now > "$marker"
+  [ -e "$marker" ] && return 0
+  _now > "$marker"
+  fm_wait_command_moved "$state/.subsuper-command-sig-$key" \
+    "$(stale_command_signature "$win" "$state")" || true
+}
+
+stale_tracking_remove() {  # <state> <key>
+  rm -f "$1/.subsuper-stale-$2" "$1/.subsuper-command-sig-$2" "$1/.subsuper-running-since-$2"
 }
 
 stale_marker_remove() {  # <window> <state>
-  local win=$1 state=$2 key
-  key=$(_stale_key "$(window_to_task "$win" "$state")")
-  rm -f "$state/.subsuper-stale-$key"
+  local win=$1 state=$2
+  stale_tracking_remove "$state" "$(_stale_key "$(window_to_task "$win" "$state")")"
+}
+
+# The backend's report of <window>'s foreground command set, or nothing when it
+# could not answer (fm_backend_pane_command_signature owns the format).
+stale_command_signature() {  # <window> <state>
+  local win=$1 state=$2
+  fm_backend_pane_command_signature "$(task_window_backend "$win" "$state")" "$win" 2>/dev/null || true
+}
+
+# stale_crew_is_running_commands: 0 iff <window>'s foreground command set moved
+# since the last sample AND its endpoint confidently holds a live agent - the
+# watcher's crew_is_running_commands reading, so a worker waiting inside a
+# blocking command (a poll on CI, a long measurement it keeps in the foreground)
+# is not escalated as a possible wedge in away mode either. A frozen call does
+# not move the set by definition, so a real wedge still escalates on time; an
+# unanswered probe answers no and keeps the unchanged schedule. The liveness gate
+# is what keeps an agent EXITING, which moves the set exactly once, from reading
+# as work. The sample is recorded either way, so that one movement is spent here.
+stale_crew_is_running_commands() {  # <window> <state> <key>
+  local win=$1 state=$2 key=$3 alive
+  fm_wait_command_moved "$state/.subsuper-command-sig-$key" \
+    "$(stale_command_signature "$win" "$state")" || return 1
+  alive=$(fm_backend_agent_alive "$(task_window_backend "$win" "$state")" "$win" 2>/dev/null) || alive=unknown
+  [ "$alive" = alive ]
+}
+
+# Defer ONE possible-wedge escalation for a worker that is running commands, the
+# daemon's counterpart of the watcher's wedge_defer_running. A deferral, never a
+# cancellation: the wedge timer restarts so the next window probes again, and the
+# deferral window still re-surfaces once per PAUSE_RESURFACE_SECS as a recheck,
+# so a worker whose commands churn without real progress cannot stay invisible.
+stale_defer_running() {  # <window> <state> <key> <idle-age>
+  local win=$1 state=$2 key=$3 age=$4 rsf since rage
+  rsf="$state/.subsuper-running-since-$key"
+  [ -e "$rsf" ] || _now > "$rsf"
+  since=$(cat "$rsf" 2>/dev/null || true)
+  case "$since" in ''|*[!0-9]*) since=$(_now); _now > "$rsf" ;; esac
+  rage=$(( $(_now) - since ))
+  _now > "$state/.subsuper-stale-$key"
+  if [ "$rage" -ge "${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}" ]; then
+    if escalate_add "$state" "running commands ${rage}s with a live agent (idle ${age}s, rechecked on a long cadence not a wedge; confirm the wait it is inside still holds): $win"; then
+      _now > "$rsf"
+    fi
+  fi
+  log "self-handle (running commands with a live agent, idle ${age}s): $win" || true
 }
 
 # Pause marker: state/.subsuper-paused-<key> holds the epoch a declared wait (a
@@ -524,7 +630,8 @@ clear_pause_tracking() {  # <window> <state>
     "$state/.writing-since-$watcher_key" "$state/.writing-resurfaced-$watcher_key" \
     "$state/.working-since-$watcher_key" "$state/.working-resurfaced-$watcher_key" \
     "$state/.running-since-$watcher_key" "$state/.running-resurfaced-$watcher_key" \
-    "$state/.command-sig-$watcher_key"
+    "$state/.command-sig-$watcher_key" \
+    "$state/.subsuper-command-sig-$key" "$state/.subsuper-running-since-$key"
 }
 
 reconcile_pause_tracking() {  # <window> <state> <last-status-line>
@@ -533,7 +640,7 @@ reconcile_pause_tracking() {  # <window> <state> <last-status-line>
   key=$(_stale_key "$task")
   marker="$state/.subsuper-paused-$key"
   watcher_key=$(_stale_key "$win")
-  if status_is_paused_or_captain_held "$last"; then
+  if daemon_wait_is_declared "$state" "$task" "$last"; then
     stale_marker_remove "$win" "$state"
     pause_marker_record "$win" "$state"
   elif [ -e "$marker" ] || [ -e "$state/.paused-$watcher_key" ]; then
@@ -551,7 +658,7 @@ migrate_watcher_pause_markers() {  # <state>
     key=$(_stale_key "$task")
     watcher_key=$(_stale_key "$win")
     last=$(last_status_line "$state/$task.status")
-    if status_is_paused_or_captain_held "$last" || [ -e "$state/.subsuper-paused-$key" ] || [ -e "$state/.paused-$watcher_key" ]; then
+    if daemon_wait_is_declared "$state" "$task" "$last" || [ -e "$state/.subsuper-paused-$key" ] || [ -e "$state/.paused-$watcher_key" ]; then
       reconcile_pause_tracking "$win" "$state" "$last"
     fi
   done
@@ -842,11 +949,11 @@ housekeeping() {  # <state>
     win=$(window_for_task "$key" "$state" 2>/dev/null || true)
     if [ -z "$win" ]; then
       # Window gone (task torn down): drop the marker, nothing to escalate.
-      rm -f "$marker"; continue
+      stale_tracking_remove "$state" "$key"; continue
     fi
     task=$(window_to_task "$win" "$state")
     last=$(last_status_line "$state/$task.status")
-    if [ -n "$last" ] && status_is_paused_or_captain_held "$last"; then
+    if daemon_wait_is_declared "$state" "$task" "$last"; then
       reconcile_pause_tracking "$win" "$state" "$last"
       continue
     fi
@@ -854,23 +961,24 @@ housekeeping() {  # <state>
     [ "$age" -ge "${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}" ] || continue
     stale_window_is_busy "$win" "$state"
     case "$?" in
-      0) rm -f "$marker" ;;
-      2) rm -f "$marker" ;;
-      *) if escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"; then
+      0|2) stale_tracking_remove "$state" "$key" ;;
+      *) if stale_crew_is_running_commands "$win" "$state" "$key"; then
+           stale_defer_running "$win" "$state" "$key" "$age"
+         elif escalate_add "$state" "stale persisted ${age}s (possible wedge): $win"; then
            stale_marker_remove "$win" "$state"
          fi ;;
     esac
   done
 
-  # (2b) pause re-surface recheck. A declared wait is waiting, not wedged (fm-classify-lib.sh's
-  # status_is_paused_or_captain_held owns which declarations qualify), so it is
+  # (2b) pause re-surface recheck. A declared wait is waiting, not wedged
+  # (daemon_wait_is_declared owns which records qualify), so it is
   # rechecked on a much longer cadence than a wedge (PAUSE_RESURFACE_SECS) and never
   # escalated as one - but it MUST re-surface, so neither a forgotten pause nor a
   # forgotten captain hold can rot invisibly. Past the window: gone -> drop; still
   # declaring the wait -> escalate a recheck digest and reset the marker so the window
   # repeats. The digest names WHICH human the wait is on, because the captain is the
   # one reading it: an external dependency for a paused: declaration, and the captain
-  # themself for a verified hold transfer.
+  # themself for a verified hold transfer or the backlog's own captain hold.
   # Pane busy state does NOT end the wait. A declared wait can legitimately hold a
   # pane busy - a worker parked on a long foreground call it keeps live for as long
   # as the wait lasts - so reading busy as "the crew resumed" retires the window of
@@ -887,7 +995,7 @@ housekeeping() {  # <state>
     fi
     task=$(window_to_task "$win" "$state")
     last=$(last_status_line "$state/$task.status")
-    if [ -z "$last" ] || ! status_is_paused_or_captain_held "$last"; then
+    if ! daemon_wait_is_declared "$state" "$task" "$last"; then
       reconcile_pause_tracking "$win" "$state" "$last"
       continue
     fi
@@ -904,7 +1012,7 @@ housekeeping() {  # <state>
       2) rm -f "$marker" ;;
       *)
         last=$(last_status_line "$state/$task.status")
-        if [ -n "$last" ] && status_is_captain_held "$last"; then
+        if daemon_task_is_captain_held "$state" "$task" "$last"; then
           if escalate_add "$state" "captain-held ${age}s (awaiting the captain, answer the held decision or release the hold): $win"; then
             _now > "$marker"
           fi
@@ -1136,15 +1244,18 @@ handle_wake() {  # <reason> <state>
               # once per STALE_ESCALATE_SECS for as long as the wait lasted.
               # Housekeeping (2b) then owns the re-surface, so the wait is still
               # bounded - by one recheck per PAUSE_RESURFACE_SECS instead.
-              case "${decision%%|*}" in
-                pause) : ;;
-                *) case "$stale_detail" in
-                     idle\ *s,\ possible\ wedge,\ escalation\ *)
-                       last=$(last_status_line "$state/$task.status")
-                       status_is_paused_or_captain_held "$last" \
-                         || decision="escalate|${reason#stale: }"
-                       ;;
-                   esac ;;
+              # Only the crew's own status verbs count here, never the backlog
+              # hold classify_stale also honors: under away mode an enriched wedge
+              # comes from the watcher's busy-pane bound, and a hold says the
+              # captain owes an answer, not that a still-busy worker is healthy
+              # (daemon_wait_is_declared and the watcher's busy_turn_bound_check
+              # own that split).
+              case "$stale_detail" in
+                idle\ *s,\ possible\ wedge,\ escalation\ *)
+                  last=$(last_status_line "$state/$task.status")
+                  status_is_paused_or_captain_held "$last" \
+                    || decision="escalate|${reason#stale: }"
+                  ;;
               esac ;;
     check:*)  decision=$(classify_check "$reason") ;;
     heartbeat|heartbeat:*) decision=$(classify_heartbeat) ;;
