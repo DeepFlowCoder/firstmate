@@ -135,6 +135,35 @@ Each spend the case was written to reject was checked by breaking it in the sour
 
 Verified after the fix: 8 concurrent copies plus 16 busy loops, three rounds at load average 56-63, 24 runs, 24 passed; and in the 78-160 batch above, 32 runs, 32 passed.
 
+## tests/fm-bearings-snapshot.test.sh - cases that read a secondmate home
+
+Measured 2026-10-05.
+Symptom: `not ok - canonical secondmate or child bounds were not enforced` (`test_secondmate_and_child_bounds_are_disclosed`) and `not ok - terminal in-flight rows discarded the readable home` (`test_nonprogressing_child_states_are_explicit`) on no-mistakes test gates at load average 17-19, each passing on rerun and in CI.
+
+Cause, in one line: the snapshot reads each secondmate home under a wall-clock bound (`FM_SNAPSHOT_SECONDMATE_TIMEOUT`, default 8s) and folds a cut read to `unknown`, so on a loaded runner the home whose content the case asserts on was never read.
+
+Measured with `fm_run_timed` instrumented in a scratch copy to log each bounded call's duration and exit code, running the two cases alone:
+
+```
+idle, load 11-15:                     home read max 1.401s against its 8s bound
+32 fork-heavy loops, load 76:         rc=124 dur=8.263 bound=8   (case red, home read cut)
+32 fork-heavy loops, load 90-120:     home read max 7.910s against its 8s bound (14 cases sampled)
+```
+
+CPU-only loops (48 `while :; do :; done`, load 65) did not reproduce it; the loaded cost is driven by process creation, which is what concurrent pipelines spend.
+Shortening the bound to 1s reproduced the red on an idle machine, with the cut home reading `"reason": "structured home snapshot timed out"`.
+
+Fix: the suite now gives every snapshot read bound 120s of headroom, under the rule [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development) owns for a case whose assertion is not about the timeout itself: about 15x the worst measured loaded cost, and spent only by a read that hangs.
+The two cases whose assertion is a bound set it short themselves.
+The timed-out home moved out of `test_bad_secondmate_homes_never_revive_parent_work` into `test_timed_out_secondmate_home_stays_explicit_unknown`, alone in its snapshot, because the bound is one number for every home and a 1s bound judged the malformed home by machine speed too.
+Its read hangs 30s against 1s, so load only makes the cut more certain.
+`test_perl_fallback_bounds_github_call` dropped its `elapsed < 10` ceiling for the PR #124 pattern: a marker the stalled `gh` leaves only after 60s, and a `perl` shim recording the bound each call is handed.
+Breaking it on purpose found that the case had never stalled a call: its tool directory lacked `env`, which the bounded call execs first, so `gh` never started and the case passed even with the bound removed; `env` is now in that directory.
+
+Each property was checked by breaking it in the source, under 4 busy loops: a home bound hard-coded to 120s, a `gh` bound of 10s, an unbounded `gh` call, a perl alarm that never fires, a `failed` child no longer terminal, the per-home child cap ignored, and an unstructured row no longer invalidating each turned its case red.
+
+Verified after the fix: the five affected cases, 6 rounds under 4 busy loops at load average 32-95 (load shared with other workers), 30 runs, 30 passed; the whole suite at load average 37, 61 passed.
+
 ## The class, so the next one is recognized instead of re-diagnosed
 
 The entries above are one family - a temporal race that gets worse exactly when CI runs shards in parallel, which is when it matters most - and each one yields a rule worth more than the single case that paid for it.
@@ -147,8 +176,9 @@ The entries above are one family - a temporal race that gets worse exactly when 
    Count a bounded call where it is handed its bound, before the clock starts, never from inside the process the bound exists to cut.
 - The choice between an iteration-counted bound and a wall-clock one is owned by [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development), in the sentence beginning "Where a case's assertion is not about the timeout itself", which now carries both halves of it.
    An assertion that is genuinely about a timeout still measures the machine as well as the code, so state its margin and re-measure it under load rather than trusting it: shrinking headroom is the warning, and a bound raised to turn a red green is not a fix, it hides the race and buys the same failure back on a busier day.
+- A bound shared by several reads judges every one of them, so the case that asserts on it runs alone under it and every other case gets headroom over the measured loaded cost.
 
-Neither fix on this page made its case pass by widening a bound, and that is the point of recording them together.
+No fix on this page made a case pass by widening a bound that case asserts on, and that is the point of recording them together; the bearings entry widened only bounds its cases never assert on.
 Case A's bound was replaced rather than simply raised or lowered, and the comparison is now measured: 4000 iterations cost 20.9-28.6 s on an idle 8-core machine and 40.1-42.2 s under moderate load, against a flat 30 s cap, so the change tightened the bound under load and loosened it when idle.
 
 That rule was already in writing before either of today's failures, and neither of the two tickets that hit them cited it.
@@ -166,6 +196,7 @@ Run the owning suite through the repo's runner, under load, from a worktree, wit
 ```
 bin/fm-test-run.sh tests/fm-watcher-lock.test.sh
 bin/fm-test-run.sh tests/fm-crew-state.test.sh
+bin/fm-test-run.sh tests/fm-bearings-snapshot.test.sh
 ```
 
 A single case is isolated by keeping the suite's definitions, dropping its invocation list, and calling the one case - the suites run every case from a flat list at the end of the file, so truncating above that list and appending the wanted name runs it alone:
