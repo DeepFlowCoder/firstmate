@@ -1050,6 +1050,44 @@ test_ship_and_scout_briefs_carry_the_same_stash_warning() {
   pass "fm-brief.sh: ship and scout briefs carry one identical stash warning"
 }
 
+# The commonest wait in this fleet is a worker idle on a background job it
+# started itself, and nothing supervision reads can see one, so an undeclared
+# one reports as a possible wedge. Measured 2026-09-23: three healthy workers in
+# one night, after the brief had listed only external waits and called the
+# declaration a courtesy supervision could do without.
+test_ship_and_scout_briefs_name_the_own_background_job_wait() {
+  local home brief kind
+  home="$TMP_ROOT/background-wait-home"
+  write_registry "$home"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-bgwait-ship ship-proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold exited non-zero"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" brief-bgwait-scout ship-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+
+  for kind in brief-bgwait-ship brief-bgwait-scout; do
+    brief="$home/data/$kind/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep 'known wait you expect to clear on its own (a background job you started yourself' "$brief" \
+      "$kind: status rule does not list the worker's own background job as a wait to declare"
+    assert_grep 'something outside your turn - a background job you started yourself' "$brief" \
+      "$kind: wait rule does not name the worker's own background job"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'Before you stop, declare the wait: append `paused: {what you are waiting on}`.' "$brief" \
+      "$kind: wait rule does not require declaring the wait"
+    assert_grep 'without the declaration your wait reports as a possible wedge' "$brief" \
+      "$kind: wait rule does not say what an undeclared wait costs"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'A wait you already declared with `needs-decision`, `blocked`, or a handoff `working:`' "$brief" \
+      "$kind: wait rule asks for paused on top of a wait already declared another way"
+    assert_no_grep 'courtesy, not the mechanism' "$brief" \
+      "$kind: wait rule still calls the declaration a courtesy"
+    assert_no_grep 'supervision does not need your' "$brief" \
+      "$kind: wait rule still claims supervision tells a wait from a wedge without the declaration"
+  done
+  pass "fm-brief.sh: ship and scout briefs name the own-background-job wait and require declaring it"
+}
+
 # A worker that reads the captain's real keychain can block on a system password
 # dialog for hours while supervision still reads it as working, and killing the
 # process does not dismiss the dialog. The prohibition therefore has to travel in
@@ -1248,5 +1286,6 @@ test_briefs_teach_a_key_position_the_classifier_reads
 test_brief_self_close_template_closes_a_blocker_the_same_brief_opens
 test_crewmate_briefs_route_captain_questions_through_the_status_log
 test_ship_and_scout_briefs_carry_the_same_stash_warning
+test_ship_and_scout_briefs_name_the_own_background_job_wait
 test_crewmate_briefs_forbid_reading_the_real_credential_store
 test_scout_and_secondmate_scaffold

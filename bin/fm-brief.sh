@@ -47,8 +47,8 @@
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
-# "blocked:": pause for a known external wait expected to clear on its own,
-# blocked when firstmate must act.
+# "blocked:": pause for a known wait expected to clear on its own, including a
+# background job the worker started itself, blocked when firstmate must act.
 # Every scaffold teaches exactly ONE position for a decision key - the one
 # bin/fm-classify-lib.sh actually reads - rendered from the shared
 # KEY_POSITION_RULE below, which owns why that position and no other.
@@ -231,13 +231,17 @@ INBOX_SECTION=${INBOX_SECTION%$'\n'}
 # know invents one, and a polling loop is the shape that invents itself: measured
 # 2026-09-13, a worker spent 17 minutes and ~28,800 tokens re-running an empty
 # command while its own work sat finished and its pipeline advanced on its own.
-# Supervision no longer depends on the declaration this rule mentions
-# (bin/fm-wait-evidence-lib.sh), which is exactly why the rule can present it as
-# a courtesy rather than leaning on a worker to remember it.
+# The declaration it asks for is not optional. bin/fm-wait-evidence-lib.sh reads
+# a captain hold and a command set that keeps moving, but nothing there can see a
+# worker gone idle on a background job it started itself, which is this fleet's
+# most common wait: measured 2026-09-23, three healthy workers in one night read
+# as possible wedges, each costing firstmate a manual inspection, after this rule
+# had called the declaration a courtesy supervision could do without.
 IFS= read -r -d '' WAIT_RULE <<EOF || true
 8. Waiting is something you DO, not something you run. When your next step depends on
-   something outside you - a pipeline gate, a check run, a release, a rate-limit reset,
-   an answer from firstmate - end your turn and stay still. The wake comes to you:
+   something outside your turn - a background job you started yourself and are waiting
+   to finish, a pipeline gate, a check run, a release, a rate-limit reset, an answer
+   from firstmate - end your turn and stay still. The wake comes to you:
    firstmate steers you through the instruction inbox below, and supervision is already
    watching this endpoint. Never write a polling loop, a sleep-and-retry loop, or a
    repeated command to pass the time. It burns your context for nothing, and a pane that
@@ -245,9 +249,12 @@ IFS= read -r -d '' WAIT_RULE <<EOF || true
    also spends the attention that exists to catch a worker who is genuinely stuck.
    If something truly must be checked before you can continue, take ONE concrete reading,
    act on what it says, and stop again - never a second one just in case.
-   Declaring \`$PAUSED_VERB: {why}\` before you stop makes firstmate's report of you more
-   accurate, and it is a courtesy, not the mechanism: supervision does not need your
-   declaration to tell a wait from a wedge.
+   Before you stop, declare the wait: append \`$PAUSED_VERB: {what you are waiting on}\`.
+   Supervision cannot see what an idle pane is waiting on, least of all a background job
+   you started yourself: without the declaration your wait reports as a possible wedge,
+   and firstmate spends a manual inspection of your pane to learn you were fine.
+   A wait you already declared with \`needs-decision\`, \`blocked\`, or a handoff \`working:\`
+   line that Definition of done declares needs no \`$PAUSED_VERB\` line on top of it.
 EOF
 WAIT_RULE=${WAIT_RULE%$'\n'}
 
@@ -493,7 +500,8 @@ $STASH_SECTION
    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
    FYI progress lines; firstmate reads your pane for that.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
+   known wait you expect to clear on its own (a background job you started yourself, an
+   upstream release, a rate-limit reset):
    firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
@@ -636,8 +644,9 @@ $RULE1
    this brief cannot name it and you cannot proceed alone; firstmate, which chose the harness,
    sends it.
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
-   known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
-   a scheduled window, a blocking pipeline gate call you are waiting to return): firstmate then
+   known wait you expect to clear on its own (a background job you started yourself, an
+   upstream release, a rate-limit reset, a scheduled window, a blocking pipeline gate call
+   you are waiting to return): firstmate then
    leaves your idle pane alone and rechecks it on a long cadence instead of treating it as a
    possible wedge. Use \`blocked:\` when you are stuck and need help.
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
