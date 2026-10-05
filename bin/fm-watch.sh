@@ -1384,7 +1384,20 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 
 clear_pause_state() {  # <window-key>
   local key=$1
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key" \
+    "$STATE/.paused-surfaced-$key"
+}
+
+# declaration_already_surfaced: 0 iff surface_nonterminal_stale already surfaced
+# this exact declared wait for this window, read as the status log's observed
+# signature it recorded in .paused-surfaced-<key>. Any later append changes the
+# signature, so a lifted or re-declared wait never matches; an unreadable log or
+# an absent record reads as not surfaced, which surfaces rather than absorbs.
+declaration_already_surfaced() {  # <window-key> <task>
+  local key=$1 task=$2 recorded current
+  recorded=$(cat "$STATE/.paused-surfaced-$key" 2>/dev/null) || return 1
+  current=$(fm_wake_signal_sig "$STATE/$task.status" 2>/dev/null) || return 1
+  [ -n "$current" ] && [ "$recorded" = "$current" ]
 }
 
 clear_pause_tracking() {  # <window-key>
@@ -1448,8 +1461,9 @@ absorb_class_for_stale() {  # <window> <task>
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
 # After fm-crew-state has fallen back to stopped or unknown, paused classification is
-# recovered in exactly three cases: a confidently dead ordinary crew; a secondmate,
-# whose endpoint liveness this function deliberately never reads; or a VERIFIED
+# recovered in exactly four cases: a confidently dead ordinary crew; a live ordinary
+# crew whose unchanged declaration was already surfaced once; a secondmate, whose
+# endpoint liveness this function deliberately never reads; or a VERIFIED
 # captain-held transfer, which skips both liveness gates because the hold is already
 # tracked off the pane. A worker-declared `paused:` never skips them.
 #
@@ -1462,7 +1476,7 @@ absorb_class_for_stale() {  # <window> <task>
 # time, so it CORROBORATES a declared wait rather than outranking it (see the
 # working branch below).
 pause_state_class() {  # <window> <task>
-  local win=$1 task=$2 key last recheck_file class agent_alive kind held=0
+  local win=$1 task=$2 key last recheck_file class agent_alive kind held=0 surfaced
   key=$(window_key "$win")
   last=$(last_status_line "$STATE/$task.status")
   recheck_file="$STATE/.paused-rechecked-$key"
@@ -1499,7 +1513,7 @@ pause_state_class() {  # <window> <task>
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
     if [ "$kind" != secondmate ] && [ "$held" -ne 1 ]; then
       agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-      if [ "$agent_alive" != dead ]; then
+      if [ "$agent_alive" != dead ] && ! declaration_already_surfaced "$key" "$task"; then
         rm -f "$recheck_file"
         printf 'none'
         return
@@ -1570,20 +1584,34 @@ pause_state_class() {  # <window> <task>
   fi
   if [ "$kind" != secondmate ] && [ "$held" -ne 1 ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-    if [ "$agent_alive" != dead ]; then
+    # A live agent under a worker-declared pause surfaces, because the free-text
+    # declaration can hide a live decision gate - but once per DECLARATION, not once
+    # per pane hash. An idle live agent's pane redraws on its own, and each redraw
+    # used to re-enter the first sighting and surface the same unchanged wait again
+    # (measured 2026-09-12: bare stale wakes every ~7-20 minutes under a 3600s
+    # window). After surface_nonterminal_stale has surfaced this exact declaration,
+    # an authoritative read that still names nothing new - `paused` from the log
+    # itself, or `none` - takes the bounded cadence. `parked` and `done` say a human
+    # now holds the next step, which IS new, so they keep surfacing.
+    surfaced=0
+    case "$class" in
+      paused|none) declaration_already_surfaced "$key" "$task" && surfaced=1 ;;
+    esac
+    if [ "$agent_alive" != dead ] && [ "$surfaced" -ne 1 ]; then
       rm -f "$recheck_file"
       printf 'none'
       return
     fi
   fi
   # Recover paused classification for a declared wait that authoritative crew state
-  # could not name. Reaching here already proves the only three admissible cases: an
+  # could not name. Reaching here already proves the only four admissible cases: an
   # ordinary crew whose agent the gate above confirmed dead, so no live decision gate
-  # is being silenced; a secondmate, whose endpoint liveness is deliberately never
-  # read and so cannot supply that confirmation; or a verified captain-held transfer,
-  # whose hold bin/fm-captain-hold.sh recorded in the backlog before writing the verb,
-  # so the decision is tracked off the pane and needs no liveness corroboration at
-  # all. Without the mate case a mate's
+  # is being silenced; an ordinary crew whose live agent's unchanged declaration was
+  # already surfaced once, per the gate above; a secondmate, whose endpoint liveness
+  # is deliberately never read and so cannot supply that confirmation; or a verified
+  # captain-held transfer, whose hold bin/fm-captain-hold.sh recorded in the backlog
+  # before writing the verb, so the decision is tracked off the pane and needs no
+  # liveness corroboration at all. Without the mate case a mate's
   # captain hold - which has no current-state mapping and so arrives as `none` -
   # would be silenced by every caller rather than taking the bounded re-surface
   # cadence, and a forgotten hold would rot invisibly.
@@ -1616,8 +1644,10 @@ surface_nonterminal_stale() {  # <window> <hash>
     : > "$STATE/.paused-$key"
     date +%s > "$STATE/.paused-rechecked-$key"
     date +%s > "$STATE/.paused-resurfaced-$key"
+    fm_wake_signal_sig "$STATE/$task.status" > "$STATE/.paused-surfaced-$key" 2>/dev/null \
+      || rm -f "$STATE/.paused-surfaced-$key"
   else
-    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+    clear_pause_state "$key"
   fi
   wake "stale: $win"
 }

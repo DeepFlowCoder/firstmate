@@ -2115,6 +2115,116 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate still surfaces once"
 }
 
+# --- a live worker's declared pause surfaces once per DECLARATION, not per redraw --
+# The live 2026-09-12 case: two workers, each with an unchanged `paused:` line and
+# a live agent, were absorbed as declared pauses on their unchanged panes and yet
+# woke firstmate with bare `stale:` wakes at ~7m30s and ~15-20min, far inside their
+# 3600s window. The pane of an idle live agent redraws on its own, and every new
+# hash used to re-enter the first sighting and surface the same declaration again.
+# Both authoritative reads measured that evening are driven: the status log's own
+# `paused` and a phantom `failed` run step, which classifies as `none`.
+#
+# Phase A pins what must NOT change: the first sight of a live agent under a
+# worker-declared pause still surfaces once, so a `paused:` line cannot hide a live
+# decision gate. Phase B is the regression: one continuous watcher, four redraws,
+# no wake. Phase C is the falsifier's other half: the moment the declaration is
+# lifted the pane is back on ordinary detection and surfaces on its first sight.
+# Phase D: a NEW declaration is new information and surfaces once again.
+test_live_declared_pause_surfaces_once_per_declaration() {
+  local dir state fakebin out capture_file statusf window key sig pid crew round wakes
+  for crew in 'state: paused · source: status-log · waiting on the background measurement' \
+              'state: failed · source: run-step · run failed'; do
+    dir=$(make_case "live-declared-pause-$(printf '%s' "$crew" | cut -c8-13)"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/wait.status"
+    window="test:fm-wait"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/wait.meta"
+    printf 'paused: waiting on the background measurement, about two hours\n' > "$statusf"
+    sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-wait_status"
+    printf 'idle prompt (redraw 0)\n' > "$capture_file"
+    printf '%s' "$(hash_text "idle prompt (redraw 0)")" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+
+    # Phase A: first sight of the declaration surfaces once, plainly.
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$crew" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 \
+      FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    wait_for_exit "$pid" 100 || fail "[$crew] first sight of a live declared pause did not surface"
+    grep -Fx "stale: $window" "$out" >/dev/null || fail "[$crew] first sight did not surface a plain stale wake: $(cat "$out")"
+    ack_stopped_cycle "$state" || fail "[$crew] could not acknowledge the first-sight surface"
+
+    # Phase B: one continuous watcher, four redraws of the same idle pane, same
+    # declaration. None may wake firstmate: a wake exits the watcher.
+    : > "$out"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$crew" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 \
+      FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    round=1
+    while [ "$round" -le 4 ]; do
+      printf 'idle prompt (redraw %s)\n' "$round" > "$capture_file"
+      for _ in 1 2 3; do
+        wait_poll_cycle "$state" "$pid" \
+          || fail "[$crew] unchanged declared pause re-surfaced on redraw $round: $(cat "$out")"
+      done
+      round=$((round + 1))
+    done
+    reap "$pid"
+    wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+    [ "$wakes" -eq 0 ] || fail "[$crew] unchanged declared pause queued $wakes stale wakes across four redraws"
+    [ -e "$state/.paused-$key" ] || fail "[$crew] redraws dropped the declared pause off its bounded cadence"
+    [ ! -e "$state/.stale-since-$key" ] || fail "[$crew] redraws started the wedge timer under a declared pause"
+    # The reap above is watcher downtime, which the next arm announces before its
+    # stale scan; consume that recovery wake so phase C reads the stale verdict.
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$crew" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 \
+      FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    wait_for_exit "$pid" 100 || fail "[$crew] the re-arm after downtime did not announce its recovery"
+    grep -Fx 'check: rearm-resurface' "$out" >/dev/null || fail "[$crew] the re-arm after downtime woke on something else: $(cat "$out")"
+    ack_stopped_cycle "$state" || fail "[$crew] could not acknowledge the downtime recovery"
+
+    # Phase C: the worker lifts the declaration. Ordinary detection is back at once:
+    # the very next stale sighting surfaces, with no pause wording.
+    printf 'working: measurement landed, reading the results\n' >> "$statusf"
+    sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-wait_status"
+    printf 'idle prompt (after lift)\n' > "$capture_file"
+    printf '%s' "$(hash_text "idle prompt (after lift)")" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    : > "$out"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: working · source: status-log · reading the results' \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 \
+      FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    wait_for_exit "$pid" 100 || fail "[$crew] a lifted declaration did not return to ordinary stale detection"
+    grep -Fx "stale: $window" "$out" >/dev/null || fail "[$crew] lifted declaration did not surface plainly: $(cat "$out")"
+    [ ! -e "$state/.paused-$key" ] || fail "[$crew] lifted declaration kept its pause marker"
+    ack_stopped_cycle "$state" || fail "[$crew] could not acknowledge the lifted-declaration surface"
+
+    # Phase D: a fresh declaration is new information, so its first sight surfaces.
+    printf 'paused: waiting on the second background measurement\n' >> "$statusf"
+    sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-wait_status"
+    printf 'idle prompt (second wait)\n' > "$capture_file"
+    printf '%s' "$(hash_text "idle prompt (second wait)")" > "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    : > "$out"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$crew" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 \
+      FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    wait_for_exit "$pid" 100 || fail "[$crew] a new declaration's first sight did not surface"
+    grep -Fx "stale: $window" "$out" >/dev/null || fail "[$crew] new declaration did not surface plainly: $(cat "$out")"
+    ack_stopped_cycle "$state" || fail "[$crew] could not acknowledge the new-declaration surface"
+  done
+  pass "a live worker's declared pause surfaces once per declaration, not once per pane redraw, and a lifted one is detected at once"
+}
+
 # --- captain-held work whose liveness read is INCONCLUSIVE -------------------
 # The live 2026-08-18 case: a delivered task parked on a captain hold, whose
 # agent had already exited, woke firstmate as a fresh `stale:` roughly once a
@@ -4548,6 +4658,7 @@ test_afk_busy_declared_pause_ticking_pane_hands_off_once
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
+test_live_declared_pause_surfaces_once_per_declaration
 test_captain_held_absorbs_without_a_confident_death
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_captain_held_resurfaces_in_normal_mode
