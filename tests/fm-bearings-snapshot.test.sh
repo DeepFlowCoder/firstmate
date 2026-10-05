@@ -18,6 +18,25 @@ FM_ROOT_OVERRIDE="$TMP_ROOT/fixture-root"
 mkdir -p "$FM_ROOT_OVERRIDE"
 export FM_ROOT_OVERRIDE
 
+# Every cross-home and per-task read the snapshot makes runs under a wall-clock
+# bound, and a read cut by one is folded to `unknown`. Almost no case here is
+# about those bounds: each asserts what the snapshot concludes from a home, and
+# under the production defaults a loaded runner cut a 3-child home's read at its
+# 8s bound and failed the case on a home it never read. So the suite gives every
+# bound headroom over the measured loaded cost (CONTRIBUTING.md, Development),
+# and the cases whose assertion IS a bound set it short themselves, alone in
+# their snapshot. A bound is spent in full only by a read that hangs, so the
+# headroom costs a passing run nothing. docs/verification/test-flakiness.md
+# records the measured cost and the margin.
+FM_TEST_READ_BOUND=120
+export FM_SNAPSHOT_SECONDMATE_TIMEOUT=$FM_TEST_READ_BOUND
+export FM_SNAPSHOT_CREW_STATE_TIMEOUT=$FM_TEST_READ_BOUND
+export FM_CREW_STATE_NM_TIMEOUT=$FM_TEST_READ_BOUND
+export FM_SNAPSHOT_TERMINAL_TIMEOUT=$FM_TEST_READ_BOUND
+export FM_SNAPSHOT_PARENT_ACTIVITY_TIMEOUT=$FM_TEST_READ_BOUND
+export FM_SNAPSHOT_REGISTRY_TIMEOUT=$FM_TEST_READ_BOUND
+export FM_BEARINGS_PR_TIMEOUT=$FM_TEST_READ_BOUND
+
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
 # A fakebin that stubs the local tools the canonical snapshot may reach for, plus a
@@ -48,7 +67,10 @@ SH
 #!/usr/bin/env bash
 echo "gh $*" >> "$NET_LOG"
 if [ "${FAKE_GH_FAIL:-0}" = 1 ]; then exit 1; fi
-if [ "${FAKE_GH_SLEEP:-0}" = 1 ]; then sleep 30; fi
+if [ "${FAKE_GH_SLEEP:-0}" = 1 ]; then
+  sleep 60
+  [ -z "${FAKE_GH_FINISHED:-}" ] || printf 'finished\n' >> "$FAKE_GH_FINISHED"
+fi
 if [ -n "${FAKE_GH_ROLLUP:-}" ]; then
   cat <<JSON
 [{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":$FAKE_GH_ROLLUP}]
@@ -445,14 +467,13 @@ write_parent_secondmate_event() {  # <parent> <id> <home> <note>
 }
 
 test_bad_secondmate_homes_never_revive_parent_work() {
-  local home fakebin missing invalid unreadable malformed timedout wt json
+  local home fakebin missing invalid unreadable malformed json
   home=$(make_home bad-homes)
   : > "$home/data/secondmates.md"
   missing="$TMP_ROOT/missing-home"
   invalid="$TMP_ROOT/invalid-home"
   unreadable="$TMP_ROOT/unreadable-home"
   malformed="$TMP_ROOT/malformed-home"
-  timedout="$TMP_ROOT/timedout-home"
 
   append_secondmate_registry "$home" missing "$missing"
 
@@ -471,6 +492,36 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   append_secondmate_registry "$home" malformed "$malformed"
   write_parent_secondmate_event "$home" malformed "$malformed" "old malformed work"
 
+  fakebin=$(make_fakebin "$home")
+  json=$(run "$home" "$fakebin" --json)
+  chmod 700 "$unreadable/data"
+  printf '%s' "$json" | jq -e '
+    (.secondmates | length) == 4
+      and all(.secondmates[]; .state == "unknown")
+      and (.in_flight | map(.id) | all(. != "invalid" and . != "unreadable" and . != "malformed"))
+      and (.secondmates | any(.[]; .id == "missing" and .provenance == "unknown"
+        and .freshness == "unknown" and (.reason | contains("invalid home"))))
+      and ([.secondmates[] | select(.id != "missing")]
+        | all(.provenance == "parent-event-fallback" and .freshness == "historical-event"))
+      and (.secondmates | any(.[]; .id == "invalid" and (.reason | contains("marked for"))))
+      and (.secondmates | any(.[]; .id == "unreadable" and (.reason | test("invalid home|unreadable"))))
+      and (.secondmates | any(.[]; .id == "malformed" and (.reason | contains("unstructured current backlog row"))))
+      and ([.secondmate_reconcile[].id] == ["malformed"])
+      and (.secondmate_reconcile[0].kind == "unstructured_current")
+  ' >/dev/null || fail "bad home outcomes revived stale work or lacked provenance: $json"
+  pass "missing, invalid, unreadable, and malformed homes stay explicit unknowns"
+}
+
+# The one case here whose assertion IS the cross-home bound, so it alone sets
+# that bound short, and alone in its snapshot: the bound is one number for every
+# home, and any other home read under it would be judged by how fast the machine
+# reads it. The home's read hangs 30s on its child's no-mistakes call against a
+# 1s bound, so a slower machine only makes the cut more certain, never less.
+test_timed_out_secondmate_home_stays_explicit_unknown() {
+  local home fakebin timedout wt json
+  home=$(make_home timed-out-home)
+  : > "$home/data/secondmates.md"
+  timedout="$TMP_ROOT/timedout-home"
   make_valid_secondmate_home timedout "$timedout"
   wt="$timedout/projects/slow"
   fm_git_init_commit "$wt"
@@ -484,23 +535,14 @@ test_bad_secondmate_homes_never_revive_parent_work() {
 
   fakebin=$(make_fakebin "$home")
   json=$(FAKE_NM_SLEEP=1 FM_SNAPSHOT_SECONDMATE_TIMEOUT=1 run "$home" "$fakebin" --json)
-  chmod 700 "$unreadable/data"
   printf '%s' "$json" | jq -e '
-    (.secondmates | length) == 5
-      and all(.secondmates[]; .state == "unknown")
-      and (.in_flight | map(.id) | all(. != "invalid" and . != "unreadable" and . != "malformed" and . != "timedout"))
-      and (.secondmates | any(.[]; .id == "missing" and .provenance == "unknown"
-        and .freshness == "unknown" and (.reason | contains("invalid home"))))
-      and ([.secondmates[] | select(.id != "missing")]
-        | all(.provenance == "parent-event-fallback" and .freshness == "historical-event"))
-      and (.secondmates | any(.[]; .id == "invalid" and (.reason | contains("marked for"))))
-      and (.secondmates | any(.[]; .id == "unreadable" and (.reason | test("invalid home|unreadable"))))
-      and (.secondmates | any(.[]; .id == "malformed" and (.reason | contains("unstructured current backlog row"))))
-      and (.secondmates | any(.[]; .id == "timedout" and (.reason | contains("timed out"))))
-      and ([.secondmate_reconcile[].id] == ["malformed"])
-      and (.secondmate_reconcile[0].kind == "unstructured_current")
-  ' >/dev/null || fail "bad home outcomes revived stale work or lacked provenance: $json"
-  pass "missing, invalid, unreadable, malformed, and timed-out homes stay explicit unknowns"
+    (.secondmates | length) == 1
+      and (.in_flight | map(.id) | all(. != "timedout"))
+      and (.secondmates[0] | .id == "timedout" and .state == "unknown"
+        and (.reason | contains("timed out"))
+        and .provenance == "parent-event-fallback" and .freshness == "historical-event")
+  ' >/dev/null || fail "timed-out home revived stale work or lacked provenance: $json"
+  pass "a home whose read outlives the cross-home bound stays an explicit unknown"
 }
 
 test_oversized_secondmate_summary_stays_strict_unknown() {
@@ -1595,19 +1637,40 @@ test_partial_github_failure_degrades() {
 }
 
 test_perl_fallback_bounds_github_call() {
-  local home fakebin toolbin cmd json started elapsed
+  local home fakebin toolbin cmd json finished perl_calls gh_bounds real_perl
   home=$(make_home perl-timeout); write_fixture "$home"
   fakebin=$(make_fakebin "$home")
   toolbin="$home/toolbin"
   mkdir -p "$toolbin"
-  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc perl sleep cat find; do
+  # env is what the bounded gh call execs first: without it the call fails before
+  # gh starts, so the case would pass without ever stalling a call.
+  for cmd in bash dirname basename jq date sed git grep tail cut tr head sort wc sleep cat find env; do
     ln -s "$(command -v "$cmd")" "$toolbin/$cmd"
   done
-  started=$(date +%s)
+  # Whether the bound held is read off markers rather than off the clock, because
+  # a wall-clock ceiling on the whole read measures the machine as well as the
+  # bound. The stalled gh leaves a marker only if it runs its full 60s, which a
+  # bound that never fires lets it do on any machine. The bound each gh call is
+  # handed is recorded by this perl shim before the real perl starts its alarm,
+  # so the case still proves the configured 1s reached the call, which is what
+  # the old ceiling stood for, without asking how fast the machine got there.
+  finished="$home/gh.finished"
+  perl_calls="$home/perl.calls"
+  : > "$perl_calls"
+  real_perl=$(command -v perl) || fail "no perl on PATH for the perl arm"
+  cat > "$toolbin/perl" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = "-e" ]; then printf '%s\n' "\${*:3}" >> "$perl_calls"; fi
+exec $real_perl "\$@"
+SH
+  chmod +x "$toolbin/perl"
   json=$(PATH="$fakebin:$toolbin" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
-    FM_BEARINGS_PR_TIMEOUT=1 NET_LOG="$home/net.log" FAKE_GH_SLEEP=1 "$BEARINGS" --include-prs --json)
-  elapsed=$(( $(date +%s) - started ))
-  [ "$elapsed" -lt 10 ] || fail "Perl fallback did not bound a stalled gh call (${elapsed}s)"
+    FM_BEARINGS_PR_TIMEOUT=1 NET_LOG="$home/net.log" FAKE_GH_SLEEP=1 FAKE_GH_FINISHED="$finished" \
+    "$BEARINGS" --include-prs --json)
+  [ ! -e "$finished" ] || fail "Perl fallback did not bound a stalled gh call: it ran to completion"
+  gh_bounds=$(grep -E '^[0-9]+ env .* gh ' "$perl_calls" | cut -d' ' -f1 | sort -u || true)
+  [ "$gh_bounds" = 1 ] \
+    || fail "stalled gh calls were not handed the configured 1s perl bound (bounds: $(printf '%s' "$gh_bounds" | tr '\n' ' '))"
   printf '%s' "$json" | jq -e '.prs | test("unavailable")' >/dev/null \
     || fail "timed-out gh call did not fail soft: $json"
   pass "Perl fallback bounds stalled GitHub calls without coreutils timeout"
@@ -2823,6 +2886,7 @@ test_parent_activity_evidence_is_bounded_and_disclosed
 test_active_child_overrides_old_parent_event
 test_structured_child_decision_reaches_captains_call
 test_bad_secondmate_homes_never_revive_parent_work
+test_timed_out_secondmate_home_stays_explicit_unknown
 test_oversized_secondmate_summary_stays_strict_unknown
 test_secondmate_and_child_bounds_are_disclosed
 test_parent_decision_is_untrusted_contradiction_only
