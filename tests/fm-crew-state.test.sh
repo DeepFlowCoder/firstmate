@@ -260,10 +260,11 @@ reset_fakes() {
   FM_FAKE_NM_CALLS=""
   FM_FAKE_GH_PR_STATE=""
   FM_FAKE_GH_CALLS=""
-  # Only the budget case installs the `timeout` and `date` stubs these drive, so
+  # Only the budget cases install the `timeout` and `date` stubs these drive, so
   # every other case leaves them empty and reaches the real binaries.
   FM_FAKE_TIMEOUT_CALLS=""
   FM_FAKE_CLOCK_TICKS=""
+  FM_FAKE_CLOCK=""
   # The forge read is opt-in, so it is OFF for every case that does not name it -
   # which is what makes a case that forgets to name it read as the default,
   # local-only path rather than silently reaching a stub.
@@ -272,7 +273,7 @@ reset_fakes() {
   export FM_FAKE_TMUX_AGENT FM_FAKE_TMUX_WINDOW
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_NM_CALLS
   export FM_FAKE_GH_PR_STATE FM_FAKE_GH_CALLS FM_CREW_STATE_RESOLVE_PR
-  export FM_FAKE_TIMEOUT_CALLS FM_FAKE_CLOCK_TICKS
+  export FM_FAKE_TIMEOUT_CALLS FM_FAKE_CLOCK_TICKS FM_FAKE_CLOCK
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -1984,16 +1985,28 @@ test_dead_window_still_reports_active_run_step() {
 
 test_no_timeout_uses_perl_bound() {
   reset_fakes
-  local d toolbin out start elapsed calls_file calls real_date
+  local d toolbin out finished perl_calls bounded real_date real_perl real_sleep
   d=$(new_case no-timeout)
   make_repo_on_branch "$d/wt" fm/feat-timeout
   make_fakebin "$d" >/dev/null
-  calls_file="$d/no-mistakes.calls"
-  : > "$calls_file"
-  cat > "$d/fakebin/no-mistakes" <<'SH'
+  finished="$d/no-mistakes.finished"
+  perl_calls="$d/perl.calls"
+  : > "$perl_calls"
+  # A call that would outlive any bound this case hands it, and says so if it
+  # ever gets to finish. Whether the bound held is read off that marker rather
+  # than off the clock: a wall-clock ceiling on the read measures the machine as
+  # well as the code, and on a loaded runner it fails a bound that held. The
+  # sleep is only the margin: a bound that never fires leaves the marker on any
+  # machine, and a bound that holds would have to stall for a whole minute to be
+  # mistaken for one that did not. The fake records nothing else, because on a
+  # loaded runner the one-second bound can kill it before its first line runs:
+  # the calls are counted where the bound is handed out instead, below.
+  # The read runs on a PATH without sleep, so the fake names the real one.
+  real_sleep=$(command -v sleep) || fail "no sleep on PATH for the hung call"
+  cat > "$d/fakebin/no-mistakes" <<SH
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "${FM_FAKE_NM_CALLS:-/dev/null}"
-while :; do :; done
+$real_sleep 60
+printf 'finished\n' >> "$finished"
 SH
   chmod +x "$d/fakebin/no-mistakes"
   # The read's budget is counted in whole `date +%s` seconds, so the one-second
@@ -2003,7 +2016,6 @@ SH
   # leaves every assertion below trivially true on a loaded runner. Pin that one
   # reading - only `+%s`, every other use of date stays real - so the bound this
   # case hands the perl arm is the bound it gets, whatever the machine is doing.
-  # Elapsed time is still measured on the real clock, in this shell.
   real_date=$(command -v date) || fail "no date on PATH to pin the read's budget"
   cat > "$d/fakebin/date" <<SH
 #!/usr/bin/env bash
@@ -2012,20 +2024,33 @@ exec $real_date "\$@"
 SH
   chmod +x "$d/fakebin/date"
   toolbin=$(make_no_timeout_toolbin "$d")
+  # Records the seconds and command every `perl -e` bound is handed, then runs
+  # the real perl, so the bound is both observed at the boundary the bounded call
+  # crosses and still really enforced. The record is written before perl starts
+  # its alarm, so no bound, however short, can kill a call before it is counted.
+  real_perl=$(command -v perl) || fail "no perl on PATH for the perl arm"
+  rm -f "$toolbin/perl"
+  cat > "$toolbin/perl" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = "-e" ]; then printf '%s\n' "\${*:3}" >> "$perl_calls"; fi
+exec $real_perl "\$@"
+SH
+  chmod +x "$toolbin/perl"
   fm_write_meta "$d/state/feat-timeout.meta" "window=fm:fm-feat-timeout" "worktree=$d/wt" "kind=ship" \
     "harness=claude"
   FM_FAKE_BUSY=1
   local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-timeout)
   "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-timeout busy --gen "$gen" \
     --source claude-hook --event user-prompt-submit
-  start=$SECONDS
-  out=$(FM_FAKE_NM_CALLS="$calls_file" PATH="$d/fakebin:$toolbin" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_NM_TIMEOUT=1 "$CREW_STATE" feat-timeout)
-  elapsed=$((SECONDS - start))
+  out=$(PATH="$d/fakebin:$toolbin" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_NM_TIMEOUT=1 "$CREW_STATE" feat-timeout)
   assert_contains "$out" "state: working" "timed-out no-mistakes falls back to pane"
   assert_contains "$out" "source: pane" "timed-out no-mistakes -> pane source"
-  [ "$elapsed" -lt 5 ] || fail "perl timeout did not bound no-mistakes calls (elapsed ${elapsed}s)"
-  calls=$(awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null || echo 0)
-  [ "$calls" -eq 1 ] || fail "empty no-mistakes status triggered extra lookups ($calls calls)"
+  [ ! -e "$finished" ] \
+    || fail "perl timeout did not bound no-mistakes calls: the hung call ran to completion"
+  bounded=$(grep -F ' no-mistakes ' "$perl_calls" || true)
+  [ -n "$bounded" ] || fail "no no-mistakes call went through the perl bound"
+  [ "$bounded" = "1 no-mistakes axi status" ] \
+    || fail "empty no-mistakes status triggered extra lookups, or axi status was not handed the read's one-second budget (perl-bounded calls: $(printf '%s' "$bounded" | tr '\n' ';'))"
   pass "no timeout command uses perl bound"
 }
 
@@ -3984,55 +4009,95 @@ EOF
   pass "an unnameable successor lets the blocker answer"
 }
 
-# FM_CREW_STATE_NM_TIMEOUT bounds the WHOLE read, and what that buys is measured
-# HERE the way a caller experiences it: the read is run under the same bound its
-# callers apply - bin/fm-fleet-snapshot.sh and bin/fm-inactive-reconcile.sh both
-# wrap it in exactly this - and it has to come back with its own reasoned answer
-# instead of being killed and folded into a bare, reasonless `unknown` from
-# outside. That is the property, and it is a yes-or-no fact about the read's
-# output rather than a number of seconds, so nothing here depends on how loaded
-# the runner is.
+# FM_CREW_STATE_NM_TIMEOUT bounds the WHOLE read, and what that buys is that the
+# read comes back with its own reasoned answer under the same bound its callers
+# apply - bin/fm-fleet-snapshot.sh and bin/fm-inactive-reconcile.sh both wrap it
+# in exactly that number - instead of being killed and folded into a bare,
+# reasonless `unknown` from outside.
 #
-# It rejects both spends it was written for, and rejects them structurally.
-# Spending the bound once per call takes about a second longer than the caller
-# allows, so the caller's timer fires. Spending it down to the last second fails
-# for the subtler reason the reserve exists for: the caller's clock starts at
-# exec and this one only after bash has sourced six libraries, so the caller's
-# timer fires FIRST however fast the machine is.
+# It rejects both spends it was written for. Spending the bound once per call
+# overruns the caller's bound outright. Spending it down to the last second
+# leaves nothing for the read to say why: the caller's clock starts at exec and
+# this one only after bash has sourced six libraries, so the caller's timer
+# fires FIRST however fast the machine is. The read therefore has to stop
+# spending a reserve short of the bound - a fifth of it, never under two seconds,
+# as its header states.
+#
+# The clock is what this case controls rather than races. Run on the real clock
+# it measured the machine as well as the code: on a loaded runner the libraries
+# alone can eat the reserve, and the caller's timer then killed a read whose
+# arithmetic was right. So time here moves only when a call spends it - the axi
+# status call takes one second, and the runs list, which never answers, takes
+# every second it is given - and what is asserted is the time the read had spent
+# when it answered, against the bound minus the reserve.
 test_the_whole_read_lands_inside_its_bound_with_its_reason() {
   reset_fakes
-  local d out rc
+  local d fb out real_date spent bound=6 reserve=2
   d=$(new_case shared-deadline)
   make_repo_on_branch "$d/wt" fm/feat-deadline
-  make_fakebin "$d" >/dev/null
-  cat > "$d/fakebin/no-mistakes" <<'SH'
+  fb=$(make_fakebin "$d")
+  real_date=$(command -v date) || fail "no date on PATH to fall back to"
+  # A virtual clock: `+%s` reads the seconds spent so far, every other use of
+  # date is the real one.
+  cat > "$fb/date" <<SH
+#!/usr/bin/env bash
+set -u
+if [ "\${1:-}" = "+%s" ]; then
+  printf '%s\n' "\$(( 1700000000 + \$(cat "\$FM_FAKE_CLOCK" 2>/dev/null || echo 0) ))"
+  exit 0
+fi
+exec $real_date "\$@"
+SH
+  # A call the bound cut - exit 124, the bounded runner's own word for it - spent
+  # every second it was handed; any other call spent what it charged itself.
+  # Parses `timeout`'s published CLI shape, options then DURATION then command,
+  # and being first on PATH it is the mechanism every bounded call here selects.
+  cat > "$fb/timeout" <<'SH'
+#!/usr/bin/env bash
+set -u
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  case "${args[$i]}" in
+    -k|--kill-after|-s|--signal) i=$(( i + 2 )) ;;
+    -*) i=$(( i + 1 )) ;;
+    *) break ;;
+  esac
+done
+secs=${args[$i]}
+"${args[@]:$(( i + 1 ))}"
+rc=$?
+if [ "$rc" -eq 124 ]; then
+  printf '%s\n' "$(( $(cat "$FM_FAKE_CLOCK") + secs ))" > "$FM_FAKE_CLOCK"
+fi
+exit "$rc"
+SH
+  cat > "$fb/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 set -u
 case "$*" in
   "axi status")
-    sleep 1
+    printf '%s\n' "$(( $(cat "$FM_FAKE_CLOCK") + 1 ))" > "$FM_FAKE_CLOCK"
     printf '%s\n' "$FM_FAKE_AXI_STATUS" ;;
   runs*)
-    # Sleeps rather than spins: a busy loop competes for the same cores the
-    # elapsed-time assertion below measures against.
-    sleep 600 ;;
+    exit 124 ;;
 esac
 exit 0
 SH
-  chmod +x "$d/fakebin/no-mistakes"
+  chmod +x "$fb/date" "$fb/timeout" "$fb/no-mistakes"
   fm_write_meta "$d/state/deadline.meta" "window=fm:fm-deadline" "worktree=$d/wt" "kind=ship" "harness=claude"
   FM_FAKE_AXI_STATUS="$(run_running fm/feat-deadline)"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" deadline
-  # The caller's bound, applied the way bin/fm-fleet-snapshot.sh applies it: the
-  # same number the read is given, through the repo's own bounded runner, with
-  # rc 124 meaning the caller killed it.
-  out=$( . "$ROOT/bin/fm-timeout-lib.sh"
-         fm_run_timed 6 env "PATH=$d/fakebin:$PATH" "FM_STATE_OVERRIDE=$d/state" \
-           FM_CREW_STATE_NM_TIMEOUT=6 "$CREW_STATE" deadline )
-  rc=$?
-  [ "$rc" -ne 124 ] \
-    || fail "the caller's bound killed the read before it could answer (rc $rc)"
+  FM_FAKE_CLOCK="$d/clock"
+  printf '0\n' > "$FM_FAKE_CLOCK"
+  out=$(PATH="$fb:$PATH" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_NM_TIMEOUT="$bound" \
+    "$CREW_STATE" deadline)
+  spent=$(cat "$FM_FAKE_CLOCK")
+  [ "$spent" -gt 1 ] \
+    || fail "the runs list was never bounded by what was left, so nothing tested the shared deadline (spent ${spent}s)"
+  [ "$spent" -le $(( bound - reserve )) ] \
+    || fail "the read spent ${spent}s of a ${bound}s bound, leaving less than its ${reserve}s reserve to answer in"
   [ -n "$out" ] || fail "the read returned nothing for its caller to report"
   assert_contains "$out" "state: unknown" "a runs list that never answered leaves the reading unchecked"
   assert_contains "$out" "within budget" "and the line says the budget is what ran out"

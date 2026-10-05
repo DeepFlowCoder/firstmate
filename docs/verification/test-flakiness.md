@@ -8,7 +8,7 @@ A flaky test is not noise.
 It spends the meaning of green: every red that turns out to be nothing trains the next red to be read as "probably flaky too", and that is the reading that one day waves a real regression through.
 On 2026-09-23 this register's first entry cost the opposite error, which is the same erosion running the other way - a green trunk was believed to carry a regression from the two changes that had just landed, at the price of a false alarm to the captain, a full re-run of checks, and a delivery held while the verdict was settled.
 
-Date of the measurements below: 2026-09-23.
+Date of the measurements below: 2026-09-23, except where an entry names its own date.
 Machine: Darwin 24.6.0, 8 cores (`sysctl -n hw.ncpu`).
 Load was generated with `for i in $(seq 1 24); do bash -c 'while :; do :; done' & done` and is reported as the 1-minute load average at the time of the run.
 Those loops never end on their own, so stop them with `kill $(jobs -p)` from the same shell once the measurement is over.
@@ -92,14 +92,59 @@ Again no bound was widened: the dependency was removed.
 
 Verified after the fix: 30 isolated runs, 30 passed, at load average 205.
 
+### A second cause of the same message, measured 2026-10-04
+
+That fix closed the clock-phase cause and left a second one with the identical message, so the message alone does not name its cause.
+The case counted calls from inside its fake `no-mistakes`, and the fake is the very process the one-second bound kills: on a runner loaded enough that starting the fake's bash takes longer than the bound, the fake dies before its first line and the call it was making goes uncounted.
+The read had made the call; only the witness was gone.
+
+Measured with the case's wall-clock ceiling removed so the count assertion is reached, and a `perl` shim in the case's tool directory recording every bound handed out before exec'ing the real perl, 8 concurrent copies of the case plus 16 busy loops, three rounds, load average 168-188:
+
+```
+24 not ok - empty no-mistakes status triggered extra lookups (0 calls)
+```
+
+In all 24 the shim had recorded `1 no-mistakes axi status`, so the call was made and handed its one-second bound every time, and the fake recorded none of them.
+
+The same batch shape on the unmodified case, load average 275, failed every run on its wall-clock ceiling first, which hid the count failure behind it:
+
+```
+3 not ok - perl timeout did not bound no-mistakes calls (elapsed 5s)
+4 not ok - perl timeout did not bound no-mistakes calls (elapsed 6s)
+1 not ok - perl timeout did not bound no-mistakes calls (elapsed 7s)
+```
+
+Fix: landed together with this entry.
+The case now counts calls where the bound is handed out - the `perl` shim, which writes its record before perl starts its alarm - and asserts there was exactly one, `1 no-mistakes axi status`, which also pins the seconds the perl arm was given.
+The wall-clock ceiling is gone: the fake sleeps 60s and then leaves a marker, so a bound that never fires leaves the marker on any machine, and a bound that holds would have to stall a whole minute to be mistaken for one that did not.
+Each property was checked by breaking it in the source: a bound of 10s instead of the budget, an extra runs lookup after `axi status`, and an alarm that never fires each turned the case red.
+
+Verified after the fix: 16 concurrent copies plus 64 busy loops, two rounds, load average 78-160, 32 runs, 32 passed.
+
+## tests/fm-crew-state.test.sh - test_the_whole_read_lands_inside_its_bound_with_its_reason
+
+Measured 2026-10-04.
+Symptom: `not ok - the caller's bound killed the read before it could answer (rc 124)`, 8 of 8 runs in the batch above at load average 275, and passing when run alone.
+
+Cause, in one line: the case ran the read on the real clock under a real 6s caller bound, so the read's 2s reserve had to cover sourcing six libraries and everything after the last bounded call, and under enough load that work alone outgrows the reserve - the case measured the machine as well as the arithmetic it was written to pin.
+
+Fix: landed together with this entry.
+Time in the case is now virtual: a `date` stub reads a clock file, the axi status call advances it one second, and a `timeout` stub advances it by every second it handed a call that came back 124, the bounded runner's own word for a cut.
+The case asserts the read had spent no more than the bound minus its 2s reserve when it answered, plus the reasoned `unknown` it answers with.
+Each spend the case was written to reject was checked by breaking it in the source: a per-call bound spent 7s of 6, no reserve spent 6s, and a reserve of one spent 5s, each turning the case red.
+
+Verified after the fix: 8 concurrent copies plus 16 busy loops, three rounds at load average 56-63, 24 runs, 24 passed; and in the 78-160 batch above, 32 runs, 32 passed.
+
 ## The class, so the next one is recognized instead of re-diagnosed
 
-Both entries above are the same family - a temporal race that gets worse exactly when CI runs shards in parallel, which is when it matters most - and each one yields a rule worth more than the single case that paid for it.
+The entries above are one family - a temporal race that gets worse exactly when CI runs shards in parallel, which is when it matters most - and each one yields a rule worth more than the single case that paid for it.
 
 - A budget counted in whole seconds is not the budget it names: `N` seconds of `date +%s` is really somewhere between `N-1` and `N`, because the first tick is a fraction.
    A case that needs the whole amount must pin the clock, not widen the number.
 - Poll for the value the case needs, never for the path that will hold it.
    A file that exists is not a file that has been written, and a writer that rewrites one truncates it first.
+- A process the bound can kill cannot be the witness that it ran.
+   Count a bounded call where it is handed its bound, before the clock starts, never from inside the process the bound exists to cut.
 - The choice between an iteration-counted bound and a wall-clock one is owned by [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development), in the sentence beginning "Where a case's assertion is not about the timeout itself", which now carries both halves of it.
    An assertion that is genuinely about a timeout still measures the machine as well as the code, so state its margin and re-measure it under load rather than trusting it: shrinking headroom is the warning, and a bound raised to turn a red green is not a fix, it hides the race and buys the same failure back on a busier day.
 
@@ -109,12 +154,10 @@ Case A's bound was replaced rather than simply raised or lowered, and the compar
 That rule was already in writing before either of today's failures, and neither of the two tickets that hit them cited it.
 The gap was that an existing rule was not found when it was needed, not that the rule was missing, and that is itself worth recording: it is the reason this register points at [`CONTRIBUTING.md`](../../CONTRIBUTING.md#development) as the rule's owner.
 
-## Wall-clock assertions still standing, with their measured headroom
+## Wall-clock assertions retired
 
-These are sound today and are listed so the margin is a known number rather than a rediscovery.
-
-- `test_no_timeout_uses_perl_bound` asserts the read finishes in under 5s; measured maximum 2s at load average 205.
-- `test_the_whole_read_lands_inside_its_bound_with_its_reason` gives the read a 6s caller bound; 20 isolated runs, 20 passed, at load average 194.
+The two cases this section used to list as sound were each measured sound only when run alone, and both failed every run once several copies ran together at load average 275, so isolated headroom is not CI headroom.
+Neither asserts a wall-clock duration any more; their entries above record the measurements and what replaced each one.
 
 ## Re-measuring
 
@@ -134,3 +177,5 @@ bash tests/zz-one.sh
 ```
 
 The copy has to live in `tests/` because the suites resolve `tests/lib.sh` from their own directory, and it is scratch: delete it when the measurement is done.
+
+Run several copies of that one case at once as well as alone, because CI runs shards in parallel, and the two cases measured sound alone on 2026-09-23 failed every run on 2026-10-04 once several copies ran together.
