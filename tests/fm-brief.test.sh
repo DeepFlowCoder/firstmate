@@ -1267,7 +1267,73 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+# Parallel ship workers on one repository kept deriving the same receipt and
+# migration number, because each held its number in uncommitted files until the
+# end. Every ship mode must carry the claim-early rule, a scout must not, and the
+# git commands the rule hands the worker must actually see a sibling copy's
+# committed claim while missing its uncommitted one - that difference is the
+# whole premise, so it is run against real worktrees rather than read as prose.
+test_ship_briefs_claim_sequence_numbers_early() {
+  local home brief mode list_cmd tree_cmd cmd repo ref claimed
+  home="$TMP_ROOT/numbers-home"
+  write_registry "$home"
+  for mode in no-mistakes direct-PR local-only; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-numbers-$mode" ship-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "ship scaffold ($mode) exited non-zero"
+    brief="$home/data/brief-numbers-$mode/brief.md"
+    assert_line "$brief" '# Numbers handed out in sequence' \
+      "$mode: ship brief did not carry the sequence-number rule"
+    assert_grep 'claim it the moment you know you need it, in its own commit' "$brief" \
+      "$mode: ship brief did not tell the worker to commit the claim at once"
+    assert_grep 'confirm the number is still free there' "$brief" \
+      "$mode: ship brief dropped the pre-handoff recheck for copies of another clone"
+  done
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" brief-numbers-scout ship-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+  assert_no_grep '# Numbers handed out in sequence' "$home/data/brief-numbers-scout/brief.md" \
+    "scout brief carried a claim rule for a number it never delivers"
+
+  brief="$home/data/brief-numbers-direct-PR/brief.md"
+  # shellcheck disable=SC2016 # Literal backticks delimit the commands in the brief.
+  list_cmd=$(grep -o '`git for-each-ref[^`]*`' "$brief" | tr -d '`')
+  # shellcheck disable=SC2016 # Literal backticks delimit the commands in the brief.
+  tree_cmd=$(grep -o '`git ls-tree[^`]*`' "$brief" | tr -d '`')
+  [ -n "$list_cmd" ] && [ -n "$tree_cmd" ] \
+    || fail "ship brief did not name both commands for reading sibling claims"
+
+  fm_git_identity
+  repo="$TMP_ROOT/numbers-repo"
+  git init -q -b main "$repo/main"
+  mkdir -p "$repo/main/rec"
+  : > "$repo/main/rec/0001"
+  git -C "$repo/main" add rec && git -C "$repo/main" commit -q -m base
+  git -C "$repo/main" worktree add -q -b fm/a "$repo/a"
+  git -C "$repo/main" worktree add -q -b fm/b "$repo/b"
+  : > "$repo/a/rec/0002"
+  git -C "$repo/a" add rec && git -C "$repo/a" commit -q -m 'claim 0002'
+  : > "$repo/a/rec/0003"
+
+  # <branch> and <dir> are placeholders the worker fills; here claims live in rec/.
+  claimed=""
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    cmd=${tree_cmd//<branch>/$ref}
+    cmd=${cmd//<dir>/rec}
+    claimed="$claimed $(cd "$repo/b" && eval "$cmd" | tr '\n' ' ')"
+  done < <(cd "$repo/b" && eval "$list_cmd")
+  case "$claimed" in
+    *rec/0002*) ;;
+    *) fail "the brief's commands missed a sibling copy's committed claim (saw:$claimed)" ;;
+  esac
+  case "$claimed" in
+    *rec/0003*) fail "the brief's commands saw an uncommitted file, so the commit-at-once premise is untested" ;;
+  esac
+  pass "fm-brief.sh: ship briefs claim sequence numbers in their own commit, and the named commands see sibling claims"
+}
+
 test_no_mistakes_dod_wording
+test_ship_briefs_claim_sequence_numbers_early
 test_no_mistakes_dod_defines_done_once
 test_faster_paths_still_complete_at_their_own_gate
 test_rule4_handoff_exception_is_named_not_a_general_waiting_escape
