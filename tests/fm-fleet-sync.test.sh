@@ -1007,7 +1007,18 @@ test_non_signature_fetch_failure_is_not_retried() {
   fakebin="$home/fb-locknonsig"; rm -rf "$fakebin"; mkdir -p "$fakebin"
   clone=$(build_pair "$home" locknonsig)
   advance_origin "$home" locknonsig C1
-  git -C "$clone" remote set-url origin "file://$home/remotes/does-not-exist.git"
+  # The fetch has to be attempted and fail for a reason that is not the lock, so
+  # origin stays a URL the forge resolution recognizes - a network remote, since a
+  # local path that names no repository is never trusted as the forge and would
+  # stop the run before any fetch - and the fakebin `ssh` git reaches it through
+  # refuses the connection. The `.invalid` host could never be reached for real.
+  git -C "$clone" remote set-url origin 'git@forge.invalid:locknonsig.git'
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+echo "ssh: Could not resolve hostname forge.invalid: nodename nor servname provided, or not known" >&2
+exit 255
+SH
+  chmod +x "$fakebin/ssh"
   out="$home/out-locknonsig"; err="$home/err-locknonsig"
 
   set +e
