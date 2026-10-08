@@ -1031,6 +1031,9 @@ SH
   assert_contains "$(cat "$out")" "locknonsig: skipped: fetch failed" "non-signature: fleet-sync did not report the fetch failure"
   assert_no_grep "waiting" "$err" "non-signature: a non-lock failure was wrongly retried"
   assert_no_grep "packed-refs lock" "$err" "non-signature: a non-lock failure entered the lock guard"
+  # Every test shares one home, so a later whole-fleet sync would fetch this ssh
+  # origin without the pinned stub; remove the clone so nothing else reaches it.
+  rm -rf "$clone"
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
 
