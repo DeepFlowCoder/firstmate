@@ -1007,18 +1007,33 @@ test_non_signature_fetch_failure_is_not_retried() {
   fakebin="$home/fb-locknonsig"; rm -rf "$fakebin"; mkdir -p "$fakebin"
   clone=$(build_pair "$home" locknonsig)
   advance_origin "$home" locknonsig C1
-  git -C "$clone" remote set-url origin "file://$home/remotes/does-not-exist.git"
+  # The fetch has to be attempted and fail for a reason that is not the lock, so
+  # origin stays a URL the forge resolution recognizes - a network remote, since a
+  # local path that names no repository is never trusted as the forge and would
+  # stop the run before any fetch - and the fakebin `ssh` git reaches it through
+  # refuses the connection. The `.invalid` host could never be reached for real.
+  git -C "$clone" remote set-url origin 'git@forge.invalid:locknonsig.git'
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+echo "ssh: Could not resolve hostname forge.invalid: nodename nor servname provided, or not known" >&2
+exit 255
+SH
+  chmod +x "$fakebin/ssh"
   out="$home/out-locknonsig"; err="$home/err-locknonsig"
 
   set +e
   FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=3 \
   FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=0 \
+  GIT_SSH_COMMAND="$fakebin/ssh" \
     run_sync_guarded "$home" "$fakebin" "$out" "$err" locknonsig
   set -e
 
   assert_contains "$(cat "$out")" "locknonsig: skipped: fetch failed" "non-signature: fleet-sync did not report the fetch failure"
   assert_no_grep "waiting" "$err" "non-signature: a non-lock failure was wrongly retried"
   assert_no_grep "packed-refs lock" "$err" "non-signature: a non-lock failure entered the lock guard"
+  # Every test shares one home, so a later whole-fleet sync would fetch this ssh
+  # origin without the pinned stub; remove the clone so nothing else reaches it.
+  rm -rf "$clone"
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
 

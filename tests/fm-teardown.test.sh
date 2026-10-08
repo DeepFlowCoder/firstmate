@@ -325,9 +325,11 @@ strip_every_forge_remote() {
 
 # Leave the forge reachable only through an endpoint that cannot be connected to
 # without a credential: origin stays the captain's working copy, and "gh" - the
-# one remote that could be the forge - gets a URL on a scheme this case owns, so
-# git dispatches it to `git-remote-fmforgeprompt` in the case's fakebin and
-# nothing here touches a host, a network, or any credential store.
+# one remote that could be the forge - gets an scp-like ssh URL, which the forge
+# resolution recognizes as a network remote and git reaches through the ssh
+# program the test pins, so the case's fakebin `ssh` answers and nothing here touches a
+# host, a network, or any credential store. The host is on the reserved
+# `.invalid` domain, so even a real ssh could never connect to it.
 #
 # The stub answers the way git itself does. Git reaches for a credential through
 # an askpass program when one is configured (GIT_ASKPASS, core.askPass,
@@ -339,17 +341,17 @@ strip_every_forge_remote() {
 point_the_forge_at_an_endpoint_that_demands_a_credential() {
   local case_dir=$1
   repoint_origin_to_a_working_copy "$case_dir"
-  git -C "$case_dir/project" remote set-url gh 'fmforgeprompt://127.0.0.1:1/forge.git'
-  cat > "$case_dir/fakebin/git-remote-fmforgeprompt" <<'SH'
+  git -C "$case_dir/project" remote set-url gh 'git@forge.invalid:forge.git'
+  cat > "$case_dir/fakebin/ssh" <<'SH'
 #!/usr/bin/env bash
 if [ "${GIT_TERMINAL_PROMPT:-}" = 0 ] && [ "${GIT_ASKPASS-unset}" = "" ]; then
-  echo "fatal: could not read Username for '${2:-}': terminal prompts disabled" >&2
+  echo "fatal: could not read Username for 'forge.invalid': terminal prompts disabled" >&2
   exit 128
 fi
 sleep 30
 exit 128
 SH
-  chmod +x "$case_dir/fakebin/git-remote-fmforgeprompt"
+  chmod +x "$case_dir/fakebin/ssh"
 }
 
 # Override GitHub lookups to report PR 7 as merged with the supplied head.
@@ -1192,6 +1194,7 @@ test_local_only_discard_gate_refuses_instead_of_waiting_on_a_credential() {
   (
     unset GIT_ASKPASS
     export GIT_TERMINAL_PROMPT=1
+    export GIT_SSH_COMMAND="$case_dir/fakebin/ssh"
     run_teardown "$case_dir"
   ) > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
