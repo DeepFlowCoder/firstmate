@@ -23,6 +23,7 @@
 #   fm-test-run.sh --concurrent-safe-family-jobs-max <name>
 #   fm-test-run.sh --list-lanes
 #   fm-test-run.sh --list-timing-artifacts
+#   fm-test-run.sh --list-unmeasured    (portable-serial scripts on the default weight)
 #   fm-test-run.sh --check-coverage
 #
 # Aggregation (no suite execution):
@@ -680,7 +681,8 @@ tests/fm-watcher-lock.test.sh 76134
 EOF
 }
 
-portable_serial_weight_for() {
+# Print the measured hint for one script, or return 1 when it has none.
+portable_serial_hint_for() {
   local want=$1 path ms
   while read -r path ms; do
     if [ "$path" = "$want" ]; then
@@ -688,7 +690,22 @@ portable_serial_weight_for() {
       return 0
     fi
   done < <(portable_serial_weight_hints)
-  printf '%s\n' "$PORTABLE_SERIAL_DEFAULT_WEIGHT_MS"
+  return 1
+}
+
+portable_serial_weight_for() {
+  portable_serial_hint_for "$1" || printf '%s\n' "$PORTABLE_SERIAL_DEFAULT_WEIGHT_MS"
+}
+
+# Portable-serial scripts with no measured hint, which balance on
+# PORTABLE_SERIAL_DEFAULT_WEIGHT_MS instead. This listing is the only owner of
+# how many there are: it changes with every added test, so no prose states it.
+list_portable_serial_unmeasured() {
+  local script
+  while IFS= read -r script; do
+    [ -n "$script" ] || continue
+    portable_serial_hint_for "$script" >/dev/null || printf '%s\n' "$script"
+  done < <(list_portable_serial)
 }
 
 # Longest-processing-time assignment of the serial remainder to
@@ -920,12 +937,13 @@ run_coverage_guard() {
     fi
   fi
 
-  printf 'FM_TEST_COVERAGE ok total=%s parallel=%s serial=%s serial_shards=%s herdr=%s\n' \
+  printf 'FM_TEST_COVERAGE ok total=%s parallel=%s serial=%s serial_shards=%s herdr=%s serial_unmeasured=%s\n' \
     "$(wc -l <"$tmp/all" | tr -d ' ')" \
     "$(wc -l <"$tmp/shards_union" | tr -d ' ')" \
     "$(wc -l <"$tmp/serial" | tr -d ' ')" \
     "$PORTABLE_SERIAL_SHARDS" \
-    "$(wc -l <"$tmp/herdr" | tr -d ' ')"
+    "$(wc -l <"$tmp/herdr" | tr -d ' ')" \
+    "$(list_portable_serial_unmeasured | wc -l | tr -d ' ')"
   rm -rf "$tmp"
   return 0
 }
@@ -1721,6 +1739,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --list-timing-artifacts)
       list_ci_timing_artifacts
+      exit 0
+      ;;
+    --list-unmeasured)
+      list_portable_serial_unmeasured
       exit 0
       ;;
     --check-coverage)
