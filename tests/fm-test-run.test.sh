@@ -724,6 +724,46 @@ test_portable_shard_union_and_coverage_guard() {
   pass "portable shard union, disjointness, and coverage guard hold"
 }
 
+# How many portable-serial scripts balance on the default weight instead of a
+# measured hint is derived, never written down: the count changes with every
+# added test, and a hand-written copy of it once read 16 while the lane held 31.
+# So the listing must follow the tree with no edit, leave out what is not serial
+# or already measured, and agree with the count the coverage guard prints in CI.
+test_unmeasured_serial_scripts_are_derived_from_the_tree() {
+  local tmp repo script listed extra out count
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-unmeasured.XXXXXX")
+  repo="$tmp/repo"
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  chmod +x "$repo/bin/fm-test-run.sh"
+  # measured serial, proven-isolated, real-herdr-gated, and one unmeasured
+  for script in fm-afk-return.test.sh fm-brief.test.sh \
+    fm-backend-herdr-smoke.test.sh fm-zz-unmeasured-a.test.sh; do
+    printf '#!/usr/bin/env bash\n' >"$repo/tests/$script"
+  done
+
+  listed=$("$repo/bin/fm-test-run.sh" --list-unmeasured)
+  [ "$listed" = "tests/fm-zz-unmeasured-a.test.sh" ] \
+    || fail "--list-unmeasured must name only the unhinted serial script, got: $listed"
+
+  printf '#!/usr/bin/env bash\n' >"$repo/tests/fm-zz-unmeasured-b.test.sh"
+  listed=$("$repo/bin/fm-test-run.sh" --list-unmeasured)
+  [ "$listed" = "tests/fm-zz-unmeasured-a.test.sh"$'\n'"tests/fm-zz-unmeasured-b.test.sh" ] \
+    || fail "an added serial test must join the unmeasured listing with no edit, got: $listed"
+  rm -rf "$tmp"
+
+  listed=$("$RUNNER" --list-unmeasured)
+  [ -n "$listed" ] || fail "--list-unmeasured printed nothing for the real lane"
+  extra=$(comm -23 <(printf '%s\n' "$listed" | LC_ALL=C sort) \
+    <("$RUNNER" --list --lane portable-serial | LC_ALL=C sort) || true)
+  [ -z "$extra" ] || fail "--list-unmeasured named scripts outside the serial lane: $extra"
+  out=$("$RUNNER" --check-coverage)
+  count=$(printf '%s\n' "$listed" | wc -l | tr -d ' ')
+  printf '%s\n' "$out" | grep -Eq "^FM_TEST_COVERAGE ok .* serial_unmeasured=${count}\$" \
+    || fail "the coverage guard must print the unmeasured count the listing derives ($count), got: $out"
+  pass "the unmeasured serial set is derived from the tree and the coverage guard reports its count"
+}
+
 test_portable_serial_shards_partition_the_serial_lane() {
   local lanes count serial shard listed union dups shard_lane total cap
   lanes=$("$RUNNER" --list-lanes)
@@ -1408,6 +1448,7 @@ test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
 test_portable_serial_shards_partition_the_serial_lane
+test_unmeasured_serial_scripts_are_derived_from_the_tree
 test_portable_serial_shard_lane_refusals
 test_ci_serial_matrix_agrees_with_the_runner_shard_count
 test_ci_timing_producers_match_the_runner_expectation

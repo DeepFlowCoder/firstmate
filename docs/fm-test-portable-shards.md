@@ -71,7 +71,9 @@ Assignment is longest-processing-time bin packing over per-script duration hints
 The hints merge two wholesale refreshes, because this fork and `kunchenguid/firstmate` measured the lane separately before reconciling.
 The base is the 2026-08-29 refresh from the four `fm-test-timing-portable-serial-*` artifacts of run 33236596384 on `DeepFlowCoder/firstmate`, where the lane ran 118 scripts in 2958555 ms of serial work.
 The eight scripts that refresh never saw carry the hints measured upstream in green CI run [32491999845](https://github.com/kunchenguid/firstmate/actions/runs/32491999845) on 2026-08-21, except `tests/fm-tool-update-check.test.sh`, whose 12846 ms comes from the shard 3 artifact of run [32461816719](https://github.com/kunchenguid/firstmate/actions/runs/32461816719), the first run that measured it.
-Sixteen scripts in the lane carry the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default instead of a measurement until the next wholesale refresh, which is due: the thirteen the upstream reconciliation added, which neither refresh measured, plus `tests/fm-notify-moshi.test.sh`, `tests/fm-lint-source-boundary.test.sh`, and `tests/fm-mem-trace.test.sh`.
+A script with no entry in the `portable_serial_weight_hints` table carries the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default instead of a measurement until the next wholesale refresh, which is due.
+`bin/fm-test-run.sh --list-unmeasured` lists those scripts at any head, and `bin/fm-test-run.sh --check-coverage` reports how many as `serial_unmeasured=` on every CI run.
+This page deliberately states no count: the lane derives its membership from `tests/`, so every added test changes the number, and a count written here reads as measured long after it stopped being true.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
 Balance is still worth keeping current, because enough unmeasured scripts let one shard carry more than twice another shard's real work and reach the job cap while another runner sits idle.
 Refresh the hints whenever the serial lane gains scripts, rather than waiting for a shard to time out.
@@ -146,7 +148,7 @@ That job is not a verdict about the suites themselves; the lane that ran a faili
 | Lane | Bound | Rationale |
 |---|---|---|
 | portable parallel 1/2 | job `timeout-minutes: 10` | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-8 | job `timeout-minutes: 20` | Raised from 15 after shard 3 hit that cap at 15m18s on run 33296163782, which GitHub reports as a cancelled job rather than a timeout. The balanced estimate is about 7.1 min, but it is known optimistic: 16 scripts still carry the default weight rather than a measurement, and the run was cut before shard 3's timing artifact uploaded, so which script overran is unmeasured. 20 min restores tripwire margin without guessing at the cause. |
+| portable serial 1-8 | job `timeout-minutes: 20` | Raised from 15 after shard 3 hit that cap at 15m18s on run 33296163782, which GitHub reports as a cancelled job rather than a timeout. The balanced estimate is about 7.1 min, but it is known optimistic: every script `bin/fm-test-run.sh --list-unmeasured` names still carries the default weight rather than a measurement, and the run was cut before shard 3's timing artifact uploaded, so which script overran is unmeasured. 20 min restores tripwire margin without guessing at the cause. |
 | Herdr | family-run step `timeout-minutes: 20`; job `timeout-minutes: 75` backstop | Healthy runs finish around 7 minutes, so the step bound is the hang tripwire (cleanup and timing artifacts still upload) while the job cap stays a last-resort backstop. |
 
 Timeouts are hang tripwires rather than expected healthy durations.
