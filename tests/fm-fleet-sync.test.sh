@@ -1024,6 +1024,7 @@ SH
   set +e
   FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=3 \
   FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=0 \
+  GIT_SSH_COMMAND="$fakebin/ssh" \
     run_sync_guarded "$home" "$fakebin" "$out" "$err" locknonsig
   set -e
 

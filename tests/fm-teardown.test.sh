@@ -326,8 +326,8 @@ strip_every_forge_remote() {
 # Leave the forge reachable only through an endpoint that cannot be connected to
 # without a credential: origin stays the captain's working copy, and "gh" - the
 # one remote that could be the forge - gets an scp-like ssh URL, which the forge
-# resolution recognizes as a network remote and git reaches by running `ssh`
-# from PATH, so the case's fakebin `ssh` answers and nothing here touches a
+# resolution recognizes as a network remote and git reaches through the ssh
+# program the test pins, so the case's fakebin `ssh` answers and nothing here touches a
 # host, a network, or any credential store. The host is on the reserved
 # `.invalid` domain, so even a real ssh could never connect to it.
 #
@@ -1194,6 +1194,7 @@ test_local_only_discard_gate_refuses_instead_of_waiting_on_a_credential() {
   (
     unset GIT_ASKPASS
     export GIT_TERMINAL_PROMPT=1
+    export GIT_SSH_COMMAND="$case_dir/fakebin/ssh"
     run_teardown "$case_dir"
   ) > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
