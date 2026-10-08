@@ -206,6 +206,9 @@ gates withholds queued items held under the parked hold kind (deferred_marker,
   --all-queued reveals the rows. A future-kind row is date-deferred, never
   withheld: it renders as its dated gate while ahead and surfaces once due.
 Raise FM_BEARINGS_PR_LIMIT to expand per-repository open-PR results.
+FM_BEARINGS_PR_TIMEOUT (default 20s) bounds each live GitHub call under --include-prs,
+  and under that option only it is also the default for FM_CREW_STATE_NM_TIMEOUT and
+  FM_SNAPSHOT_CREW_STATE_TIMEOUT when either is unset; an explicit value still wins.
 EOF
 }
 
