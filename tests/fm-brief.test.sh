@@ -1274,7 +1274,7 @@ test_faster_paths_use_configured_authority_without_stacked_review
 # committed claim while missing its uncommitted one - that difference is the
 # whole premise, so it is run against real worktrees rather than read as prose.
 test_ship_briefs_claim_sequence_numbers_early() {
-  local home brief mode list_cmd tree_cmd cmd repo ref claimed
+  local home brief mode list_cmd tree_cmd fetch_cmd cmd repo ref claimed
   home="$TMP_ROOT/numbers-home"
   write_registry "$home"
   for mode in no-mistakes direct-PR local-only; do
@@ -1299,8 +1299,10 @@ test_ship_briefs_claim_sequence_numbers_early() {
   list_cmd=$(grep -o '`git for-each-ref[^`]*`' "$brief" | tr -d '`')
   # shellcheck disable=SC2016 # Literal backticks delimit the commands in the brief.
   tree_cmd=$(grep -o '`git ls-tree[^`]*`' "$brief" | tr -d '`')
-  [ -n "$list_cmd" ] && [ -n "$tree_cmd" ] \
-    || fail "ship brief did not name both commands for reading sibling claims"
+  # shellcheck disable=SC2016 # Literal backticks delimit the commands in the brief.
+  fetch_cmd=$(grep -o '`git fetch[^`]*`' "$brief" | tr -d '`')
+  [ -n "$list_cmd" ] && [ -n "$tree_cmd" ] && [ -n "$fetch_cmd" ] \
+    || fail "ship brief did not name the commands for fetching and reading sibling claims"
 
   fm_git_identity
   repo="$TMP_ROOT/numbers-repo"
@@ -1308,11 +1310,22 @@ test_ship_briefs_claim_sequence_numbers_early() {
   mkdir -p "$repo/main/rec"
   : > "$repo/main/rec/0001"
   git -C "$repo/main" add rec && git -C "$repo/main" commit -q -m base
+  git init -q --bare -b main "$repo/origin.git"
+  git -C "$repo/main" remote add origin "$repo/origin.git"
+  git -C "$repo/main" push -q origin main
   git -C "$repo/main" worktree add -q -b fm/a "$repo/a"
   git -C "$repo/main" worktree add -q -b fm/b "$repo/b"
   : > "$repo/a/rec/0002"
   git -C "$repo/a" add rec && git -C "$repo/a" commit -q -m 'claim 0002'
   : > "$repo/a/rec/0003"
+  # A copy of a different clone shares no branch store; only a fetch shows its pushed claim.
+  git clone -q "$repo/origin.git" "$repo/other"
+  git -C "$repo/other" checkout -q -b fm/c
+  : > "$repo/other/rec/0004"
+  git -C "$repo/other" add rec && git -C "$repo/other" commit -q -m 'claim 0004'
+  git -C "$repo/other" push -q origin fm/c
+  (cd "$repo/b" && eval "$fetch_cmd") >/dev/null 2>&1 \
+    || fail "the brief's fetch command failed in a worktree with no upstream"
 
   # <branch> and <dir> are placeholders the worker fills; here claims live in rec/.
   claimed=""
@@ -1325,6 +1338,10 @@ test_ship_briefs_claim_sequence_numbers_early() {
   case "$claimed" in
     *rec/0002*) ;;
     *) fail "the brief's commands missed a sibling copy's committed claim (saw:$claimed)" ;;
+  esac
+  case "$claimed" in
+    *rec/0004*) ;;
+    *) fail "the brief's fetch-then-derive commands missed a claim another clone pushed (saw:$claimed)" ;;
   esac
   case "$claimed" in
     *rec/0003*) fail "the brief's commands saw an uncommitted file, so the commit-at-once premise is untested" ;;
