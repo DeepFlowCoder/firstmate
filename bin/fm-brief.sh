@@ -79,6 +79,10 @@
 # removals but cannot stop every destructive one, so `git stash` is not to be
 # used here at all. bin/fm-stash-guard.sh owns what that guard covers and what
 # it does not.
+# Ship briefs also carry the sequence-number rule: a number the project hands
+# out in sequence (receipt, migration) is claimed in its own commit as soon as
+# the task knows it needs one, so parallel siblings sharing the branch store
+# see it and derive a different one; NUMBERS_SECTION below owns the why.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -338,6 +342,27 @@ That protection is not complete: when more than one entry already exists, a pop 
 Do not use `git stash` here at all, and never work around a refusal when one does fire.
 EOF
 STASH_SECTION=${STASH_SECTION%$'\n'}
+
+# Parallel ship workers on one repository draw from the same sequences - receipt
+# numbers, numbered migrations - and a number held only in uncommitted files is
+# invisible to every sibling, so two workers derive the same one and the later
+# PR pays a rebase and a renumber. Copies of one clone share one branch store,
+# so a number committed on a task branch is visible to every sibling at once:
+# the cure is to claim early in its own commit, not to coordinate centrally.
+# Claiming late and renumbering is the worse half, because the number spreads
+# into code, titles, and any database that already applied a migration by name.
+# Ship-only: a scout delivers a report, never a number other work must respect.
+IFS= read -r -d '' NUMBERS_SECTION <<'EOF' || true
+# Numbers handed out in sequence
+Other workers may be live on this repository right now, each in its own copy, and every copy of one clone shares one branch store: a sibling sees what you committed on your branch, never your uncommitted files.
+If this task needs a number the project hands out in sequence - a receipt, record, or decision number, a numbered migration, anything named "the next free one" - claim it the moment you know you need it, in its own commit, before any other work: create the numbered file, with the project's own minting command when its `AGENTS.md` names one, and commit it at once.
+Run `git fetch` in your copy first, so what you derive from never reads a stale default branch or misses a branch a different clone has pushed.
+Then derive it from the default branch AND every other unmerged branch, never from the default branch alone: `git for-each-ref --no-merged HEAD --format='%(refname)' refs/heads refs/remotes` lists those branches and `git ls-tree --name-only <branch> -- <dir>/` shows what each one claimed; a minting command that already reads other branches does this for you.
+A gap in the sequence is harmless, so a claimed number is never handed back; a duplicate is the failure this prevents.
+Once committed, the number is yours: cite it freely and do not renumber on your own initiative.
+Before you hand the work off - pushing, opening the PR, or reporting it implemented - fetch the default branch and confirm the number is still free there, because a copy of a different clone shares no branch store with you; if it was taken, renumber to the next free one everywhere it appears in one commit and say so in your report.
+EOF
+NUMBERS_SECTION=${NUMBERS_SECTION%$'\n'}
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -665,6 +690,8 @@ $KEY_POSITION_RULE_INDENTED
 $WAIT_RULE
 
 $INBOX_SECTION
+
+$NUMBERS_SECTION
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
