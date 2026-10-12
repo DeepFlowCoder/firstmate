@@ -176,10 +176,10 @@ repo is the backlog row's own recorded repo, null when the row records none. It 
   groups work by project rather than by errand; the bearings board resolves its lane key
   from it, folding the spellings of one project together against the project registry
   (bin/fm-bearings-board.sh owns that rule, and this projection stays faithful to the record).
-  Two rows are null for a different reason: a registered secondmate's own in_flight row
-  aggregates several children and has no single repo, and that home's summary records no
-  repo on its decisions_open rows at all, so those project null even when the mate's
-  backlog records one. Both still read as the no-repo marker downstream.
+  One row is null for a different reason: a registered secondmate's own in_flight row
+  aggregates several children and has no single repo, so it still reads as the no-repo
+  marker downstream. A secondmate's decisions_open rows carry the repo its own backlog
+  row records, so its captain calls group with their project.
 gates.since and landed.landed_on are the backlog's own recorded dates, null when the
   row records none: how long queued work has waited, and when landed work landed.
   They are current-state facts with a date on them, not a history, because the fleet
