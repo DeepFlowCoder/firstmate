@@ -234,8 +234,144 @@ What is given up is cross-module dataflow *within these seven roots* - the modul
 - **`--extended-analysis=false` in CI.** Would work (725 MiB for the worst root) but pays for two bad roots with the whole fleet's dataflow coverage.
 - **Dropping `--external-sources` globally.** Same objection, repo-wide, plus SC1091 noise on every root.
 - **A larger runner.** Costs money and leaves the 238 s single-root wall in place; it hides the symptom.
+- **An automatic fresh attempt on runner loss.** Every runner loss this lane ever had was this lane exhausting its runner, and none has recurred since the boundary, so a retry could only turn a memory regression into a lucky green; [No runner loss since the boundary](#no-runner-loss-since-the-boundary) holds the census.
 
 ### The guard this rests on
 
 Nothing here stops a *new* root from growing a source graph large enough to cross the line again, and this page is the reason the next occurrence is cheap to diagnose rather than a night's work: the trace reproduces the curve in one run, and the per-root profile names the file in ten minutes.
 A root that starts approaching these numbers belongs on the same boundary.
+
+## Re-measured a month later: two workers, and no attempt-level retry
+
+Date: 2026-10-12.
+Runner: GitHub-hosted `ubuntu-latest`, image `ubuntu-24.04` version 20261004.327, 2 CPUs, MemTotal 7938 MiB, SwapTotal 3072 MiB.
+ShellCheck 0.11.0, the pinned version; canonical set now 391 roots.
+The decisions these numbers support are stated once, above the lint lane in [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml).
+
+### One worker against two
+
+Run 38284064110 ran the lane's exact lint, unchanged, on six runners: `FM_LINT_JOBS=1` and `FM_LINT_JOBS=2`, three runs of each, with the trace streaming at a 5 s interval.
+The probe step, from a measurement-only workflow that was never merged:
+
+```sh
+bin/fm-mem-trace.sh --interval 5 | tee "$RUNNER_TEMP/trace.log" &
+start=$(date +%s)
+rc=0
+bin/fm-lint.sh --telemetry "$RUNNER_TEMP/telemetry.tsv" > "$RUNNER_TEMP/lint.out" 2>&1 || rc=$?
+end=$(date +%s)
+pkill -f fm-mem-trace.sh || true
+echo "probe: jobs=$FM_LINT_JOBS lint_exit=$rc lint_wall_s=$((end - start))"
+awk '
+  $1 == "fm-mem" {
+    n++
+    if (min_avail == "" || $3 < min_avail) min_avail = $3
+    if (min_swap == "" || $6 < min_swap) min_swap = $6
+    if ($9 > max_procs) max_procs = $9
+    if ($11 > max_hwm) max_hwm = $11
+    if ($12 > max_sum) max_sum = $12
+  }
+  END {
+    printf "probe_summary: samples=%d min_mem_avail_mib=%s min_swap_free_mib=%s max_shellcheck_procs=%s max_single_hwm_mib=%s max_concurrent_rss_sum_mib=%s\n", n, min_avail, min_swap, max_procs, max_hwm, max_sum
+  }
+' "$RUNNER_TEMP/trace.log"
+```
+
+Output, one job per pair of lines:
+
+```text
+# job 114928070246
+probe: jobs=1 lint_exit=0 lint_wall_s=929
+probe_summary: samples=184 min_mem_avail_mib=3565 min_swap_free_mib=3072 max_shellcheck_procs=1 max_single_hwm_mib=3481 max_concurrent_rss_sum_mib=3481
+# job 114928070166
+probe: jobs=1 lint_exit=0 lint_wall_s=813
+probe_summary: samples=162 min_mem_avail_mib=3567 min_swap_free_mib=3072 max_shellcheck_procs=1 max_single_hwm_mib=3438 max_concurrent_rss_sum_mib=3438
+# job 114928069856
+probe: jobs=1 lint_exit=0 lint_wall_s=957
+probe_summary: samples=190 min_mem_avail_mib=3525 min_swap_free_mib=3072 max_shellcheck_procs=1 max_single_hwm_mib=3485 max_concurrent_rss_sum_mib=3485
+# job 114928070031
+probe: jobs=2 lint_exit=0 lint_wall_s=599
+probe_summary: samples=118 min_mem_avail_mib=1485 min_swap_free_mib=3072 max_shellcheck_procs=2 max_single_hwm_mib=3481 max_concurrent_rss_sum_mib=6506
+# job 114928069601
+probe: jobs=2 lint_exit=0 lint_wall_s=639
+probe_summary: samples=126 min_mem_avail_mib=1624 min_swap_free_mib=3072 max_shellcheck_procs=2 max_single_hwm_mib=3485 max_concurrent_rss_sum_mib=6629
+# job 114928069956
+probe: jobs=2 lint_exit=0 lint_wall_s=501
+probe_summary: samples=99 min_mem_avail_mib=1759 min_swap_free_mib=3072 max_shellcheck_procs=2 max_single_hwm_mib=3481 max_concurrent_rss_sum_mib=6506
+```
+
+| | one worker | two workers |
+| --- | --- | --- |
+| lint wall | 813-957 s | 501-639 s |
+| ShellCheck held at once | 3438-3485 MiB | 6506-6629 MiB |
+| lowest MemAvailable | 3525-3567 MiB | 1485-1759 MiB |
+| swap consumed | none | none |
+| verdict | exit 0, all three | exit 0, all three |
+
+`max_concurrent_rss_sum_mib` is the sum of the live ShellCheck processes' current resident size in one sample, so under two workers it is what the machine actually held at once, unlike `worker_rss_sum_kib`, which adds maxima that need not coexist.
+
+The single-process peak is the same instrument as the 2574 MiB figure above - VmHWM sampled by this trace - and it grew to 3438-3485 MiB in the month after the boundary landed, while the canonical set grew from 350 to 391 roots.
+Which roots carry that growth was not measured here; the per-root command under Reproducing answers it.
+
+Whether two workers shorten the run, not just the lane, depends on whether Lint is the longest lane.
+Over the 60 most recent CI runs, 2026-09-23 to 2026-10-09, comparing the green Lint job with the longest other green job of the same run, excluding the timing aggregate that waits on the others; `runs.tsv` is the run listing from the census below:
+
+```sh
+cut -f1 runs.tsv | head -60 > recent-runs
+while read -r id; do
+  gh api -X GET "repos/DeepFlowCoder/firstmate/actions/runs/$id/jobs" -f per_page=100 --jq "
+    [.jobs[] | select(.conclusion==\"success\" and .name!=\"Behavior timing aggregate\") | {n:.name, d:((.completed_at|fromdateiso8601)-(.started_at|fromdateiso8601))}] as \$j
+    | (\$j | map(select(.n==\"Lint\")) | .[0].d) as \$lint
+    | (\$j | map(select(.n!=\"Lint\")) | max_by(.d)) as \$other
+    | select(\$lint != null)
+    | [\"$id\", \$lint, \$other.d, \$other.n] | @tsv"
+done < recent-runs > critpath.tsv
+awk -F'\t' '{n++; d=$2-$3; if (d>0) {longest++; s+= (d<330?d:330)}} END {print "runs", n, "lint_longest", longest, "mean_gain_if_2w_s", s/n}' critpath.tsv
+```
+
+```text
+runs 60 lint_longest 38 mean_gain_if_2w_s 117.8
+```
+
+The 330 s cap is the median saving the probe measured, 929 s against 599 s.
+So two workers would take about two minutes off the average run, and up to five and a half off a run Lint leads by that much.
+
+### No runner loss since the boundary
+
+Every attempt of every Lint job in this repository's CI history, 2026-08-20 to 2026-10-09:
+
+```sh
+for p in 1 2 3 4; do
+  gh api -X GET 'repos/DeepFlowCoder/firstmate/actions/workflows/ci.yml/runs' -f per_page=100 -f page=$p \
+    --jq '.workflow_runs[] | [.id, .run_attempt, .event, .head_branch, .conclusion, .created_at] | @tsv'
+done > runs.tsv
+while IFS=$'\t' read -r id att ev br concl created; do
+  gh api -X GET "repos/DeepFlowCoder/firstmate/actions/runs/$id/jobs" -f filter=all -f per_page=100 \
+    --jq ".jobs[] | select(.name==\"Lint\") | [\"$id\", .id, .run_attempt, .conclusion, .started_at, .completed_at, .runner_name // \"-\", \"$br\"] | @tsv"
+done < runs.tsv > lintjobs.tsv
+awk -F'\t' '$4!="success"{print $2}' lintjobs.tsv | while read -r j; do
+  m=$(gh api "repos/DeepFlowCoder/firstmate/check-runs/$j/annotations" \
+    --jq '[.[] | select(.annotation_level=="failure") | .message] | join(" || ")')
+  printf '%s\t%s\n' "$j" "$m"
+done > fail-annot.tsv
+```
+
+One run's job listing returned HTTP 502 the first time and was fetched again on its own.
+Of 347 attempts, 308 were green, 38 failed, and 1 was cancelled; the failure annotations, first 90 characters:
+
+```text
+  25 Process completed with exit code 143.
+   2 The hosted runner lost communication with the server. Anything in your workflow that termi
+   1 The job has exceeded the maximum execution time of 45m0s
+  11 The job was not started because recent account payments have failed or your spending limit
+```
+
+The 27 runner-loss signatures, exit 143 or lost communication, run from job 99245658478 on 2026-08-30 to job 103697190442, started 2026-09-13T08:14:50Z.
+The boundary merged at 2026-09-13T10:59:02Z, and every Lint attempt started after it, through 2026-10-09T01:10:32Z, reads:
+
+```text
+   1 failure
+ 175 success
+```
+
+That one failure is a billing annotation on a job that never started.
+So the exit 143 and runner-shutdown failures this lane was known for were all this lane exhausting its own runner, and none has recurred since the boundary.

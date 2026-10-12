@@ -939,10 +939,13 @@ test_ci_runs_one_shellcheck_at_a_time() {
   # two shards must run one at a time, while a developer machine keeps both.
   #
   # That is what this test pins, and it remains correct. It is NOT a claim that
-  # one worker makes the lane fit: measured on the runner, one worker alone
-  # reached 7223 MiB of a 7942 MiB machine and the lane still dies. The earlier
+  # one worker makes the lane fit: before the source boundary, one worker alone
+  # reached 7223 MiB of a 7942 MiB machine and the lane still died. The earlier
   # macOS figures that read as "one worker fits" understated the runner by more
-  # than half; docs/verification/lint-lane-memory.md owns the current numbers.
+  # than half. After the boundary, re-measured on the runner, two workers held
+  # nearly twice what one did and left less than half the headroom, which is
+  # why CI still runs one; docs/verification/lint-lane-memory.md owns the
+  # current numbers.
   #
   # Concurrency is observable at the process boundary, so a recording ShellCheck
   # on PATH answers it without reading fm-lint.sh: each stub instance registers

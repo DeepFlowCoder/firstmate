@@ -34,7 +34,10 @@
 # byte-identical diagnostics and the same exit selection, so the worker count is
 # purely a resource decision.
 # It defaults to two workers locally and to ONE in CI (GITHUB_ACTIONS=true or
-# CI=true), because a hosted runner's memory is the binding constraint there.
+# CI=true), because a hosted runner's memory is the binding constraint there:
+# measured on the runner, two workers save minutes but spend more than half of
+# the headroom the lane's growing peak needs. The lint lane in
+# .github/workflows/ci.yml owns that measurement and when to revisit it.
 # FM_LINT_JOBS overrides either default.
 # The worker count is not what makes this lane fit, and nothing here claims it
 # is: measured on the runner, a single ShellCheck over half this repo reached
@@ -47,6 +50,8 @@
 # Because that replay is the only place a verdict is produced, a run cut short by
 # a signal - a cancelled job, a reclaimed CI runner - has proven nothing, and the
 # parent says so on stderr before exiting 129 (HUP), 130 (INT), or 143 (TERM).
+# CI deliberately does not rerun such a run on a fresh runner; the lint lane in
+# .github/workflows/ci.yml says why.
 #
 # Optional quiet telemetry writes one bounded TSV snapshot of content and source
 # graph identity, wall/CPU/RSS, shard load, and competing ShellCheck processes.
