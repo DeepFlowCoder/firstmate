@@ -999,6 +999,13 @@ test_open_decision_surfaces_end_to_end() {
       and .key == "mate-decision-race" and .verb == "captain-hold")
   ' >/dev/null || fail "an authoritative captain hold must surface in decisions_open: $json"
   pass "an authoritative captain hold surfaces end-to-end"
+  # The mate's backlog records the hold under (repo: firstmate); the home summary
+  # must carry that repo through so the call groups with its project rather than
+  # falling into the no-repo lane.
+  printf '%s' "$json" | jq -e '
+    .decisions_open | any(.[]; .id == "mate/mate-decision-race" and .repo == "firstmate")
+  ' >/dev/null || fail "a secondmate captain hold must keep its recorded repo: $json"
+  pass "a secondmate captain hold keeps its recorded repo"
 }
 
 test_report_pointers_surface() {

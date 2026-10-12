@@ -857,7 +857,8 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
          | {id,key:.id,verb:"captain-hold",summary:(.title | trunc(160)),
             reason:(.hold_reason | trunc(160)),
             hold_until:(.hold_until // null),
-            deferred_marker:(.deferred_marker // false),source:"backlog"} ]) as $captain_holds_all
+            deferred_marker:(.deferred_marker // false),
+            repo:((.repo // null) | if . == null then null else trunc(120) end),source:"backlog"} ]) as $captain_holds_all
     | ([ $backlog.records[]? | select(landed_record)
          | {id:(.id | trunc(120)),title:(.title | trunc(120)),
             kind:((.kind // null) | if . == null then null else trunc(40) end),
@@ -906,7 +907,9 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
             doing:((.current_state.detail // "") | trunc(120))} ]) as $active_all
     | ($captain_holds_all
        + ([ $tasks[] as $t | ($t.hints.open_decisions // [])[]
-            | {id:$t.id,key,verb,summary:(.summary | trunc(160)),reason:null,source:"status"} ])) as $decisions_all
+            | {id:$t.id,key,verb,summary:(.summary | trunc(160)),reason:null,
+               repo:(first($backlog.records[]? | select(.id == $t.id) | .repo // null) // null
+                     | if . == null then null else trunc(120) end),source:"status"} ])) as $decisions_all
     | ([ $queued_all[]
          | select((.unresolved_blocker_ids | length) > 0 or (.hold_reason != null and .hold_kind != null))
          | {id:(.id | trunc(120)),title:(.title | trunc(90)),
