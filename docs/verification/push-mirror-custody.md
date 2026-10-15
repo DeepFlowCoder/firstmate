@@ -2,7 +2,7 @@
 
 Audience: maintainer verification.
 
-This record supports no guarantee of this repository's own.
+Its one guarantee of this repository's own is the one under "Diagnosing and leaving it": that `bin/fm-nm-mirror.sh` reads the real gate mirror the way its test reads a stand-in.
 It records a measured behavior of the installed `no-mistakes` pipeline that costs this fleet delivery time, so that the next person to meet it recognizes it instead of re-diagnosing it, and so the report filed upstream rests on observation rather than recollection.
 It is tracked as `fm-monitor-rebasa-bajo-guardia-de-espejo`.
 
@@ -65,6 +65,30 @@ It moves the first run's diagnosis from operator error to a pipeline recovery pa
 - That the second run's push would have refused. It was cancelled first; the prediction was never tested.
 - Any claim about how often this happens, or about which no-mistakes versions other than v1.75.2 behave this way.
 - Any claim that work was lost. On the first run nothing was: every named commit was still published, and the content of the fix commit was present on both lineages.
+
+## Diagnosing and leaving it
+
+`bin/fm-nm-mirror.sh` owns the diagnosis and the exit; its header states the verdicts, the at-risk classification, and why the exit is a fresh branch rather than a mirror write or `no-mistakes axi sync --adopt-published`.
+`tests/fm-nm-mirror.test.sh` rebuilds the diverged shape with a stand-in mirror and proves the exit keeps every commit.
+
+On 2026-10-15, with no-mistakes v1.84.0 and git 2.54.0, `check` was run read-only against this repository's real gate mirror, from a scratch repository whose local branch was set to the first run's live head `c15550f1`:
+
+```sh
+bin/fm-nm-mirror.sh check -C <scratch> \
+  --branch fm/fm-un-solo-veredicto-para-codigo-malo-y-revisor-cortado
+```
+
+```
+mirror: diverged
+mirror ref: /Users/ramongarcia/.no-mistakes/repos/14f712cb403a.git refs/heads/fm/fm-un-solo-veredicto-para-codigo-malo-y-revisor-cortado at 711f87d6f4fbaa55b09fdac43eb034068d807eb3
+live head: c15550f1541aefb0d926d3d63ebb05de438fe668
+at-risk commits (2 on the mirror lineage, not on the live head):
+  unproven c5ac8de486bddb85303e4b97521447ce7f8a69d1 fix(bin): stop reporting a time-cap cut with the word a code verdict uses
+  present (same patch) 711f87d6f4fbaa55b09fdac43eb034068d807eb3 no-mistakes(document): Fix stale run-outcome docs for cap-cut reporting
+```
+
+It exited 1 and named the same two commits the push step refused over.
+The second one reads unproven because its rebased copy on the live head is not the same change: its patch does not reverse-apply there and its files differ.
 
 ## Refreshing this
 
