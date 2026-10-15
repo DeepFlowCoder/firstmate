@@ -210,6 +210,22 @@
 #     root still exists, so the account's healthy LaunchAgent worker and every
 #     live remote secondmate worker are out of scope. Best effort: a sweep
 #     failure never blocks this teardown.
+#
+# Real data left in the task copy: `treehouse return --force` cleans untracked
+# files but KEEPS gitignored ones, so a project's gitignored data/ - where a
+# project keeps the captain's real records - survives a return and is handed to
+# the next task that leases the slot (measured 2026-10-07: a full 135 MB copy of a
+# project's data/ and three ledger copies in a reusable pool). Once every safety
+# refusal has passed, and before the copy is released or removed on any backend,
+# purge_task_worktree_real_data removes from the task's own copy only what git
+# ignores under each directory in TEARDOWN_REAL_DATA_DIRS (data/), through
+# `git clean -X`: tracked files stay, a symlink is removed as a link and never
+# followed, and nothing outside those directories is touched. It first proves the
+# copy is a linked worktree whose top level is the recorded path and which is not
+# the project clone; a copy it cannot prove that about, a removal that fails, or
+# anything still listed afterwards REFUSES before the release, with the copy, its
+# branch, and every record intact. It runs on --force too, since that data was
+# never the task's work. Secondmate homes are not task copies and are out of scope.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1450,6 +1466,57 @@ cleanup_stale_lock_for_safety_check() {
 
   echo "teardown: worktree safety check blocked by git lock $lock that is not provably stale (may belong to a live process); leaving it in place" >&2
   return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
+}
+
+# Remove the real data a task left in its own copy before that copy is released.
+# See "Real data left in the task copy" in the script header.
+TEARDOWN_REAL_DATA_DIRS=(data)
+purge_task_worktree_real_data() {
+  local wt=$1 proj=$2 rel present=() wt_real proj_real top git_dir common_dir leftover
+  for rel in "${TEARDOWN_REAL_DATA_DIRS[@]}"; do
+    if [ -e "$wt/$rel" ] || [ -L "$wt/$rel" ]; then
+      present+=("$rel")
+    fi
+  done
+  [ "${#present[@]}" -gt 0 ] || return 0
+  # The copy must be proven a disposable linked worktree, distinct from the
+  # project clone, before anything inside it is deleted.
+  wt_real=$(CDPATH='' cd -- "$wt" 2>/dev/null && pwd -P) || wt_real=
+  top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || top=
+  [ -z "$top" ] || top=$(CDPATH='' cd -- "$top" 2>/dev/null && pwd -P) || top=
+  git_dir=$(git -C "$wt" rev-parse --path-format=absolute --git-dir 2>/dev/null) || git_dir=
+  common_dir=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common_dir=
+  proj_real=
+  [ -z "$proj" ] || proj_real=$(CDPATH='' cd -- "$proj" 2>/dev/null && pwd -P) || proj_real=
+  if [ -z "$wt_real" ] || [ -z "$top" ] || [ -z "$git_dir" ] || [ -z "$common_dir" ]; then
+    echo "REFUSED: cannot establish that $wt is a git worktree, so the data it holds (${present[*]}) cannot be removed safely; nothing was released" >&2
+    return 1
+  fi
+  if [ "$top" != "$wt_real" ] || [ "$git_dir" = "$common_dir" ] \
+     || { [ -n "$proj_real" ] && [ "$wt_real" = "$proj_real" ]; }; then
+    echo "REFUSED: $wt is not a disposable linked task worktree separate from the project clone, so its data (${present[*]}) was left untouched and nothing was released" >&2
+    return 1
+  fi
+  for rel in "${present[@]}"; do
+    # git clean -X removes only what git ignores: tracked files stay, and a
+    # symlink is removed as a link, never followed into what it points at.
+    if ! leftover=$(git -C "$wt" clean -ffdXn -- "$rel" 2>&1); then
+      echo "error: could not list the gitignored $rel the task left in $wt; nothing was released: $leftover" >&2
+      return 1
+    fi
+    [ -n "$leftover" ] || continue
+    if ! git -C "$wt" clean -ffdXq -- "$rel" >/dev/null; then
+      echo "error: could not remove the gitignored $rel the task left in $wt; nothing was released" >&2
+      return 1
+    fi
+    leftover=$(git -C "$wt" clean -ffdXn -- "$rel" 2>&1) || leftover="git clean -n failed: $leftover"
+    if [ -n "$leftover" ]; then
+      echo "error: gitignored $rel still present in $wt after removal; nothing was released:" >&2
+      printf '%s\n' "$leftover" >&2
+      return 1
+    fi
+    echo "teardown: removed the gitignored $rel the task left in $wt" >&2
+  done
 }
 
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
@@ -3036,6 +3103,12 @@ if [ "$BACKEND" = herdr ]; then
   fm_backend_herdr_parse_target "$T" || exit 1
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
+fi
+
+# The task's leftover real data goes before its copy is released or removed;
+# a refusal here leaves the copy, its branch, and every record intact.
+if [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
+  purge_task_worktree_real_data "$WT" "$PROJ" || exit 1
 fi
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
