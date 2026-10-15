@@ -197,8 +197,21 @@
 # destination, normal-case deduplication, and at-least-once recovery.
 # A landed merge whose outcome cannot be written is reported loudly rather than
 # misreported as a failed merge.
+#
+# TASK ALREADY CLEANED UP
+# A task's record normally outlives its PR, because cleanup refuses while the
+# task's PR is still open (bin/fm-teardown.sh). A PR can still outlive its task
+# record: a discard-authorized forced cleanup, or a cleanup from before that
+# refusal existed. --task-cleaned-up, passed before the optional -- separator,
+# merges that PR through this same fitness gate, merge path, and outcome report,
+# and only skips recording pr= and arming the merge poll on a task record that
+# no longer exists. It is accepted only when the task record is absent, so it
+# can never skip that recording for a live task. A missing record without the
+# flag still refuses, naming the flag, rather than guessing that the task was
+# cleaned up. It adds no merge authority: the captain's word, or a yolo posture,
+# is required exactly as for any other merge.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [--captain-override-red]
-#          [-- <extra forge merge args>]
+#          [--task-cleaned-up] [-- <extra forge merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -243,9 +256,11 @@ shift 2
 # is deliberately accepted only here: after --, every argument belongs to
 # gh-axi, so the flag cannot be smuggled in through the passthrough.
 OVERRIDE=0
+CLEANED_UP=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --captain-override-red) OVERRIDE=1; shift ;;
+    --task-cleaned-up) CLEANED_UP=1; shift ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -255,8 +270,8 @@ reject_override_in_passthrough() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-      --captain-override-red)
-        echo "error: --captain-override-red is firstmate's own flag and must come before the -- separator" >&2
+      --captain-override-red|--task-cleaned-up)
+        echo "error: $arg is firstmate's own flag and must come before the -- separator" >&2
         return 1
         ;;
     esac
@@ -331,8 +346,16 @@ reject_repo_overrides "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
-if [ ! -f "$META" ] || [ -L "$META" ]; then
+if [ "$CLEANED_UP" -eq 1 ]; then
+  if [ -e "$META" ] || [ -L "$META" ]; then
+    echo "error: --task-cleaned-up was given but task $ID still has its task record; nothing was merged; merge without the flag so the merge is recorded on that task" >&2
+    exit 1
+  fi
+elif [ ! -f "$META" ] || [ -L "$META" ]; then
   echo "error: task metadata is unavailable" >&2
+  if [ ! -e "$META" ] && [ ! -L "$META" ]; then
+    echo "error: nothing was merged; if task $ID was already cleaned up while its PR stayed open, re-run with --task-cleaned-up" >&2
+  fi
   exit 1
 fi
 
@@ -612,7 +635,7 @@ fi
 # The recorded head is read before bin/fm-pr-check.sh rewrites the metadata,
 # because that script re-records pr= and drops a pr_head= it cannot resolve.
 RECORDED_HEAD=
-if [ "$PROVIDER" = gitlab ]; then
+if [ "$PROVIDER" = gitlab ] && [ "$CLEANED_UP" -eq 0 ]; then
   RECORDED_HEAD=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
 fi
 
@@ -797,7 +820,7 @@ github_read_outcome_with_gh_axi() {
 github_read_outcome() {
   if ! command -v gh >/dev/null 2>&1; then
     github_read_outcome_with_gh_axi && return 0
-    echo "error: could not read the GitHub pull request outcome after the merge attempt; PR metadata and merge poll remain recorded" >&2
+    echo "error: could not read the GitHub pull request outcome after the merge attempt; $POLL_FOLLOWUP" >&2
     return 1
   fi
   # Only a failed gh read falls back. A gh read that completes and reports the
@@ -808,7 +831,7 @@ github_read_outcome() {
   if github_read_outcome_with_gh_axi && [ "$FM_PR_GITHUB_MERGED" = true ]; then
     return 0
   fi
-  echo "error: could not read the GitHub pull request outcome after the merge attempt: the gh read failed and the gh-axi view could not prove the outcome either; PR metadata and merge poll remain recorded" >&2
+  echo "error: could not read the GitHub pull request outcome after the merge attempt: the gh read failed and the gh-axi view could not prove the outcome either; $POLL_FOLLOWUP" >&2
   return 1
 }
 
@@ -927,15 +950,15 @@ gitlab_confirm_merged() {
   local json state
   if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" \
     -R "$PROJECT_URL" -F json 2>/dev/null) || [ -z "$json" ]; then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; %s\n' \
+      "$URL" "$POLL_FOLLOWUP" >&2
     return 2
   fi
   if ! state=$(printf '%s' "$json" | jq -r \
     'if type == "object" and (.state | type == "string") then .state else error("invalid state") end' \
     2>/dev/null); then
-    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
-      "$URL" >&2
+    printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; %s\n' \
+      "$URL" "$POLL_FOLLOWUP" >&2
     return 2
   fi
   [ "$state" = merged ]
@@ -944,7 +967,14 @@ gitlab_confirm_merged() {
 # Record before either forge call. This arms the merge poll without claiming a
 # landed outcome, so even a provider read failure after a real merge cannot
 # leave teardown without the PR identity it needs to verify the result.
-record_pr_metadata || exit 1
+# A task already cleaned up has no record to write to and no teardown to come,
+# so nothing watches this PR after this run and every unproven outcome says so.
+POLL_FOLLOWUP="PR metadata and merge poll remain recorded"
+if [ "$CLEANED_UP" -eq 0 ]; then
+  record_pr_metadata || exit 1
+else
+  POLL_FOLLOWUP="no merge poll watches it, because task $ID was already cleaned up; re-check the pull request on the forge"
+fi
 
 case "$PROVIDER" in
   github)

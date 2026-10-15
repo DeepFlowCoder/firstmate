@@ -9,7 +9,9 @@
 #   (a) a verified merge records pr= and pr_head=
 #   (b) merge is refused when gh-axi pr merge itself fails (no silent success)
 #   (c) extra gh-axi pr merge args are forwarded after number and --repo
-#   (d) merge is refused before gh-axi when task meta is missing
+#   (d) merge is refused before gh-axi when task meta is missing, naming the
+#       --task-cleaned-up path; that flag merges a cleaned-up task's PR through
+#       the same gate without writing task state, and refuses for a live task
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
@@ -1423,7 +1425,91 @@ test_missing_meta_refuses_before_merge() {
   [ ! -s "$case_dir/gh-axi.log" ] || fail "missing-meta: gh-axi pr merge was invoked"
   assert_absent "$case_dir/state/missing-x1.check.sh" \
     "missing-meta: fm-pr-check should not arm a poll for an unknown task"
+  assert_grep 're-run with --task-cleaned-up' "$case_dir/stderr" \
+    "missing-meta: refusal did not name the guarded path for a task already cleaned up"
   pass "fm-pr-merge refuses before merging when task meta is missing"
+}
+
+# A task whose record is gone, as after a cleanup that left its PR open: the
+# measured incident was a refusal with no guarded way forward. The flag merges
+# through the same fitness gate and outcome report, and writes no task record.
+test_cleaned_up_task_merges_through_the_gate() {
+  local case_dir fakebin rc
+  case_dir="$TMP_ROOT/cleaned-up-merge"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  printf '%s\n' 'state=MERGED' 'merged=true' 'queued=false' 'base=main' > "$case_dir/github-outcome"
+  printf 'false\n' > "$case_dir/github-queue"
+  add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" gone-x1 https://github.com/example/repo/pull/21 --task-cleaned-up \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "cleaned-up-merge: a green PR of a cleaned-up task should merge, stderr: $(cat "$case_dir/stderr")"
+  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "cleaned-up-merge: gh-axi pr merge was not invoked for the PR"
+  assert_absent "$case_dir/state/gone-x1.meta" \
+    "cleaned-up-merge: a task record was recreated for a task already cleaned up"
+  assert_absent "$case_dir/state/gone-x1.check.sh" \
+    "cleaned-up-merge: a merge poll was armed for a task already cleaned up"
+  assert_grep 'merge landed: gone-x1 https://github.com/example/repo/pull/21' "$case_dir/state/.wake-queue" \
+    "cleaned-up-merge: the landed merge was not reported for supervision"
+  pass "fm-pr-merge --task-cleaned-up merges a cleaned-up task's PR and records no task state"
+}
+
+test_cleaned_up_task_still_obeys_the_fitness_gate() {
+  local case_dir fakebin rc
+  case_dir="$TMP_ROOT/cleaned-up-red"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  printf 'false\n' > "$case_dir/github-queue"
+  add_gh_mocks "$case_dir" abcabcabcabcabcabcabcabcabcabcabcabcabca
+  : > "$case_dir/gh-axi.log"
+  FM_TEST_PR_READING=$(write_reading "$case_dir" \
+    'pr OPEN MERGEABLE UNSTABLE' \
+    'base main abcabcabcabcabcabcabcabcabcabcabcabcabca' \
+    'checks 1' \
+    'check COMPLETED FAILURE 1788277535 degraded build')
+  export FM_TEST_PR_READING
+
+  set +e
+  run_pr_merge "$case_dir" gone-x1 https://github.com/example/repo/pull/9 --task-cleaned-up \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  unset FM_TEST_PR_READING
+
+  expect_code 1 "$rc" "cleaned-up-red: a red PR must refuse even for a cleaned-up task"
+  assert_grep 'checks did not pass: build' "$case_dir/stderr" \
+    "cleaned-up-red: the refusal did not come from the fitness gate naming the failed check"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "cleaned-up-red: gh-axi pr merge was invoked despite a failed check"
+  pass "fm-pr-merge --task-cleaned-up never bypasses the fitness gate"
+}
+
+test_cleaned_up_flag_refuses_for_a_live_task() {
+  local case_dir rc
+  case_dir=$(make_case cleaned-up-live)
+  add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/21 --task-cleaned-up \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "cleaned-up-live: the flag must refuse while the task record exists"
+  assert_grep 'still has its task record' "$case_dir/stderr" \
+    "cleaned-up-live: the refusal did not say the task still has its record"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "cleaned-up-live: gh-axi was invoked"
+  assert_no_grep 'pr=' "$case_dir/state/task-x1.meta" \
+    "cleaned-up-live: the refusal still recorded pr="
+  pass "fm-pr-merge --task-cleaned-up cannot skip recording for a live task"
 }
 
 test_malformed_url_refuses_before_merge() {
@@ -3140,6 +3226,9 @@ test_github_queued_outcome_is_verified
 test_github_queue_required_refusal_names_the_methodless_retry
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
+test_cleaned_up_task_merges_through_the_gate
+test_cleaned_up_task_still_obeys_the_fitness_gate
+test_cleaned_up_flag_refuses_for_a_live_task
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording
