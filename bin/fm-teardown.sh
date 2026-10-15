@@ -13,6 +13,12 @@
 # already present in the up-to-date default branch. This recognizes the common
 # squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
 # on a remote yet the change is fully in main.
+# PUBLISHED IS NOT LANDED: for a ship task outside local-only, a pushed branch whose
+# PR is still OPEN refuses before anything is touched, naming that PR, because
+# cleanup retires the task record that the guarded merge (bin/fm-pr-merge.sh) needs.
+# The PR is the recorded pr= (GitHub or GitLab) or, with none recorded, an open
+# pull request on the worktree's branch in the GitHub repository the forge names;
+# a state that cannot be read refuses too. Merged and closed PRs pass as before.
 # The PR itself is resolved from the task's recorded pr= when present, or - when
 # no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
 # where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
@@ -1286,6 +1292,73 @@ work_is_landed() {
   local branch=$1
   pr_is_merged "$branch" && return 0
   content_in_default
+}
+
+# PUBLISHED IS NOT LANDED (see script header). The task's PR is the recorded pr=
+# when there is one, otherwise an open pull request on the worktree's branch in
+# the GitHub repository the forge names. Its state is read live from the forge:
+# merged or closed passes, open refuses naming that PR, and every reading that
+# could not be taken refuses naming what could not be read, because a gate that
+# cannot measure never passes. A forge that is not a github.com repository and no
+# recorded pr= leaves no PR to ask about, exactly as the landed-work test reads it.
+# Sets TASK_PR_OPEN_REFUSAL and returns non-zero when teardown must refuse.
+TASK_PR_OPEN_REFUSAL=
+task_pr_state_from_axi() {  # <gh-axi or glab output>
+  printf '%s\n' "$1" | awk '
+    $1 == "state:" { count++; value=$2 }
+    END { if (count == 1 && value != "") print value; else exit 1 }
+  '
+}
+
+task_pr_is_not_open() {
+  local raw state branch slug count n
+  TASK_PR_OPEN_REFUSAL=
+  case "$KIND" in
+    secondmate|scout) return 0 ;;
+  esac
+  [ "$MODE" != local-only ] || return 0
+  if [ -n "$PR_URL" ]; then
+    if ! fm_pr_url_parse "$PR_URL"; then
+      TASK_PR_OPEN_REFUSAL="the recorded PR $PR_URL is not a pull or merge request URL this can read, so nothing here proves it is not still open"
+      return 1
+    fi
+    case "$FM_PR_PROVIDER" in
+      github)
+        raw=$(gh-axi pr view "$FM_PR_NUMBER" --repo "$FM_PR_OWNER/$FM_PR_REPO" 2>/dev/null) || raw=
+        ;;
+      gitlab)
+        raw=$(glab mr view "$FM_PR_NUMBER" -R "https://$FM_PR_HOST/$FM_PR_PATH" 2>/dev/null) || raw=
+        ;;
+      *) raw= ;;
+    esac
+    if ! state=$(task_pr_state_from_axi "$raw"); then
+      TASK_PR_OPEN_REFUSAL="the state of the recorded PR $FM_PR_URL could not be read from the forge, so nothing here proves it is not still open"
+      return 1
+    fi
+    case "$state" in
+      merged|MERGED|closed|CLOSED) return 0 ;;
+      open|OPEN|opened)
+        TASK_PR_OPEN_REFUSAL="its PR $FM_PR_URL is still open: the branch is published but the PR has not merged, so the work has not landed"
+        return 1
+        ;;
+    esac
+    TASK_PR_OPEN_REFUSAL="the recorded PR $FM_PR_URL reads as '$state', which is neither merged nor closed, so the work has not landed"
+    return 1
+  fi
+  [ -d "$WT" ] || return 0
+  branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 0
+  [ -n "$branch" ] || return 0
+  slug=$(forge_repo_slug) || return 0
+  if ! raw=$(cd "$WT" && gh-axi pr list --state open --head "$branch" --limit 1 --repo "$slug" 2>/dev/null) \
+    || ! count=$(printf '%s\n' "$raw" | sed -n 's/^count:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1) \
+    || [ -z "$count" ]; then
+    TASK_PR_OPEN_REFUSAL="whether branch $branch has an open PR in $slug could not be read from the forge, so nothing here proves it has none"
+    return 1
+  fi
+  [ "$count" -gt 0 ] || return 0
+  n=$(printf '%s\n' "$raw" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
+  TASK_PR_OPEN_REFUSAL="its PR https://github.com/$slug/pull/${n:-?} on branch $branch is still open: the branch is published but the PR has not merged, so the work has not landed"
+  return 1
 }
 
 backlog_refresh_reminder() {
@@ -2990,6 +3063,12 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] &&
   fi
   require_orca_worktree_path_match "$ORCA_WORKTREE_ID" "$WT" || exit 1
   ORCA_PATH_MATCH_VERIFIED=1
+fi
+
+if [ "$FORCE" != "--force" ] && ! task_pr_is_not_open; then
+  echo "REFUSED: task $ID cannot be cleaned up: $TASK_PR_OPEN_REFUSAL." >&2
+  echo "Nothing was changed. Merge or close the PR first (bin/fm-pr-merge.sh after the captain approves), or get the captain's explicit OK to discard, then --force." >&2
+  exit 1
 fi
 
 if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then

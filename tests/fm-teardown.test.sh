@@ -5,7 +5,8 @@
 # treehouse return hard-resets the worktree. "Landed" means reachable from a remote
 # OR - for a normal ship task whose commits are not so reachable - its PR is merged
 # and GitHub reports a PR head that contains the current local work, or its content
-# is already in the up-to-date default branch.
+# is already in the up-to-date default branch. A pushed branch whose PR is still
+# open is published, not landed, and refuses.
 #
 # Covers three fixes:
 #   - local-only fork-remote: a fork IS a remote, so fork-pushed upstream-
@@ -42,6 +43,10 @@
 #   (aa) local-only + origin/HEAD on the captain's own branch  -> REFUSE (forge names it)
 #   (bb) local-only + no forge to name the default branch      -> REFUSE (cannot measure)
 #   (cc) local-only + forge endpoint that demands a credential -> REFUSE at once (never wait)
+#   (dd) no-mistakes + pushed branch, recorded PR still open   -> REFUSE naming the PR
+#   (ee) direct-PR + pushed branch, open PR found by branch    -> REFUSE naming the PR
+#   (ff) no-mistakes + pushed branch, PR state unreadable      -> REFUSE (cannot measure)
+#   (gg) no-mistakes + pushed branch, PR merged or closed      -> ALLOW  (no regression)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -94,15 +99,16 @@ SH
 # tmux kill-window etc.: succeed silently.
 exit 0
 SH
-  # Default gh-axi mock: no PR is associated with the branch, and viewing any PR
-  # number fails. This keeps the landed-work check hermetic (never reaching the real
-  # gh-axi) and represents the common "no GitHub PR" baseline. Tests that need a
-  # merged PR or a lookup error override this file with the helpers below.
+  # Default gh-axi mock: no PR is associated with the branch, and a PR a case
+  # records as pr= reads as merged, which is what recording it before teardown
+  # means. This keeps the landed-work check hermetic (never reaching the real
+  # gh-axi) and represents the common "no GitHub PR" baseline. Tests that need an
+  # open PR or a lookup error override this file with the helpers below.
   cat > "$fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
   "pr list") printf '%s\n' "count: 0 (showing first 0)" "pull_requests[]: []" ; exit 0 ;;
-  "pr view") echo "error: pull request not found" >&2 ; exit 1 ;;
+  "pr view") printf '%s\n' "pull_request:" "  state: merged" ; exit 0 ;;
 esac
 exit 0
 SH
@@ -361,6 +367,10 @@ add_gh_pr_merged_for_head() {
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
   "pr list")
+    # PR 7 is merged, so a listing filtered to open pull requests holds none.
+    case " $* " in
+      *" --state open "*) printf '%s\n' "count: 0" "pull_requests: []" ; exit 0 ;;
+    esac
     printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,merged" ; exit 0 ;;
   "pr view")
     printf '%s\n' "pull_request:" "  number: 7" "  state: merged" '  merged: "2026-06-26T00:00:00Z"' ; exit 0 ;;
@@ -950,6 +960,146 @@ test_merged_pr_with_later_local_commit_refuses() {
   expect_code 1 "$rc" "stale-pr-head: teardown should refuse when HEAD moved after PR recording"
   grep -q REFUSED "$case_dir/stderr" || fail "stale-pr-head: no REFUSED line in stderr"
   pass "merged PR does not allow teardown after a later local commit"
+}
+
+# Override GitHub lookups so the task's PR 7 reads as <state> (open, merged,
+# closed) through gh-axi, the named reading the open-PR gate takes, and the open
+# list on the branch carries it exactly when it is open. Args: case_dir state
+add_gh_axi_pr_in_state() {
+  local case_dir=$1 state=$2
+  cat > "$case_dir/fakebin/gh-axi" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr list")
+    if [ '$state' = open ]; then
+      printf '%s\n' "count: 1" "pull_requests[1]{number,title,state}:" "  7,\"task work\",open"
+    else
+      printf '%s\n' "count: 0" "pull_requests: []"
+    fi
+    exit 0 ;;
+  "pr view")
+    printf '%s\n' "pull_request:" "  number: 7" "  state: $state" ; exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/gh-axi"
+}
+
+# A treehouse that records every call, so a refusal can prove it returned nothing.
+add_logging_treehouse() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$case_dir/treehouse.log'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# The refusal must leave everything that cleanup would have retired in place.
+assert_nothing_cleaned_up() {  # <case-dir> <label>
+  local case_dir=$1 label=$2
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "$label: the task record was removed"
+  [ -d "$case_dir/wt" ] || fail "$label: the worktree was removed"
+  git -C "$case_dir/project" rev-parse --verify -q refs/heads/fm/task-x1 >/dev/null \
+    || fail "$label: the task branch was deleted"
+  [ ! -s "$case_dir/treehouse.log" ] || fail "$label: the worktree was returned: $(cat "$case_dir/treehouse.log")"
+}
+
+# PUBLISHED IS NOT LANDED. The measured defect: the branch was pushed, so every
+# commit was reachable from a remote-tracking branch and teardown reported
+# "complete" while the task's PR was still open - and the guarded merge then
+# refused because the task record it needs was gone.
+test_pushed_branch_with_open_recorded_pr_refuses() {
+  local case_dir rc
+  case_dir=$(make_case open-pr-recorded)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  append_pr_meta_for_current_head "$case_dir"
+  add_gh_axi_pr_in_state "$case_dir" open
+  add_logging_treehouse "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "open-pr-recorded: teardown must refuse while the PR is open"
+  grep -q 'REFUSED' "$case_dir/stderr" || fail "open-pr-recorded: no REFUSED line, stderr: $(cat "$case_dir/stderr")"
+  grep -qF 'PR https://github.com/example/repo/pull/7 is still open' "$case_dir/stderr" \
+    || fail "open-pr-recorded: the refusal does not name the open PR, stderr: $(cat "$case_dir/stderr")"
+  assert_nothing_cleaned_up "$case_dir" open-pr-recorded
+  pass "a pushed branch whose recorded PR is still open is refused, naming the PR, with nothing cleaned up"
+}
+
+test_pushed_branch_with_open_pr_found_by_branch_refuses() {
+  local case_dir rc
+  case_dir=$(make_case open-pr-by-branch)
+  write_meta "$case_dir" direct-PR ship
+  wt_commit_file "$case_dir" feature.txt hello "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  add_gh_axi_pr_in_state "$case_dir" open
+  add_logging_treehouse "$case_dir"
+  name_origin_as_github "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "open-pr-by-branch: teardown must refuse while the branch's PR is open"
+  grep -qF 'PR https://github.com/example/repo/pull/7 on branch fm/task-x1 is still open' "$case_dir/stderr" \
+    || fail "open-pr-by-branch: the refusal does not name the open PR, stderr: $(cat "$case_dir/stderr")"
+  assert_nothing_cleaned_up "$case_dir" open-pr-by-branch
+  pass "a pushed branch with an open PR and no recorded pr= is refused, naming the PR"
+}
+
+test_pushed_branch_with_unreadable_recorded_pr_refuses() {
+  local case_dir rc
+  case_dir=$(make_case open-pr-unreadable)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  append_pr_meta_for_current_head "$case_dir"
+  add_gh_axi_error "$case_dir"
+  add_logging_treehouse "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "open-pr-unreadable: teardown must refuse when the PR state cannot be read"
+  grep -qF 'could not be read from the forge' "$case_dir/stderr" \
+    || fail "open-pr-unreadable: the refusal does not say what could not be read, stderr: $(cat "$case_dir/stderr")"
+  assert_nothing_cleaned_up "$case_dir" open-pr-unreadable
+  pass "a pushed branch whose recorded PR state cannot be read is refused rather than presumed landed"
+}
+
+test_pushed_branch_with_merged_or_closed_recorded_pr_allows() {
+  local case_dir rc state
+  for state in merged closed; do
+    case_dir=$(make_case "pr-$state-pushed")
+    write_meta "$case_dir" no-mistakes ship
+    wt_commit_file "$case_dir" feature.txt hello "shippable work"
+    git -C "$case_dir/wt" push -q origin fm/task-x1
+    git -C "$case_dir/project" fetch -q origin
+    append_pr_meta_for_current_head "$case_dir"
+    add_gh_axi_pr_in_state "$case_dir" "$state"
+
+    set +e
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 0 "$rc" "pr-$state-pushed: teardown should complete once the PR is $state"
+    ! grep -q REFUSED "$case_dir/stderr" || fail "pr-$state-pushed: teardown printed a REFUSED line: $(cat "$case_dir/stderr")"
+  done
+  pass "a pushed branch whose recorded PR is merged or closed is torn down (no regression)"
 }
 
 test_pr_check_does_not_refresh_stale_pr_head() {
@@ -3643,6 +3793,10 @@ test_no_pr_recorded_discovers_merged_pr_by_branch_allows
 test_unnameable_repository_never_releases_unlanded_work
 test_squash_merged_pr_allows_replayed_unpushed_patch
 test_merged_pr_with_later_local_commit_refuses
+test_pushed_branch_with_open_recorded_pr_refuses
+test_pushed_branch_with_open_pr_found_by_branch_refuses
+test_pushed_branch_with_unreadable_recorded_pr_refuses
+test_pushed_branch_with_merged_or_closed_recorded_pr_allows
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
