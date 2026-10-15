@@ -88,7 +88,7 @@ at-risk commits (2 on the mirror lineage, not on the live head):
 ```
 
 It exited 1 and named the same two commits the push step refused over.
-The second one reads unproven because its rebased copy on the live head is not the same change: its patch does not reverse-apply there and its files differ.
+The first one reads unproven because its rebased copy on the live head is not the same change: its patch does not reverse-apply there and its files differ.
 
 ## Refreshing this
 
