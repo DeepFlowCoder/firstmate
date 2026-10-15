@@ -225,7 +225,8 @@
 # the project clone; a copy it cannot prove that about, a removal that fails, or
 # anything still listed afterwards REFUSES before the release, with the copy, its
 # branch, and every record intact. It runs on --force too, since that data was
-# never the task's work. Secondmate homes are not task copies and are out of scope.
+# never the task's work, and on each child ship or scout copy a forced secondmate
+# teardown releases. Secondmate homes are not task copies and are out of scope.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -2899,12 +2900,14 @@ cleanup_firstmate_home_children() {
     elif [ "$child_backend" = orca ]; then
       if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+        purge_task_worktree_real_data "$child_wt" "$child_proj" || return 1
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
           "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
       fi
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
     elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+      purge_task_worktree_real_data "$child_wt" "$child_proj" || return 1
       rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
         "$child_wt/.opencode/plugins/fm-busy-state.js" \
         "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"

@@ -61,6 +61,8 @@
 #        project clone's own data/ all kept
 #   (ee) the same under --force                       -> data/ ignored files gone
 #   (ff) ignored data/ in a copy that is not a linked worktree -> REFUSE, untouched
+#   (gg) forced secondmate teardown with ignored data/ in a child task copy
+#        -> child data/ ignored files gone, tracked file and project data/ kept
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -3753,6 +3755,38 @@ test_real_data_in_a_copy_that_is_not_a_linked_worktree_refuses_untouched() {
   pass "data in a copy that is not a linked worktree is refused and left untouched"
 }
 
+test_forced_secondmate_teardown_removes_real_data_left_in_child_task_copy() {
+  local case_dir rc child_wt
+  case_dir=$(make_case real-data-purge-child)
+  write_meta "$case_dir" local-only secondmate
+  configure_secondmate_with_tmux_children "$case_dir"
+  child_wt="$case_dir/child-a-wt"
+  printf '%s\n' 'data/' > "$child_wt/.gitignore"
+  mkdir -p "$child_wt/data/base_datos"
+  printf '%s\n' 'tracked fixture' > "$child_wt/data/README.md"
+  git -C "$child_wt" add -- .gitignore
+  git -C "$child_wt" add -f -- data/README.md
+  git -C "$child_wt" -c user.email=t@t -c user.name=t commit -q -m "ignore data"
+  printf '%s\n' 'ledger' > "$child_wt/data/base_datos/ledger.sqlite"
+  mkdir -p "$case_dir/project/data"
+  printf '%s\n' 'the captain real data' > "$case_dir/project/data/ledger.sqlite"
+  add_ignored_keeping_treehouse "$case_dir"
+
+  rc=0
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "real-data-purge-child: forced secondmate teardown should succeed"
+  assert_line "$case_dir/treehouse.log" "returned $child_wt" \
+    "real-data-purge-child: the child task copy was never returned to the pool"
+  assert_no_grep "left: " "$case_dir/treehouse.log" \
+    "real-data-purge-child: ignored data/ files in a child task copy survived into the pool"
+  assert_absent "$child_wt/data/base_datos" "real-data-purge-child: the child's ignored ledger copy survived"
+  assert_present "$child_wt/data/README.md" "real-data-purge-child: a file the project tracks under data/ was deleted"
+  assert_present "$case_dir/project/data/ledger.sqlite" \
+    "real-data-purge-child: the child project clone's own data/ was touched"
+  pass "forced secondmate teardown removes the gitignored data/ a child task left in its copy"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -3765,6 +3799,7 @@ test_teardown_missing_busy_sidecar_completes
 test_teardown_removes_real_data_left_in_task_copy
 test_forced_teardown_also_removes_real_data_left_in_task_copy
 test_real_data_in_a_copy_that_is_not_a_linked_worktree_refuses_untouched
+test_forced_secondmate_teardown_removes_real_data_left_in_child_task_copy
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
