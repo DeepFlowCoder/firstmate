@@ -358,6 +358,11 @@ test_no_mistakes_dod_wording() {
   # guards the structure that makes it safe.
   assert_grep "firstmate's authority check" "$brief" \
     "no-mistakes DOD lost the apostrophe prose that the structural fix makes parse-safe"
+  # A worker meets the mirror refusal mid-run, so the exit must be reachable
+  # from the brief by a path that actually runs.
+  assert_grep "If a run stops with \`refusing to reconcile private mirror ref\`, run \`$ROOT/bin/fm-nm-mirror.sh check\`" "$brief" \
+    "no-mistakes DOD must route the mirror refusal to the mirror helper by absolute path"
+  [ -x "$ROOT/bin/fm-nm-mirror.sh" ] || fail "the mirror helper the brief names must be executable"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 

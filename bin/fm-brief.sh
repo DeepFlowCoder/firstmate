@@ -604,6 +604,7 @@ Follow the guidance no-mistakes itself provides for the mechanics: it loads when
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
 The one scaffold section that is never boilerplate is the credential-store rule above: carry that section into every \`--intent\` in full, never in summary and never in part, because the workers the pipeline runs never see this brief and that is the placement measured to be obeyed.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+If a run stops with \`refusing to reconcile private mirror ref\`, run \`$FM_ROOT/bin/fm-nm-mirror.sh check\` in your worktree and follow the exit it prints; never delete, reset, or force-push the old branch to get past it.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
