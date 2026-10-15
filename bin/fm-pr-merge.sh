@@ -1027,6 +1027,7 @@ case "$PROVIDER" in
     elif [ "$FM_PR_GITHUB_QUEUED" = true ]; then
       printf 'verified: %s is queued (state=%s, merged=%s, isInMergeQueue=%s)\n' \
         "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED"
+      [ "$CLEANED_UP" -eq 0 ] || printf 'actionable: %s is not merged yet; %s\n' "$URL" "$POLL_FOLLOWUP" >&2
       exit 0
     else
       github_report_forge_output "$merge_output"
@@ -1044,6 +1045,10 @@ case "$PROVIDER" in
       --sha "$FM_PR_MERGE_HEAD" --yes "$@"
     gitlab_confirm_rc=0
     gitlab_confirm_merged || gitlab_confirm_rc=$?
+    if [ "$gitlab_confirm_rc" -eq 1 ] && [ "$CLEANED_UP" -eq 1 ]; then
+      printf 'actionable: GitLab accepted the merge request for %s but it is not merged yet; %s\n' \
+        "$URL" "$POLL_FOLLOWUP" >&2
+    fi
     [ "$gitlab_confirm_rc" -eq 0 ] || exit 0
     ;;
   *)
@@ -1054,7 +1059,8 @@ esac
 
 # Reached only after the forge confirmed the merge landed: set -e exits on a
 # refused or failed merge above, and a queued forge merge exits without an
-# outcome while its existing poll remains armed.
+# outcome while its existing poll remains armed, or, for a task already cleaned
+# up, after saying that no poll watches it.
 outcome_rc=0
 fm_merge_outcome_report "$FM_HOME" "$STATE" "$ID" "$URL" self || outcome_rc=$?
 case "$outcome_rc" in

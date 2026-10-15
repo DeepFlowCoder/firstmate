@@ -11,7 +11,8 @@
 #   (c) extra gh-axi pr merge args are forwarded after number and --repo
 #   (d) merge is refused before gh-axi when task meta is missing, naming the
 #       --task-cleaned-up path; that flag merges a cleaned-up task's PR through
-#       the same gate without writing task state, and refuses for a live task
+#       the same gate without writing task state, refuses for a live task,
+#       and says a merely queued PR has no poll left to follow it up
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
@@ -1510,6 +1511,34 @@ test_cleaned_up_flag_refuses_for_a_live_task() {
   assert_no_grep 'pr=' "$case_dir/state/task-x1.meta" \
     "cleaned-up-live: the refusal still recorded pr="
   pass "fm-pr-merge --task-cleaned-up cannot skip recording for a live task"
+}
+
+test_cleaned_up_queued_merge_says_no_poll_follows_up() {
+  local case_dir fakebin rc
+  case_dir="$TMP_ROOT/cleaned-up-queued"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  printf '%s\n' 'state=OPEN' 'merged=false' 'queued=true' 'base=main' > "$case_dir/github-outcome"
+  printf 'true\n' > "$case_dir/github-queue"
+  add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" gone-x1 https://github.com/example/repo/pull/21 --task-cleaned-up \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "cleaned-up-queued: an enqueued PR is a successful outcome, stderr: $(cat "$case_dir/stderr")"
+  assert_grep 'verified: https://github.com/example/repo/pull/21 is queued' "$case_dir/stdout" \
+    "cleaned-up-queued: the outcome was not reported as queued"
+  assert_grep 'no merge poll watches it, because task gone-x1 was already cleaned up; re-check the pull request on the forge' \
+    "$case_dir/stderr" "cleaned-up-queued: the queued PR did not say nothing follows it up"
+  assert_absent "$case_dir/state/gone-x1.check.sh" \
+    "cleaned-up-queued: a merge poll was armed for a task already cleaned up"
+  assert_absent "$case_dir/state/.wake-queue" \
+    "cleaned-up-queued: a queued PR was reported as landed"
+  pass "fm-pr-merge --task-cleaned-up says no poll follows up a queued PR"
 }
 
 test_malformed_url_refuses_before_merge() {
@@ -3229,6 +3258,7 @@ test_missing_meta_refuses_before_merge
 test_cleaned_up_task_merges_through_the_gate
 test_cleaned_up_task_still_obeys_the_fitness_gate
 test_cleaned_up_flag_refuses_for_a_live_task
+test_cleaned_up_queued_merge_says_no_poll_follows_up
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording
