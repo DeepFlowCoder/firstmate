@@ -183,10 +183,10 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-fitness-lib.sh`   | Own which forge check values count as a pass: a merge-fitness verdict for the merge gate, and one summary word over a whole check list for a reporting surface |
 | `fm-nm-attestation-delta.sh` | Hand the `Require no-mistakes` check an attested ancestor when the only commits since it are the pipeline's own CI-fix commits |
 | `fm-nm-mirror.sh`       | Diagnose a no-mistakes gate mirror ref that a rebased branch no longer contains, naming the cause and the exit, and take that exit without deleting a commit: preserve the mirror lineage under a tag and move the live head to a fresh branch ([push-mirror-custody.md](verification/push-mirror-custody.md)) |
-| `fm-pr-merge.sh`         | Refuse an unfit PR, record PR metadata, merge a task's canonical full GitHub or GitLab URL, then refuse an outcome it cannot prove landed or queued |
+| `fm-pr-merge.sh`         | Refuse an unfit PR, merge a task's canonical full GitHub or GitLab URL, record PR metadata for a live task, and support the guarded already-cleaned-up path owned by its header |
 | `fm-merge-outcome-lib.sh` | Publish a confirmed merge's durable, role-routed supervision outcome                 |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
-| `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
+| `fm-teardown.sh`         | Fail-closed teardown: refuse an open or unreadable ship PR before cleanup, return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared Relay config, relay, and reply-threading helpers                              |

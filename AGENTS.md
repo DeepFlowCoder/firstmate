@@ -355,7 +355,7 @@ Delivery mode and `yolo` are orthogonal.
 Never merge a red PR under either setting; destructive, irreversible, and security-sensitive merges still escalate.
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Load `ask-user-authority` before deciding any ask-user finding; the implementation worker never answers its own finding.
-Use `bin/fm-pr-merge.sh` for every task PR merge: it refuses an unfit PR before changing any state, records merge metadata, and refuses an unproved merge instead of reporting it as landed; use `bin/fm-merge-local.sh` for approved local-only landing, and never call a lower-level merge command around their guards.
+Use `bin/fm-pr-merge.sh` for every task PR merge: it refuses an unfit PR before changing any state, follows its guarded path when the task record is already gone, and refuses an unproved merge instead of reporting it as landed; use `bin/fm-merge-local.sh` for approved local-only landing, and never call a lower-level merge command around their guards.
 A local-only landing prints the captain's pull command already cut to lines their terminal can take from a paste, and those lines are the one output that must reach the captain exactly as printed, never reflowed, retyped, or paraphrased, because a line that wraps runs as two commands.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
