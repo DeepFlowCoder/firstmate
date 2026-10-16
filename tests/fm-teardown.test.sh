@@ -58,6 +58,16 @@
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#
+# Also covers real data left in the task copy: treehouse return keeps gitignored
+# files, so teardown must remove the ignored data/ itself before the release.
+#   (dd) landed work with ignored data/ in the copy  -> data/ ignored files gone,
+#        tracked data/ file, ignored file outside data/, symlink target, and the
+#        project clone's own data/ all kept
+#   (ee) the same under --force                       -> data/ ignored files gone
+#   (ff) ignored data/ in a copy that is not a linked worktree -> REFUSE, untouched
+#   (gg) forced secondmate teardown with ignored data/ in a child task copy
+#        -> child data/ ignored files gone, tracked file and project data/ kept
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -3764,6 +3774,169 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+# The real `treehouse return --force` resets and cleans untracked files but keeps
+# gitignored ones (measured against treehouse v2.3.0), so whatever ignored data a
+# task leaves in its copy is handed to the next lease. This fake does the same and
+# records which ignored data/ files were still in the copy when it was returned.
+add_ignored_keeping_treehouse() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  shift
+  wt=""
+  for a in "$@"; do
+    case "$a" in
+      --force) ;;
+      *) wt=$a ;;
+    esac
+  done
+  git -C "$wt" reset -q --hard
+  git -C "$wt" clean -fdq
+  printf 'returned %s\n' "$wt" >> "$FM_FAKE_TREEHOUSE_LOG"
+  git -C "$wt" ls-files --others --ignored --exclude-standard -- data \
+    | sed 's/^/left: /' >> "$FM_FAKE_TREEHOUSE_LOG"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# Give the task copy a landed .gitignore for data/ plus the shapes a project's
+# real data takes there: an ignored ledger, a nested ignored directory, a symlink
+# pointing outside the copy, and one file the project deliberately tracks under
+# data/. The project clone gets its own data/ that must never be touched.
+seed_task_copy_with_real_data() {
+  local case_dir=$1 wt
+  wt="$case_dir/wt"
+  printf '%s\n' 'data/' 'node_modules/' > "$wt/.gitignore"
+  mkdir -p "$wt/data"
+  printf '%s\n' 'tracked fixture' > "$wt/data/README.md"
+  git -C "$wt" add -- .gitignore
+  git -C "$wt" add -f -- data/README.md
+  git -C "$wt" -c user.email=t@t -c user.name=t commit -q -m "ignore data"
+  git -C "$wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  mkdir -p "$wt/data/base_datos" "$wt/data/scout/altas" "$wt/node_modules/dep" "$case_dir/outside"
+  printf '%s\n' 'ledger' > "$wt/data/base_datos/ledger.sqlite"
+  printf '%s\n' 'scout copy' > "$wt/data/scout/altas/l.sqlite"
+  printf '%s\n' 'precious' > "$case_dir/outside/precious.txt"
+  ln -s "$case_dir/outside" "$wt/data/enlace"
+  printf '%s\n' 'warm cache' > "$wt/node_modules/dep/index.js"
+  mkdir -p "$case_dir/project/data"
+  printf '%s\n' 'the captain real data' > "$case_dir/project/data/ledger.sqlite"
+}
+
+test_teardown_removes_real_data_left_in_task_copy() {
+  local case_dir rc wt
+  case_dir=$(make_case real-data-purge)
+  wt="$case_dir/wt"
+  write_meta "$case_dir" no-mistakes ship
+  seed_task_copy_with_real_data "$case_dir"
+  add_ignored_keeping_treehouse "$case_dir"
+
+  rc=0
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "real-data-purge: teardown of landed work should succeed"
+  assert_line "$case_dir/treehouse.log" "returned $wt" \
+    "real-data-purge: the task copy was never returned to the pool"
+  assert_no_grep "left: " "$case_dir/treehouse.log" \
+    "real-data-purge: ignored data/ files survived into the returned pool slot"
+  assert_absent "$wt/data/base_datos" "real-data-purge: the ignored ledger copy survived teardown"
+  assert_absent "$wt/data/scout" "real-data-purge: the nested ignored data survived teardown"
+  [ ! -L "$wt/data/enlace" ] || fail "real-data-purge: the symlink under data/ survived teardown"
+  assert_present "$case_dir/outside/precious.txt" \
+    "real-data-purge: removing the symlink under data/ followed it and deleted its target"
+  assert_present "$wt/data/README.md" "real-data-purge: a file the project tracks under data/ was deleted"
+  assert_present "$wt/node_modules/dep/index.js" \
+    "real-data-purge: an ignored file outside data/ was deleted"
+  assert_present "$case_dir/project/data/ledger.sqlite" \
+    "real-data-purge: the project clone's own data/ was touched"
+  assert_grep "removed the gitignored data the task left in $wt" "$case_dir/stderr" \
+    "real-data-purge: teardown did not report the removal"
+  pass "teardown removes the gitignored data/ a task left in its copy and nothing else"
+}
+
+test_forced_teardown_also_removes_real_data_left_in_task_copy() {
+  local case_dir rc wt
+  case_dir=$(make_case real-data-purge-force)
+  wt="$case_dir/wt"
+  write_meta "$case_dir" no-mistakes ship
+  seed_task_copy_with_real_data "$case_dir"
+  wt_commit "$case_dir" "unlanded work the captain chose to discard"
+  add_ignored_keeping_treehouse "$case_dir"
+
+  rc=0
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "real-data-purge-force: forced teardown should succeed"
+  assert_line "$case_dir/treehouse.log" "returned $wt" \
+    "real-data-purge-force: the task copy was never returned to the pool"
+  assert_no_grep "left: " "$case_dir/treehouse.log" \
+    "real-data-purge-force: ignored data/ files survived a forced teardown"
+  assert_present "$case_dir/project/data/ledger.sqlite" \
+    "real-data-purge-force: the project clone's own data/ was touched"
+  pass "forced teardown also removes the gitignored data/ a task left in its copy"
+}
+
+test_real_data_in_a_copy_that_is_not_a_linked_worktree_refuses_untouched() {
+  local case_dir rc wt
+  case_dir=$(make_case real-data-not-linked)
+  wt="$case_dir/wt"
+  git -C "$case_dir/project" worktree remove --force "$wt"
+  git clone -q "$case_dir/origin.git" "$wt"
+  git -C "$wt" checkout -q -b fm/task-x1
+  write_meta "$case_dir" no-mistakes ship
+  seed_task_copy_with_real_data "$case_dir"
+  add_ignored_keeping_treehouse "$case_dir"
+
+  rc=0
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "real-data-not-linked: teardown must refuse to delete data in a copy it cannot prove disposable"
+  assert_grep "is not a disposable linked task worktree" "$case_dir/stderr" \
+    "real-data-not-linked: the refusal did not name the unproven copy"
+  assert_present "$wt/data/base_datos/ledger.sqlite" \
+    "real-data-not-linked: data was deleted from a copy that was not proven disposable"
+  assert_absent "$case_dir/treehouse.log" "real-data-not-linked: the copy was released despite the refusal"
+  assert_present "$case_dir/state/task-x1.meta" "real-data-not-linked: the task record was removed despite the refusal"
+  pass "data in a copy that is not a linked worktree is refused and left untouched"
+}
+
+test_forced_secondmate_teardown_removes_real_data_left_in_child_task_copy() {
+  local case_dir rc child_wt
+  case_dir=$(make_case real-data-purge-child)
+  write_meta "$case_dir" local-only secondmate
+  configure_secondmate_with_tmux_children "$case_dir"
+  child_wt="$case_dir/child-a-wt"
+  printf '%s\n' 'data/' > "$child_wt/.gitignore"
+  mkdir -p "$child_wt/data/base_datos"
+  printf '%s\n' 'tracked fixture' > "$child_wt/data/README.md"
+  git -C "$child_wt" add -- .gitignore
+  git -C "$child_wt" add -f -- data/README.md
+  git -C "$child_wt" -c user.email=t@t -c user.name=t commit -q -m "ignore data"
+  printf '%s\n' 'ledger' > "$child_wt/data/base_datos/ledger.sqlite"
+  mkdir -p "$case_dir/project/data"
+  printf '%s\n' 'the captain real data' > "$case_dir/project/data/ledger.sqlite"
+  add_ignored_keeping_treehouse "$case_dir"
+
+  rc=0
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "real-data-purge-child: forced secondmate teardown should succeed"
+  assert_line "$case_dir/treehouse.log" "returned $child_wt" \
+    "real-data-purge-child: the child task copy was never returned to the pool"
+  assert_no_grep "left: " "$case_dir/treehouse.log" \
+    "real-data-purge-child: ignored data/ files in a child task copy survived into the pool"
+  assert_absent "$child_wt/data/base_datos" "real-data-purge-child: the child's ignored ledger copy survived"
+  assert_present "$child_wt/data/README.md" "real-data-purge-child: a file the project tracks under data/ was deleted"
+  assert_present "$case_dir/project/data/ledger.sqlite" \
+    "real-data-purge-child: the child project clone's own data/ was touched"
+  pass "forced secondmate teardown removes the gitignored data/ a child task left in its copy"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -3773,6 +3946,10 @@ test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
+test_teardown_removes_real_data_left_in_task_copy
+test_forced_teardown_also_removes_real_data_left_in_task_copy
+test_real_data_in_a_copy_that_is_not_a_linked_worktree_refuses_untouched
+test_forced_secondmate_teardown_removes_real_data_left_in_child_task_copy
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
