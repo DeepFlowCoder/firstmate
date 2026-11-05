@@ -873,7 +873,7 @@ case "$FM_AFK_HEALTH_VERDICT" in
   healthy) printf 'present - away-mode supervision is active; the daemon (pid %s) owns the watcher.\n' "${FM_AFK_HEALTH_PID:-unknown}" ;;
   starting) printf 'present - %s\n' "$FM_AFK_HEALTH_DETAIL" ;;
   *)
-    printf 'AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON - SUPERVISION IS OFF.\n'
+    printf 'AWAY MODE IS FLAGGED WITHOUT HEALTHY SUPERVISION - SUPERVISION IS OFF.\n'
     printf '%s\n' "$FM_AFK_HEALTH_DETAIL"
     printf 'Every other supervision path stands down for that flag, so nothing is watching this home until it is resolved.\n'
     # Repairing a home this session does not hold is the one thing not to do,

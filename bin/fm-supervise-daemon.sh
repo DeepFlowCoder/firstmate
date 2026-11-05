@@ -1503,9 +1503,13 @@ fm_super_main() {
   migrate_watcher_pause_markers "$STATE"
 
   # --- shutdown: flush buffered escalations, reap child, release lock -------
-  local WATCHER_PID="" CUR_TMP=""
+  local WATCHER_PID="" CUR_TMP="" SLEEP_PID=""
   cleanup() {
     trap - TERM INT
+    if [ -n "${SLEEP_PID:-}" ]; then
+      kill "$SLEEP_PID" 2>/dev/null || true
+      wait "$SLEEP_PID" 2>/dev/null || true
+    fi
     wedge_alarm_stop_active_notifier
     escalate_flush "$STATE" 2>/dev/null || true
     if [ -n "${WATCHER_PID:-}" ]; then
@@ -1521,6 +1525,16 @@ fm_super_main() {
     exit 0
   }
   trap cleanup TERM INT
+
+  # Bash defers traps during a foreground external sleep. Waiting on a child
+  # instead makes TERM interrupt every backoff immediately, within the away
+  # launcher's stop budget; cleanup also reaps that child.
+  daemon_sleep() {
+    sleep "$1" &
+    SLEEP_PID=$!
+    wait "$SLEEP_PID" || true
+    SLEEP_PID=""
+  }
 
   # --- crash-loop guard -----------------------------------------------------
   local crash_times=() backoff_secs=$CRASH_NORMAL_SLEEP
@@ -1543,7 +1557,7 @@ fm_super_main() {
   }
 
   start_watcher() {
-    CUR_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-watch.XXXXXX") || { log "error: mktemp failed; retrying in 5s"; sleep 5; return 1; }
+    CUR_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-watch.XXXXXX") || { log "error: mktemp failed; retrying in 5s"; daemon_sleep 5; return 1; }
     "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
     WATCHER_PID=$!
   }
@@ -1560,7 +1574,7 @@ fm_super_main() {
     if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
       log "warn: supervisor target '$TARGET' gone; backing off ${INJECT_FAIL_SLEEP}s, will retry"
       # Flush is pointless with no pane; preserve any buffered escalations.
-      sleep "$INJECT_FAIL_SLEEP"
+      daemon_sleep "$INJECT_FAIL_SLEEP"
       continue
     fi
 
@@ -1581,7 +1595,7 @@ fm_super_main() {
           record_crash
           log "watcher exited rc=$rc reason='$reason'; restarting after ${backoff_secs}s"
           WATCHER_PID=""
-          sleep "$backoff_secs"
+          daemon_sleep "$backoff_secs"
           continue
         fi
         # Non-wake stdout (e.g. a watcher singleton-collision "already running"
@@ -1591,7 +1605,7 @@ fm_super_main() {
         if ! is_wake_reason "$reason"; then
           log "watcher non-wake stdout, idling: $reason"
           WATCHER_PID=""
-          sleep "${HOUSEKEEPING_TICK:-$HOUSEKEEPING_TICK_DEFAULT}"
+          daemon_sleep "${HOUSEKEEPING_TICK:-$HOUSEKEEPING_TICK_DEFAULT}"
           continue
         fi
         log "wake: $reason"
@@ -1608,7 +1622,7 @@ fm_super_main() {
     # to detect its exit (the kill -0 above) promptly and run housekeeping often
     # enough that batch flushes, stale rechecks, and the catch-all scan fire on
     # cadence. Gating keeps a large fleet cheap between ticks.
-    sleep 1
+    daemon_sleep 1
     if [ "$(_file_age "$STATE/.subsuper-last-housekeep")" -ge "${FM_HOUSEKEEPING_TICK:-$HOUSEKEEPING_TICK_DEFAULT}" ]; then
       _now > "$STATE/.subsuper-last-housekeep"
       housekeeping "$STATE"

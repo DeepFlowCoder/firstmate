@@ -17,8 +17,8 @@
 #               orphaned away mode instead of standing down for a dead daemon.
 #
 # Hermetic: no real daemon, no real harness, no real agent session. The "live
-# daemon" is an ordinary sleeper holding a real identity-backed lock, which is
-# exactly what the liveness predicate reads.
+# daemon" is an ordinary sleeper holding a real identity-backed lock, with a
+# watcher beat controlled independently of process liveness.
 # shellcheck disable=SC2016 # single quotes are deliberate: $FM_HOME expands inside the fake harness child
 set -u
 
@@ -70,8 +70,8 @@ enter_away_mode() {  # <dir> <age-seconds>
   printf '%s' "$(( $(date '+%s') - age ))" > "$dir/state/.afk"
 }
 
-# A live process holding the away daemon's identity-backed lock, which is the
-# only thing the liveness predicate reads. Prints its pid.
+# A live process holding the away daemon's identity-backed lock and a fresh
+# watcher beat. Prints its pid.
 start_fake_daemon() {  # <dir>
   local dir=$1 pid identity lock="$1/state/.supervise-daemon.lock"
   sleep 600 >/dev/null 2>&1 &
@@ -81,6 +81,7 @@ start_fake_daemon() {  # <dir>
   mkdir -p "$lock"
   printf '%s\n' "$pid" > "$lock/pid"
   printf '%s\n' "$identity" > "$lock/pid-identity"
+  touch "$dir/state/.last-watcher-beat"
   printf '%s\n' "$pid"
 }
 
@@ -99,6 +100,71 @@ expect_verdict() {  # <dir> <expected> <label>
 }
 
 # --- VERDICT ----------------------------------------------------------------
+
+test_live_daemon_requires_watcher_progress() {
+  local dir channel out
+  for channel in stale missing unreadable future; do
+    dir=$(make_home "$TMP_ROOT/v-progress-$channel")
+    enter_away_mode "$dir" 4000
+    start_fake_daemon "$dir" >/dev/null
+    touch -t 202001010000 "$dir/state/.supervise-daemon.lock/pid"
+    case "$channel" in
+      stale) touch -t 202001010000 "$dir/state/.last-watcher-beat" ;;
+      missing) rm "$dir/state/.last-watcher-beat" ;;
+      unreadable)
+        rm "$dir/state/.last-watcher-beat"
+        ln -s "$dir/no-such-beat" "$dir/state/.last-watcher-beat"
+        ;;
+      future) touch -t 209901010000 "$dir/state/.last-watcher-beat" ;;
+    esac
+    expect_verdict "$dir" orphaned "live daemon with $channel watcher progress"
+    out=$(report "$dir")
+    assert_contains "$out" watcher "progress failure must name the watcher"
+    FM_HOME="$dir" bash -c '. "$1"; ! fm_afk_owns_supervision "$2"' _ \
+      "$dir/bin/fm-afk-health.sh" "$dir/state" || fail "$channel progress still owns supervision"
+    touch "$dir/state/.last-watcher-beat"
+    expect_verdict "$dir" healthy "a recovered watcher restores health"
+  done
+  pass "fm-afk-health: a live daemon cannot hide stale, missing, unreadable or future watcher progress"
+}
+
+test_live_daemon_watcher_start_grace() {
+  local dir
+  dir=$(make_home "$TMP_ROOT/v-watcher-start")
+  enter_away_mode "$dir" 4000
+  start_fake_daemon "$dir" >/dev/null
+  rm "$dir/state/.last-watcher-beat"
+  expect_verdict "$dir" starting "new daemon gets its own watcher startup window"
+  touch -t 202001010000 "$dir/state/.supervise-daemon.lock/pid"
+  expect_verdict "$dir" orphaned "missing watcher after daemon startup grace"
+  enter_away_mode "$dir" 0
+  expect_verdict "$dir" orphaned "refreshing the away flag cannot reset daemon startup grace"
+  pass "fm-afk-health: daemon restart gets a bounded watcher startup grace even with an old away flag"
+}
+
+test_watcher_grace_boundary_and_configuration() {
+  local dir stamp age setting out expected
+  dir=$(make_home "$TMP_ROOT/v-watcher-grace")
+  enter_away_mode "$dir" 4000
+  start_fake_daemon "$dir" >/dev/null
+  touch -t 202001010000 "$dir/state/.supervise-daemon.lock/pid" "$dir/state/.last-watcher-beat"
+  stamp=$(bash -c '. "$1"; fm_afk_health_mtime "$2"' _ \
+    "$dir/bin/fm-afk-health.sh" "$dir/state/.last-watcher-beat")
+  for age in 300 301; do
+    for setting in 300 301 invalid; do
+      expected=healthy
+      if [ "$age" = 301 ] && [ "$setting" != 301 ]; then expected=orphaned; fi
+      out=$(FM_AFK_WATCHER_GRACE="$setting" TEST_NOW="$((stamp + age))" bash -c '
+        . "$1"
+        date() { printf "%s\n" "$TEST_NOW"; }
+        fm_afk_health "$2"
+        printf "%s\n" "$FM_AFK_HEALTH_VERDICT"
+      ' _ "$dir/bin/fm-afk-health.sh" "$dir/state")
+      [ "$out" = "$expected" ] || fail "watcher age=$age grace=$setting: expected $expected, got $out"
+    done
+  done
+  pass "fm-afk-health: watcher grace is inclusive, configurable, and defaults on invalid input"
+}
 
 test_verdict_off_without_flag() {
   local dir
@@ -342,7 +408,7 @@ test_guard_blocks_orphaned_away_mode_despite_fresh_beacon() {
   record_live_watcher "$dir" >/dev/null
   out=$(run_guard "$dir"); status=$?
   expect_code 2 "$status" "guard must refuse a blind turn end on an orphaned away mode"
-  printf '%s' "$out" | grep -q 'AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON' \
+  printf '%s' "$out" | grep -q 'AWAY MODE IS FLAGGED WITHOUT HEALTHY SUPERVISION' \
     || fail "guard must name the orphaned away mode, not a generic missing watcher: $out"
   printf '%s' "$out" | grep -q 'nothing is watching this home' \
     || fail "guard must state the consequence: $out"
@@ -437,7 +503,7 @@ test_autoarm_keeps_arming_through_an_orphaned_away_mode() {
   out=$(run_autoarm "$dir"); status=$?
   [ -e "$dir/state/arm-ran" ] || fail "the arm never ran under an orphaned away mode"
   expect_code 2 "$status" "an actionable arm under an orphaned away mode must rewake"
-  printf '%s' "$out" | grep -q 'AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON' \
+  printf '%s' "$out" | grep -q 'AWAY MODE IS FLAGGED WITHOUT HEALTHY SUPERVISION' \
     || fail "the rewake must say why supervision had stopped: $out"
   pass "fm-claude-stop-autoarm: keeps arming and names the orphaned away mode"
 }
@@ -468,6 +534,9 @@ test_autoarm_stands_down_inside_the_start_window() {
 }
 
 test_verdict_off_without_flag
+test_live_daemon_requires_watcher_progress
+test_live_daemon_watcher_start_grace
+test_watcher_grace_boundary_and_configuration
 test_verdict_healthy_with_live_daemon
 test_verdict_orphaned_flag_outlived_daemon
 test_verdict_starting_inside_the_measured_window

@@ -2306,6 +2306,7 @@ start_fake_away_daemon() {  # <home>
   mkdir -p "$lock"
   printf '%s\n' "$pid" > "$lock/pid"
   printf '%s\n' "$identity" > "$lock/pid-identity"
+  touch "$home/state/.last-watcher-beat"
   printf '%s\n' "$pid"
 }
 
@@ -2349,7 +2350,7 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON" \
+  assert_contains "$out" "AWAY MODE IS FLAGGED WITHOUT HEALTHY SUPERVISION" \
     "the digest did not name an away mode with no daemon behind it"
   assert_contains "$out" "nothing is watching this home" "the digest did not state the consequence"
   assert_contains "$out" "fm-afk-launch.sh stop" "the digest named the problem without the repair"
@@ -2382,7 +2383,7 @@ EOF
   kill "$holder_pid" 2>/dev/null || true
   wait "$holder_pid" 2>/dev/null || true
 
-  assert_contains "$out" "AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON" \
+  assert_contains "$out" "AWAY MODE IS FLAGGED WITHOUT HEALTHY SUPERVISION" \
     "a read-only session must still report the lapse"
   assert_contains "$out" "read-only session should report the lapse" \
     "the read-only digest did not say the lapse is not its to repair"

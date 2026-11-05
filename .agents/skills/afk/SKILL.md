@@ -48,17 +48,17 @@ batched digest rather than per-wake injections.
    It exits immediately if the identity-backed daemon lock already names a live process, otherwise it execs `bin/fm-supervise-daemon.sh` in the foreground.
    The daemon is **presence-gated**: it injects escalations only while `state/.afk` exists, and stays quiet otherwise.
 
-4. **Verify the daemon is ALIVE, on either path; starting it is not running it.**
+4. **Verify away-mode supervision is healthy on either path.**
    Run `bin/fm-afk-health.sh`.
    It must read `healthy` before you tell the captain away mode is active, and again before you end the turn that entered it, because that second read is the one that catches a daemon reaped right after it came up.
-   - `starting` means the daemon has not taken over yet.
+   - `starting` means the daemon or its watcher is still coming up.
      Never acknowledge away mode on `starting`: read it again, and if it will not reach `healthy`, stop away mode and report the failure.
-   - `orphaned` means the flag is there and the daemon is not, which is zero supervision.
+   - `orphaned` means the flag remains without healthy supervision, as defined by `bin/fm-afk-health.sh`.
      Restart it or leave away mode; do not proceed.
 
    After that the state is checked for you rather than remembered.
-   The session digest's AFK section, both turn-end guards, and Claude's Stop-owned re-arm all read this same verdict, so an orphaned away mode is named immediately when its daemon started and then died; only a daemon that never took over at all waits out `FM_AFK_START_GRACE` (default 300s) before it is named instead of being discovered by accident.
-   That check reads the flag and the daemon's own lock from disk, so a dead daemon cannot suppress its own diagnosis.
+   The session digest's AFK section, both turn-end guards, and Claude's Stop-owned re-arm all read this same verdict, so they report an orphaned away mode rather than standing down for it.
+   The health check's header owns the disk-only progress checks and their grace windows, including a live daemon whose watcher stops beating.
 
 5. **Do not separately arm `fm-watch.sh`.** The daemon manages the watcher as
    its child; the singleton lock no-ops a stray arm harmlessly.
