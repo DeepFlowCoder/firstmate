@@ -2542,6 +2542,9 @@ EOF
     if ! wait_is_declared "$task" "$last" && [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$key"
     fi
+    if [ "$(cat "$STATE/.stale-$key" 2>/dev/null)" = quota ]; then
+      rm -f "$STATE/.stale-$key"
+    fi
     # An idle secondmate endpoint is healthy by design, so a mate is admitted to
     # the pane-stale path ONLY to serve a declared wait's bounded re-surface -
     # the same declarations pause_state_class reconciles below, which is why this

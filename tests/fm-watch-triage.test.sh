@@ -4730,8 +4730,49 @@ test_codex_quota_wait_hands_off_once_under_afk() {
   pass "AFK quota wait hands off one plain wake for daemon-owned rechecks"
 }
 
+test_codex_quota_wait_afk_hands_off_again_after_resume() {
+  local dir state fakebin out window pid key capture
+  dir=$(make_case codex-quota-afk-reset); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; window=test:fm-quota; key=test_fm-quota
+  capture="$dir/viewport"
+  cp "$ROOT/tests/fixtures/codex-usage-limit-reconstructed.screen" "$capture"
+  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/quota.meta"
+  : > "$state/.afk"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=codex FM_STATE_OVERRIDE="$state" \
+    FM_POLL=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "AFK quota wait did not hand off"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "AFK quota wake was decorated: $(cat "$out")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge AFK quota wake"
+  [ "$(cat "$state/.stale-$key")" = quota ] || fail "AFK quota handoff did not record its one-shot marker"
+
+  printf 'worker resumed\n' > "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=codex FM_STATE_OVERRIDE="$state" \
+    FM_POLL=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || fail "resumed watcher exited before a full poll: $(cat "$out")"
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" != quota ] \
+    || fail "quota one-shot marker survived the observed screen disappearing"
+  wait_for_exit "$pid" 100 || fail "resumed worker never reclassified: $(cat "$out")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the resumed stale wake"
+
+  cp "$ROOT/tests/fixtures/codex-usage-limit-reconstructed.screen" "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=codex FM_STATE_OVERRIDE="$state" \
+    FM_POLL=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "second AFK quota wait did not hand off: $(cat "$out")"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "second AFK quota wake was missing or decorated: $(cat "$out")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the second AFK quota wake"
+  pass "AFK quota wait resets its one-shot marker on resume and hands off the next distinct wait"
+}
+
 test_codex_quota_wait_absorbs_rechecks_and_releases
 test_codex_quota_wait_hands_off_once_under_afk
+test_codex_quota_wait_afk_hands_off_again_after_resume
 test_status_span_actionable_classifier
 test_status_span_survives_a_later_routine_append
 test_status_span_respects_decision_closure
