@@ -213,7 +213,7 @@ autoarm_record() {  # <outcome>
 # NO shell &: this hook process tree is the harness-owned lifecycle. The arm
 # forks the watcher as its own tracked child exactly as it does for the
 # model-driven background-task path, and propagates the wake reason on close.
-# Every non-actionable close is checked against the same identity-matched live
+# Every close is checked against the same identity-matched live
 # watcher and fresh-beacon predicate used by the turn-end guard before it is
 # retried or translated into an operator-visible failure.
 OUT=
