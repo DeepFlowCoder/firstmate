@@ -252,6 +252,9 @@ case "$pid:$field" in
   660:comm=) printf '%s\n' sleep ;;
   660:args=) printf '%s\n' 'sleep 60' ;;
   660:ppid=) printf '%s\n' 1 ;;
+  670:comm=) printf '%s\n' codex ;;
+  670:args=) printf '%s\n' 'codex app-server --managed-daemon' ;;
+  670:ppid=) printf '%s\n' 1 ;;
   690:*) exit 1 ;;
   *:comm=) printf '%s\n' bash ;;
   *:args=) printf '%s\n' bash ;;
@@ -278,6 +281,10 @@ SH
   if lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then
     fail "a live process that is no harness was reported as another session"
   fi
+
+  printf '670\n' > "$dir/state/.lock"
+  lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'" \
+    || fail "a live managed Codex daemon holding the lock was treated as a repairable home"
 
   printf 'not-a-pid\n' > "$dir/state/.lock"
   if lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then

@@ -177,6 +177,20 @@ fm_harness_pid_alive() {
   fm_harness_process_matches "$comm" "$args"
 }
 
+# True if $1 is a live managed Codex app-server daemon. A shared host is
+# deliberately not a harness (fm_harness_process_matches excludes it) and never
+# a session owner, but a lock naming a live host is still not this session's to
+# repair: it requires recovery (read-only) until that exact process exits, the
+# same rule lock_recovery_safe in bin/fm-lock.sh enforces for acquire.
+fm_codex_managed_daemon_pid_alive() {
+  local pid=$1 comm args
+  kill -0 "$pid" 2>/dev/null || return 1
+  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
+  args=$(ps -o args= -p "$pid" 2>/dev/null) || return 1
+  [ -n "$comm" ] && [ -n "$args" ] || return 1
+  fm_codex_managed_daemon_matches "$comm" "$args"
+}
+
 # True when the newline-separated pid list $1 contains pid $2. One owner of the
 # membership rule both lock questions below are answered with, so a single walk
 # of the process ancestry can serve either of them.
@@ -222,13 +236,15 @@ fm_session_lock_pid() {
 }
 
 # True when state dir $1 holds a session lock naming a LIVE harness process that
-# is NOT in this process's harness ancestry: ANOTHER firstmate session owns this
-# home right now, so nothing running here may repair, drain, or otherwise mutate
-# its fleet state.
-# This is the exact complement of fm_session_lock_owned_by_self for the one case
+# is NOT in this process's harness ancestry, or a live managed Codex app-server
+# daemon: another firstmate session owns this home right now, or a shared host's
+# legacy lock requires recovery (read-only), so nothing running here may repair,
+# drain, or otherwise mutate its fleet state.
+# This is the exact complement of fm_session_lock_owned_by_self for the cases
 # that can be proved, and it requires positive proof in both directions: an
-# absent, malformed, dead, or non-harness lock is not another session, and an
-# ancestry this process cannot resolve is not proof of foreignness either.
+# absent, malformed, dead, or non-harness lock (other than a live managed
+# daemon) is not another session, and an ancestry this process cannot resolve is
+# not proof of foreignness either.
 # That second requirement is deliberate rather than incidental. The away-mode
 # daemon and other detached helpers act FOR the lock-owning session from outside
 # its process tree, where the ancestry walk finds no harness at all; treating
@@ -245,6 +261,11 @@ fm_session_lock_held_by_other() {
   local state=$1 lock_pid pids
   FM_SESSION_LOCK_OTHER_PID=
   lock_pid=$(fm_session_lock_pid "$state") || return 1
+  if fm_codex_managed_daemon_pid_alive "$lock_pid"; then
+    # shellcheck disable=SC2034 # Read by callers after the function returns.
+    FM_SESSION_LOCK_OTHER_PID=$lock_pid
+    return 0
+  fi
   fm_harness_pid_alive "$lock_pid" || return 1
   pids=$(fm_harness_ancestry_pids) || return 1
   if fm_pid_list_contains "$pids" "$lock_pid"; then
