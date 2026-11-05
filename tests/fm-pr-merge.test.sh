@@ -1255,6 +1255,40 @@ SH
   pass "fm-pr-merge preserves bookkeeping when gh is absent and the fallback read fails"
 }
 
+test_github_without_gh_default_squash_refuses_with_guidance() {
+  local case_dir ghless_path rc
+  # Without gh the default squash path cannot read viewerMergeBodyText, so it
+  # must refuse before recording anything and name the --body/--body-file
+  # workaround rather than fail as an unexplained missing-gh error.
+  case_dir=$(make_case github-without-gh-squash-refuses)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 4343434343434343434343434343434343434343
+  rm "$case_dir/fakebin/gh"
+  ghless_path="$case_dir/path-without-gh"
+  mirror_path_without "$ghless_path" gh "$case_dir/fakebin"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/62 --captain-override-red \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "github-without-gh-squash-refuses: an unreadable squash body must refuse"
+  assert_grep 'nothing was merged' "$case_dir/stderr" \
+    "github-without-gh-squash-refuses: no refusal diagnostic"
+  assert_grep 'pass --body or --body-file' "$case_dir/stderr" \
+    "github-without-gh-squash-refuses: the refusal named no body workaround"
+  assert_no_grep 'pr=https://' "$case_dir/state/task-x1.meta" \
+    "github-without-gh-squash-refuses: refusal recorded pr="
+  assert_absent "$case_dir/state/task-x1.check.sh" \
+    "github-without-gh-squash-refuses: refusal armed a merge poll"
+  [ ! -s "$case_dir/gh-axi.log" ] \
+    || fail "github-without-gh-squash-refuses: a merge was attempted without a readable body"
+  pass "fm-pr-merge refuses a gh-less default squash and names the body workaround"
+}
+
 test_github_zero_exit_queue_required_refuses_with_a_methodless_retry() {
   local case_dir rc
   case_dir=$(make_case github-zero-exit-queue-required)
@@ -3357,6 +3391,8 @@ test_squash_body_inputs_and_failures() {
         expect_code 1 "$rc" "squash $variant: unreadable body must refuse"
         assert_no_grep 'pr merge' "$case_dir/gh-axi.log" "squash $variant: merge was attempted"
         assert_grep 'nothing was merged' "$case_dir/stderr" "squash $variant: no diagnostic"
+        assert_no_grep 'pr=https://' "$case_dir/state/task-x1.meta" "squash $variant: refusal recorded pr="
+        assert_absent "$case_dir/state/task-x1.check.sh" "squash $variant: refusal armed a merge poll"
         ;;
       agent-only)
         expect_code 0 "$rc" "agent-only body refused"
@@ -3424,6 +3460,7 @@ test_github_failed_gh_read_falls_back_to_gh_axi
 test_github_failed_merge_names_an_observed_landed_state
 test_github_without_gh_still_uses_gh_axi_merge
 test_github_without_gh_failed_read_keeps_bookkeeping
+test_github_without_gh_default_squash_refuses_with_guidance
 test_github_merged_outcome_is_verified
 test_github_verified_merge_requires_poll_recording
 test_github_queued_outcome_is_verified
