@@ -183,7 +183,8 @@
 # agent email addresses, and named tool [bot] accounts, never a human's first
 # name or an entire provider domain. An unreadable body refuses even under the
 # fitness override, since that override grants no agent-attribution exception.
-# Explicit merge/rebase methods and GitLab keep their existing message handling.
+# Explicit merge/rebase methods, methodless merge-queue enqueues, and GitLab
+# keep their existing message handling.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -1093,7 +1094,9 @@ case "$PROVIDER" in
       FM_PR_GITHUB_AUTO_REQUESTED=true
     fi
     FM_PR_GITHUB_EXTRA_ARGS=("$@")
-    github_prepare_squash_body "$@" || exit 1
+    if [ "$FM_PR_GITHUB_METHOD_SENT" = true ]; then
+      github_prepare_squash_body "$@" || exit 1
+    fi
     if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
       "${merge_args[@]+"${merge_args[@]}"}" "${FM_PR_GITHUB_EXTRA_ARGS[@]+"${FM_PR_GITHUB_EXTRA_ARGS[@]}"}" 2>&1); then
       FM_PR_GITHUB_MERGE_ACCEPTED=true

@@ -1281,8 +1281,8 @@ test_github_zero_exit_queue_required_refuses_with_a_methodless_retry() {
     "github-zero-exit-queue-required: refusal named no concrete next step"
   assert_grep 'isMergeQueueEnabled' "$case_dir/gh.log" \
     "github-zero-exit-queue-required: the queue was never read from the pull request itself"
-  grep -qxF 'pr merge 56 --repo example/repo --body Ordinary squash body' "$case_dir/gh-axi.log" \
-    || fail "github-zero-exit-queue-required: a merge method was imposed on a queue base"
+  grep -qxF 'pr merge 56 --repo example/repo' "$case_dir/gh-axi.log" \
+    || fail "github-zero-exit-queue-required: a merge method or body was imposed on a queue base"
   [ "$(wc -l < "$case_dir/gh-axi.log" | tr -d '[:space:]')" = 1 ] \
     || fail "github-zero-exit-queue-required: the wrapper attempted more than one merge"
   assert_no_grep --auto "$case_dir/gh-axi.log" \
@@ -1372,8 +1372,8 @@ test_github_queue_base_enqueues_without_imposing_a_method() {
   set -e
 
   expect_code 0 "$rc" "github-queue-base-enqueues: an enqueued PR is a successful outcome"
-  grep -qxF 'pr merge 76 --repo example/repo --body Ordinary squash body' "$case_dir/gh-axi.log" \
-    || fail "github-queue-base-enqueues: a merge method was imposed on a queue base"
+  grep -qxF 'pr merge 76 --repo example/repo' "$case_dir/gh-axi.log" \
+    || fail "github-queue-base-enqueues: a merge method or body was imposed on a queue base"
   assert_no_grep --squash "$case_dir/gh-axi.log" \
     "github-queue-base-enqueues: the default --squash the queue refuses was still sent"
   assert_grep 'verified: https://github.com/example/repo/pull/76 is queued' "$case_dir/stdout" \
@@ -1389,6 +1389,33 @@ test_github_queue_base_enqueues_without_imposing_a_method() {
   assert_absent "$case_dir/state/.wake-queue" \
     "github-queue-base-enqueues: a queued pull request was recorded as a landed outcome"
   pass "fm-pr-merge enqueues on a queue base without imposing a method and reports it as queued"
+}
+
+test_github_queue_base_skips_squash_body_read() {
+  local case_dir rc
+  case_dir=$(make_case github-queue-skips-body-read)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 3434343434343434343434343434343434343434
+  write_github_outcome "$case_dir" OPEN false true main
+  printf 'true\n' > "$case_dir/github-queue"
+  : > "$case_dir/body-read-fails"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/77 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "github-queue-skips-body-read: an enqueued PR is a successful outcome"
+  grep -qxF 'pr merge 77 --repo example/repo' "$case_dir/gh-axi.log" \
+    || fail "github-queue-skips-body-read: a merge method or body was imposed on a queue base"
+  assert_no_grep 'viewerMergeBodyText' "$case_dir/gh.log" \
+    "github-queue-skips-body-read: the squash body read ran on a methodless queue enqueue"
+  assert_grep 'verified: https://github.com/example/repo/pull/77 is queued' "$case_dir/stdout" \
+    "github-queue-skips-body-read: the outcome was not reported as queued"
+  pass "fm-pr-merge skips the squash body read on a methodless queue enqueue"
 }
 
 test_github_queue_required_refusal_names_the_methodless_retry() {
@@ -1414,8 +1441,8 @@ test_github_queue_required_refusal_names_the_methodless_retry() {
     "github-queue-required: refusal did not name the queue requirement"
   assert_grep 'retry naming no merge method: ' "$case_dir/stderr" \
     "github-queue-required: refusal did not name a retry the queue can accept"
-  grep -qxF 'pr merge 54 --repo example/repo --body Ordinary squash body' "$case_dir/gh-axi.log" \
-    || fail "github-queue-required: a merge method was imposed on a queue base"
+  grep -qxF 'pr merge 54 --repo example/repo' "$case_dir/gh-axi.log" \
+    || fail "github-queue-required: a merge method or body was imposed on a queue base"
   assert_present "$case_dir/state/task-x1.check.sh" \
     "github-queue-required: the failed forge call did not leave the merge poll armed"
   pass "fm-pr-merge explains the retry a GitHub merge queue can accept"
@@ -3357,6 +3384,7 @@ test_squash_body_inputs_and_failures
 test_github_zero_exit_queue_required_refuses_with_a_methodless_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_queue_base_enqueues_without_imposing_a_method
+test_github_queue_base_skips_squash_body_read
 test_fitness_gate_refuses_the_same_on_a_queue_base
 test_verified_merge_records_pr_and_head
 test_pr_metadata_is_recorded_before_the_forge_call
