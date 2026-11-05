@@ -175,6 +175,16 @@
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
 #
+# GitHub squash bodies are read from viewerMergeBodyText(mergeType: SQUASH),
+# the same composed text gh uses in its message editor, or from the caller's
+# --body/--body-file. Known agent Co-Authored-By identities are removed before
+# gh-axi receives the body; human trailers and other text are preserved.
+# Agent identities are exact tool names (with optional model versions), known
+# agent email addresses, and named tool [bot] accounts, never a human's first
+# name or an entire provider domain. An unreadable body refuses even under the
+# fitness override, since that override grants no agent-attribution exception.
+# Explicit merge/rebase methods and GitLab keep their existing message handling.
+#
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
 # is open, detailed_merge_status is mergeable, has_conflicts is false,
@@ -288,6 +298,87 @@ caller_has_merge_method() {
     esac
   done
   return 1
+}
+
+github_strip_agent_coauthors() {
+  awk '
+    {
+      line = tolower($0)
+      if (line ~ /^[[:space:]]*co-authored-by:[[:space:]]*/) {
+        identity = line
+        sub(/^[[:space:]]*co-authored-by:[[:space:]]*/, "", identity)
+        name = identity
+        sub(/[[:space:]]*<.*$/, "", name)
+        sub(/[[:space:]]+$/, "", name)
+        if (identity ~ /<(noreply@anthropic[.]com|noreply@openai[.]com|codex@openai[.]com|copilot@github[.]com|cursoragent@cursor[.]com|noreply@cursor[.]com)>[[:space:]]*$/ ||
+            name ~ /^(claude code|claude (opus|sonnet|haiku)( [0-9][a-z0-9. -]*)?|openai codex|github copilot|cursor agent|gemini cli|opencode)$/ ||
+            name ~ /^(claude|codex|copilot|cursor|gemini|grok|kimi|opencode|pi|muse)\[bot\]$/) next
+      }
+      printf "%s%s", separator, $0
+      separator = "\n"
+    }'
+}
+
+# Send the cleaned snapshot explicitly, including an empty body, so the forge
+# cannot compose a different body after this read. Other flags pass through. Body reads
+# carry a marker to distinguish a valid empty string from absent/malformed API
+# data, without adding jq as a dependency on the GitHub path.
+github_prepare_squash_body() {
+  local method=squash body='' cleaned='' body_set=0 body_file='' file_set=0 arg
+  local -a args
+  args=()
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    shift
+    case "$arg" in
+      --body|-b|--body-file|-F)
+        [ "$#" -gt 0 ] || { echo "error: $arg requires a value" >&2; return 1; }
+        body_set=1
+        case "$arg" in
+          --body|-b) body=$1; file_set=0 ;;
+          *) body_file=$1; file_set=1 ;;
+        esac
+        shift ;;
+      --body=*) body_set=1; file_set=0; body=${arg#--body=} ;;
+      -b?*) body_set=1; file_set=0; body=${arg#-b} ;;
+      --body-file=*) body_set=1; file_set=1; body_file=${arg#--body-file=} ;;
+      -F?*) body_set=1; file_set=1; body_file=${arg#-F} ;;
+      --method)
+        [ "$#" -gt 0 ] || { echo 'error: --method requires a value' >&2; return 1; }
+        method=$1; args+=("$arg" "$1"); shift ;;
+      --method=*) method=${arg#--method=}; args+=("$arg") ;;
+      --merge|--rebase|-m|-r) method=other; args+=("$arg") ;;
+      --squash|-s) method=squash; args+=("$arg") ;;
+      --subject|--author-email|--match-head-commit|-t|-A)
+        [ "$#" -gt 0 ] || { echo "error: $arg requires a value" >&2; return 1; }
+        args+=("$arg" "$1"); shift ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  [ "$method" = squash ] || return 0
+  if [ "$file_set" -eq 1 ]; then
+    body=$(cat -- "$body_file" && printf '.') || {
+      echo 'error: the squash body file could not be read; nothing was merged' >&2
+      return 1
+    }
+    body=${body%.}
+  fi
+  if [ "$body_set" -eq 0 ]; then
+    # shellcheck disable=SC2016 # GraphQL variables belong to the query, not the shell.
+    if ! body=$(gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){viewerMergeBodyText(mergeType:SQUASH)}}}' \
+      -f owner="$PR_OWNER" -f repo="$PR_REPO" -F number="$PR_NUMBER" \
+      -q '.data.repository.pullRequest.viewerMergeBodyText | if type == "string" then "body\n" + . + "." else error("invalid squash body") end'); then
+      echo 'error: the composed squash body could not be read; nothing was merged' >&2
+      return 1
+    fi
+    case "$body" in
+      body$'\n'*.) body=${body#*$'\n'}; body=${body%.} ;;
+      *) echo 'error: the composed squash body was invalid; nothing was merged' >&2; return 1 ;;
+    esac
+  fi
+  cleaned=$(printf '%s\n' "$body" | github_strip_agent_coauthors && printf '.') || return 1
+  cleaned=${cleaned%.}
+  FM_PR_GITHUB_EXTRA_ARGS=("${args[@]+"${args[@]}"}" --body "$cleaned")
 }
 
 # Whether the caller's own extra arguments asked for auto-merge, including the
@@ -1001,8 +1092,10 @@ case "$PROVIDER" in
     if caller_requested_auto_merge "$@"; then
       FM_PR_GITHUB_AUTO_REQUESTED=true
     fi
+    FM_PR_GITHUB_EXTRA_ARGS=("$@")
+    github_prepare_squash_body "$@" || exit 1
     if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
-      "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1); then
+      "${merge_args[@]+"${merge_args[@]}"}" "${FM_PR_GITHUB_EXTRA_ARGS[@]+"${FM_PR_GITHUB_EXTRA_ARGS[@]}"}" 2>&1); then
       FM_PR_GITHUB_MERGE_ACCEPTED=true
     else
       merge_status=$?
