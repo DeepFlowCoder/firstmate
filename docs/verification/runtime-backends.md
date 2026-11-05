@@ -6,6 +6,30 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Task-copy occupancy
+
+[`fm-worktree-owner-lib.sh`](../../bin/fm-worktree-owner-lib.sh) owns the occupancy contract.
+The portable regression uses real Git worktrees and stub runtime endpoints; it does not depend on a vendor's harness output or require a live Herdr session.
+The allocation and cleanup checks run before the backend split for tmux, Herdr, Zellij, Orca, and cmux, and before harness wiring for every supported harness.
+Secondmate homes are excluded, while forced retirement preflights and locks their child task copies.
+
+Refresh the proof with:
+
+```sh
+FM_TEARDOWN_GUARD_DONE=1 bin/fm-test-run.sh tests/fm-teardown.test.sh tests/fm-spawn-pool-base-freshen.test.sh tests/fm-teardown-endpoint-safety.test.sh
+```
+
+The stale-record regression publishes both task branches to a temporary bare repository and gives both task records the same physical copy.
+Its return stub performs a real hard reset, so the pre-fix failure proves live content is lost rather than merely observing a cleanup command.
+The allocation regression additionally exercises a detached copy, path aliases, forced cleanup, malformed or symlinked ownership authority, and a contended occupancy lock through the real spawn and teardown entrypoints.
+Verified on 2026-11-05 with Git 2.54.0 and Bash 5.3.9 on macOS; the three suites passed, including these observations:
+
+```text
+ok - recycled worktree: published stale task refuses naming occupant; true owner cleans up
+ok - new allocation owns detached copy; stale, forced, aliased, malformed, symlinked, and locked cleanup refuses
+ok - fm-teardown: destructive cleanup serializes with metadata writers
+```
+
 ## tmux
 
 Foreground-process behavior was verified on 2026-07-07 with tmux 3.6a on macOS.

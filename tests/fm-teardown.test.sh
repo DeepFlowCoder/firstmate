@@ -3937,6 +3937,50 @@ test_forced_secondmate_teardown_removes_real_data_left_in_child_task_copy() {
   pass "forced secondmate teardown removes the gitignored data/ a child task left in its copy"
 }
 
+test_recycled_worktree_refuses_stale_task_and_allows_occupant() {
+  local case_dir rc=0
+  case_dir=$(make_case recycled-worktree)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "published stale task"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/wt" checkout -q -b fm/task-live main
+  printf 'live task work\n' > "$case_dir/wt/live.txt"
+  git -C "$case_dir/wt" add live.txt
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t commit -qm 'published live task'
+  git -C "$case_dir/wt" push -q origin fm/task-live
+  fm_write_meta "$case_dir/state/task-live.meta" \
+    'window=firstmate:fm-task-live' 'endpoint_task_id=task-live' \
+    "worktree=$case_dir/wt" "project=$case_dir/project" \
+    'kind=ship' 'mode=no-mistakes'
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf 'return\n' >> "$FM_RECYCLED_RETURN_LOG"
+git -C "$3" reset --hard -q main
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  FM_RECYCLED_RETURN_LOG="$case_dir/returns" run_teardown "$case_dir" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] || fail "recycled worktree: stale published task reset the live task's copy"
+  assert_grep 'task-live' "$case_dir/stderr" 'refusal must name the current occupant'
+  assert_present "$case_dir/wt/live.txt" 'stale cleanup destroyed live work'
+  assert_present "$case_dir/state/task-x1.meta" 'stale cleanup removed metadata'
+  assert_absent "$case_dir/returns" 'stale cleanup returned the occupied copy'
+  [ "$(git -C "$case_dir/wt" branch --show-current)" = fm/task-live ] \
+    || fail 'stale cleanup changed the live branch'
+
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_CONFIG_OVERRIDE="$case_dir/config" PATH="$case_dir/fakebin:$PATH" \
+    FM_RECYCLED_RETURN_LOG="$case_dir/returns" \
+    "$TEARDOWN" task-live > "$case_dir/owner-stdout" 2> "$case_dir/owner-stderr" \
+    || fail "true occupant could not return its own copy: $(cat "$case_dir/owner-stderr")"
+  assert_present "$case_dir/returns" 'true occupant did not return its own copy'
+  assert_absent "$case_dir/state/task-live.meta" 'true occupant metadata was not retired'
+  assert_present "$case_dir/state/task-x1.meta" 'owner cleanup retired the stale task record'
+  pass 'recycled worktree: published stale task refuses naming occupant; true owner cleans up'
+}
+
+test_recycled_worktree_refuses_stale_task_and_allows_occupant
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present

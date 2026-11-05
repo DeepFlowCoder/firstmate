@@ -740,6 +740,7 @@ SPAWN_META_LOCK_HELD=0
 SPAWN_META_PUBLISH_STARTED=0
 SPAWN_TASK_SET_LOCK=
 SPAWN_TASK_SET_LOCK_HELD=0
+SPAWN_COPY_OWNER_LOCK=
 RELAUNCH_REPLACEMENT_PENDING=0
 RELAUNCH_REPLACEMENT_BUSY_GEN=
 RELAUNCH_REPLACEMENT_HARNESS=
@@ -844,6 +845,10 @@ spawn_abort_cleanup() {
   if [ "$SPAWN_META_LOCK_HELD" = 1 ]; then
     SPAWN_META_LOCK_HELD=0
     fm_lock_release "$SPAWN_META_LOCK" || true
+  fi
+  if [ -n "$SPAWN_COPY_OWNER_LOCK" ]; then
+    fm_lock_release "$SPAWN_COPY_OWNER_LOCK" || true
+    SPAWN_COPY_OWNER_LOCK=
   fi
   if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_SET_LOCK_HELD=0
@@ -2712,6 +2717,19 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 fi
+# The provider has now resolved the copy. Bind occupancy before any base reset,
+# hooks, or worker writes; recovery must prove its existing claim instead.
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/fm-worktree-owner-lib.sh"
+if [ "$KIND" != secondmate ]; then
+  fm_worktree_owner_acquire "$WT" || exit 1
+  SPAWN_COPY_OWNER_LOCK=$FM_WORKTREE_OWNER_LOCK
+  if [ "$REUSE" -eq 0 ]; then
+    fm_worktree_owner_publish "$STATE" "$ID" || exit 1
+  else
+    fm_worktree_owner_require "$WT" "$STATE" "$ID" || exit 1
+  fi
+fi
 if [ "$REUSE" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
@@ -3260,6 +3278,10 @@ if [ "$REUSE" -eq 1 ]; then
   SPAWN_META_TMP=
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
+fi
+if [ -n "$SPAWN_COPY_OWNER_LOCK" ]; then
+  fm_lock_release "$SPAWN_COPY_OWNER_LOCK"
+  SPAWN_COPY_OWNER_LOCK=
 fi
 if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   # The record is published, so this task is now part of the set a teardown

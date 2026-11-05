@@ -13,8 +13,14 @@ make_case() {  # <name>
   local dir=$1
   mkdir -p "$TMP_ROOT/$dir/home/state" "$TMP_ROOT/$dir/home/data" \
     "$TMP_ROOT/$dir/home/config" "$TMP_ROOT/$dir/fakebin" \
-    "$TMP_ROOT/$dir/worktree" "$TMP_ROOT/$dir/project"
-  : > "$TMP_ROOT/$dir/worktree/sentinel"
+    "$TMP_ROOT/$dir/project"
+  # Valid cleanup also proves copy occupancy, so use a real isolated Git copy.
+  git init -q -b main "$TMP_ROOT/$dir/project"
+  : > "$TMP_ROOT/$dir/project/sentinel"
+  git -C "$TMP_ROOT/$dir/project" add sentinel
+  git -C "$TMP_ROOT/$dir/project" -c user.name=fmtest -c user.email=fmtest@example.invalid \
+    commit -qm baseline
+  git -C "$TMP_ROOT/$dir/project" worktree add -q --detach "$TMP_ROOT/$dir/worktree"
   : > "$TMP_ROOT/$dir/runtime.log"
   cat > "$TMP_ROOT/$dir/fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
