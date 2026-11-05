@@ -25,6 +25,8 @@ set -u
 . "$ROOT/bin/fm-control-lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-trace-context-lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-pr-lib.sh"
 
 CONTROL="$ROOT/bin/fm-control.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
@@ -271,6 +273,52 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_grep "/exit" "$dir/fake/literal" "the previous agent should have been exited"
   assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
+}
+
+test_relaunch_keeps_merge_poll_authenticated() {
+  local dir out rc harness url attempt state tx_before
+  for harness in claude codex; do
+    for url in https://github.com/example/repo/pull/34 https://gitlab.example.com/group/repo/-/merge_requests/34; do
+      dir=$(new_case "merge-poll-$harness" rl34)
+      add_ship_task "$dir" rl34 claude
+      state="$dir/home/state"
+      cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 0123456789abcdef0123456789abcdef01234567
+SH
+      cat > "$dir/fakebin/glab" <<'SH'
+#!/usr/bin/env bash
+printf 'state:\tmerged\n'
+SH
+      chmod +x "$dir/fakebin/gh" "$dir/fakebin/glab"
+      env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_SPAWN_NO_GUARD=1 \
+        "$ROOT/bin/fm-pr-check.sh" rl34 "$url" > "$dir/poll.out" 2>&1 \
+        || fail "could not arm the fixture merge poll: $(cat "$dir/poll.out")"
+      fm_pr_poll_artifacts_valid "$state" rl34 "$ROOT/bin/fm-pr-poll.sh" \
+        || fail "the initial merge poll must be authenticated"
+      printf '%s' "$harness" > "$dir/fake/becomes"
+
+      # First prove a normal relaunch; then retry from the historical broken
+      # layout (pr= followed by control_relaunch_tx=), without rearming the poll.
+      for attempt in normal historical; do
+        if [ "$attempt" = historical ]; then
+          printf 'control_relaunch_tx=old-transaction\n' >> "$state/rl34.meta"
+        fi
+        tx_before=$(meta_field "$dir" rl34 control_relaunch_tx)
+        out=$(run_control "$dir" rl34 relaunch --harness "$harness" --note "continue watching the PR"); rc=$?
+        expect_code 0 "$rc" "relaunch with a merge poll should succeed"$'\n'"$out"
+        [ -n "$(meta_field "$dir" rl34 control_relaunch_tx)" ] \
+          && [ "$(meta_field "$dir" rl34 control_relaunch_tx)" != "$tx_before" ] \
+          || fail "relaunch must publish its new transaction marker"
+        [ "$(grep -c '^control_relaunch_tx=' "$state/rl34.meta")" -eq 1 ] \
+          || fail "relaunch must replace the prior transaction marker"
+        fm_pr_poll_artifacts_valid "$state" rl34 "$ROOT/bin/fm-pr-poll.sh" \
+          || fail "$attempt relaunch onto $harness invalidated the merge poll for $url"
+        [ "$FM_PR_META_URL" = "$url" ] || fail "relaunch changed the watched PR identity"
+      done
+    done
+  done
+  pass "fm-control relaunch: existing merge polls stay authenticated, including after historical broken ordering"
 }
 
 test_relaunch_preserves_durable_task_metadata() {
@@ -1313,6 +1361,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_relaunch_keeps_merge_poll_authenticated
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
