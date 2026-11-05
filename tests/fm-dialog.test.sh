@@ -716,6 +716,21 @@ test_unresponsive_at_a_dialog_types_nothing_before_signalling() {
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-control-lib.sh"
 
+# Reconstructed October screen, not a full live capture: the September modal
+# plus the usage-limit string recorded on 2026-10-06. No new answer is inferred.
+test_inspect_codex_usage_limit_with_registered_modal() {
+  local dir out
+  dir=$(new_case quota-dialog)
+  add_task "$dir" t1 codex
+  cp "$ROOT/tests/fixtures/codex-usage-limit-reconstructed.screen" "$dir/fake/pane"
+  out=$(run_control "$dir" t1 dialog) || fail "combined usage-limit screen was not inspectable: $out"
+  assert_contains "$out" rate-limit-switch "usage-limit screen lost the registered modal"
+  assert_contains "$out" keep-model "inspection lost the existing answers"
+  [ ! -s "$dir/fake/literal" ] && [ ! -s "$dir/fake/keys" ] || fail "inspection pressed a key"
+  pass "reconstructed codex usage-limit screen remains inspectable as rate-limit-switch"
+}
+
+test_inspect_codex_usage_limit_with_registered_modal
 test_registered_classes_are_recognized_from_their_real_rendering
 test_a_working_screen_recognizes_nothing
 test_each_class_is_recognized_only_by_its_own_screen

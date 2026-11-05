@@ -4654,6 +4654,84 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
+# The fixture is reconstructed from the September modal and the two strings
+# recorded on 2026-10-06; it is not a full live capture of the exhausted screen.
+test_codex_quota_wait_absorbs_rechecks_and_releases() {
+  local dir state fakebin out window key capture pid
+  dir=$(make_case codex-quota); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; window=test:fm-quota; key=test_fm-quota
+  capture="$dir/viewport"
+  cp "$ROOT/tests/fixtures/codex-usage-limit-reconstructed.screen" "$capture"
+  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/quota.meta"
+  printf 'working: implementing\n' > "$state/quota.status"
+  prime_status_seen "$state" "$state/quota.status"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=codex FM_FAKE_CREW_STATE='state: working · source: run-step · validating' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=0 FM_POLL=0.2 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || fail "quota screen surfaced a wedge: $(cat "$out")"
+  wait_poll_cycle "$state" "$pid" || fail "quota screen repeated a wedge: $(cat "$out")"
+  [ -e "$state/.paused-$key" ] || fail "quota wait did not take pause cadence"
+  [ ! -e "$state/.stale-since-$key" ] || fail "quota wait started a wedge timer"
+  [ ! -s "$state/.wake-queue" ] || fail "quota wait queued a repeated wake"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the quota test stop"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=codex FM_STATE_OVERRIDE="$state" \
+    FM_PAUSE_RESURFACE_SECS=0 FM_POLL=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "quota wait never resurfaced for its bounded recheck"
+  grep -F 'awaiting external provider quota' "$out" >/dev/null || fail "recheck did not name quota: $(cat "$out")"
+  grep -F 'possible wedge' "$out" >/dev/null && fail "quota recheck was called a wedge"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the quota recheck"
+
+  # Removing the observed screen must restore supervision even with no status
+  # append from the worker. With no other established state, ordinary stale
+  # supervision must surface the worker for inspection again.
+  printf 'worker resumed\n' > "$capture"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=codex FM_FAKE_CREW_STATE='state: unknown · source: none · unestablished' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=0 FM_POLL=0.2 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "removing quota screen left the worker hidden on pause cadence"
+  [ ! -e "$state/.paused-$key" ] || fail "quota pause survived the screen disappearing"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "ordinary stale supervision was not restored: $(cat "$out")"
+  pass "codex quota wait absorbs repeated polls, rechecks on pause cadence, and releases on resume"
+}
+
+test_codex_quota_wait_hands_off_once_under_afk() {
+  local dir state fakebin out window pid
+  dir=$(make_case codex-quota-afk); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; window=test:fm-quota
+  printf 'window=%s\nkind=ship\nharness=codex\n' "$window" > "$state/quota.meta"
+  : > "$state/.afk"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$ROOT/tests/fixtures/codex-usage-limit-reconstructed.screen" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=codex FM_STATE_OVERRIDE="$state" \
+    FM_POLL=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "AFK quota wait did not hand off"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "AFK quota wake was decorated: $(cat "$out")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge AFK quota wake"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$ROOT/tests/fixtures/codex-usage-limit-reconstructed.screen" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=codex FM_STATE_OVERRIDE="$state" \
+    FM_POLL=0.2 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_poll_cycle "$state" "$pid" || fail "AFK quota wait repeated its handoff: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "AFK quota wait requeued itself"
+  reap "$pid"
+  pass "AFK quota wait hands off one plain wake for daemon-owned rechecks"
+}
+
+test_codex_quota_wait_absorbs_rechecks_and_releases
+test_codex_quota_wait_hands_off_once_under_afk
 test_status_span_actionable_classifier
 test_status_span_survives_a_later_routine_append
 test_status_span_respects_decision_closure

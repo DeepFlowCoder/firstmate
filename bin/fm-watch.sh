@@ -227,6 +227,8 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-quota-wait-lib.sh
+. "$SCRIPT_DIR/fm-quota-wait-lib.sh"
 # Steering-inbox loss detection: bin/fm-task-inbox-lib.sh owns the record,
 # doorbell, and re-ring ladder contracts; this watcher only supplies the busy
 # gate and the wake emission (inbox_steer_check below).
@@ -1256,8 +1258,8 @@ status_idle_age() {  # <task>
 # captain themself for a verified hold. Only the captain-held verb takes the second
 # wording; a caller that reached the bounded cadence off pause tracking alone, with
 # no declaring verb left on the log, keeps the external-wait wording it always had.
-handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf age detail reason
+handle_paused_stale() {  # <window> <task> <hash> [quota]
+  local win=$1 task=$2 h=$3 quota=${4-} key statusf age detail reason
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -1265,7 +1267,10 @@ handle_paused_stale() {  # <window> <task> <hash>
   clear_defer_tracking "$key"
   statusf="$STATE/$task.status"
   age=$(status_idle_age "$task")
-  if task_is_captain_held "$task" "$(last_status_line "$statusf")"; then
+  if [ "$quota" = quota ]; then
+    detail="quota wait, awaiting external provider"
+    reason="paused ${age}s, awaiting external provider quota - observed codex usage limit, rechecked on a long cadence; confirm the wait still holds"
+  elif task_is_captain_held "$task" "$(last_status_line "$statusf")"; then
     detail="captain-held, awaiting the captain"
     reason="captain-held ${age}s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
   else
@@ -2518,6 +2523,22 @@ EOF
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
     key=$(window_key "$w")
     last=$(last_status_line "$STATE/$task.status")
+    # A live provider error declares the wait even when the exhausted model
+    # cannot append paused:. Re-read the viewport so a resumed worker immediately
+    # leaves this path, including a worker with an old busy lifecycle record.
+    if fm_quota_wait_task "$STATE" "$task"; then
+      if afk_present; then
+        # One plain handoff per observed wait; the daemon owns its rechecks.
+        if [ "$(cat "$STATE/.stale-$key" 2>/dev/null)" != quota ]; then
+          fm_wake_append stale "$w" "stale: $w" || exit 1
+          printf 'quota' > "$STATE/.stale-$key"
+          wake "stale: $w"
+        fi
+      else
+        handle_paused_stale "$w" "$task" quota quota
+      fi
+      continue
+    fi
     if ! wait_is_declared "$task" "$last" && [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$key"
     fi

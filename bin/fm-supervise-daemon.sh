@@ -165,6 +165,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$FM_DAEMON_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-quota-wait-lib.sh
+. "$FM_DAEMON_DIR/fm-quota-wait-lib.sh"
 
 # Canonical construction and parsing for every Firstmate operational input.
 # shellcheck source=bin/fm-operational-input.sh
@@ -438,6 +440,7 @@ daemon_task_is_captain_held() {  # <state> <task> <last-status-line>
 daemon_wait_is_declared() {  # <state> <task> <last-status-line>
   local state=$1 task=$2 last=$3
   status_is_paused_or_captain_held "$last" && return 0
+  fm_quota_wait_task "$state" "$task" && return 0
   fm_wait_id_in_list "$task" "$(fm_wait_captain_held_ids "$(dirname "$state")" 2>/dev/null || true)"
 }
 
@@ -470,7 +473,9 @@ classify_stale() {  # <window> <state> [<span-record> <span-status>]
     # records a pause marker (long re-surface cadence in housekeeping) rather than
     # a wedge stale marker. Cheap: the status line already read plus one backlog
     # scan, no fm-crew-state.sh call.
-    if daemon_task_is_captain_held "$state" "$task" "$last"; then
+    if fm_quota_wait_task "$state" "$task"; then
+      printf 'pause|codex quota wait (awaiting external provider), rechecked on a long cadence'
+    elif daemon_task_is_captain_held "$state" "$task" "$last"; then
       printf 'pause|captain-held (awaiting the captain), rechecked on a long cadence: %s' "${last:-backlog hold on $task}"
     else
       printf 'pause|paused (awaiting external), rechecked on a long cadence: %s' "$last"
@@ -1016,6 +1021,10 @@ housekeeping() {  # <state>
           if escalate_add "$state" "captain-held ${age}s (awaiting the captain, answer the held decision or release the hold): $win"; then
             _now > "$marker"
           fi
+        elif fm_quota_wait_task "$state" "$task"; then
+          if escalate_add "$state" "paused ${age}s (awaiting external provider quota, recheck whether the wait still holds): $win"; then
+            _now > "$marker"
+          fi
         elif [ -n "$last" ] && status_is_paused "$last"; then
           if escalate_add "$state" "paused ${age}s (awaiting external, recheck whether the wait still holds): $win"; then
             _now > "$marker"
@@ -1253,7 +1262,7 @@ handle_wake() {  # <reason> <state>
               case "$stale_detail" in
                 idle\ *s,\ possible\ wedge,\ escalation\ *)
                   last=$(last_status_line "$state/$task.status")
-                  status_is_paused_or_captain_held "$last" \
+                  { status_is_paused_or_captain_held "$last" || fm_quota_wait_task "$state" "$task"; } \
                     || decision="escalate|${reason#stale: }"
                   ;;
               esac ;;

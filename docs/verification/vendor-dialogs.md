@@ -143,6 +143,28 @@ The same user-visible behaviours were driven live through the herdr backend agai
 
 A backend with no viewport source answers nothing, and the dialog verb refuses there by name rather than reading scrollback instead.
 
+## Exhausted-quota observation
+
+The 2026-10-06 record retained two strings from a live Codex worker: `You've hit your usage limit` followed by `Approaching rate limits` above the rate-limit-switch modal.
+Neither a complete viewport nor the Codex version was retained.
+[`codex-usage-limit-reconstructed.screen`](../../tests/fixtures/codex-usage-limit-reconstructed.screen) is explicitly a reconstruction: the recorded usage-limit line added to the September modal capture above, not a full live October capture.
+No real agent is driven to its limit to refresh this case.
+[`bin/fm-quota-wait-lib.sh`](../../bin/fm-quota-wait-lib.sh) registers those two strings as passive quota evidence, separately from the dialog registry's authority to answer a menu.
+`tests/fm-dialog.test.sh` verifies that the reconstructed combined screen remains inspectable through `fm-control.sh dialog` as the existing `rate-limit-switch` class, without pressing a key or inferring any new answer.
+The reconstruction does not establish why the unretained October screen failed dialog recognition; a differing offered-model description remains a limitation of the registered capture described above.
+
+Fixture verification on 2026-11-05, macOS, using fake tmux and Herdr CLIs only, with no installed harness or live Herdr session involved:
+
+```
+$ bash tests/fm-quota-wait.test.sh
+ok - quota recognition requires both recorded strings and the measured harness
+ok - missing, unreadable, dead, ambiguous, remote and unsupported inputs establish no quota wait
+ok - Herdr quota observation uses its visible viewport and releases on resume
+```
+
+Only tmux and Herdr expose a native viewport through `fm_backend_capture_visible`; zellij, Orca and cmux establish no quota wait rather than substituting scrollback.
+The Claude exhausted-window case remains unregistered because no rendered text was retained; it requires a real capture before a classifier can be added.
+
 ## Other harnesses
 
 No other harness has a registered dialog class.
