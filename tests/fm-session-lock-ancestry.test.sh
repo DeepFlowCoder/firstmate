@@ -471,7 +471,11 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
 # dependency on the harness running this suite.
 test_managed_codex_daemon_never_owns_a_session() {
   local dir
-  dir="$TMP_ROOT/codex-managed"
+  # The home path is embedded in the request-runner's argv through the env
+  # PATH prefix below. Keep it free of harness names: a path component such as
+  # "codex-managed" would trip fm_harness_process_matches' bare-interpreter
+  # rule and make the neutral python fixture read as a session owner.
+  dir="$TMP_ROOT/managed-host"
   mkdir -p "$dir/state"
   ln -s /bin/bash "$dir/codex"
   mkdir -p "$dir/ps-bin"
