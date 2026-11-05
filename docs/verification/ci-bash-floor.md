@@ -130,8 +130,8 @@ The watcher's own background children already redirect both streams, but the wat
 
 Raising the floor removes the only known trigger of the swallowed signal.
 It does not change what happens if a trap fails to run for any other reason: bash still prints and continues, and the handler still does not run.
-`reap` in [`../../tests/lib.sh`](../../tests/lib.sh) bounds this for pids a suite explicitly reaps, by escalating to SIGKILL, but a SIGKILL skips the EXIT cleanup and orphaned descendants keep the inherited pipe.
-Raising the floor alone did not address that residual exposure.
+`reap` in [`../../tests/lib.sh`](../../tests/lib.sh) bounds this for pids a suite explicitly reaps, by escalating to SIGKILL, but a SIGKILL skips the EXIT cleanup, so orphaned descendants kept the lane's pipe open.
+Raising the floor alone did not address that residual exposure; the runner change that closed it now writes serial output to a regular file, so a surviving descendant cannot hold the lane open.
 The independent runner regression is [`../../tests/fm-test-run.test.sh`](../../tests/fm-test-run.test.sh), specifically `test_serial_output_does_not_wait_for_orphan_eof` and `test_serial_output_streams_and_drains_bytes`.
 
 ## Independent output-capture verification
