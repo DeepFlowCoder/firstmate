@@ -3379,8 +3379,27 @@ test_squash_body_inputs_and_failures() {
   pass "squash bodies support explicit methods, text/files/stdin, empty messages and failed reads"
 }
 
+test_squash_short_method_flag_is_not_parsed() {
+  local case_dir
+  case_dir=$(make_case squash-short-method-flag)
+  add_gh_mocks "$case_dir" cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+  printf 'Human prose\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n' > "$case_dir/squash-body"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 -- -m \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "squash-short-method-flag: merge refused"
+  assert_no_grep 'noreply@anthropic.com' "$case_dir/merged-body" \
+    "squash-short-method-flag: agent trailer reached the squash message"
+  assert_grep 'Human prose' "$case_dir/merged-body" \
+    "squash-short-method-flag: prose was lost"
+  assert_grep 'pr merge 9 --repo example/repo --squash -m' "$case_dir/gh-axi.log" \
+    "squash-short-method-flag: -m was not forwarded or squash was not imposed"
+  assert_grep '--body ' "$case_dir/gh-axi.log" \
+    "squash-short-method-flag: cleaned body was not explicitly sent"
+  pass "a short merge flag is forwarded, not parsed, so squash cleaning still runs"
+}
+
 test_squash_removes_agent_coauthors_and_keeps_humans
 test_squash_body_inputs_and_failures
+test_squash_short_method_flag_is_not_parsed
 test_github_zero_exit_queue_required_refuses_with_a_methodless_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_queue_base_enqueues_without_imposing_a_method

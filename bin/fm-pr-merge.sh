@@ -332,27 +332,22 @@ github_prepare_squash_body() {
     arg=$1
     shift
     case "$arg" in
-      --body|-b|--body-file|-F)
+      --body|--body-file)
         [ "$#" -gt 0 ] || { echo "error: $arg requires a value" >&2; return 1; }
         body_set=1
         case "$arg" in
-          --body|-b) body=$1; file_set=0 ;;
+          --body) body=$1; file_set=0 ;;
           *) body_file=$1; file_set=1 ;;
         esac
         shift ;;
       --body=*) body_set=1; file_set=0; body=${arg#--body=} ;;
-      -b?*) body_set=1; file_set=0; body=${arg#-b} ;;
       --body-file=*) body_set=1; file_set=1; body_file=${arg#--body-file=} ;;
-      -F?*) body_set=1; file_set=1; body_file=${arg#-F} ;;
       --method)
         [ "$#" -gt 0 ] || { echo 'error: --method requires a value' >&2; return 1; }
         method=$1; args+=("$arg" "$1"); shift ;;
       --method=*) method=${arg#--method=}; args+=("$arg") ;;
-      --merge|--rebase|-m|-r) method=other; args+=("$arg") ;;
-      --squash|-s) method=squash; args+=("$arg") ;;
-      --subject|--author-email|--match-head-commit|-t|-A)
-        [ "$#" -gt 0 ] || { echo "error: $arg requires a value" >&2; return 1; }
-        args+=("$arg" "$1"); shift ;;
+      --merge|--rebase) method=other; args+=("$arg") ;;
+      --squash) method=squash; args+=("$arg") ;;
       *) args+=("$arg") ;;
     esac
   done
