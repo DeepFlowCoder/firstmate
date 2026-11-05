@@ -512,6 +512,64 @@ test_post_alarm_actionable_close_is_suppressed() {
   pass "auto-arm: post-alarm actionable outcomes cannot continue or reset failure state"
 }
 
+test_post_alarm_actionable_close_with_verified_recovery_rewakes() {
+  local dir out status pid identity
+  dir=$(make_primary_dir "$TMP_ROOT/post-alarm-recovered-actionable")
+  : > "$dir/state/task.meta"
+  : > "$dir/state/.claude-autoarm-failure-notified"
+  : > "$dir/state/.claude-autoarm-failure-alarmed"
+  printf 'session=sess-autoarm\ncount=4\nepoch=9\n' > "$dir/state/.turnend-claude-blocks"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || fail "could not identify recovered successor"
+  record_watcher_lock "$dir" "$pid" "$identity"
+  touch "$dir/state/.last-watcher-beat"
+
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  expect_code 2 "$status" "verified recovery must end suppression and deliver the actionable wake"
+  assert_contains "$out" "stale: fixture-win actionable" "positive recovery lost the actionable reason"
+  assert_absent "$dir/state/.turnend-claude-blocks" "positive recovery left the block budget"
+  assert_absent "$dir/state/.claude-autoarm-failure-notified" "positive recovery left the failure notice"
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "positive recovery left the attended alarm"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "recovered actionable cycle must record rewake"
+  pass "auto-arm: verified recovery ends post-alarm suppression without losing the actionable wake"
+}
+
+test_post_alarm_actionable_close_with_unhealthy_successor_stays_suppressed() {
+  local dir kind out status pid identity
+  for kind in stale-beacon wrong-identity; do
+    dir=$(make_primary_dir "$TMP_ROOT/post-alarm-$kind")
+    : > "$dir/state/task.meta"
+    : > "$dir/state/.claude-autoarm-failure-notified"
+    : > "$dir/state/.claude-autoarm-failure-alarmed"
+    write_arm_fixture "$dir" actionable
+    sleep 60 &
+    pid=$!
+    identity=$(watcher_identity "$dir" "$pid") || fail "could not identify $kind successor"
+    record_watcher_lock "$dir" "$pid" "$identity"
+    touch "$dir/state/.last-watcher-beat"
+    if [ "$kind" = stale-beacon ]; then
+      touch -t 202001010000 "$dir/state/.last-watcher-beat"
+    else
+      printf 'different-process\n' > "$dir/state/.watch.lock/pid-identity"
+    fi
+    out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+
+    expect_code 0 "$status" "$kind must not count as positive recovery"
+    [ -z "$out" ] || fail "$kind produced a post-alarm continuation: $out"
+    assert_present "$dir/state/.claude-autoarm-failure-notified" "$kind cleared the failure notice"
+    assert_present "$dir/state/.claude-autoarm-failure-alarmed" "$kind cleared the attended alarm"
+    [ "$(epoch_outcome "$dir")" = failed-suppressed ] || fail "$kind must record failed-suppressed"
+  done
+  pass "auto-arm: stale or identity-mismatched successors cannot end post-alarm suppression"
+}
+
 test_benign_cycle_end_with_live_watcher_is_silent() {
   local dir out out2 status status2 pid identity
   dir=$(make_primary_dir "$TMP_ROOT/benign-live")
@@ -1166,6 +1224,8 @@ test_failed_cycles_notify_once_and_keep_retrying
 test_failure_notice_marker_write_refuses_delivery_and_retries
 test_unverified_clean_close_exhausts_retries
 test_post_alarm_actionable_close_is_suppressed
+test_post_alarm_actionable_close_with_verified_recovery_rewakes
+test_post_alarm_actionable_close_with_unhealthy_successor_stays_suppressed
 test_benign_cycle_end_with_live_watcher_is_silent
 test_positive_recovery_budget_contention_preserves_episode
 test_owner_mutex_contention_preserves_failure_episode_reset

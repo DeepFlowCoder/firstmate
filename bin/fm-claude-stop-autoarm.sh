@@ -249,12 +249,12 @@ while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
   if [ -n "$OUT" ]; then
     grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" 2>/dev/null && ACTIONABLE=1
   fi
-  [ "$ACTIONABLE" -eq 1 ] && break
-
-  # A non-actionable close is benign when another verified watcher already owns
-  # this home and is still beating within the shared grace window.
+  # Check positive recovery even on actionable closes: a verified successor
+  # ends the failure episode before its alarm can suppress this wake.
   if fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME"; then
     HEALTHY=1
+  fi
+  if [ "$ACTIONABLE" -eq 1 ] || [ "$HEALTHY" -eq 1 ]; then
     break
   fi
   [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ] || break
@@ -274,21 +274,25 @@ if [ "$HEALTHY" -eq 1 ]; then
   fm_autoarm_reset_owned "$STATE" "$MY_GEN"
   RESET_RC=$?
   if [ "$RESET_RC" -eq 0 ]; then
-    autoarm_record clean
+    # Preserve an actionable reason while clearing the recovered episode;
+    # only a non-actionable close is an ordinary silent completion.
+    if [ "$ACTIONABLE" -ne 1 ]; then
+      autoarm_record clean
+      [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+      exit 0
+    fi
+  elif [ "$RESET_RC" -eq 2 ]; then
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  else
+    if autoarm_commit failed-suppressed; then
+      [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+      [ -e "$FAILURE_ALARM" ] && exit 0
+      exit 2
+    fi
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 0
   fi
-  if [ "$RESET_RC" -eq 2 ]; then
-    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-    exit 0
-  fi
-  if autoarm_commit failed-suppressed; then
-    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-    [ -e "$FAILURE_ALARM" ] && exit 0
-    exit 2
-  fi
-  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  exit 0
 fi
 
 # After the synchronous guard has consumed the episode's attended fail-open,
