@@ -47,6 +47,24 @@ fm_harness_path_name() {  # <path>
   return 1
 }
 
+# A managed Codex app-server is a shared conversation host, not a session.
+# Keep this separate from harness identity: a legacy lock naming a live host
+# needs recovery, but must never count as proof of session ownership.
+fm_codex_managed_daemon_matches() {  # <comm> <args>
+  local comm=$1 args=$2 argv0 name
+  case " $args " in *" app-server "*) ;; *) return 1 ;; esac
+  case " $args " in *" --managed-daemon "*) ;; *) return 1 ;; esac
+  case "$(basename -- "$comm")" in *codex*) return 0 ;; esac
+  case "$comm" in
+    *node*|*python*)
+      printf '%s' "$args" | grep -q codex && return 0
+      ;;
+  esac
+  argv0=${args%% *}
+  name=$(fm_harness_path_name "$comm") || name=$(fm_harness_path_name "$argv0") || return 1
+  [ "$name" = codex ]
+}
+
 # True when the process described by command name $1 and full argument string $2
 # is a verified harness. Sets FM_HARNESS_IS_CLAUDE for the ancestry walk.
 #
@@ -63,6 +81,7 @@ FM_HARNESS_IS_CLAUDE=0
 fm_harness_process_matches() {  # <comm> <args>
   local comm=$1 args=$2 base argv0 name
   FM_HARNESS_IS_CLAUDE=0
+  fm_codex_managed_daemon_matches "$comm" "$args" && return 1
   base=$(basename -- "$comm")
   if printf '%s' "$base" | grep -qE "$FM_HARNESS_RE"; then
     case "$base" in *claude*) FM_HARNESS_IS_CLAUDE=1 ;; esac
@@ -112,7 +131,10 @@ fm_harness_ancestry_pids() {
   local pid=$$ comm args extending=0 printed=0
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break
-    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || break
+    [ -n "$args" ] || break
+    # Do not climb through a shared host into an unrelated launching session.
+    fm_codex_managed_daemon_matches "$comm" "$args" && break
     if fm_harness_process_matches "$comm" "$args"; then
       printf '%s\n' "$pid"
       printed=1
@@ -150,7 +172,8 @@ fm_harness_pid_alive() {
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  args=$(ps -o args= -p "$pid" 2>/dev/null)
+  args=$(ps -o args= -p "$pid" 2>/dev/null) || return 1
+  [ -n "$args" ] || return 1
   fm_harness_process_matches "$comm" "$args"
 }
 

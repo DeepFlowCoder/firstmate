@@ -302,6 +302,24 @@ SH
   pass "session-lock: another live session holding the home is proved, never assumed"
 }
 
+test_managed_codex_identity_sources() {
+  local comm args
+  for comm in codex codex-aarch64 /opt/codex/bin/engine node python; do
+    case "$comm" in
+      node|python) args="$comm /opt/codex/bin/cli.js app-server --managed-daemon" ;;
+      *) args="$comm app-server --managed-daemon" ;;
+    esac
+    if lib_eval "$FAKEBIN" "fm_harness_process_matches '$comm' '$args'"; then
+      fail "$comm: managed Codex daemon was recognized as a session"
+    fi
+    lib_eval "$FAKEBIN" "fm_harness_process_matches '$comm' '$comm /opt/codex/bin/cli.js app-server --stdio'" \
+      || fail "$comm: ordinary Codex process identity was lost"
+  done
+  lib_eval "$FAKEBIN" "fm_harness_process_matches claude 'claude app-server --managed-daemon'" \
+    || fail "Codex daemon exclusion changed another harness's identity"
+  pass "session-lock: managed Codex identity is excluded through every supported name source"
+}
+
 # --- end-to-end layer: the real Stop auto-arm in real process trees ----------
 
 install_autoarm_scripts() {
@@ -440,6 +458,138 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+# A managed app-server hosts many conversations in one process. Use real
+# processes with its actual argv shape, then drive the public lock command.
+# Python only supplies a request/reply fixture, so there is no polling or
+# dependency on the harness running this suite.
+test_managed_codex_daemon_never_owns_a_session() {
+  local dir
+  dir="$TMP_ROOT/codex-managed"
+  mkdir -p "$dir/state"
+  ln -s /bin/bash "$dir/codex"
+  mkdir -p "$dir/ps-bin"
+  cat > "$dir/ps-bin/ps" <<'SH'
+#!/usr/bin/env bash
+if [ "${4:-}" = "$FM_BLIND_PID" ] && [ "${2:-}" = "$FM_BLIND_FIELD" ]; then
+  [ "$FM_BLIND_MODE" = empty ] && exit 0
+  exit 1
+fi
+exec "$FM_REAL_PS" "$@"
+SH
+  chmod +x "$dir/ps-bin/ps"
+  cat > "$dir/app-server" <<'SH'
+printf '%s\n' "$$"
+while IFS= read -r request; do
+  python3 - "$request" <<'PY'
+import json, subprocess, sys
+result = subprocess.run(json.loads(sys.argv[1]), capture_output=True, text=True, timeout=15)
+print(json.dumps([result.returncode, result.stdout + result.stderr]), flush=True)
+PY
+done
+SH
+  if ! python3 - "$dir" "$ROOT" <<'PY'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+home, root = sys.argv[1:]
+env = dict(os.environ, FM_HOME=home, FM_STATE_OVERRIDE=home + "/state")
+lib = root + "/bin/fm-session-lock-lib.sh"
+lock = root + "/bin/fm-lock.sh"
+processes = []
+
+def start(*args):
+    process = subprocess.Popen(
+        [home + "/codex", "app-server", *args],
+        cwd=home, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    processes.append(process)
+    assert int(process.stdout.readline()) == process.pid, "fixture failed to start"
+    return process
+
+def run(process, *command):
+    process.stdin.write(json.dumps(command) + "\n")
+    process.stdin.flush()
+    return json.loads(process.stdout.readline())
+
+def query(process, expression):
+    return run(process, "bash", "-c", '. "$1"; ' + expression, "_", lib)
+
+try:
+    daemon = start("--listen", "unix://", "--managed-daemon")
+    args = subprocess.check_output(["ps", "-o", "args=", "-p", str(daemon.pid)], text=True)
+    assert "app-server --listen unix:// --managed-daemon" in args, args
+    rc, out = query(daemon, "fm_harness_ancestry_pid")
+    assert rc != 0, f"managed daemon was selected as a session owner: {out}"
+    rc, _ = query(daemon, f"fm_harness_pid_alive {daemon.pid}")
+    assert rc != 0, "managed daemon was recognized as a live session"
+    rc, out = run(daemon, lock)
+    assert rc != 0 and "session-scoped" in out, out
+    assert not Path(home, "state/.lock").exists(), "daemon published a session lock"
+
+    # An existing daemon lock is unsafe, rather than proof that conversations
+    # are gone. Recovery must wait for that exact daemon to exit.
+    holder = Path(home, "state/.lock")
+    holder.write_text(f"{daemon.pid}\n")
+    assert holder.read_text() == f"{daemon.pid}\n"
+    session = start("--stdio")
+    rc, out = run(session, lock, "status")
+    assert rc == 0 and "recovery required" in out, out
+    rc, out = run(session, lock)
+    assert rc != 0 and "stop" in out and "daemon" in out, out
+    assert holder.read_text() == f"{daemon.pid}\n", "live daemon lock was overwritten"
+    rc, _ = query(daemon, f"fm_session_lock_owned_by_self '{home}/state'")
+    assert rc != 0, "a daemon claimed its legacy lock as a session"
+
+    # Losing a process-table channel must never permit replacing the live host.
+    for field in ("comm=", "args="):
+        for mode in ("failure", "empty"):
+            prefix = ["env", "PATH=" + home + "/ps-bin:" + os.environ["PATH"],
+                      "FM_REAL_PS=" + shutil.which("ps"), "FM_BLIND_PID=" + str(daemon.pid),
+                      "FM_BLIND_FIELD=" + field, "FM_BLIND_MODE=" + mode]
+            rc, out = run(session, *prefix, lock)
+            assert rc != 0 and "cannot establish" in out, (field, mode, out)
+            assert holder.read_text() == f"{daemon.pid}\n", "unreadable live lock was replaced"
+            rc, out = run(session, *prefix, lock, "status")
+            assert rc == 0 and "recovery required" in out, (field, mode, out)
+            rc, out = run(daemon, *prefix, "bash", "-c",
+                          '. "$1"; fm_harness_ancestry_pid', "_", lib)
+            assert rc != 0, ("unreadable host escaped the ancestry boundary", field, mode, out)
+
+    daemon.stdin.close()
+    assert daemon.wait(timeout=10) == 0
+    rc, out = run(session, lock)
+    assert rc == 0, out
+    assert holder.read_text() == f"{session.pid}\n", "stdio session did not own the lock"
+    rc, _ = query(session, f"fm_session_lock_owned_by_self '{home}/state'")
+    assert rc == 0, "stdio session could not recognize its own lock"
+
+    competitor = start("--stdio")
+    rc, out = run(competitor, lock)
+    assert rc != 0 and "another live firstmate session" in out, out
+    assert holder.read_text() == f"{session.pid}\n", "live session lock was overwritten"
+    session.stdin.close()
+    assert session.wait(timeout=10) == 0
+    rc, out = run(competitor, lock)
+    assert rc == 0, out
+    assert holder.read_text() == f"{competitor.pid}\n", "closed session left a permanent lock"
+finally:
+    for process in processes:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=10)
+PY
+  then
+    fail "managed Codex daemon session-lock recovery failed"
+  fi
+  pass "session-lock: managed Codex daemon is never an owner; recovery proves it exited"
+}
+
+test_managed_codex_daemon_never_owns_a_session
+test_managed_codex_identity_sources
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
