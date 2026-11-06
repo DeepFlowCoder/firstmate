@@ -3359,7 +3359,7 @@ BODY
 test_squash_body_inputs_and_failures() {
   local case_dir variant body rc
   body=$'Keep this prose about Claude.\nco-authored-by: Claude <noreply@anthropic.com>\nCo-Authored-By: Alice <alice@example.invalid>\n\n'
-  for variant in default squash method method-equals body body-equals file file-equals stdin clean-stdin agent-only clean empty unreadable invalid missing-file; do
+  for variant in default squash method method-equals method-case method-equals-ws body body-equals file file-equals stdin clean-stdin agent-only clean empty unreadable invalid missing-file; do
     case_dir=$(make_case "squash-body-$variant")
     add_gh_mocks "$case_dir" abcabcabcabcabcabcabcabcabcabcabcabcabca
     printf '%s' "$body" > "$case_dir/squash-body"
@@ -3368,6 +3368,8 @@ test_squash_body_inputs_and_failures() {
       squash) set -- --squash ;;
       method) set -- --method squash ;;
       method-equals) set -- --method=squash ;;
+      method-case) set -- --method SQUASH ;;
+      method-equals-ws) set -- --method=squash' ' ;;
       body) set -- --body "$body" ;;
       body-equals) set -- "--body=$body" ;;
       file) set -- --body-file "$case_dir/squash-body" ;;

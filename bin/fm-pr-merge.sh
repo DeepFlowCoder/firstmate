@@ -295,20 +295,26 @@ reject_override_in_passthrough "$@" || exit 1
 
 # The single place the long-form merge-method flags are recognized, so method
 # detection and the squash-vs-other body-cleaning choice read the same list.
-# Prints the caller's method (squash, merge, rebase, or a --method value) and
-# returns 0, or returns 1 having printed nothing when the caller named none.
+# Prints the caller's method (squash, merge, rebase, or a --method value),
+# lowercased and whitespace-trimmed, and returns 0, or returns 1 having printed
+# nothing when the caller named none.
 github_caller_merge_method() {
-  local arg
+  local arg value
   while [ "$#" -gt 0 ]; do
     arg=$1
     shift
     case "$arg" in
-      --squash) printf 'squash'; return 0 ;;
-      --merge) printf 'merge'; return 0 ;;
-      --rebase) printf 'rebase'; return 0 ;;
-      --method) printf '%s' "${1-}"; return 0 ;;
-      --method=*) printf '%s' "${arg#--method=}"; return 0 ;;
+      --squash) value=squash ;;
+      --merge) value=merge ;;
+      --rebase) value=rebase ;;
+      --method) value=${1-} ;;
+      --method=*) value=${arg#--method=} ;;
+      *) continue ;;
     esac
+    value=${value,,}
+    value=${value//[[:space:]]/}
+    printf '%s' "$value"
+    return 0
   done
   return 1
 }
