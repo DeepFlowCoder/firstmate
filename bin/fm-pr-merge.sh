@@ -179,9 +179,9 @@
 # the same composed text gh uses in its message editor, or from the caller's
 # --body/--body-file. Known agent Co-Authored-By identities are removed before
 # gh-axi receives the body; human trailers and other text are preserved.
-# Agent identities are exact tool names (with optional model versions), known
-# agent email addresses, and named tool [bot] accounts, never a human's first
-# name or an entire provider domain. An unreadable body refuses even under the
+# Agent identities are recognized by their known agent email addresses alone,
+# never by display name or an entire provider domain, so a human whose name
+# resembles a tool keeps attribution. An unreadable body refuses even under the
 # fitness override, since that override grants no agent-attribution exception.
 # Explicit merge/rebase methods, methodless merge-queue enqueues, and GitLab
 # keep their existing message handling. A message a merge queue composes itself
@@ -330,12 +330,7 @@ github_strip_agent_coauthors() {
       if (line ~ /^[[:space:]]*co-authored-by:[[:space:]]*/) {
         identity = line
         sub(/^[[:space:]]*co-authored-by:[[:space:]]*/, "", identity)
-        name = identity
-        sub(/[[:space:]]*<.*$/, "", name)
-        sub(/[[:space:]]+$/, "", name)
-        if (identity ~ /<(noreply@anthropic[.]com|noreply@openai[.]com|codex@openai[.]com|copilot@github[.]com|cursoragent@cursor[.]com|noreply@cursor[.]com)>[[:space:]]*$/ ||
-            name ~ /^(claude code|claude (opus|sonnet|haiku)( [0-9][a-z0-9. -]*)?|openai codex|github copilot|cursor agent|gemini cli|opencode)$/ ||
-            name ~ /^(claude|codex|copilot|cursor|gemini|grok|kimi|opencode|pi|muse)\[bot\]$/) next
+        if (identity ~ /<(noreply@anthropic[.]com|noreply@openai[.]com|codex@openai[.]com|copilot@github[.]com|cursoragent@cursor[.]com|noreply@cursor[.]com)>[[:space:]]*$/) next
       }
       printf "%s%s", separator, $0
       separator = "\n"

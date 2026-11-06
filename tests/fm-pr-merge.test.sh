@@ -3330,6 +3330,7 @@ Co-Authored-By: Codex <codex@openai.com>
 Co-Authored-By: Alice Example <alice@example.invalid>
 Co-Authored-By: Claude Martin <claude@example.invalid>
 Co-Authored-By: Claude <claude@example.invalid>
+Co-Authored-By: Claude Sonnet <sonnet@example.invalid>
 Co-Authored-By: Renamed Assistant <noreply@openai.com>
 Co-Authored-By: github copilot <tool@example.invalid>
 Co-Authored-By: gemini[bot] <123@users.noreply.github.com>
@@ -3347,11 +3348,13 @@ BODY
     "squash coauthors: a human sharing an agent first name was removed"
   assert_grep 'Co-Authored-By: Claude <claude@example.invalid>' "$case_dir/merged-body" \
     "squash coauthors: a human first name was treated as an agent identity"
+  assert_grep 'Co-Authored-By: Claude Sonnet <sonnet@example.invalid>' "$case_dir/merged-body" \
+    "squash coauthors: a human named after a model was removed"
   assert_grep 'Co-Authored-By: Alice <alice@openai.com>' "$case_dir/merged-body" \
     "squash coauthors: an entire provider domain was treated as an agent identity"
   assert_no_grep 'Renamed Assistant' "$case_dir/merged-body" 'known agent email was not filtered'
-  assert_no_grep 'github copilot' "$case_dir/merged-body" 'tool identity was not filtered'
-  assert_no_grep 'gemini[bot]' "$case_dir/merged-body" 'agent bot identity was not filtered'
+  assert_grep 'github copilot' "$case_dir/merged-body" 'a non-agent email with a tool-like name was removed'
+  assert_grep 'gemini[bot]' "$case_dir/merged-body" 'a non-agent email with a bot-like name was removed'
   assert_grep '* Fix a regression' "$case_dir/merged-body" "squash coauthors: prose was lost"
   pass "squash messages remove agent coauthors and preserve human trailers and prose"
 }
