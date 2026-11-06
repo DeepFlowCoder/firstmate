@@ -810,33 +810,32 @@ test_stale_actionable_wait_escalates_and_keeps_pause_cadence() {
 # pause marker (long re-surface cadence) rather than a wedge stale marker.
 test_codex_quota_wait_daemon_rechecks_and_releases() (
   local dir state win out before after
-  local PATH=$PATH
   dir=$(make_case codex-quota-daemon); state="$dir/state"; win=test:fm-quota
-  export PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state"
+  export FM_STATE_OVERRIDE="$state"
   export FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CURRENT_COMMAND=codex
   export FM_FAKE_TMUX_CAPTURE="$dir/viewport"
   export FM_ESCALATE_BATCH_SECS=999999 FM_HEARTBEAT_SCAN_SECS=999999 FM_PAUSE_RESURFACE_SECS=100
   cp "$ROOT/tests/fixtures/codex-usage-limit-reconstructed.screen" "$FM_FAKE_TMUX_CAPTURE"
   printf 'window=%s\nharness=codex\nkind=ship\n' "$win" > "$state/quota.meta"
   printf 'working: implementing\n' > "$state/quota.status"
-  out=$(classify_stale "$win" "$state")
+  out=$(PATH="$dir/fakebin:$PATH" classify_stale "$win" "$state")
   case "$out" in pause\|*quota*) ;; *) fail "quota exhaustion was not a declared wait: $out" ;; esac
   # A wedge already queued before detection must not outrank the observed wait.
-  handle_wake "stale: $win (idle 500s, possible wedge, escalation 2)" "$state"
+  PATH="$dir/fakebin:$PATH" handle_wake "stale: $win (idle 500s, possible wedge, escalation 2)" "$state"
   [ -e "$state/.subsuper-paused-quota" ] || fail "daemon quota pause marker missing"
   [ ! -e "$state/.subsuper-stale-quota" ] || fail "daemon kept aging quota as a wedge"
   [ ! -s "$state/.subsuper-escalations" ] || fail "daemon escalated quota exhaustion as a wedge"
   printf '%s\n' "$(( $(date +%s) - 500 ))" > "$state/.subsuper-paused-quota"
-  housekeeping "$state"
+  PATH="$dir/fakebin:$PATH" housekeeping "$state"
   grep -F 'awaiting external provider quota' "$state/.subsuper-escalations" >/dev/null \
     || fail "daemon quota wait never resurfaced for a recheck"
   grep -F 'possible wedge' "$state/.subsuper-escalations" >/dev/null && fail "daemon called quota a wedge"
   before=$(wc -l < "$state/.subsuper-escalations")
-  housekeeping "$state"
+  PATH="$dir/fakebin:$PATH" housekeeping "$state"
   after=$(wc -l < "$state/.subsuper-escalations")
   [ "$before" = "$after" ] || fail "daemon repeated a fresh quota recheck"
   printf 'worker resumed\n' > "$FM_FAKE_TMUX_CAPTURE"
-  housekeeping "$state"
+  PATH="$dir/fakebin:$PATH" housekeeping "$state"
   [ ! -e "$state/.subsuper-paused-quota" ] || fail "daemon quota pause survived resume"
   pass "daemon honors observed quota waits, bounds rechecks, and releases them on resume"
 )
