@@ -1387,8 +1387,14 @@ for META_HOME_PAIR in \
 do
   TASK_ID=${META_HOME_PAIR%%:*}
   TASK_HOME=${META_HOME_PAIR#*:}
-  teardown_task "$TASK_ID" "$TASK_HOME" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err" \
-    || fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
+  # The session restarts above killed every earlier pane, so Treehouse may have
+  # reassigned a surviving task's copy to a later task. Cleaning that stale
+  # record must refuse and name the current occupant; any other failure is real.
+  if ! teardown_task "$TASK_ID" "$TASK_HOME" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err"; then
+    grep -F "REFUSED: task $TASK_ID does not own " "$TMP_ROOT/td-$TASK_ID.err" >/dev/null 2>&1 \
+      && grep -F "current occupant is " "$TMP_ROOT/td-$TASK_ID.err" >/dev/null 2>&1 \
+      || fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
+  fi
 done
 assert_focus_is "$CAPTAIN_FOCUS" "multi-home teardown"
 pass "real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority"
