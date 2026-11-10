@@ -5,12 +5,11 @@
 # PID of any one tool call, which is dead moments after it is written.
 # Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
 #        fm-lock.sh status    print holder and liveness; always exits 0
-# Managed Codex app-server processes cannot own this PID lock. Daemon-hosted
-# conversations are identified by their request-runner process (the direct child
-# of the daemon) and can take the lock. A legacy lock naming a live managed
-# daemon is preserved until that exact process exits: close its conversations,
-# stop that daemon instance through Codex, and retry from a session-scoped CLI
-# or stdio app-server.
+# Managed Codex app-server processes cannot own this PID lock. A session hosted
+# inside a managed daemon is deliberately read-only: the daemon boundary breaks
+# ancestry walks, and the daemon itself is excluded from harness identity. No
+# takeover is offered; recovery requires stopping the daemon instance through
+# Codex, then retry from a session-scoped CLI or stdio app-server.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

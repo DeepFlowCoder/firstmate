@@ -149,42 +149,15 @@ fm_harness_ancestry_pids() {
   [ "$printed" -eq 1 ]
 }
 
-# Print the conversation/request-runner process that is a direct child of a
-# managed Codex daemon when called from inside that daemon. Returns the pid that
-# is a direct child of the daemon - the conversation context - so daemon-hosted
-# sessions can be identified by their conversation process rather than the daemon.
-fm_harness_ancestry_pid_inside_daemon() {
-  local pid=$$ comm args child ppid
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-    args=$(ps -o args= -p "$pid" 2>/dev/null) || return 1
-    [ -n "$args" ] || return 1
-    if fm_codex_managed_daemon_matches "$comm" "$args"; then
-      [ -n "$child" ] || return 1
-      printf '%s\n' "$child"
-      return 0
-    fi
-    child=$pid
-    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-    pid=$ppid
-    [ -n "$pid" ] && [ "$pid" -gt 1 ] || return 1
-  done
-  return 1
-}
-
 # Print the one pid that identifies this session when the session lock is being
 # WRITTEN: the outermost pid of the contiguous run. That is the pid that lives as
 # long as the session - a Claude worker several levels in is reaped when its hook
 # returns, and a lock naming it would look stale moments later while the session
 # is still running. Every non-Claude harness reports a single pid, so this is its
 # innermost match unchanged.
-#
-# For a conversation running inside a managed Codex daemon, where fm_harness_ancestry_pids
-# cannot climb through the daemon boundary, record the conversation/request-runner
-# process instead, so daemon-hosted sessions can take the lock and are not read-only.
 fm_harness_ancestry_pid() {
   local pids pid outermost=''
-  pids=$(fm_harness_ancestry_pids) || pids=$(fm_harness_ancestry_pid_inside_daemon) || return 1
+  pids=$(fm_harness_ancestry_pids) || return 1
   while IFS= read -r pid; do
     [ -n "$pid" ] && outermost=$pid
   done <<EOF
