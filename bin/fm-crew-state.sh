@@ -1433,7 +1433,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         if [ "$BRANCH_NEWEST_STATUS" = failed ] && nm_newest_row_cut "$BRANCH_NEWEST_SHA"; then
           RUN_CAP_CUT=1
           emit unknown run-step \
-            "a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($CUT_ROW_DETAIL)"
+            "$CUT_ROW_DETAIL (a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT)"
         fi
         if [ "$BRANCH_NEWEST_STATUS" = failed ]; then
           FAILED_DETAIL=$RUN_DETAIL

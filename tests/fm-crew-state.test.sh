@@ -1446,6 +1446,26 @@ test_a_cut_on_the_coarse_arm_is_read_through_the_overview_id() {
   pass "a cut on the coarse arm is read through the overview id"
 }
 
+test_a_coarse_cut_proven_guards_against_identity_check_revert() {
+  reset_fakes
+  local d short out; d=$(new_case coarse-cut-proven)
+  make_repo_on_branch "$d/wt" fm/feat-cp
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cp.meta" "window=fm:fm-cp" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="  running  fm/other-crew aaaaaaa  2026-09-22 22:00
+  failed  fm/feat-cp ${short}  2026-09-22 20:13
+  failed  fm/feat-cp ${short}  2026-09-22 20:12"
+  FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-cp | sed 's/01RUN/01CUT/')"
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01X|fm/other-crew|running|aaaaaaa" "01CUT|fm/feat-cp|failed|${short}")"
+  out=$(run_crew_state "$d" cp)
+
+  assert_contains "$out" "cut off by its own 30m0s time cap" "coarse cut proven by overview survives identity check failure with two failed rows"
+  assert_contains "$out" "state: unknown" "a proven cut keeps unknown state despite identity check failing"
+  pass "a proven coarse cut is not reverted when identity check fails with multiple rows"
+}
+
 test_a_coarse_cut_with_mismatched_head_does_not_identify() {
   reset_fakes
   local d short out; d=$(new_case coarse-cut-mismatch-head)
@@ -4588,6 +4608,28 @@ test_a_superseding_cut_is_read_through_the_overview_id() {
   pass "a superseding cut is read through the overview id"
 }
 
+test_a_superseding_cut_is_recognised_by_inactive_reconcile() {
+  reset_fakes
+  local d short out; d=$(new_case superseding-cut-inactive)
+  make_repo_on_branch "$d/wt" fm/feat-sia
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/sia.meta" "window=fm:fm-sia" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/sia.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-sia)"
+  FM_FAKE_RUNS_LIST="  failed   fm/feat-sia ${short}  2026-09-22 20:12
+  running  fm/feat-sia ${short}  2026-09-22 09:05"
+  FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-sia | sed 's/01RUN/01CUT/')"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" sia
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01CUT|fm/feat-sia|failed|${short}")"
+  out=$(run_crew_state "$d" sia)
+
+  assert_contains "$out" "state: unknown" "superseding cut reports unknown"
+  assert_contains "$out" "validation was cut off by its own" "the superseding cut detail opens with the marker"
+  pass "a superseding cut is recognised by the detail marker"
+}
+
 test_a_superseding_cut_with_mismatched_head_does_not_identify() {
   reset_fakes
   local d short out; d=$(new_case superseding-cut-mismatch-head)
@@ -5021,11 +5063,13 @@ test_a_cap_cut_is_not_handed_over_to_a_busy_pane
 test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word
 test_a_cut_among_two_failed_rows_is_identified_by_run_id
 test_a_cut_on_the_coarse_arm_is_read_through_the_overview_id
+test_a_coarse_cut_proven_guards_against_identity_check_revert
 test_a_coarse_cut_with_mismatched_head_does_not_identify
 test_a_coarse_cut_with_non_cut_error_does_not_identify
 test_a_coarse_cut_where_run_returns_different_id_does_not_identify
 test_a_coarse_cut_where_run_returns_different_branch_does_not_identify
 test_a_superseding_cut_is_read_through_the_overview_id
+test_a_superseding_cut_is_recognised_by_inactive_reconcile
 test_a_superseding_cut_with_mismatched_head_does_not_identify
 test_a_superseding_cut_with_non_cut_error_does_not_identify
 test_a_superseding_cut_where_run_returns_different_id_does_not_identify

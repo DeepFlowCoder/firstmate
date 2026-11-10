@@ -413,6 +413,11 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # recorded under `fm-listado-de-corridas-sin-id` rather than as a limit of its
 # own.
 #
+# THE OVERVIEW ID BREAKS THIS TIE: `fm_nm_overview_row_identifies_run` uses the
+# run id from `axi status` to require the reported run be the branch's NEWEST
+# overview row with the reported word. This establishes identity in both the
+# count-of-one and the lagging-status shapes, closing both residuals.
+#
 # 0 ONLY when identity is established. Every other answer - a missing argument, a
 # word that matches no row, a word that matches more than one - is "not
 # established", because a caller asks this to decide whether it may make a
