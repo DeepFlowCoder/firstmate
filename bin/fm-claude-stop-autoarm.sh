@@ -285,13 +285,15 @@ if [ "$HEALTHY" -eq 1 ]; then
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 0
   else
-    if autoarm_commit failed-suppressed; then
+    if [ "$ACTIONABLE" -ne 1 ]; then
+      if autoarm_commit failed-suppressed; then
+        [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+        [ -e "$FAILURE_ALARM" ] && exit 0
+        exit 2
+      fi
       [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-      [ -e "$FAILURE_ALARM" ] && exit 0
-      exit 2
+      exit 0
     fi
-    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-    exit 0
   fi
 fi
 

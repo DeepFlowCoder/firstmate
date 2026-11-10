@@ -632,6 +632,31 @@ test_positive_recovery_budget_contention_preserves_episode() {
   pass "auto-arm: budget contention preserves the episode and forces a reset retry"
 }
 
+test_actionable_close_with_reset_contention_prints_banner() {
+  local dir out status pid identity holder
+  dir=$(make_primary_dir "$TMP_ROOT/actionable-reset-contention")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || fail "could not identify live watcher holder for actionable reset contention"
+  record_watcher_lock "$dir" "$pid" "$identity"
+  touch "$dir/state/.last-watcher-beat"
+  sleep 60 &
+  holder=$!
+  mkdir -p "$dir/state/.turnend-claude-blocks.lock"
+  printf '%s\n' "$holder" > "$dir/state/.turnend-claude-blocks.lock/pid"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" "an actionable close must rewake even when the episode reset lock is busy"
+  assert_contains "$out" "firstmate watcher wake" "actionable close with reset contention must print the wake banner"
+  assert_contains "$out" "stale: fixture-win actionable" "actionable close with reset contention must carry the reason"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "actionable close with reset contention must record outcome=rewake"
+  kill "$holder" "$pid" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pass "auto-arm: actionable close with reset contention delivers the wake banner and rewakes"
+}
+
 test_owner_mutex_contention_preserves_failure_episode_reset() {
   local dir out hook_pid status watcher watcher_id holder i
   dir=$(make_primary_dir "$TMP_ROOT/reset-owner-contention")
@@ -1228,6 +1253,7 @@ test_post_alarm_actionable_close_with_verified_recovery_rewakes
 test_post_alarm_actionable_close_with_unhealthy_successor_stays_suppressed
 test_benign_cycle_end_with_live_watcher_is_silent
 test_positive_recovery_budget_contention_preserves_episode
+test_actionable_close_with_reset_contention_prints_banner
 test_owner_mutex_contention_preserves_failure_episode_reset
 test_arms_for_x_mode_poll_need_without_inflight
 test_single_flight_admits_exactly_one_owner
