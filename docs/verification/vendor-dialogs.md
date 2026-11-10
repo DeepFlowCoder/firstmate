@@ -149,7 +149,7 @@ The 2026-10-06 record retained two strings from a live Codex worker: `You've hit
 Neither a complete viewport nor the Codex version was retained.
 [`codex-usage-limit-reconstructed.screen`](../../tests/fixtures/codex-usage-limit-reconstructed.screen) is explicitly a reconstruction: the recorded usage-limit line added to the September modal capture above, not a full live October capture.
 No real agent is driven to its limit to refresh this case.
-[`bin/fm-quota-wait-lib.sh`](../../bin/fm-quota-wait-lib.sh) registers the usage-limit and rate-limit strings anchored to the modal footer as passive quota evidence, separately from the dialog registry's authority to answer a menu.
+[`bin/fm-quota-wait-lib.sh`](../../bin/fm-quota-wait-lib.sh) registers the usage-limit and rate-limit strings plus the modal footer (a third required string, taken from the September capture) as passive quota evidence, separately from the dialog registry's authority to answer a menu.
 `tests/fm-dialog.test.sh` verifies that the reconstructed combined screen remains inspectable through `fm-control.sh dialog` as the existing `rate-limit-switch` class, without pressing a key or inferring any new answer.
 The reconstruction does not establish why the unretained October screen failed dialog recognition; a differing offered-model description remains a limitation of the registered capture described above.
 
