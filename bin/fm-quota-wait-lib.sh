@@ -3,9 +3,9 @@
 # Requires fm-backend.sh for the task reader; the screen predicate is pure.
 #
 # Codex quota recognition requires the usage-limit and rate-limit strings
-# anchored to the modal footer on 2026-10-06. The regression viewport is
-# reconstructed, not a full live capture; provenance and the deliberately
-# excluded Claude case live in docs/verification/vendor-dialogs.md.
+# from 2026-10-06, anchored to the modal footer from the September capture.
+# The regression viewport is reconstructed, not a full live capture; provenance
+# and the deliberately excluded Claude case live in docs/verification/vendor-dialogs.md.
 # This is observation only: it authorizes no keypress, model switch or quota reset.
 # An unsupported harness/backend, unreadable viewport or unproven live agent
 # establishes no wait and leaves ordinary supervision in force.
