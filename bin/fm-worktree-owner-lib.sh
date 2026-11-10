@@ -8,6 +8,12 @@
 # Callers hold fm-task-owner.lock from inspection/claim through publication or
 # destructive cleanup. This is a per-copy lock shared across Firstmate homes.
 #
+# Spawn (non-destructive) acquires with wait: a bounded loop against a fixed
+# deadline, overridable by FM_WORKTREE_OWNER_WAIT_DEADLINE (seconds). Teardown
+# (destructive) acquires with try-only (non-blocking): it must not hold pane
+# locks while waiting for another task's cleanup to finish. Both refuse when a
+# live or recently-live task occupies the copy.
+#
 # Legacy copies have no record. Within the recorded home, a sole metadata claim
 # is accepted; with multiple claims, only the unique task whose fm/<id> branch
 # is actually checked out may adopt the copy. Ambiguity refuses, including a
@@ -18,7 +24,7 @@
 # Requires fm_lock_* and fm_meta_get from the caller's existing libraries.
 
 fm_worktree_owner_acquire() {  # <worktree> [wait]; sets RECORD and LOCK globals
-  local wt=$1 mode=${2:-try} actual top gitdir
+  local wt=$1 mode=${2:-try} actual top gitdir deadline start rc
   FM_WORKTREE_OWNER_RECORD=
   FM_WORKTREE_OWNER_LOCK=
   if ! actual=$(cd -- "$wt" 2>/dev/null && pwd -P) \
@@ -33,11 +39,24 @@ fm_worktree_owner_acquire() {  # <worktree> [wait]; sets RECORD and LOCK globals
   FM_WORKTREE_OWNER_RECORD="$gitdir/fm-task-owner"
   FM_WORKTREE_OWNER_LOCK="$gitdir/fm-task-owner.lock"
   if [ "$mode" = wait ]; then
-    fm_lock_acquire_wait "$FM_WORKTREE_OWNER_LOCK" || {
-      echo "REFUSED: task-copy occupancy is locked for $wt; cannot acquire after bounded wait." >&2
-      FM_WORKTREE_OWNER_LOCK=
-      return 1
-    }
+    deadline=${FM_WORKTREE_OWNER_WAIT_DEADLINE:-60}
+    start=$(date +%s)
+    while :; do
+      rc=0
+      fm_lock_try_acquire "$FM_WORKTREE_OWNER_LOCK" || rc=$?
+      [ "$rc" -eq 0 ] && return 0
+      [ "$rc" -eq 2 ] && {
+        echo "REFUSED: task-copy occupancy lock directory is unwritable for $wt." >&2
+        FM_WORKTREE_OWNER_LOCK=
+        return 1
+      }
+      if [ $(($(date +%s) - start)) -ge "$deadline" ]; then
+        echo "REFUSED: task-copy occupancy is locked for $wt; cannot acquire after bounded wait ($deadline seconds)." >&2
+        FM_WORKTREE_OWNER_LOCK=
+        return 1
+      fi
+      sleep 0.1
+    done
   elif ! fm_lock_try_acquire "$FM_WORKTREE_OWNER_LOCK"; then
     echo "REFUSED: task-copy occupancy is locked for $wt; another allocation or cleanup is in progress." >&2
     FM_WORKTREE_OWNER_LOCK=

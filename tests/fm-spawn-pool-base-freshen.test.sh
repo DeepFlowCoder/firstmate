@@ -428,6 +428,60 @@ test_stale_pin_beside_other_dirt_reports_one_verdict() {
   pass "a stale pin beside other dirt yields the conservative refusal alone, with no stale-pin line"
 }
 
+test_spawn_waits_for_briefly_held_occupancy_lock() {
+  local rec id out status record lock_holder lock_pid
+  id='spawn-occupancy-wait-brief'
+  rec=$(make_case occupancy-wait-brief "$id")
+  read_case_record "$rec"
+
+  record="$(git -C "$POOL_DIR" rev-parse --absolute-git-dir)/fm-task-owner"
+
+  mkdir "$record.lock"
+  printf '%s\n' "$$" > "$record.lock/pid"
+
+  (
+    sleep 0.5
+    rm "$record.lock/pid"
+    rmdir "$record.lock"
+  ) &
+  lock_holder=$!
+
+  status=0
+  out=$(FM_WORKTREE_OWNER_WAIT_DEADLINE=2 run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || status=$?
+  wait "$lock_holder" 2>/dev/null || true
+
+  expect_code 0 "$status" "spawn should wait and succeed when lock is released before deadline: $out"
+  assert_contains "$out" "spawned $id" "spawn did not report success after lock release"
+  pass "spawn waits for briefly held occupancy lock and succeeds after release"
+}
+
+test_spawn_refuses_after_occupancy_lock_deadline() {
+  local rec id out status record lock_holder lock_pid
+  id='spawn-occupancy-wait-deadline'
+  rec=$(make_case occupancy-wait-deadline "$id")
+  read_case_record "$rec"
+
+  record="$(git -C "$POOL_DIR" rev-parse --absolute-git-dir)/fm-task-owner"
+
+  mkdir "$record.lock"
+  printf '%s\n' "$$" > "$record.lock/pid"
+
+  (
+    sleep 3
+    rm "$record.lock/pid" 2>/dev/null || true
+    rmdir "$record.lock" 2>/dev/null || true
+  ) &
+  lock_holder=$!
+
+  status=0
+  out=$(FM_WORKTREE_OWNER_WAIT_DEADLINE=1 run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || status=$?
+  wait "$lock_holder" 2>/dev/null || true
+
+  [ "$status" -ne 0 ] || fail "spawn should fail when deadline is exceeded"
+  assert_contains "$out" "cannot acquire after bounded wait" "spawn did not report deadline exceeded"
+  pass "spawn refuses after occupancy lock deadline expires"
+}
+
 test_reallocated_copy_ownership_survives_detached_head() {
   local rec stale=pool-owner-stale live=pool-owner-live out status record variant
   rec=$(make_case copy-ownership "$stale")
@@ -491,6 +545,8 @@ test_reallocated_copy_ownership_survives_detached_head() {
   pass 'new allocation owns detached copy; stale, forced, aliased, malformed, symlinked, and locked cleanup refuses'
 }
 
+test_spawn_waits_for_briefly_held_occupancy_lock
+test_spawn_refuses_after_occupancy_lock_deadline
 test_reallocated_copy_ownership_survives_detached_head
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
