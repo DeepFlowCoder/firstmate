@@ -360,6 +360,22 @@ fm-doc-audience-check: ok surfaces=61 local_links=174
 FM_TEST_SUMMARY total=4 failed=0 skipped_gate=0 duration_ms=102585
 ```
 
+The actionable-close recovery reset was verified on 2026-11-05 with ShellCheck 0.11.0 and isolated behavior suites.
+These tests exercise the executable hook with real process identities and fixture arm output; they do not refresh the live Claude hook-delivery evidence above.
+
+```sh
+bin/fm-lint.sh
+bin/fm-doc-audience-check.sh
+bin/fm-test-run.sh tests/fm-claude-stop-autoarm.test.sh tests/fm-turnend-guard.test.sh
+```
+
+Observed recovery assertions:
+
+```text
+ok - auto-arm: verified recovery ends post-alarm suppression without losing the actionable wake
+ok - auto-arm: stale or identity-mismatched successors cannot end post-alarm suppression
+```
+
 The model-aware pull-guard predicate correction (`bin/fm-guard.sh` no longer reports a false watcher-down mid-turn under the Claude Stop auto-arm model, where the watcher runs only between turns) was verified on 2026-08-04 with the installed ShellCheck 0.11.0 and the same isolated behavior suites.
 
 ```sh
