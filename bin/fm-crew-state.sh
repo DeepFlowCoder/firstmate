@@ -1398,6 +1398,8 @@ if [ "$HAVE_RUN" = 1 ]; then
   # limit stands in for the other.
   if [ "$RUN_CAP_CUT" = 1 ] && [ "$RUN_CUT_PROVEN" != 1 ] \
     && ! fm_nm_runs_row_identifies_run "$RUNS_LIST_OUT" "$CREW_BRANCH" "$RUN_TERMINAL_WORD" \
+    && [ "$RUNS_ANSWERED" = 1 ] \
+    && { nm_overview_read; fm_nm_overview_newest_for_branch "$OVERVIEW_OUT" "$CREW_BRANCH" >/dev/null; } \
     && ! nm_overview_identifies_reported_run "$RUN_TERMINAL_WORD"; then
     RUN_STATE=failed
     RUN_DETAIL=$RUN_FAILED_DETAIL

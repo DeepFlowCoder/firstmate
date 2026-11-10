@@ -1624,6 +1624,25 @@ test_an_unarbitrated_cut_does_not_assert_the_cut_phrase() {
   pass "a cut whose runs list never answered does not assert the cut phrase"
 }
 
+test_an_unarbitrated_cut_does_not_use_overview_to_assert_phrase() {
+  reset_fakes
+  local d short out; d=$(new_case cut-unarbitrated-overview)
+  make_repo_on_branch "$d/wt" fm/feat-uo
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/uo.meta" "window=fm:fm-uo" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-uo)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01CUT|fm/feat-uo|failed|${short}")"
+  out=$(run_crew_state "$d" uo)
+
+  assert_not_contains "$out" "time cap" \
+    "overview populated but list unarbitrated must not assert cut phrase"
+  assert_contains "$out" "run failed (the work is not lost)" \
+    "unarbitrated cut keeps failure phrase regardless of overview"
+  pass "overview does not override unarbitrated list silence"
+}
+
 # THE THIRD PARTY THE FALSE WORD COST. A task idling on a correctly declared
 # external wait was read as a possible wedge, because the old run's `failed`
 # outranked its pause and the watcher's absorb classifier saw an answered
@@ -5073,6 +5092,7 @@ test_a_superseding_cut_where_run_returns_different_branch_does_not_identify
 test_a_superseding_cut_with_terminal_reported_run_keeps_unknown_state
 test_a_listing_that_filled_its_limit_still_identifies_one_row
 test_an_unarbitrated_cut_does_not_assert_the_cut_phrase
+test_an_unarbitrated_cut_does_not_use_overview_to_assert_phrase
 test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path
 test_a_cap_cut_under_an_open_decision_is_not_absorbed_as_healthy_idle
 test_a_superseded_cut_is_quoted_but_no_longer_read_as_a_cut
