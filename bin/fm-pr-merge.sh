@@ -340,7 +340,7 @@ github_strip_agent_coauthors() {
     }'
 }
 
-# Send the cleaned snapshot explicitly, including an empty body, so the forge
+# Send the cleaned snapshot explicitly, including an empty body (as an empty file), so the forge
 # cannot compose a different body after this read. Other flags pass through. Body reads
 # carry a marker to distinguish a valid empty string from absent/malformed API
 # data, without adding jq as a dependency on the GitHub path.
@@ -392,7 +392,12 @@ github_prepare_squash_body() {
   fi
   cleaned=$(printf '%s\n' "$body" | github_strip_agent_coauthors && printf '.') || return 1
   cleaned=${cleaned%.}
-  FM_PR_GITHUB_EXTRA_ARGS=("${args[@]+"${args[@]}"}" --body "$cleaned")
+  # The CLI refuses a blank inline --body ("--body requires text"), but accepts an
+  # empty file, which still pins the message so the forge cannot recompose it.
+  case "$cleaned" in
+    *[![:space:]]*) FM_PR_GITHUB_EXTRA_ARGS=("${args[@]+"${args[@]}"}" --body "$cleaned") ;;
+    *) FM_PR_GITHUB_EXTRA_ARGS=("${args[@]+"${args[@]}"}" --body-file /dev/null) ;;
+  esac
 }
 
 # Whether the caller's own extra arguments asked for auto-merge, including the
