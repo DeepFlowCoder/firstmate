@@ -4746,7 +4746,7 @@ test_codex_quota_wait_afk_hands_off_again_after_resume() {
   wait_for_exit "$pid" 100 || fail "AFK quota wait did not hand off"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "AFK quota wake was decorated: $(cat "$out")"
   ack_stopped_cycle "$state" || fail "could not acknowledge AFK quota wake"
-  [ "$(cat "$state/.stale-$key")" = quota ] || fail "AFK quota handoff did not record its one-shot marker"
+  [ "$(cat "$state/.quota-handoff-$key")" = quota ] || fail "AFK quota handoff did not record its one-shot marker"
 
   printf 'worker resumed\n' > "$capture"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
@@ -4754,7 +4754,7 @@ test_codex_quota_wait_afk_hands_off_again_after_resume() {
     FM_POLL=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_poll_cycle "$state" "$pid" || fail "resumed watcher exited before a full poll: $(cat "$out")"
-  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" != quota ] \
+  [ ! -e "$state/.quota-handoff-$key" ] \
     || fail "quota one-shot marker survived the observed screen disappearing"
   wait_for_exit "$pid" 100 || fail "resumed worker never reclassified: $(cat "$out")"
   ack_stopped_cycle "$state" || fail "could not acknowledge the resumed stale wake"

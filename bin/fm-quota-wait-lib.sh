@@ -2,9 +2,10 @@
 # Observed provider-quota waits, independent of a worker-written paused: line.
 # Requires fm-backend.sh for the task reader; the screen predicate is pure.
 #
-# Only codex's two strings recorded together on 2026-10-06 are registered.
-# The regression viewport is reconstructed, not a full live capture; provenance
-# and the deliberately excluded Claude case live in docs/verification/vendor-dialogs.md.
+# Codex quota recognition requires the usage-limit and rate-limit strings
+# anchored to the modal footer on 2026-10-06. The regression viewport is
+# reconstructed, not a full live capture; provenance and the deliberately
+# excluded Claude case live in docs/verification/vendor-dialogs.md.
 # This is observation only: it authorizes no keypress, model switch or quota reset.
 # An unsupported harness/backend, unreadable viewport or unproven live agent
 # establishes no wait and leaves ordinary supervision in force.

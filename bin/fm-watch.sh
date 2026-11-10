@@ -1416,7 +1416,7 @@ clear_pause_tracking() {  # <window-key>
   local key=$1
   clear_pause_state "$key"
   clear_defer_tracking "$key"
-  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" "$STATE/.quota-handoff-$key"
 }
 
 # The absorb class remembered for <memo-file>, but only while <last-status-line>
@@ -2536,9 +2536,9 @@ EOF
     if fm_quota_wait_task "$STATE" "$task"; then
       if afk_present; then
         # One plain handoff per observed wait; the daemon owns its rechecks.
-        if [ "$(cat "$STATE/.stale-$key" 2>/dev/null)" != quota ]; then
+        if [ "$(cat "$STATE/.quota-handoff-$key" 2>/dev/null)" != quota ]; then
           fm_wake_append stale "$w" "stale: $w" || exit 1
-          printf 'quota' > "$STATE/.stale-$key"
+          printf 'quota' > "$STATE/.quota-handoff-$key"
           wake "stale: $w"
         fi
       else
@@ -2549,8 +2549,8 @@ EOF
     if ! wait_is_declared "$task" "$last" && [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$key"
     fi
-    if [ "$(cat "$STATE/.stale-$key" 2>/dev/null)" = quota ]; then
-      rm -f "$STATE/.stale-$key"
+    if [ "$(cat "$STATE/.stale-$key" 2>/dev/null)" = quota ] || [ -e "$STATE/.quota-handoff-$key" ]; then
+      rm -f "$STATE/.stale-$key" "$STATE/.quota-handoff-$key"
     fi
     # An idle secondmate endpoint is healthy by design, so a mate is admitted to
     # the pane-stale path ONLY to serve a declared wait's bounded re-surface -
