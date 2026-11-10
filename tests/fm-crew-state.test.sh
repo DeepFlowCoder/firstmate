@@ -73,6 +73,8 @@ case "${1:-}" in
   axi)
     shift
     case "${1:-}" in
+      "")
+        printf '%s\n' "${FM_FAKE_AXI_OVERVIEW:-}" ;;
       status)
         shift
         if [ "${1:-}" = --run ]; then printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
@@ -267,6 +269,7 @@ reset_fakes() {
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_AXI_STATUS_RUN=""
   FM_FAKE_RUNS_LIST=""
+  FM_FAKE_AXI_OVERVIEW=""
   FM_FAKE_BUSY=0
   FM_FAKE_BUSY_TEXT=
   FM_FAKE_TMUX_MISSING=0
@@ -291,7 +294,7 @@ reset_fakes() {
   # which is what makes a case that forgets to name it read as the default,
   # local-only path rather than silently reaching a stub.
   FM_CREW_STATE_RESOLVE_PR=""
-  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
+  export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_AXI_OVERVIEW FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
   export FM_FAKE_TMUX_AGENT FM_FAKE_TMUX_WINDOW
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_NM_CALLS
   export FM_FAKE_GH_PR_STATE FM_FAKE_GH_CALLS FM_CREW_STATE_RESOLVE_PR
@@ -1368,6 +1371,73 @@ test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word() {
   assert_contains "$one_row" "cut off by its own 30m0s time cap" \
     "an identified cut still names what ended the run"
   pass "a cut over a branch whose reported run cannot be identified keeps the failure word"
+}
+
+# The `no-mistakes axi` overview (no subcommand) is the one listing that carries
+# a run id: runs[N]{id,branch,status,head,pr}, newest first, capped repo-wide.
+axi_overview() {  # <row>...  (each: id|branch|status|head)
+  local row id br st hd
+  printf 'count: %s of 245 total\nruns[%s]{id,branch,status,head,pr}:\n' "$#" "$#"
+  for row in "$@"; do
+    IFS='|' read -r id br st hd <<< "$row"
+    printf '  "%s",%s,%s,%s,""\n' "$id" "$br" "$st" "$hd"
+  done
+}
+
+# fm-listado-de-corridas-sin-id. Two `failed` rows used to identify nothing, so a
+# cut reported for one of them degraded to the failure word. The overview names
+# the reported run by id, so the cut is asserted exactly where that id is on this
+# branch with the reported word - and nowhere else.
+test_a_cut_among_two_failed_rows_is_identified_by_run_id() {
+  reset_fakes
+  local d short two_rows other_branch fell_off; d=$(new_case cut-by-id)
+  make_repo_on_branch "$d/wt" fm/feat-id
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/id.meta" "window=fm:fm-id" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-id)"
+  FM_FAKE_RUNS_LIST="  failed  fm/feat-id ${short}  2026-09-22 21:40
+  failed  fm/feat-id ${short}  2026-09-22 20:12"
+
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01OTHER|fm/feat-id|failed|${short}" "01RUN|fm/feat-id|failed|${short}")"
+  two_rows=$(run_crew_state "$d" id)
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01RUN|fm/other|failed|${short}")"
+  other_branch=$(run_crew_state "$d" id)
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01OTHER|fm/feat-id|failed|${short}")"
+  fell_off=$(run_crew_state "$d" id)
+
+  assert_contains "$two_rows" "cut off by its own 30m0s time cap" \
+    "a cut whose id the overview names on this branch is identified despite two failed rows"
+  assert_contains "$two_rows" "state: unknown" "an identified cut reports the state nothing established"
+  assert_not_contains "$other_branch" "time cap" "the same id on another branch proves nothing"
+  assert_not_contains "$fell_off" "time cap" "an id absent from the overview window proves nothing"
+  assert_contains "$fell_off" "state: failed" "an unproven cut keeps the failure word"
+  pass "a cut among two failed rows is identified by run id"
+}
+
+# fm-corte-por-tope-fuera-del-brazo-de-lista. The coarse arm reads a listing with
+# no error column, so a cut printed as `failed`. The overview names the newest
+# row's id, and `axi status --run <id>` carries the error.
+test_a_cut_on_the_coarse_arm_is_read_through_the_overview_id() {
+  reset_fakes
+  local d short out plain; d=$(new_case coarse-cut-by-id)
+  make_repo_on_branch "$d/wt" fm/feat-cc
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cc.meta" "window=fm:fm-cc" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="  running  fm/other-crew aaaaaaa  2026-09-22 22:00
+  failed  fm/feat-cc ${short}  2026-09-22 20:12"
+  FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-cc | sed 's/01RUN/01CUT/')"
+
+  plain=$(run_crew_state "$d" cc)
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01X|fm/other-crew|running|aaaaaaa" "01CUT|fm/feat-cc|failed|${short}")"
+  out=$(run_crew_state "$d" cc)
+
+  assert_contains "$plain" "state: failed" "with no overview the coarse arm keeps the failure word"
+  assert_contains "$out" "cut off by its own 30m0s time cap" "the coarse arm now names the cut"
+  assert_contains "$out" "state: unknown" "a cut read on the coarse arm is the state nothing established"
+  pass "a cut on the coarse arm is read through the overview id"
 }
 
 # THE IDENTITY PROOF MUST NOT CARRY AN EXPIRY DATE. `no-mistakes runs` is
@@ -4411,6 +4481,31 @@ test_cancelled_run_does_not_override_a_declared_pause() {
   pass "a cancelled run does not override a declared pause"
 }
 
+# The superseding-failed-row arm reads the same error-less listing, so a cut that
+# replaced a running reading used to print `failed` too. The overview id closes it.
+test_a_superseding_cut_is_read_through_the_overview_id() {
+  reset_fakes
+  local d short out plain; d=$(new_case superseding-cut-by-id)
+  make_repo_on_branch "$d/wt" fm/feat-sc
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/sc.meta" "window=fm:fm-sc" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/sc.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-sc)"
+  FM_FAKE_RUNS_LIST="  failed   fm/feat-sc ${short}  2026-09-22 20:12
+  running  fm/feat-sc ${short}  2026-09-22 09:05"
+  FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-sc | sed 's/01RUN/01CUT/')"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" sc
+  plain=$(run_crew_state "$d" sc)
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01CUT|fm/feat-sc|failed|${short}")"
+  out=$(run_crew_state "$d" sc)
+  assert_contains "$plain" "state: failed" "with no overview the superseding row keeps the failure word"
+  assert_contains "$out" "cut off by its own 30m0s time cap" "the superseding cut is named"
+  assert_not_contains "$out" "state: failed" "a cut is not a verdict on the work"
+  pass "a superseding cut is read through the overview id"
+}
+
 # INSTANCE 3 (measured 2026-09-09). On fm-hold-en-vuelo-invisible the line read
 # "state: working - source: run-step - validating (running)" for hours, while the
 # branch's own newest run had been failed for a long time. The arbitration that
@@ -4731,6 +4826,9 @@ test_wall_clock_cut_reads_the_same_as_a_timeout_cut
 test_a_killed_agent_without_a_cap_stays_an_ordinary_failure
 test_a_cap_cut_is_not_handed_over_to_a_busy_pane
 test_a_cut_over_an_unidentifiable_failed_row_keeps_the_failure_word
+test_a_cut_among_two_failed_rows_is_identified_by_run_id
+test_a_cut_on_the_coarse_arm_is_read_through_the_overview_id
+test_a_superseding_cut_is_read_through_the_overview_id
 test_a_listing_that_filled_its_limit_still_identifies_one_row
 test_an_unarbitrated_cut_does_not_assert_the_cut_phrase
 test_a_cap_cut_no_longer_sends_a_paused_task_down_the_stuck_path

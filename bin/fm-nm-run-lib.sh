@@ -431,6 +431,46 @@ fm_nm_runs_row_identifies_run() {  # <runs-output> <branch> <word>
   [ "$hits" = 1 ]
 }
 
+# The one listing that DOES carry a run id: `no-mistakes axi` with no subcommand
+# prints runs[N]{id,branch,status,head,pr}, newest first and capped repo-wide
+# (measured v1.106.1: 10 of 245). Each row is `"<id>",<branch>,<status>,<head>,"<pr>"`.
+# That id is the key the text listing lacks, so a reported run (whose `axi status`
+# carries its id) can be MATCHED to a row instead of counted against its siblings.
+#
+# 0 only when a row carries exactly this id AND this branch AND this status word.
+# The cap makes absence meaningless - a run whose row fell off the window looks
+# like a run that never existed - so every other answer, including an overview
+# that did not answer, is "not established", never "not this run".
+fm_nm_overview_row_identifies_run() {  # <overview> <branch> <run-id> <word>
+  local out=${1:-} branch=${2:-} id=${3:-} word=${4:-} row rid rbr rst
+  [ -n "$out" ] && [ -n "$branch" ] && [ -n "$id" ] && [ -n "$word" ] || return 1
+  while IFS= read -r row; do
+    row=$(fm_nm_trim "$row")
+    IFS=, read -r rid rbr rst _ <<< "$row"
+    rid=$(fm_nm_strip_quotes "$rid")
+    [ "$rid" = "$id" ] || continue
+    [ "$rbr" = "$branch" ] && [ "$(fm_nm_strip_quotes "$rst")" = "$word" ] && return 0
+    return 1
+  done <<< "$out"
+  return 1
+}
+
+# This branch's NEWEST row in an overview, as "<id><TAB><status><TAB><head>", or
+# nothing. Newest-first is the order the text listing uses too, so the first row
+# for the branch is the same run in both.
+fm_nm_overview_newest_for_branch() {  # <overview> <branch>
+  local out=${1:-} branch=${2:-} row rid rbr rst rhd
+  [ -n "$out" ] && [ -n "$branch" ] || return 1
+  while IFS= read -r row; do
+    row=$(fm_nm_trim "$row")
+    IFS=, read -r rid rbr rst rhd _ <<< "$row"
+    [ "$rbr" = "$branch" ] || continue
+    printf '%s\t%s\t%s' "$(fm_nm_strip_quotes "$rid")" "$(fm_nm_strip_quotes "$rst")" "$(fm_nm_strip_quotes "$rhd")"
+    return 0
+  done <<< "$out"
+  return 1
+}
+
 # 0 when captured list output $1 carries EVIDENCE - at least one line that parses
 # as a run row AND whose status word this library models, active or terminal.
 # Non-empty stdout alone is not evidence: the real listing prints a trailer after

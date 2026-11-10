@@ -47,13 +47,13 @@
 #      nobody chose it and a busy pane would read as healthy work over a dead
 #      validation. bin/fm-nm-run-lib.sh owns that whole distinction, including
 #      why the reading is right to outlive its run. It is the STRONGER of the two
-#      readings of one word, so it is bounded twice below, and both bounds are
-#      permanent: the runs-list arms print `failed` because they cannot see the
-#      evidence it is made from (`fm-corte-por-tope-fuera-del-brazo-de-lista`),
-#      and on this read the cut is named only where the runs list PROVES which
-#      run was reported, which it cannot when that list did not answer, carries
-#      no row for the branch, or carries more than one run of the reported word,
-#      since its rows carry no run id and `axi status` no timestamp
+#      readings of one word, so it is bounded twice below: the runs-list arms read
+#      it through the newest row's run id in the `no-mistakes axi` overview and
+#      print `failed` where that id cannot be had
+#      (`fm-corte-por-tope-fuera-del-brazo-de-lista`), and on this read the cut is
+#      named only where the reported run is IDENTIFIED - by exactly one row of its
+#      word in the runs list, or by its own id in that overview - which it is not
+#      when neither answers or the run's row fell past their windows
 #      (`fm-listado-de-corridas-sin-id`). Every unproven reading keeps the
 #      ordinary failure phrase inside whatever wrapper its own arm produces.
 #      EXCEPT: while the active step is ci, `axi status` alone cannot tell "still
@@ -846,6 +846,51 @@ nm_scan_runs_for_branch() {  # <branch>
   return 0
 }
 
+# The overview (`no-mistakes axi`, no subcommand) is the one listing that carries
+# run ids, which is what the text listing above cannot give. Read lazily and at
+# most once, and only on the paths that need an id; silence is "not established".
+# Rule owner: fm_nm_overview_row_identifies_run in bin/fm-nm-run-lib.sh.
+OVERVIEW_READ=0
+OVERVIEW_OUT=""
+nm_overview_read() {
+  [ "$OVERVIEW_READ" = 1 ] && return 0
+  OVERVIEW_READ=1
+  OVERVIEW_OUT=$(nm_run axi)
+}
+
+# The reported run's own id, matched against the overview. 0 only when a row
+# carries that id on this branch with the reported word.
+nm_overview_identifies_reported_run() {  # <reported-terminal-word>
+  local id
+  id=$(strip_quotes "$(nm_field id)")
+  [ -n "$id" ] || return 1
+  nm_overview_read
+  fm_nm_overview_row_identifies_run "$OVERVIEW_OUT" "$CREW_BRANCH" "$id" "$1"
+}
+
+# A runs-list row has no error column, so a cut there reads as `failed`. When the
+# branch's NEWEST overview row is a failed run whose head is this row's sha, the
+# id-addressed status carries the error. Sets CUT_ROW_DETAIL to the cut's detail
+# and returns 0 only when that run is a time-cap cut on THIS branch; every other
+# answer leaves the ordinary failure reading untouched.
+CUT_ROW_DETAIL=""
+nm_newest_row_cut() {  # <row-sha>
+  local sha=${1:-} row id st hd out
+  CUT_ROW_DETAIL=""
+  [ -n "$sha" ] || return 1
+  nm_overview_read
+  row=$(fm_nm_overview_newest_for_branch "$OVERVIEW_OUT" "$CREW_BRANCH") || return 1
+  IFS=$'\t' read -r id st hd <<< "$row"
+  [ "$st" = failed ] && [ -n "$id" ] && [ -n "$hd" ] || return 1
+  case "$sha" in "$hd"*) ;; *) case "$hd" in "$sha"*) ;; *) return 1 ;; esac ;; esac
+  out=$(nm_run axi status --run "$id")
+  [ "$(strip_quotes "$(fm_nm_field "$out" id)")" = "$id" ] || return 1
+  [ "$(strip_quotes "$(fm_nm_field "$out" branch)")" = "$CREW_BRANCH" ] || return 1
+  [ "$(strip_quotes "$(fm_nm_field "$out" outcome)")" = failed ] || return 1
+  fm_nm_failure_is_cap_cut "$(strip_quotes "$(fm_nm_field "$out" error)")" || return 1
+  CUT_ROW_DETAIL=$(fm_nm_cap_cut_detail "$(strip_quotes "$(fm_nm_field "$out" error)")")
+}
+
 # THE decision point for "may this verdict be asserted as this branch's current
 # one?". Every path that would report a run-step verdict passes through here, and
 # every piece of evidence is an INPUT to it rather than a branch of its own, so
@@ -1052,6 +1097,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   # `unknown` like an abort does and is terminal like one, and it is neither of
   # the things that combination otherwise means, so it has to say so by name.
   RUN_CAP_CUT=0
+  RUN_CUT_PROVEN=0
   # The ordinary failure reading a cut replaced, kept for the one arm entitled to
   # put it back.
   RUN_FAILED_DETAIL=""
@@ -1109,6 +1155,17 @@ if [ "$HAVE_RUN" = 1 ]; then
     # full path's `pr:` field feeds, because the question it answers - did this
     # work land? - is not a question about which surface was read.
     RUN_PR=$COARSE_PR
+    # fm-corte-por-tope-fuera-del-brazo-de-lista: the row has no error column, but
+    # the overview names its id, and that run's own status carries the account.
+    # Only the branch's newest row is read (the one the arbitration can stand on).
+    if [ "$RUN_WORD" = failed ] && [ "$COARSE_ROW_IS_NEWEST" = 1 ] \
+      && nm_newest_row_cut "$BRANCH_NEWEST_SHA"; then
+      RUN_FAILED_DETAIL=$RUN_DETAIL
+      RUN_STATE=unknown
+      RUN_DETAIL="$CUT_ROW_DETAIL ($COARSE_QUALIFIER)"
+      RUN_CAP_CUT=1
+      RUN_CUT_PROVEN=1
+    fi
   else
     status=$(strip_quotes "$(nm_field status)")
     RUN_STATUS=$status
@@ -1331,17 +1388,19 @@ if [ "$HAVE_RUN" = 1 ]; then
   # `not established` here for the same reason it is silence everywhere else in
   # this read.
   #
-  # AND WHERE THE TIE HAS TO BE BROKEN, IT CANNOT BE, so the cut reading does not
-  # reach that reading at all and never will: a runs-list row carries no run id
-  # and `axi status` carries no timestamp, so a branch carrying more than one row
-  # of the reported word offers nothing to match the reported run to one of them.
-  # That degrade is permanent rather than pending, it is why the identity proof
-  # counts rather than matches, and it is tracked as `fm-listado-de-corridas-sin-id`.
-  # It is a different limit from the runs-list arms above, which print `failed`
-  # for their own reason - their rows carry no error column - and neither limit
-  # stands in for the other.
-  if [ "$RUN_CAP_CUT" = 1 ] \
-    && ! fm_nm_runs_row_identifies_run "$RUNS_LIST_OUT" "$CREW_BRANCH" "$RUN_TERMINAL_WORD"; then
+  # AND WHERE THE TIE HAS TO BE BROKEN, THE OVERVIEW BREAKS IT: a runs-list row
+  # carries no run id and `axi status` carries no timestamp, so a branch with more
+  # than one row of the reported word offers the count nothing to match, but the
+  # `no-mistakes axi` overview carries the id, branch and status of each row, and a
+  # row with the reported run's own id proves which run it is. A run whose row fell
+  # past the overview's window, or an overview that did not answer, proves nothing
+  # and keeps the failure word. Tracked as `fm-listado-de-corridas-sin-id`.
+  # It is a different limit from the runs-list arms above, whose rows carry no
+  # error column - they read the cut through the same overview id - and neither
+  # limit stands in for the other.
+  if [ "$RUN_CAP_CUT" = 1 ] && [ "$RUN_CUT_PROVEN" != 1 ] \
+    && ! fm_nm_runs_row_identifies_run "$RUNS_LIST_OUT" "$CREW_BRANCH" "$RUN_TERMINAL_WORD" \
+    && ! nm_overview_identifies_reported_run "$RUN_TERMINAL_WORD"; then
     RUN_STATE=failed
     RUN_DETAIL=$RUN_FAILED_DETAIL
     RUN_CAP_CUT=0
@@ -1370,6 +1429,13 @@ if [ "$HAVE_RUN" = 1 ]; then
         # re-attribute - a `completed` row is not turned into a claim that the
         # work landed, because a positive claim needs the stronger evidence the
         # list alone does not carry.
+        # fm-corte-por-tope-fuera-del-brazo-de-lista: this row has no error
+        # column either, so a cut that replaced the reading is read through the
+        # overview id. A cut is not a verdict on the work, so it is `unknown`.
+        if [ "$BRANCH_NEWEST_STATUS" = failed ] && nm_newest_row_cut "$BRANCH_NEWEST_SHA"; then
+          emit unknown run-step \
+            "a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($CUT_ROW_DETAIL)"
+        fi
         if [ "$BRANCH_NEWEST_STATUS" = failed ]; then
           FAILED_DETAIL=$RUN_DETAIL
           case "$RUN_DETAIL" in
