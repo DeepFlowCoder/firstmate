@@ -541,6 +541,11 @@ fm_nm_verdict_state() {  # <run-word>
 # reported as empty: a caller treats only 0 as "nothing was delivered".
 # Local refs only, because the timer-driven readers of a run word may not touch
 # the network; a stale base can only miss an empty branch, never invent one.
+# NOTE: an empty diff also describes a branch whose work is already in the base
+# (fast-forward merge, rebase-merge, or direct push with no PR recorded). A caller
+# seeing 0 cannot distinguish a never-committed branch from an already-landed one,
+# so unknown is the deliberately safe direction; separate landed-work checks catch
+# the landed case when a PR URL is available.
 fm_nm_branch_carries_no_change() {  # <worktree>
   local wt=${1:-} base rc
   [ -n "$wt" ] && [ -d "$wt" ] || return 2

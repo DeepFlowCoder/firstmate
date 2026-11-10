@@ -1715,7 +1715,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_STATE" = "done" ] \
     && [ -z "$RUN_PR" ] && fm_nm_branch_carries_no_change "$WT"; then
     RUN_STATE=unknown
-    RUN_DETAIL="$RUN_DETAIL${SEP}but the branch carries no change against its base${SEP}nothing was delivered by this run"
+    RUN_DETAIL="$RUN_DETAIL${SEP}no change against base - either nothing was delivered or the branch already landed; check before acting"
   fi
 
   # Reconcile the status log. A needs-decision/blocked line under an ACTIVE run

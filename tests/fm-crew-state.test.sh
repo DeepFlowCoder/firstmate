@@ -3563,7 +3563,6 @@ test_a_passed_run_with_no_pull_request_keeps_its_own_verdict() {
   local d short out calls
   d=$(new_case passed-no-pr-recorded)
   make_repo_on_branch "$d/wt" fm/feat-noprrecorded
-  git -C "$d/wt" branch -q base-ref HEAD
   echo change > "$d/wt/changed.txt"
   git -C "$d/wt" add changed.txt
   git -C "$d/wt" commit -q -m "a real change"
@@ -3588,14 +3587,18 @@ test_a_passed_run_with_no_pull_request_keeps_its_own_verdict() {
 # A `passed` run that names no pull request on a branch carrying NO change
 # against its base delivered nothing: "there was nothing to do" and "it was done
 # and passed" are different facts and must not share the word `done`. Driven
-# with a stubbed passed outcome and no daemon. The first direction is the empty
-# branch (unknown, says why); the second is the same run on a branch that does
-# carry a change (done, as before), so the guard cannot go vacuous.
+# with a stubbed passed outcome and no daemon. The test exercises the empty-branch
+# guard on a branch that carries no change.
 test_a_passed_run_over_an_empty_branch_is_not_delivered_work() {
   reset_fakes
   local d short out
   d=$(new_case passed-empty-branch)
-  make_repo_on_branch "$d/wt" fm/feat-emptybranch
+  mkdir -p "$d/wt"
+  git -C "$d/wt" init -q -b main
+  git -C "$d/wt" commit -q --allow-empty -m init
+  git -C "$d/wt" checkout -q -b fm/feat-emptybranch
+  FM_FAKE_RUN_HEAD=$(git -C "$d/wt" rev-parse HEAD)
+  export FM_FAKE_RUN_HEAD
   short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/emptybranch.meta" "window=fm:fm-emptybranch" "worktree=$d/wt" "kind=ship" "harness=claude"
@@ -3606,7 +3609,7 @@ test_a_passed_run_over_an_empty_branch_is_not_delivered_work() {
   out=$(run_crew_state "$d" emptybranch)
   assert_contains "$out" "state: unknown" "a passed run that changed nothing is not reported as done"
   assert_contains "$out" "run passed" "the run's own verdict stays on the line"
-  assert_contains "$out" "carries no change against" "the line says why it is not delivered work"
+  assert_contains "$out" "no change against base" "the line says why it is not delivered work"
   pass "a passed run over an empty branch is not reported as delivered work"
 }
 
