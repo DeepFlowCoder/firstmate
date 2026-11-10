@@ -2586,6 +2586,7 @@ test_secondmate_force_teardown_refuses_child_active_home_descendant() {
   childwt="$home/data"
   err="$TMP_ROOT/child-active-descendant.err"
   mkdir -p "$home/state" "$home/data" "$subhome/state" "$childproj"
+  git init -q "$childwt"
   printf 'domain\n' > "$subhome/.fm-secondmate-home"
   cat > "$home/state/domain.meta" <<EOF
 window=firstmate:fm-domain
@@ -2632,6 +2633,7 @@ test_secondmate_force_teardown_refuses_child_repo_descendant() {
   childwt="$fakeroot/data"
   err="$TMP_ROOT/child-repo-descendant.err"
   mkdir -p "$home/state" "$home/data" "$subhome/state" "$childproj" "$childwt" "$fakeroot/bin"
+  git init -q "$childwt"
   cat > "$fakeroot/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -2682,6 +2684,7 @@ test_secondmate_force_teardown_refuses_unregistered_child_worktree() {
   childwt="$TMP_ROOT/unregistered-child-worktree"
   err="$TMP_ROOT/unregistered-child.err"
   mkdir -p "$home/state" "$home/data" "$subhome/state" "$childproj" "$childwt"
+  git init -q "$childwt"
   printf 'domain\n' > "$subhome/.fm-secondmate-home"
   cat > "$home/state/domain.meta" <<EOF
 window=firstmate:fm-domain
