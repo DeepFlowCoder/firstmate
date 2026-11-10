@@ -179,14 +179,15 @@
 # the same composed text gh uses in its message editor, or from the caller's
 # --body/--body-file. Known agent Co-Authored-By identities are removed before
 # gh-axi receives the body; human trailers and other text are preserved.
-# Agent identities are recognized by their known agent email addresses alone,
-# never by display name or an entire provider domain, so a human whose name
-# resembles a tool keeps attribution. An unreadable body refuses even under the
-# fitness override, since that override grants no agent-attribution exception.
-# Explicit merge/rebase methods, methodless merge-queue enqueues, and GitLab
-# keep their existing message handling. A message a merge queue composes itself
-# is not cleaned by this change; that gap is tracked separately as
-# fm-coautores-por-fila-de-fusion.
+# Agent identities are recognized by known agent email addresses, exact tool
+# names (claude code, openai codex, github copilot, cursor agent, gemini cli,
+# opencode), or [bot] accounts, never by name alone or entire provider domain,
+# so a human whose name resembles a tool keeps attribution. An unreadable body
+# refuses even under the fitness override, since that override grants no
+# agent-attribution exception. Explicit merge/rebase methods, methodless
+# merge-queue enqueues, and GitLab keep their existing message handling. A
+# message a merge queue composes itself is not cleaned by this change; that gap
+# is tracked separately as fm-coautores-por-fila-de-fusion.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -311,7 +312,7 @@ github_caller_merge_method() {
       --method=*) value=${arg#--method=} ;;
       *) continue ;;
     esac
-    value=${value,,}
+    value=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
     value=${value//[[:space:]]/}
     printf '%s' "$value"
     return 0
@@ -331,6 +332,8 @@ github_strip_agent_coauthors() {
         identity = line
         sub(/^[[:space:]]*co-authored-by:[[:space:]]*/, "", identity)
         if (identity ~ /<(noreply@anthropic[.]com|noreply@openai[.]com|codex@openai[.]com|copilot@github[.]com|cursoragent@cursor[.]com|noreply@cursor[.]com)>[[:space:]]*$/) next
+        if (identity ~ /^(claude code|openai codex|github copilot|cursor agent|gemini cli|opencode)[[:space:]]*</) next
+        if (identity ~ /\[bot\][[:space:]]*</) next
       }
       printf "%s%s", separator, $0
       separator = "\n"

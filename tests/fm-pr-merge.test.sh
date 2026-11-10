@@ -3353,8 +3353,8 @@ BODY
   assert_grep 'Co-Authored-By: Alice <alice@openai.com>' "$case_dir/merged-body" \
     "squash coauthors: an entire provider domain was treated as an agent identity"
   assert_no_grep 'Renamed Assistant' "$case_dir/merged-body" 'known agent email was not filtered'
-  assert_grep 'github copilot' "$case_dir/merged-body" 'a non-agent email with a tool-like name was removed'
-  assert_grep 'gemini[bot]' "$case_dir/merged-body" 'a non-agent email with a bot-like name was removed'
+  assert_no_grep 'github copilot' "$case_dir/merged-body" 'exact agent tool name was not filtered'
+  assert_no_grep 'gemini[bot]' "$case_dir/merged-body" '[bot] account was not filtered'
   assert_grep '* Fix a regression' "$case_dir/merged-body" "squash coauthors: prose was lost"
   pass "squash messages remove agent coauthors and preserve human trailers and prose"
 }
