@@ -428,6 +428,127 @@ test_stale_pin_beside_other_dirt_reports_one_verdict() {
   pass "a stale pin beside other dirt yields the conservative refusal alone, with no stale-pin line"
 }
 
+test_spawn_waits_for_briefly_held_occupancy_lock() {
+  local rec id out status record lock_holder
+  id='spawn-occupancy-wait-brief'
+  rec=$(make_case occupancy-wait-brief "$id")
+  read_case_record "$rec"
+
+  record="$(git -C "$POOL_DIR" rev-parse --absolute-git-dir)/fm-task-owner"
+
+  mkdir "$record.lock"
+  printf '%s\n' "$$" > "$record.lock/pid"
+
+  (
+    sleep 3
+    rm "$record.lock/pid"
+    rmdir "$record.lock"
+  ) &
+  lock_holder=$!
+
+  status=0
+  out=$(FM_WORKTREE_OWNER_WAIT_DEADLINE=10 run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || status=$?
+  wait "$lock_holder" 2>/dev/null || true
+
+  expect_code 0 "$status" "spawn should wait and succeed when lock is released before deadline: $out"
+  assert_contains "$out" "spawned $id" "spawn did not report success after lock release"
+  pass "spawn waits for briefly held occupancy lock and succeeds after release"
+}
+
+test_spawn_refuses_after_occupancy_lock_deadline() {
+  local rec id out status record lock_holder
+  id='spawn-occupancy-wait-deadline'
+  rec=$(make_case occupancy-wait-deadline "$id")
+  read_case_record "$rec"
+
+  record="$(git -C "$POOL_DIR" rev-parse --absolute-git-dir)/fm-task-owner"
+
+  mkdir "$record.lock"
+  printf '%s\n' "$$" > "$record.lock/pid"
+
+  (
+    while [ -e "$record.lock/pid" ]; do sleep 0.1; done
+  ) &
+  lock_holder=$!
+
+  status=0
+  out=$(FM_WORKTREE_OWNER_WAIT_DEADLINE=1 run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || status=$?
+
+  rm "$record.lock/pid" 2>/dev/null || true
+  wait "$lock_holder" 2>/dev/null || true
+  rmdir "$record.lock" 2>/dev/null || true
+
+  [ "$status" -ne 0 ] || fail "spawn should fail when deadline is exceeded"
+  assert_contains "$out" "cannot acquire after bounded wait" "spawn did not report deadline exceeded"
+  pass "spawn refuses after occupancy lock deadline expires"
+}
+
+test_reallocated_copy_ownership_survives_detached_head() {
+  local rec stale=pool-owner-stale live=pool-owner-live out status record variant
+  rec=$(make_case copy-ownership "$stale")
+  read_case_record "$rec"
+  out=$(run_spawn "$stale" --mode no-mistakes --yolo off)
+  expect_code 0 "$?" 'first allocation must succeed'
+  fm_test_spawn_brief "$HOME_DIR" "$live"
+  out=$(run_spawn "$live" --mode no-mistakes --yolo off)
+  expect_code 0 "$?" 'reallocated copy must acquire its new owner'
+  [ "$(git -C "$POOL_DIR" rev-parse --abbrev-ref HEAD)" = HEAD ] \
+    || fail 'ownership test must run without a branch identifying the occupant'
+  # A path alias must not evade the same physical copy's ownership binding.
+  ln -s "$POOL_DIR" "$CASE_DIR/alias"
+  fm_write_meta "$HOME_DIR/state/$stale.meta" \
+    "window=firstmate:fm-$stale" "endpoint_task_id=$stale" \
+    "worktree=$CASE_DIR/alias" "project=$PROJECT_DIR" 'kind=ship' 'mode=no-mistakes'
+  for variant in ordinary force; do
+    status=0
+    if [ "$variant" = force ]; then
+      out=$(FM_HOME="$HOME_DIR" PATH="$FAKEBIN_DIR:$PATH" \
+        "$ROOT/bin/fm-teardown.sh" "$stale" --force 2>&1) || status=$?
+    else
+      out=$(FM_HOME="$HOME_DIR" PATH="$FAKEBIN_DIR:$PATH" \
+        "$ROOT/bin/fm-teardown.sh" "$stale" 2>&1) || status=$?
+    fi
+    [ "$status" -ne 0 ] || fail "$variant cleanup of stale occupant succeeded"
+    assert_contains "$out" "current occupant is $live" 'refusal must identify the allocated owner'
+    assert_present "$HOME_DIR/state/$stale.meta" 'stale cleanup removed its task record'
+    assert_present "$HOME_DIR/state/$live.meta" 'stale cleanup removed the live task record'
+  done
+
+  record="$(git -C "$POOL_DIR" rev-parse --absolute-git-dir)/fm-task-owner"
+  cp "$record" "$CASE_DIR/owner.saved"
+  for variant in malformed symlink locked; do
+    case "$variant" in
+      malformed) printf 'unreadable authority\n' > "$record" ;;
+      symlink) rm "$record"; ln -s "$CASE_DIR/owner.saved" "$record" ;;
+      locked) mkdir "$record.lock"; printf '%s\n' "$$" > "$record.lock/pid" ;;
+    esac
+    status=0
+    out=$(FM_HOME="$HOME_DIR" PATH="$FAKEBIN_DIR:$PATH" \
+      "$ROOT/bin/fm-teardown.sh" "$live" --force 2>&1) || status=$?
+    [ "$status" -ne 0 ] || fail "$variant occupancy authority allowed cleanup"
+    assert_contains "$out" 'REFUSED:' "$variant authority failed without a refusal diagnostic"
+    assert_present "$HOME_DIR/state/$live.meta" "$variant authority lost task metadata"
+    if [ "$variant" = locked ]; then
+      rm "$record.lock/pid"
+      rmdir "$record.lock"
+    else
+      rm "$record"
+      cp "$CASE_DIR/owner.saved" "$record"
+    fi
+  done
+  # No run is involved in this fixture; never consult the installed daemon.
+  fm_fake_exit0 "$FAKEBIN_DIR" no-mistakes
+  out=$(FM_HOME="$HOME_DIR" PATH="$FAKEBIN_DIR:$PATH" \
+    "$ROOT/bin/fm-teardown.sh" "$live" --force 2>&1)
+  expect_code 0 "$?" "true owner must clean up detached copy: $out"
+  assert_absent "$HOME_DIR/state/$live.meta" 'true owner did not retire its record'
+  assert_present "$HOME_DIR/state/$stale.meta" 'true owner cleanup retired stale record'
+  pass 'new allocation owns detached copy; stale, forced, aliased, malformed, symlinked, and locked cleanup refuses'
+}
+
+test_spawn_waits_for_briefly_held_occupancy_lock
+test_spawn_refuses_after_occupancy_lock_deadline
+test_reallocated_copy_ownership_survives_detached_head
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
 test_direct_pr_and_scout_refresh_before_launch

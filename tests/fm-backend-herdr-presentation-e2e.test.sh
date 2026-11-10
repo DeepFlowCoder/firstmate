@@ -382,10 +382,13 @@ make_project() {  # <dir>
   git -C "$dir" remote add origin "file://$dir.origin.git"
 }
 
+# The pane must outlive the whole run: treehouse treats a copy with no live
+# process as free, so a short-lived pane lets its copy be reassigned to a later
+# task and its own teardown then correctly refuses as a stale occupant.
 spawn_task() {  # <id> <home> <project>
   local id=$1 home=$2 project=$3
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr
+    "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 3600'" --mode no-mistakes --yolo off --backend herdr
 }
 
 finish_concurrent_spawn() {  # <id> <status> <stdout> <stderr>
@@ -410,7 +413,7 @@ finish_concurrent_expected_abort() {  # <id> <status> <stdout> <stderr>
 spawn_secondmate_task() {
   local id=$1 home=$2
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$home" "sh -c 'sleep 120'" --secondmate --backend herdr
+    "$ROOT/bin/fm-spawn.sh" "$id" "$home" "sh -c 'sleep 3600'" --secondmate --backend herdr
 }
 
 teardown_task() {  # <id> <home>
@@ -1384,8 +1387,15 @@ for META_HOME_PAIR in \
 do
   TASK_ID=${META_HOME_PAIR%%:*}
   TASK_HOME=${META_HOME_PAIR#*:}
-  teardown_task "$TASK_ID" "$TASK_HOME" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err" \
-    || fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
+  # The session restarts above killed every earlier pane, so Treehouse may have
+  # reassigned a surviving task's copy to a later task. Cleaning that stale
+  # record must refuse and name the current occupant; any other failure is real.
+  if ! teardown_task "$TASK_ID" "$TASK_HOME" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err"; then
+    if ! grep -F "REFUSED: task $TASK_ID does not own " "$TMP_ROOT/td-$TASK_ID.err" >/dev/null 2>&1 \
+      || ! grep -F "current occupant is " "$TMP_ROOT/td-$TASK_ID.err" >/dev/null 2>&1; then
+      fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
+    fi
+  fi
 done
 assert_focus_is "$CAPTAIN_FOCUS" "multi-home teardown"
 pass "real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority"

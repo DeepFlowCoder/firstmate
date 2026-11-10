@@ -4,6 +4,8 @@
 # clear volatile state, refresh/prune the project's clone for PR-based ship
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
+# Copy occupancy is checked before cleanup, including --force and forced child
+# cleanup; bin/fm-worktree-owner-lib.sh owns the binding and legacy adoption.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
@@ -259,6 +261,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-lock-lib.sh"
 # shellcheck source=/dev/null
+. "$SCRIPT_DIR/fm-worktree-owner-lib.sh"
+# shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
@@ -313,6 +317,8 @@ DESCENDANT_TASK_STATES=()
 DESCENDANT_TASK_IDS=()
 DESCENDANT_TASK_KINDS=()
 DESCENDANT_TASK_HOMES=()
+TEARDOWN_COPY_OWNER_LOCKS=()
+TEARDOWN_COPY_OWNER_PATHS=()
 teardown_release_locks() {
   local status=$? i
   if declare -F teardown_release_herdr_locks >/dev/null 2>&1; then
@@ -322,6 +328,10 @@ teardown_release_locks() {
     fm_lock_release "${DESCENDANT_LOCK_PATHS[$i]}" || true
   done
   DESCENDANT_LOCK_PATHS=()
+  for ((i=${#TEARDOWN_COPY_OWNER_LOCKS[@]} - 1; i >= 0; i--)); do
+    fm_lock_release "${TEARDOWN_COPY_OWNER_LOCKS[$i]}" || true
+  done
+  TEARDOWN_COPY_OWNER_LOCKS=()
   if [ -n "${HANDOFF_WAKE_RETIRE_LOCK:-}" ]; then
     fm_lock_release "$HANDOFF_WAKE_RETIRE_LOCK" || true
     HANDOFF_WAKE_RETIRE_LOCK=
@@ -787,6 +797,35 @@ WT=$(fm_meta_get "$META" worktree)
 PROJ=$(fm_meta_get "$META" project)
 T_ORCA=
 [ "$BACKEND" != orca ] || T_ORCA=$T
+# Hold every copy's occupancy lock through cleanup, including all descendants
+# preflighted before a forced home retirement. Repeated preflights reuse locks.
+teardown_require_copy_owner() {  # <worktree> <state-dir> <task-id>
+  local wt=$1 state=$2 id=$3 actual i
+  [ -e "$wt" ] || [ -L "$wt" ] || return 0
+  actual=$(cd -- "$wt" 2>/dev/null && pwd -P) || {
+    echo "REFUSED: cannot inspect task-copy occupancy at $wt." >&2
+    return 1
+  }
+  for ((i=0; i<${#TEARDOWN_COPY_OWNER_PATHS[@]}; i++)); do
+    if [ "${TEARDOWN_COPY_OWNER_PATHS[$i]}" = "$actual" ]; then
+      FM_WORKTREE_OWNER_LOCK=${TEARDOWN_COPY_OWNER_LOCKS[$i]}
+      # Consumed by fm-worktree-owner-lib.sh across the source boundary.
+      # shellcheck disable=SC2034
+      FM_WORKTREE_OWNER_RECORD=${FM_WORKTREE_OWNER_LOCK%.lock}
+      fm_worktree_owner_require "$wt" "$state" "$id"
+      return $?
+    fi
+  done
+  fm_worktree_owner_acquire "$wt" || return 1
+  TEARDOWN_COPY_OWNER_LOCKS+=("$FM_WORKTREE_OWNER_LOCK")
+  TEARDOWN_COPY_OWNER_PATHS+=("$actual")
+  fm_worktree_owner_require "$wt" "$state" "$id"
+}
+KIND=$(fm_meta_get "$META" kind)
+[ -n "$KIND" ] || KIND=ship
+if [ "$KIND" != secondmate ]; then
+  teardown_require_copy_owner "$WT" "$STATE" "$ID" || exit 1
+fi
 if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
   "$FM_ROOT/bin/fm-guard.sh" || true
 fi
@@ -802,8 +841,6 @@ fi
 ORCA_WORKTREE_ID=$(fm_meta_get "$META" orca_worktree_id)
 ORCA_PATH_MATCH_VERIFIED=0
 
-KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
-[ -n "$KIND" ] || KIND=ship
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
@@ -2772,6 +2809,7 @@ validate_firstmate_home_children_removal() {
       validate_firstmate_home_for_removal "$child_home" "child firstmate home" "$child_id" >/dev/null || return 1
       validate_firstmate_home_children_removal "$child_home" || return 1
     elif [ "$child_backend" = orca ]; then
+      teardown_require_copy_owner "$child_wt" "$sub_state" "$child_id" || return 1
       child_orca_worktree_id=$(require_orca_worktree_id "$child_meta") || return 1
       if [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
         child_proj=$(meta_value "$child_meta" project)
@@ -2779,6 +2817,7 @@ validate_firstmate_home_children_removal() {
         require_orca_worktree_path_match "$child_orca_worktree_id" "$child_wt" || return 1
       fi
     elif [ -n "$child_wt" ] && [ -e "$child_wt" ]; then
+      teardown_require_copy_owner "$child_wt" "$sub_state" "$child_id" || return 1
       child_proj=$(meta_value "$child_meta" project)
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
     fi
