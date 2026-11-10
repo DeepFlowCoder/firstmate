@@ -8,12 +8,14 @@
 # otherwise, so a crew that finishes (or stops and waits) without a current
 # working signal is never silently swallowed. The stale path applies that rule
 # plus the idle absorb classes. A declared wait - a paused: external wait, a
-# verified captain-held transfer, or, on the IDLE path only, the backlog's own
+# verified captain-held transfer, on the IDLE path only the backlog's own
 # active captain hold for the task, which says the same thing without depending
-# on the worker having appended anything - re-surfaces only on its long bounded
-# cadence, although its initial no-verb status signal still surfaces in normal
-# mode, and an authoritative parked or done state is a healthy idle wait; the
-# stale: reason below owns all of them. The hold never reaches the busy-pane
+# on the worker having appended anything, or an observed Codex quota wait read
+# from the visible viewport (fm-quota-wait-lib.sh owns that observation, with no
+# worker-written verb) - re-surfaces only on its long bounded cadence, although
+# its initial no-verb status signal still surfaces in normal mode, and an
+# authoritative parked or done state is a healthy idle wait; the stale: reason
+# below owns all of them. The hold never reaches the busy-pane
 # bound, because it reports that the CAPTAIN owes an answer and says nothing
 # about the worker's health (busy_turn_bound_check owns why).
 # bin/fm-wait-evidence-lib.sh is the single owner of the durable records that
@@ -28,14 +30,17 @@
 #                          run-step or busy pane outranks even a captain-relevant log
 #                          line, since the crew's own log gets no new entry once
 #                          firstmate hands it to a no-mistakes validation. A declared
-#                          external-wait pause or verified captain-held transfer is
-#                          absorbed instead with its own long re-surface cadence,
-#                          never as a wedge, and that recheck reason names which
-#                          human the wait is on. That declaration is the one status
-#                          line an active run-step does not outrank: the two agree
-#                          that the quiet is expected, so a declared wait whose run
-#                          step is still running takes the pause cadence rather
-#                          than the wedge timer (pause_state_class owns why).
+#                          external-wait pause, verified captain-held transfer, or
+#                          observed Codex quota wait is absorbed instead with its
+#                          own long re-surface cadence, never as a wedge, and that
+#                          recheck reason names which human or provider quota the
+#                          wait is on. That declaration is the one status line an
+#                          active run-step does not outrank: the two agree that the
+#                          quiet is expected, so a declared wait whose run step is
+#                          still running takes the pause cadence rather than the
+#                          wedge timer (pause_state_class owns why); an observed
+#                          quota wait has no status line and is read before that
+#                          run-step absorb at all.
 #                          A crew whose authoritative state is
 #                          parked at a gate or done and waiting for the merge is
 #                          absorbed outright: a human holds its next step, so its
@@ -227,6 +232,8 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-quota-wait-lib.sh
+. "$SCRIPT_DIR/fm-quota-wait-lib.sh"
 # Steering-inbox loss detection: bin/fm-task-inbox-lib.sh owns the record,
 # doorbell, and re-ring ladder contracts; this watcher only supplies the busy
 # gate and the wake emission (inbox_steer_check below).
@@ -1239,8 +1246,9 @@ status_idle_age() {  # <task>
 }
 
 
-# Absorb a stale pane under a declared external-wait pause (paused:) or a
-# dead-agent captain-held transfer, and re-surface it once every
+# Absorb a stale pane under a declared external-wait pause (paused:), a
+# dead-agent captain-held transfer, or an observed Codex quota wait (the quota
+# argument, which carries no worker-written verb), and re-surface it once every
 # PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
 # stale poll once pause_state_class permits the bounded cadence, so it must be
 # cheap: it NEVER re-reads crew state. The re-surface age comes from the shared
@@ -1251,13 +1259,14 @@ status_idle_age() {  # <task>
 # above, throttled by this window's own .paused-resurfaced-<key> marker. Advances
 # the stale suppressor to <hash> and flags the key paused.
 #
-# The recheck names WHICH human the declared wait is on, because that is the whole
-# point of a recheck the captain reads: an external dependency for paused:, and the
-# captain themself for a verified hold. Only the captain-held verb takes the second
-# wording; a caller that reached the bounded cadence off pause tracking alone, with
-# no declaring verb left on the log, keeps the external-wait wording it always had.
-handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf age detail reason
+# The recheck names WHICH wait the declared silence is on, because that is the
+# whole point of a recheck the captain reads: an external dependency for paused:,
+# an external provider quota for an observed quota wait, and the captain themself
+# for a verified hold. Only the captain-held verb takes the second wording; a
+# caller that reached the bounded cadence off pause tracking alone, with no
+# declaring verb left on the log, keeps the external-wait wording it always had.
+handle_paused_stale() {  # <window> <task> <hash> [quota]
+  local win=$1 task=$2 h=$3 quota=${4-} key statusf age detail reason
   key=$(window_key "$win")
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
@@ -1265,7 +1274,10 @@ handle_paused_stale() {  # <window> <task> <hash>
   clear_defer_tracking "$key"
   statusf="$STATE/$task.status"
   age=$(status_idle_age "$task")
-  if task_is_captain_held "$task" "$(last_status_line "$statusf")"; then
+  if [ "$quota" = quota ]; then
+    detail="quota wait, awaiting external provider"
+    reason="paused ${age}s, awaiting external provider quota - observed codex usage limit, rechecked on a long cadence; confirm the wait still holds"
+  elif task_is_captain_held "$task" "$(last_status_line "$statusf")"; then
     detail="captain-held, awaiting the captain"
     reason="captain-held ${age}s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
   else
@@ -1404,7 +1416,7 @@ clear_pause_tracking() {  # <window-key>
   local key=$1
   clear_pause_state "$key"
   clear_defer_tracking "$key"
-  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" "$STATE/.quota-handoff-$key"
 }
 
 # The absorb class remembered for <memo-file>, but only while <last-status-line>
@@ -2518,8 +2530,27 @@ EOF
     [ -z "$task" ] || inbox_steer_check "$w" "$task"
     key=$(window_key "$w")
     last=$(last_status_line "$STATE/$task.status")
+    # A live provider error declares the wait even when the exhausted model
+    # cannot append paused:. Re-read the viewport so a resumed worker immediately
+    # leaves this path, including a worker with an old busy lifecycle record.
+    if fm_quota_wait_task "$STATE" "$task"; then
+      if afk_present; then
+        # One plain handoff per observed wait; the daemon owns its rechecks.
+        if [ "$(cat "$STATE/.quota-handoff-$key" 2>/dev/null)" != quota ]; then
+          fm_wake_append stale "$w" "stale: $w" || exit 1
+          printf 'quota' > "$STATE/.quota-handoff-$key"
+          wake "stale: $w"
+        fi
+      else
+        handle_paused_stale "$w" "$task" quota quota
+      fi
+      continue
+    fi
     if ! wait_is_declared "$task" "$last" && [ -e "$STATE/.paused-$key" ]; then
       clear_pause_tracking "$key"
+    fi
+    if [ "$(cat "$STATE/.stale-$key" 2>/dev/null)" = quota ] || [ -e "$STATE/.quota-handoff-$key" ]; then
+      rm -f "$STATE/.stale-$key" "$STATE/.quota-handoff-$key"
     fi
     # An idle secondmate endpoint is healthy by design, so a mate is admitted to
     # the pane-stale path ONLY to serve a declared wait's bounded re-surface -

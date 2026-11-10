@@ -148,6 +148,10 @@ case "${1:-}" in
     esac ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    if [ -n "${FM_FAKE_QUOTA_VIEWPORT:-}" ]; then
+      cat "$FM_FAKE_QUOTA_VIEWPORT"
+      exit 0
+    fi
     if [ "${FM_FAKE_BUSY:-0}" = 1 ]; then printf 'work in progress\n%s\n' "${FM_FAKE_BUSY_TEXT:-esc to interrupt}"
     else printf 'all quiet\n> \n'; fi ;;
 esac
@@ -201,6 +205,24 @@ make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
 # from the caller's environment by the fakes above.
 run_crew_state() {  # <case-dir> <id>
   PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" "$CREW_STATE" "$2"
+}
+
+# Reconstructed from the September modal capture plus the usage-limit string
+# recorded on 2026-10-06, NOT a full live capture of the October screen.
+test_codex_quota_wait_without_a_worker_pause() {
+  local dir out
+  dir=$(new_case codex-quota-wait)
+  make_repo_on_branch "$dir/wt" fm/quota
+  make_fakebin "$dir" >/dev/null
+  printf 'worktree=%s\nwindow=sess:fm-quota\nkind=scout\nharness=codex\n' "$dir/wt" > "$dir/state/quota.meta"
+  printf 'working: implementing the change\n' > "$dir/state/quota.status"
+  out=$(FM_FAKE_QUOTA_VIEWPORT="$ROOT/tests/fixtures/codex-usage-limit-reconstructed.screen" \
+    FM_FAKE_TMUX_AGENT=alive FM_FAKE_TMUX_WINDOW=fm-quota run_crew_state "$dir" quota)
+  case "$out" in
+    'state: paused'*'source: pane'*'quota'*) ;;
+    *) fail "exhausted codex without a self-written pause must report a quota wait: $out" ;;
+  esac
+  pass "codex quota exhaustion reports a pane-declared wait without a worker pause"
 }
 
 new_case() {  # <name> -> echoes case dir with an empty state/
@@ -4543,6 +4565,7 @@ test_unmodelled_status_keeps_its_own_unknown() {
   pass "an unmodelled run status keeps its own unknown instead of a stale record"
 }
 
+test_codex_quota_wait_without_a_worker_pause
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded

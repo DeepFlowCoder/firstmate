@@ -45,11 +45,13 @@
 #     only after it has been idle for STALE_ESCALATE_SECS
 #     (configurable), rechecked once. A wedged crewmate is therefore detected
 #     within STALE_ESCALATE_SECS + a tick, never lost. A declared wait - a
-#     paused: external wait, a verified captain-held transfer, or the backlog's
-#     own captain hold, per daemon_wait_is_declared - instead gets its own
-#     longer PAUSE_RESURFACE_SECS recheck, never a wedge escalation, whether its
-#     pane reads idle or busy; only a status append that stops declaring the
-#     wait, or the hold's release, ends that routing. A worker whose foreground
+#     paused: external wait, a verified captain-held transfer, the backlog's
+#     own captain hold, or an observed Codex quota wait, per
+#     daemon_wait_is_declared - instead gets its own longer PAUSE_RESURFACE_SECS
+#     recheck, never a wedge escalation, whether its pane reads idle or busy; a
+#     status append that stops declaring the wait, the hold's release, or the
+#     disappearance of an observed quota screen ends that routing. A worker whose
+#     foreground
 #     command set keeps moving with a live agent is deferred at the wedge
 #     threshold instead of escalated (stale_crew_is_running_commands), and
 #     re-surfaces on the same long cadence; a frozen call still escalates on time.
@@ -165,6 +167,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$FM_DAEMON_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-quota-wait-lib.sh
+. "$FM_DAEMON_DIR/fm-quota-wait-lib.sh"
 
 # Canonical construction and parsing for every Firstmate operational input.
 # shellcheck source=bin/fm-operational-input.sh
@@ -429,15 +433,19 @@ daemon_task_is_captain_held() {  # <state> <task> <last-status-line>
 
 # daemon_wait_is_declared: 0 iff this worker's silence is declared by one of the
 # durable records - a worker-declared `paused:`, a `captain-held:` verb, or the
-# backlog's own captain hold. Every IDLE-pane declared-wait gate in this daemon
-# reads it, matching the watcher's wait_is_declared, so a hold cannot be honored
-# by one supervisor and aged as a wedge by the other. The enriched busy-pane wedge
-# override in handle_wake deliberately keeps the status verbs alone, for the same
-# reason the watcher's busy_turn_bound_check does: a hold says the CAPTAIN owes an
-# answer, never that a still-busy worker is healthy.
+# backlog's own captain hold - or by a live observed Codex quota wait
+# (fm_quota_wait_task, a visible-viewport read rather than a durable record).
+# Every IDLE-pane declared-wait gate in this daemon reads it, matching the
+# watcher's wait_is_declared plus its separate quota-wait check, so a hold cannot
+# be honored by one supervisor and aged as a wedge by the other. The enriched
+# busy-pane wedge override in handle_wake deliberately keeps the status verbs and
+# the quota observation alone, for the same reason the watcher's
+# busy_turn_bound_check does: a hold says the CAPTAIN owes an answer, never that
+# a still-busy worker is healthy.
 daemon_wait_is_declared() {  # <state> <task> <last-status-line>
   local state=$1 task=$2 last=$3
   status_is_paused_or_captain_held "$last" && return 0
+  fm_quota_wait_task "$state" "$task" && return 0
   fm_wait_id_in_list "$task" "$(fm_wait_captain_held_ids "$(dirname "$state")" 2>/dev/null || true)"
 }
 
@@ -464,13 +472,16 @@ classify_stale() {  # <window> <state> [<span-record> <span-status>]
     return
   fi
   if daemon_wait_is_declared "$state" "$task" "$last"; then
-    # A DECLARED external-wait pause, a verified captain-held transfer, or the
-    # backlog's own captain hold (daemon_wait_is_declared owns which records
-    # qualify): an idle pane is EXPECTED, so this is not a wedge. The caller
-    # records a pause marker (long re-surface cadence in housekeeping) rather than
-    # a wedge stale marker. Cheap: the status line already read plus one backlog
-    # scan, no fm-crew-state.sh call.
-    if daemon_task_is_captain_held "$state" "$task" "$last"; then
+    # A declared external-wait pause, a verified captain-held transfer, the
+    # backlog's own captain hold, or an observed Codex quota wait
+    # (daemon_wait_is_declared owns which qualify): an idle pane is EXPECTED, so
+    # this is not a wedge. The caller records a pause marker (long re-surface
+    # cadence in housekeeping) rather than a wedge stale marker. Cheap: the status
+    # line already read plus one backlog scan and, for quota, one visible viewport
+    # read, no fm-crew-state.sh call.
+    if fm_quota_wait_task "$state" "$task"; then
+      printf 'pause|codex quota wait (awaiting external provider), rechecked on a long cadence'
+    elif daemon_task_is_captain_held "$state" "$task" "$last"; then
       printf 'pause|captain-held (awaiting the captain), rechecked on a long cadence: %s' "${last:-backlog hold on $task}"
     else
       printf 'pause|paused (awaiting external), rechecked on a long cadence: %s' "$last"
@@ -600,7 +611,8 @@ stale_defer_running() {  # <window> <state> <key> <idle-age>
 }
 
 # Pause marker: state/.subsuper-paused-<key> holds the epoch a declared wait (a
-# paused: external wait or a verified captain-held transfer) was first observed
+# paused: external wait, a verified captain-held transfer, or an observed Codex
+# quota wait) was first observed
 # declared, whether its pane read idle or busy. Housekeeping ages it against
 # PAUSE_RESURFACE_SECS (much longer than a wedge) and re-surfaces the wait once
 # per window. Recording is create-if-absent so the timestamp is stable across a
@@ -901,8 +913,8 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
 #  2b) pause re-surface: for each declared-wait marker past PAUSE_RESURFACE_SECS,
 #     re-peek; gone -> clear; still declaring the wait, on an idle OR a busy pane
-#     -> escalate a recheck digest naming which human the wait is on, and reset
-#     the window (repeating bounded re-surface, never a wedge).
+#     -> escalate a recheck digest naming which human or provider quota the wait
+#     is on, and reset the window (repeating bounded re-surface, never a wedge).
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
@@ -976,15 +988,18 @@ housekeeping() {  # <state>
   # escalated as one - but it MUST re-surface, so neither a forgotten pause nor a
   # forgotten captain hold can rot invisibly. Past the window: gone -> drop; still
   # declaring the wait -> escalate a recheck digest and reset the marker so the window
-  # repeats. The digest names WHICH human the wait is on, because the captain is the
-  # one reading it: an external dependency for a paused: declaration, and the captain
-  # themself for a verified hold transfer or the backlog's own captain hold.
+  # repeats. The digest names WHAT the wait is on, because the captain is the one
+  # reading it: an external dependency for a paused: declaration, an external
+  # provider quota for an observed quota wait, and the captain themself for a
+  # verified hold transfer or the backlog's own captain hold.
   # Pane busy state does NOT end the wait. A declared wait can legitimately hold a
   # pane busy - a worker parked on a long foreground call it keeps live for as long
   # as the wait lasts - so reading busy as "the crew resumed" retires the window of
-  # exactly the declaration that needs it. The crew's own latest status line is the
-  # authority, and the loop head above already drops the marker the moment that line
-  # stops declaring the wait.
+  # exactly the declaration that needs it. For a worker-declared wait the crew's
+  # own latest status line is the authority, and the loop head above already drops
+  # the marker the moment that line stops declaring the wait; an observed quota
+  # wait has no such line, so its marker drops the moment the visible viewport
+  # stops showing the quota screen or its live agent can no longer be established.
   pause_secs=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
   for marker in "$state"/.subsuper-paused-*; do
     [ -e "$marker" ] || continue
@@ -1014,6 +1029,10 @@ housekeeping() {  # <state>
         last=$(last_status_line "$state/$task.status")
         if daemon_task_is_captain_held "$state" "$task" "$last"; then
           if escalate_add "$state" "captain-held ${age}s (awaiting the captain, answer the held decision or release the hold): $win"; then
+            _now > "$marker"
+          fi
+        elif fm_quota_wait_task "$state" "$task"; then
+          if escalate_add "$state" "paused ${age}s (awaiting external provider quota, recheck whether the wait still holds): $win"; then
             _now > "$marker"
           fi
         elif [ -n "$last" ] && status_is_paused "$last"; then
@@ -1244,16 +1263,16 @@ handle_wake() {  # <reason> <state>
               # once per STALE_ESCALATE_SECS for as long as the wait lasted.
               # Housekeeping (2b) then owns the re-surface, so the wait is still
               # bounded - by one recheck per PAUSE_RESURFACE_SECS instead.
-              # Only the crew's own status verbs count here, never the backlog
-              # hold classify_stale also honors: under away mode an enriched wedge
-              # comes from the watcher's busy-pane bound, and a hold says the
-              # captain owes an answer, not that a still-busy worker is healthy
-              # (daemon_wait_is_declared and the watcher's busy_turn_bound_check
-              # own that split).
+              # Only the crew's own status verbs and the observed quota wait count
+              # here, never the backlog hold classify_stale also honors: under
+              # away mode an enriched wedge comes from the watcher's busy-pane
+              # bound, and a hold says the captain owes an answer, not that a
+              # still-busy worker is healthy (daemon_wait_is_declared and the
+              # watcher's busy_turn_bound_check own that split).
               case "$stale_detail" in
                 idle\ *s,\ possible\ wedge,\ escalation\ *)
                   last=$(last_status_line "$state/$task.status")
-                  status_is_paused_or_captain_held "$last" \
+                  { status_is_paused_or_captain_held "$last" || fm_quota_wait_task "$state" "$task"; } \
                     || decision="escalate|${reason#stale: }"
                   ;;
               esac ;;
@@ -1283,10 +1302,11 @@ handle_wake() {  # <reason> <state>
       fi
       ;;
     pause)
-      # Declared wait, an external-wait pause or a verified captain-held transfer:
-      # record a pause marker (long re-surface cadence in housekeeping) and drop any
-      # wedge stale marker, so a pane that transitioned working->declared-wait is not
-      # still wedge-aged. Only stale produces this action.
+      # Declared wait, an external-wait pause, a verified captain-held transfer, or
+      # an observed Codex quota wait: record a pause marker (long re-surface cadence
+      # in housekeeping) and drop any wedge stale marker, so a pane that transitioned
+      # working->declared-wait is not still wedge-aged. Only stale produces this
+      # action.
       if [ "$kind" = "stale" ]; then
         stale_marker_remove "$arg" "$state"
         pause_marker_record "$arg" "$state"

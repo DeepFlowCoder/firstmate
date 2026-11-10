@@ -179,6 +179,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-tmux-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-quota-wait-lib.sh
+. "$SCRIPT_DIR/fm-quota-wait-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
@@ -1742,6 +1744,12 @@ fi
 # status log as the current state.
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
 pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+
+# A provider can stop the worker before it can append its own paused: line.
+# Keep run-step authority above; this observation describes the worker's pane.
+if fm_quota_wait_task "$STATE" "$ID"; then
+  emit paused pane "codex quota wait: usage limit reached; awaiting provider quota or an explicit lane change"
+fi
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
 # state is not meaningful for them; read their state from the status log only.

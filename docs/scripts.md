@@ -168,6 +168,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-control.sh`          | Agent lifecycle control plane: allowlisted `interrupt`, `exit`, transactional `relaunch`, missing-endpoint `recover`, and vendor-dialog `dialog` verbs for an exact task id ([agent-control.md](agent-control.md)) |
 | `fm-control-lib.sh`      | One executable owner of the control-plane verb allowlist, per-harness interrupt/exit mechanics, and per-backend capability |
 | `fm-dialog-lib.sh`       | One executable owner of the vendor modal dialogs firstmate may answer, and of the proof required before an option key is pressed |
+| `fm-quota-wait-lib.sh`    | Passive provider-quota evidence shared by crew-state, the watcher and the away-mode daemon; recognition never authorizes a dialog answer |
 | `fm-busy-lib.sh`         | Single owner of the semantic busy-state contract: verdicts, source attribution, and per-harness sources |
 | `fm-wait-evidence-lib.sh` | Single owner of the durable records that say a quiet worker's silence is owned by something other than a wedge: the backlog's active captain holds, and what a change in a pane's foreground command set means |
 | `fm-busy-event.sh`       | The only writer of a task's semantic busy-state record; arms an incarnation and applies lifecycle events |
