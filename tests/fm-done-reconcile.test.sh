@@ -25,6 +25,8 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 
 # A tasks-axi stub satisfying the compatibility probe and answering `list` with
 # the TOON rows the real tool emits (honouring --state), driven by FM_FAKE_ROWS ("id:state:kind ...").
+# For held tasks, append ":held" to mark them, and they appear under both their
+# original state (queued/in_flight) and under --state held.
 # One title carries a comma because the guard reads fields by position.
 make_fake_tasks_axi() {
   local fakebin=$1
@@ -38,9 +40,16 @@ case "${1:-}" in
     read -r -a __all <<< "${FM_FAKE_ROWS:-}"
     __rows=()
     for __row in "${__all[@]}"; do
-      IFS=: read -r __id __state __kind <<< "$__row"
-      [ "${2:-}" != --state ] || [ "$__state" = "${3:-}" ] || continue
-      __rows+=("$__row")
+      IFS=: read -r __id __state __kind __held <<< "$__row"
+      __held="${__held:-}"
+      if [ "${2:-}" = --state ]; then
+        if [ "${3:-}" = held ]; then
+          [ "$__held" = held ] || continue
+        else
+          [ "$__state" = "${3:-}" ] || continue
+        fi
+      fi
+      __rows+=("$__id:$__state:$__kind")
     done
     printf 'count: %s\n' "${#__rows[@]}"
     printf 'tasks[%s]{id,state,kind,repo,title}:\n' "${#__rows[@]}"
@@ -103,7 +112,7 @@ STATUS
 
 test_silent_when_book_closed_held_or_secondmate() {
   local out
-  out=$(run_guard "fm-a:done:ship fm-b:held:ship fm-c:in_flight:secondmate" <<'STATUS'
+  out=$(run_guard "fm-a:done:ship fm-b:in_flight:ship:held fm-c:in_flight:secondmate" <<'STATUS'
 fm-a|done: finished
 fm-b|done: finished
 fm-c|done: finished

@@ -93,6 +93,11 @@ done
 
 fm_tasks_axi_backend_available "$CONFIG" || exit 0
 
+# Read held task ids (a flag on queued or in_flight tasks, not a separate state).
+held_ids=$(cd "$FM_HOME" && {
+  tasks-axi list --state held 2>/dev/null
+} | LC_ALL=C sed -n 's/^  \([a-z0-9][a-z0-9-]*\),.*/\1/p')
+
 # One open-task read: "<id> <state> <kind>" per queued or in_flight row.
 book=$(cd "$FM_HOME" && {
   tasks-axi list --state queued 2>/dev/null
@@ -111,6 +116,7 @@ while IFS= read -r row; do
   state=${match%% *}
   kind=${match#* }
   [ "$kind" = secondmate ] && continue
+  printf '%s\n' "$held_ids" | LC_ALL=C grep -Fxq "$id" && continue
   if [ "$printed" -ge "$MAX_LINES" ]; then
     truncated=1
     continue

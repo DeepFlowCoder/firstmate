@@ -37,16 +37,16 @@ When any diagnostic needs captain attention, report the plain consequence and re
   This line appears only on a positive lost reading; a state the check could not read stays silent, and an absent line never means the record is healthy.
 - `GNHF_RECONCILE: <id> is queued in the book, but published branch <branch> in <repo> names it - <commit subject>` - a published branch from an overnight `gnhf` run, which works outside the fleet lifecycle, names a task the backlog still lists as queued, so dispatching that task now may pay twice for it.
   Reconcile before dispatching anything from the queue: read the named branch, decide whether what is there is what the task asked for, and then close, re-scope, or leave the task open yourself.
-- `DONE_RECONCILE: <id> is <queued|in_flight> in the book, but its worker's last status line is "done: <note>"` - a worker's own status log ends in `done:` while the backlog still lists its task open, so reading the book alone will tell the captain finished work is pending.
-  Read the worker's record with `bin/fm-crew-state.sh <id>` and its report, never the book, before saying anything about that task to the captain.
-  An investigation closes only after the `captain-hold-lifecycle` inventory of the calls its report leaves the captain, never in bulk; a ship closes through its own landing path.
-  The line never closes anything, and `bin/fm-done-reconcile.sh` owns what counts as finished.
   Nothing is reconciled for you, deliberately - the guard only ever reports, because whether published work actually satisfies a task is a judgement, and the branch may hold a partial or abandoned attempt.
   Read the line as exactly what it says: the branch NAMES the task, which is the whole of the evidence, and not that it did the work.
   Naming can come from something other than a claim, because a subject naming a file such as `bin/fm-tablero.sh` yields the token `fm-tablero`, so the quoted commit subject is a pointer to go and read the branch, never proof the task is done.
   Landing that work follows the project's ordinary delivery path like any other change, and the line goes quiet on its own once the branch's commits reach the default branch.
   Silence never means the book is reconciled: the guard matches only when a run's commit SUBJECT names the task id, so keep naming the task id in the prompt of any `gnhf` run dispatched against backlog work.
   [`bin/fm-gnhf-reconcile.sh`](../../../bin/fm-gnhf-reconcile.sh) owns that contract and its bounds, and [`docs/verification/gnhf-run-contract.md`](../../../docs/verification/gnhf-run-contract.md) records the measurements behind it.
+- `DONE_RECONCILE: <id> is <queued|in_flight> in the book, but its worker's last status line is "done: <note>"` - a worker's own status log ends in `done:` while the backlog still lists its task open, so reading the book alone will tell the captain finished work is pending.
+  Read the worker's record with `bin/fm-crew-state.sh <id>` and its report, never the book, before saying anything about that task to the captain.
+  An investigation closes only after the `captain-hold-lifecycle` inventory of the calls its report leaves the captain, never in bulk; a ship closes through its own landing path.
+  The line never closes anything, and `bin/fm-done-reconcile.sh` owns what counts as finished.
 - `STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>` - the visible startup-memory budget is not a safe one-line positive decimal file; do not infer the default or propagate it.
   Correct the local primary file, then rerun session start so the normal convergence path can deliver the validated value to secondmate homes.
 - `CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>` - the optional dispatch profile file exists but failed low-cost bootstrap validation; stop profile-based dispatch, report the actionable error, and require correction of the malformed schema, unverified harness name, or invalid harness/effort pair rather than falling back around it or selecting a bad profile.
