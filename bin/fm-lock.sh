@@ -5,11 +5,12 @@
 # PID of any one tool call, which is dead moments after it is written.
 # Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
 #        fm-lock.sh status    print holder and liveness; always exits 0
-# Managed Codex app-server processes cannot own this PID lock. A legacy lock
-# naming a live managed daemon is preserved until that exact process exits:
-# close its conversations, stop that daemon instance through Codex, and retry
-# from a session-scoped CLI or stdio app-server. No force takeover is offered,
-# because a live shared host cannot prove its conversations have ended.
+# Managed Codex app-server processes cannot own this PID lock. Daemon-hosted
+# conversations are identified by their request-runner process (the direct child
+# of the daemon) and can take the lock. A legacy lock naming a live managed
+# daemon is preserved until that exact process exits: close its conversations,
+# stop that daemon instance through Codex, and retry from a session-scoped CLI
+# or stdio app-server.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,13 +39,11 @@ lock_recovery_safe() {  # <recorded-pid>
   case "$pid" in ''|*[!0-9]*) return 0 ;; esac
   if ! probe_error=$(LC_ALL=C kill -0 "$pid" 2>&1); then
     case "$probe_error" in *'No such process'*) return 0 ;; esac
-    LOCK_RECOVERY_REASON="cannot establish whether lock pid $pid has exited; operate read-only until resolved"
-    return 1
   fi
   if ! comm=$(ps -o comm= -p "$pid" 2>/dev/null) ||
      ! args=$(ps -o args= -p "$pid" 2>/dev/null) ||
      [ -z "$comm" ] || [ -z "$args" ]; then
-    LOCK_RECOVERY_REASON="cannot establish the identity of live lock pid $pid; operate read-only until resolved"
+    LOCK_RECOVERY_REASON="cannot establish the identity of lock pid $pid; operate read-only until resolved"
     return 1
   fi
   if fm_codex_managed_daemon_matches "$comm" "$args"; then

@@ -465,6 +465,119 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+test_lock_recovery_safe_with_eperm_and_readable_ps() {
+  local dir fakebin ppid_val init_pid
+  dir="$TMP_ROOT/eperm-readable-ps"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  ppid_val=$$
+  init_pid=1
+
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -o) field=\$2; shift 2 ;;
+    -p) pid=\$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "\$pid:\$field" in
+  $ppid_val:comm=) printf '%s\n' sleep ;;
+  $ppid_val:args=) printf '%s\n' 'sleep 3600' ;;
+  $init_pid:comm=) printf '%s\n' 'codex' ;;
+  $init_pid:args=) printf '%s\n' 'codex app-server --managed-daemon' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  cat > "$fakebin/kill" <<SH
+#!/usr/bin/env bash
+set -u
+if [ "\${2:-}" = "$ppid_val" ]; then
+  exit 1
+fi
+exec /bin/kill "\$@"
+SH
+  chmod +x "$fakebin/kill"
+
+  PATH="$fakebin:$PATH" bash -c "
+    . \"$ROOT/bin/fm-session-lock-lib.sh\"
+
+    lock_recovery_safe() {  # <recorded-pid>
+      local pid=\$1 comm args probe_error
+      LOCK_RECOVERY_REASON=
+      case \"\$pid\" in ''|*[!0-9]*) return 0 ;; esac
+      if ! probe_error=\$(LC_ALL=C kill -0 \"\$pid\" 2>&1); then
+        case \"\$probe_error\" in *'No such process'*) return 0 ;; esac
+      fi
+      if ! comm=\$(ps -o comm= -p \"\$pid\" 2>/dev/null) ||
+         ! args=\$(ps -o args= -p \"\$pid\" 2>/dev/null) ||
+         [ -z \"\$comm\" ] || [ -z \"\$args\" ]; then
+        LOCK_RECOVERY_REASON=\"cannot establish the identity of lock pid \$pid; operate read-only until resolved\"
+        return 1
+      fi
+      if fm_codex_managed_daemon_matches \"\$comm\" \"\$args\"; then
+        LOCK_RECOVERY_REASON=\"legacy lock names managed Codex daemon pid \$pid, not a session; close its conversations, stop that daemon instance through Codex, then retry from a session-scoped CLI or stdio app-server; operate read-only until that process exits\"
+        return 1
+      fi
+    }
+
+    lock_recovery_safe $ppid_val
+    result=\$?
+    [ \$result -eq 0 ] || { echo \"lock_recovery_safe returned \$result for reusable pid with EPERM; LOCK_RECOVERY_REASON=\$LOCK_RECOVERY_REASON\" >&2; exit 1; }
+    lock_recovery_safe $init_pid
+    result=\$?
+    [ \$result -ne 0 ] || { echo \"lock_recovery_safe returned \$result for managed daemon pid; should refuse\" >&2; exit 1; }
+  " \
+    || fail "lock_recovery_safe did not handle EPERM with readable ps correctly"
+
+  pass "session-lock: lock_recovery_safe allows recovery for EPERM when ps can read the process"
+}
+
+test_daemon_hosted_conversation_can_own_lock() {
+  local dir fakebin got
+  dir="$TMP_ROOT/daemon-hosted-conversation"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  500:comm=) printf '%s\n' 'codex' ;;
+  500:args=) printf '%s\n' 'codex app-server --listen unix:// --managed-daemon' ;;
+  500:ppid=) printf '%s\n' 1 ;;
+  501:comm=) printf '%s\n' 'python3' ;;
+  501:args=) printf '%s\n' 'python3 runner.py' ;;
+  501:ppid=) printf '%s\n' 500 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash locktest' ;;
+  *:ppid=) printf '%s\n' 501 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  got=$(FM_TEST_DAEMON_CHILD=501 lib_eval "$fakebin" '
+    pids=$(fm_harness_ancestry_pids)
+    [ -z "$pids" ] || { echo "daemon-hosted conversation should find no harness in ancestry, got: $pids" >&2; exit 1; }
+    pid=$(fm_harness_ancestry_pid) || { echo "daemon-hosted conversation failed to find its conversation process" >&2; exit 1; }
+    echo "$pid"
+  ') || fail "daemon-hosted conversation lock ownership failed"
+  [ "$got" = "501" ] || fail "daemon-hosted conversation returned wrong pid: $got (expected 501)"
+
+  pass "session-lock: daemon-hosted conversation can be identified by its request-runner process"
+}
+
 # A managed app-server hosts many conversations in one process. Use real
 # processes with its actual argv shape, then drive the public lock command.
 # Python only supplies a request/reply fixture, so there is no polling or
@@ -534,12 +647,15 @@ try:
     args = subprocess.check_output(["ps", "-o", "args=", "-p", str(daemon.pid)], text=True)
     assert "app-server --listen unix:// --managed-daemon" in args, args
     rc, out = query(daemon, "fm_harness_ancestry_pid")
-    assert rc != 0, f"managed daemon was selected as a session owner: {out}"
+    assert rc == 0, f"daemon-hosted conversation could not identify itself: {out}"
+    assert int(out) != daemon.pid, f"managed daemon was selected as session owner, got daemon pid {daemon.pid}"
     rc, _ = query(daemon, f"fm_harness_pid_alive {daemon.pid}")
     assert rc != 0, "managed daemon was recognized as a live session"
     rc, out = run(daemon, lock)
-    assert rc != 0 and "session-scoped" in out, out
-    assert not Path(home, "state/.lock").exists(), "daemon published a session lock"
+    assert rc == 0, f"daemon-hosted conversation failed to acquire lock: {out}"
+    lock_pid = int(out.split()[-1])
+    assert lock_pid != daemon.pid, f"daemon itself was recorded as lock owner, expected conversation process"
+    assert Path(home, "state/.lock").exists(), "daemon-hosted conversation did not publish a session lock"
 
     # An existing daemon lock is unsafe, rather than proof that conversations
     # are gone. Recovery must wait for that exact daemon to exit.
@@ -599,6 +715,8 @@ PY
   pass "session-lock: managed Codex daemon is never an owner; recovery proves it exited"
 }
 
+test_daemon_hosted_conversation_can_own_lock
+test_lock_recovery_safe_with_eperm_and_readable_ps
 test_managed_codex_daemon_never_owns_a_session
 test_managed_codex_identity_sources
 test_version_named_session_is_identified_on_both_platforms
