@@ -12,6 +12,19 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-afk-return-tests)
+DAEMON_PIDS=""
+cleanup_daemons() {
+  local pid file
+  for pid in $DAEMON_PIDS; do
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  for file in "$TMP_ROOT"/backoff-*/sleep.pid; do
+    [ -f "$file" ] || continue
+    kill "$(cat "$file")" 2>/dev/null || true
+  done
+}
+fm_test_exit_trap cleanup_daemons
 
 install_runner() {  # <case-dir>
   local dir=$1
@@ -275,9 +288,81 @@ test_check_retries_recorded_terminal_teardown() {
   pass "check retries recorded terminal teardown and keeps catch-up gated until success"
 }
 
+test_return_interrupts_real_daemon_backoff() {
+  local mode dir fakebin pid out rc sleeper
+  for mode in target-gone crash; do
+    dir="$TMP_ROOT/backoff-$mode"
+    install_runner "$dir"
+    fakebin=$(fm_fakebin "$dir")
+    # No credential store or real backend is reachable from this fixture.
+    fm_fake_exit0 "$fakebin" security op
+    cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  30|60) printf '%s\n' "$$" > "$TEST_DIR/sleep.pid" ;;
+esac
+exec /bin/sleep "$@"
+SH
+    chmod +x "$fakebin/sleep"
+    cat > "$dir/bin/fm-afk-launch.sh" <<'SH'
+#!/usr/bin/env bash
+exec "$TEST_ROOT/bin/fm-afk-launch.sh" "$@"
+SH
+    cat > "$dir/bin/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+touch "$FM_HOME/state/.last-watcher-beat"
+exit 1
+SH
+    chmod +x "$dir/bin/fm-watch.sh"
+    date +%s > "$dir/home/state/.afk"
+    PATH="$fakebin:$PATH" TEST_DIR="$dir" TEST_MODE="$mode" \
+      FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
+      FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=synthetic:supervisor \
+      FM_CRASH_NORMAL_SLEEP=60 FM_WEDGE_ALARM_EXEC=discard \
+      bash -c '
+        . "$1/bin/fm-supervise-daemon.sh"
+        FM_DAEMON_DIR="$2/bin"
+        target_checks=0
+        fm_backend_target_exists() {
+          target_checks=$((target_checks + 1))
+          [ "$TEST_MODE" = crash ] || [ "$target_checks" -eq 1 ]
+        }
+        housekeeping() { :; }
+        fm_super_main
+      ' _ "$ROOT" "$dir" > "$dir/daemon.out" 2>&1 &
+    pid=$!
+    DAEMON_PIDS="$DAEMON_PIDS $pid"
+    # Bounded readiness check, not a delay assumption: stop only once the
+    # real daemon has entered the production 30s/60s backoff sleep.
+    for _ in $(seq 1 100); do
+      [ ! -s "$dir/sleep.pid" ] || break
+      /bin/sleep 0.1
+    done
+    [ -s "$dir/sleep.pid" ] || fail "$mode daemon did not reach backoff: $(cat "$dir/daemon.out")"
+    sleeper=$(cat "$dir/sleep.pid")
+    if [ "$mode" = target-gone ]; then
+      grep -F 'gone; backing off 30s' "$dir/home/state/.supervise-daemon.log" >/dev/null \
+        || fail "fixture did not reproduce the target-gone loop"
+    fi
+    rc=0
+    out=$(PATH="$fakebin:$PATH" TEST_DIR="$dir" TEST_ROOT="$ROOT" run_return "$dir" begin) || rc=$?
+    [ "$rc" -eq 0 ] || fail "$mode clean shutdown reported failure (rc=$rc): $out"
+    wait "$pid" || fail "$mode daemon did not exit cleanly"
+    DAEMON_PIDS=""
+    kill -0 "$sleeper" 2>/dev/null && fail "$mode shutdown leaked its backoff sleep"
+    rm "$dir/sleep.pid"
+    [ ! -e "$dir/home/state/.supervise-daemon.lock" ] || fail "$mode shutdown left daemon lock"
+    [ ! -e "$dir/home/state/.afk" ] || fail "$mode shutdown left away mode active"
+    [ ! -e "$dir/home/state/.afk-return-catchup" ] || fail "$mode clean shutdown left catch-up gated"
+    assert_contains "$out" 'catch-up clear' "$mode return did not finish"
+  done
+  pass "AFK return interrupts real daemon target-gone and crash backoffs without a false shutdown failure"
+}
+
 test_return_gate_orders_catchup_before_bearings
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_evidence_publication_failure_preserves_wake_for_redrain
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown
+test_return_interrupts_real_daemon_backoff

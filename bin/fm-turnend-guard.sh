@@ -204,7 +204,7 @@ block_stop() {
     printf '●%s\n' "$rule"
     printf '●  TURN WOULD END BLIND - SUPERVISION IS OFF\n'
     if [ "$AFK_ORPHANED" -eq 1 ]; then
-      printf '●  AWAY MODE IS FLAGGED WITH NO LIVE SUPERVISION DAEMON: %s\n' "$FM_AFK_HEALTH_DETAIL"
+      printf '●  AWAY MODE IS FLAGGED WITHOUT HEALTHY SUPERVISION: %s\n' "$FM_AFK_HEALTH_DETAIL"
       printf '●  Every other supervision path stands down for that flag, so nothing is watching this home.\n'
       printf '●  %s\n' "$FM_AFK_ORPHAN_REPAIR"
     elif [ "$FM_SUP_IN_FLIGHT" -gt 0 ]; then

@@ -575,7 +575,30 @@ Deterministic entry points:
 ```sh
 tests/fm-afk-health.test.sh
 tests/fm-afk-launch.test.sh
+tests/fm-afk-return.test.sh
 ```
+
+**Watcher progress and interruptible shutdown.**
+Verified 2026-11-05 on macOS 15.7.5 arm64 with Bash 5.3.9 and Herdr 0.8.2 (protocol 20).
+The health contract and grace settings are owned by `bin/fm-afk-health.sh`'s header.
+The portable health and return regressions exercise independent daemon liveness and watcher progress, plus the real daemon's 30s target-gone and 60s crash backoffs through the return gate.
+
+```sh
+bash tests/fm-afk-health.test.sh
+bash tests/fm-afk-return.test.sh
+```
+
+Selected exact successful output:
+
+```text
+ok - fm-afk-health: a live daemon cannot hide stale, missing, unreadable or future watcher progress
+ok - fm-afk-health: daemon restart gets a bounded watcher startup grace even with an old away flag
+ok - AFK return interrupts real daemon target-gone and crash backoffs without a false shutdown failure
+```
+
+A real isolated Herdr session, provisioned and stopped only through `bin/fm-herdr-lab.sh`, also exercised the target-gone path with a fixture watcher and aged beat/lock mtimes.
+Health changed from `healthy` to `orphaned` with the daemon still alive, and `bin/fm-afk-return.sh begin` completed in 5s during its 30s backoff.
+The helper's teardown verified its default-session fleet-state tripwire unchanged.
 
 ## Wedge-alarm channels
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# fm-afk-health.sh - the single owner of "does away mode actually have a live
-# supervision daemon?".
+# fm-afk-health.sh - the single owner of "does away mode have healthy
+# supervision?".
 #
 # Away mode is two separate things that can come apart: the durable flag
 # state/.afk, which tells every other supervision path to stand down because
@@ -10,22 +10,31 @@
 # worst reachable state, and historically a silent one.
 #
 # This check answers from disk only: the flag's own recorded epoch and the
-# daemon's identity-backed lock (bin/fm-afk-daemon-lock-lib.sh). It never talks
+# daemon's identity-backed lock (bin/fm-afk-daemon-lock-lib.sh), and the watcher's
+# .last-watcher-beat mtime. It never talks
 # to the daemon, so a dead daemon cannot suppress its own diagnosis.
 #
 # Verdicts:
 #   off       state/.afk absent. Away mode is not active.
-#   healthy   flag present, a live identity-matched daemon holds the lock.
+#   healthy   flag present, a live identity-matched daemon holds the lock and
+#             the watcher has a recent beat.
 #   starting  flag present and no daemon lock: the daemon has not taken over
 #             yet, and the flag is younger than the start grace. This is the
 #             legitimate window between entering away mode and the daemon
-#             taking over.
+#             taking over. A newly locked live daemon also gets this window
+#             to produce its first recent watcher beat, measured from lock/pid.
 #   orphaned  flag present with no live daemon: either a daemon lock is
 #             present but not held by a live identity-matched daemon (the
 #             daemon started and then died), or no lock exists and the flag is
 #             older than the start grace. THE BROKEN STATE: supervision is off
 #             and every other path is still standing down for a daemon that is
-#             gone.
+#             gone. A live daemon with no recent watcher beat after its own
+#             startup window is also orphaned: process liveness is insufficient.
+#
+# Watcher grace: 300 seconds, inclusive (matching FM_GUARD_GRACE).
+# Missing, unreadable or future-dated beats do not establish watcher progress.
+# This bounds detection of target-gone loops and watcher stalls without querying
+# a runtime backend; a fresh beat restores health automatically.
 #
 # Start grace: FM_AFK_START_GRACE, default 300 seconds. It bounds the two real
 # entry paths, both measured on 2026-09-22 (docs/verification/supervision.md
@@ -117,7 +126,7 @@ fm_afk_health_mtime() {  # <path>
 # Always returns 0: the verdict is the answer, and an unreadable home must not
 # be mistaken for a healthy one by a caller that only checks the status.
 fm_afk_health() {  # <state-dir>
-  local state=$1 grace age pid
+  local state=$1 grace age pid now stamp owner watcher_grace=300
   FM_AFK_HEALTH_VERDICT=off
   FM_AFK_HEALTH_PID=
   FM_AFK_HEALTH_DETAIL='away mode is not active.'
@@ -126,10 +135,34 @@ fm_afk_health() {  # <state-dir>
 
   if fm_afk_daemon_lock_live "$state"; then
     pid=$(fm_afk_daemon_lock_pid "$state" 2>/dev/null) || pid=
+    now=$(date '+%s') || now=
+    stamp=
+    if [ -f "$state/.last-watcher-beat" ]; then
+      stamp=$(fm_afk_health_mtime "$state/.last-watcher-beat") || stamp=
+    fi
+    case "$stamp" in ''|*[!0-9]*) stamp= ;; esac
+    if [ -z "$now" ] || [ -z "$stamp" ] || [ "$stamp" -gt "$now" ] || [ "$((now - stamp))" -gt "$watcher_grace" ]; then
+      # A daemon restart needs its own bounded window even when .afk and the
+      # previous watcher's beat are old. Flag refreshes cannot extend it.
+      stamp=
+      if owner=$(fm_afk_daemon_lock_owner "$state"); then
+        stamp=$(fm_afk_health_mtime "$owner/pid") || stamp=
+      fi
+      case "$stamp" in ''|*[!0-9]*) stamp= ;; esac
+      grace=$(fm_afk_start_grace)
+      if [ -n "$now" ] && [ -n "$stamp" ] && [ "$stamp" -le "$now" ] && [ "$((now - stamp))" -le "$grace" ]; then
+        FM_AFK_HEALTH_VERDICT=starting
+        FM_AFK_HEALTH_DETAIL="away-mode daemon (pid ${pid:-unknown}) is alive but has no recent watcher beat yet (daemon start grace ${grace}s)."
+      else
+        FM_AFK_HEALTH_VERDICT=orphaned
+        FM_AFK_HEALTH_DETAIL="away-mode daemon (pid ${pid:-unknown}) is alive but its watcher beat is stale, missing or unreadable (watcher grace ${watcher_grace}s), so supervision progress is not established."
+      fi
+      return 0
+    fi
     FM_AFK_HEALTH_VERDICT=healthy
     # shellcheck disable=SC2034 # Output global consumed by sourcing caller bin/fm-session-start.sh (AFK digest).
     FM_AFK_HEALTH_PID=$pid
-    FM_AFK_HEALTH_DETAIL="away mode is active and its supervision daemon (pid ${pid:-unknown}) is alive."
+    FM_AFK_HEALTH_DETAIL="away mode is active and its supervision daemon (pid ${pid:-unknown}) is alive with a recent watcher beat."
     return 0
   fi
 
@@ -161,8 +194,8 @@ fm_afk_health() {  # <state-dir>
 
 # fm_afk_owns_supervision <state-dir>
 # True exactly when standing down for the away daemon is still correct: it is
-# alive, or it is within the measured window in which it is expected to come
-# up. An orphaned away mode returns false, so a caller that used to treat the
+# alive with watcher progress, or within its bounded startup window.
+# An orphaned away mode returns false, so a caller that used to treat the
 # flag's mere presence as "handled" now keeps supervising.
 fm_afk_owns_supervision() {  # <state-dir>
   fm_afk_health "$1"
@@ -174,10 +207,10 @@ fm_afk_owns_supervision() {  # <state-dir>
 
 # The exact repair the captain's session should take, as one line. Kept here so
 # the session digest, the turn-end guards and the skill quote one wording.
-FM_AFK_ORPHAN_REPAIR='Restart away-mode supervision with the /afk skill, or leave away mode with bin/fm-afk-launch.sh stop, and confirm the result with bin/fm-afk-health.sh.'
+FM_AFK_ORPHAN_REPAIR='If the daemon is still running, stop it with bin/fm-afk-launch.sh stop and then start again with the /afk skill. Otherwise, leave away mode with bin/fm-afk-launch.sh stop and confirm the result with bin/fm-afk-health.sh.'
 
 fm_afk_health_usage() {
-  sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 fm_afk_health_main() {
