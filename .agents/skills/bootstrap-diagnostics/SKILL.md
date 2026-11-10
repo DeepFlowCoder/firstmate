@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, UPSTREAM_ANCESTRY, GNHF_RECONCILE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, CAPACITY, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, UPSTREAM_ANCESTRY, GNHF_RECONCILE, DONE_RECONCILE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, CAPACITY, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -37,6 +37,10 @@ When any diagnostic needs captain attention, report the plain consequence and re
   This line appears only on a positive lost reading; a state the check could not read stays silent, and an absent line never means the record is healthy.
 - `GNHF_RECONCILE: <id> is queued in the book, but published branch <branch> in <repo> names it - <commit subject>` - a published branch from an overnight `gnhf` run, which works outside the fleet lifecycle, names a task the backlog still lists as queued, so dispatching that task now may pay twice for it.
   Reconcile before dispatching anything from the queue: read the named branch, decide whether what is there is what the task asked for, and then close, re-scope, or leave the task open yourself.
+- `DONE_RECONCILE: <id> is <queued|in_flight> in the book, but its worker's last status line is "done: <note>"` - a worker's own status log ends in `done:` while the backlog still lists its task open, so reading the book alone will tell the captain finished work is pending.
+  Read the worker's record with `bin/fm-crew-state.sh <id>` and its report, never the book, before saying anything about that task to the captain.
+  An investigation closes only after the `captain-hold-lifecycle` inventory of the calls its report leaves the captain, never in bulk; a ship closes through its own landing path.
+  The line never closes anything, and `bin/fm-done-reconcile.sh` owns what counts as finished.
   Nothing is reconciled for you, deliberately - the guard only ever reports, because whether published work actually satisfies a task is a judgement, and the branch may hold a partial or abandoned attempt.
   Read the line as exactly what it says: the branch NAMES the task, which is the whole of the evidence, and not that it did the work.
   Naming can come from something other than a claim, because a subject naming a file such as `bin/fm-tablero.sh` yields the token `fm-tablero`, so the quoted commit subject is a pointer to go and read the branch, never proof the task is done.
