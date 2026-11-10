@@ -1262,17 +1262,16 @@ import time
 from pathlib import Path
 
 runner, tmp = sys.argv[1], Path(sys.argv[2])
-release = tmp / "release"
 fixture = tmp / "runner-kill.test.sh"
 fixture.write_text('''#!/usr/bin/env bash
 echo 'started'
-while [ ! -f "$RELEASE" ]; do sleep 0.05; done
-echo 'continuing'
 sleep 30
 ''')
 start_time = time.monotonic()
-proc = subprocess.Popen([runner, str(fixture)], env=dict(os.environ, RELEASE=str(release)),
+proc = subprocess.Popen([runner, str(fixture)], env=dict(os.environ, TMPDIR=str(tmp)),
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+import fcntl
+fcntl.fcntl(proc.stdout, fcntl.F_SETFL, os.O_NONBLOCK)
 try:
     try:
         output = b""
@@ -1280,12 +1279,12 @@ try:
         while b"started\n" not in output:
             remaining = deadline - time.monotonic()
             assert remaining > 0, "fixture never started"
-            time.sleep(0.01)
             try:
                 chunk = os.read(proc.stdout.fileno(), 1024)
                 if chunk:
                     output += chunk
             except BlockingIOError:
+                time.sleep(0.01)
                 continue
         assert proc.poll() is None, "runner exited before fixture started"
         assert b"started\n" in output, output
@@ -1298,12 +1297,12 @@ try:
         assert elapsed < 10, f"runner took {elapsed}s to finish after kill, likely hung waiting for follower"
         assert proc.returncode != 0, "killed runner should not succeed"
 finally:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    proc.communicate()
+        proc.communicate()
 PY
   pass "follower exits when runner process is killed and releases the pipe"
 }
@@ -1668,6 +1667,7 @@ test_jobs_admits_a_concurrent_safe_family
 test_concurrent_runs_are_ordered_longest_first
 test_serial_output_does_not_wait_for_orphan_eof
 test_serial_output_streams_and_drains_bytes
+test_follower_exits_when_runner_is_killed
 test_per_script_timeout_bounds_a_hang
 test_max_wall_ms_is_a_result_not_advice
 test_jobs_parallel_scheduler_and_failure_propagation
