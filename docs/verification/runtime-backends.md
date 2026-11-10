@@ -21,8 +21,8 @@ FM_TEARDOWN_GUARD_DONE=1 bin/fm-test-run.sh tests/fm-teardown.test.sh tests/fm-s
 
 The stale-record regression publishes both task branches to a temporary bare repository and gives both task records the same physical copy.
 Its return stub performs a real hard reset, so the pre-fix failure proves live content is lost rather than merely observing a cleanup command.
-The allocation regression additionally exercises a detached copy, path aliases, forced cleanup, malformed or symlinked ownership authority, a contended occupancy lock held by teardown (non-blocking try-acquire), and spawn's wait path with briefly-held and expired deadlines.
-Verified on 2026-11-05 with Git 2.54.0 and Bash 5.3.9 on macOS; the three suites passed, including these observations:
+The allocation regression additionally exercises a detached copy, path aliases, forced cleanup, malformed or symlinked ownership authority, a contended occupancy lock held by teardown (non-blocking try-acquire), and spawn's wait path with briefly-held (3s lock, 10s deadline) and expired deadlines (1s deadline held indefinitely).
+Verified with Git 2.54.0 and Bash 5.3.9 on macOS; the three suites passed, including these observations:
 
 ```text
 ok - recycled worktree: published stale task refuses naming occupant; true owner cleans up

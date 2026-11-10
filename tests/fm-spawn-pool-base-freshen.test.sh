@@ -429,7 +429,7 @@ test_stale_pin_beside_other_dirt_reports_one_verdict() {
 }
 
 test_spawn_waits_for_briefly_held_occupancy_lock() {
-  local rec id out status record lock_holder lock_pid
+  local rec id out status record lock_holder
   id='spawn-occupancy-wait-brief'
   rec=$(make_case occupancy-wait-brief "$id")
   read_case_record "$rec"
@@ -440,14 +440,14 @@ test_spawn_waits_for_briefly_held_occupancy_lock() {
   printf '%s\n' "$$" > "$record.lock/pid"
 
   (
-    sleep 0.5
+    sleep 3
     rm "$record.lock/pid"
     rmdir "$record.lock"
   ) &
   lock_holder=$!
 
   status=0
-  out=$(FM_WORKTREE_OWNER_WAIT_DEADLINE=2 run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || status=$?
+  out=$(FM_WORKTREE_OWNER_WAIT_DEADLINE=10 run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || status=$?
   wait "$lock_holder" 2>/dev/null || true
 
   expect_code 0 "$status" "spawn should wait and succeed when lock is released before deadline: $out"
@@ -456,7 +456,7 @@ test_spawn_waits_for_briefly_held_occupancy_lock() {
 }
 
 test_spawn_refuses_after_occupancy_lock_deadline() {
-  local rec id out status record lock_holder lock_pid
+  local rec id out status record lock_holder
   id='spawn-occupancy-wait-deadline'
   rec=$(make_case occupancy-wait-deadline "$id")
   read_case_record "$rec"
@@ -467,15 +467,16 @@ test_spawn_refuses_after_occupancy_lock_deadline() {
   printf '%s\n' "$$" > "$record.lock/pid"
 
   (
-    sleep 3
-    rm "$record.lock/pid" 2>/dev/null || true
-    rmdir "$record.lock" 2>/dev/null || true
+    while [ -e "$record.lock/pid" ]; do sleep 0.1; done
   ) &
   lock_holder=$!
 
   status=0
   out=$(FM_WORKTREE_OWNER_WAIT_DEADLINE=1 run_spawn "$id" --mode no-mistakes --yolo off 2>&1) || status=$?
+
+  rm "$record.lock/pid" 2>/dev/null || true
   wait "$lock_holder" 2>/dev/null || true
+  rmdir "$record.lock" 2>/dev/null || true
 
   [ "$status" -ne 0 ] || fail "spawn should fail when deadline is exceeded"
   assert_contains "$out" "cannot acquire after bounded wait" "spawn did not report deadline exceeded"
