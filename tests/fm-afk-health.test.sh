@@ -142,30 +142,6 @@ test_live_daemon_watcher_start_grace() {
   pass "fm-afk-health: daemon restart gets a bounded watcher startup grace even with an old away flag"
 }
 
-test_watcher_grace_boundary_and_configuration() {
-  local dir stamp age setting out expected
-  dir=$(make_home "$TMP_ROOT/v-watcher-grace")
-  enter_away_mode "$dir" 4000
-  start_fake_daemon "$dir" >/dev/null
-  touch -t 202001010000 "$dir/state/.supervise-daemon.lock/pid" "$dir/state/.last-watcher-beat"
-  stamp=$(bash -c '. "$1"; fm_afk_health_mtime "$2"' _ \
-    "$dir/bin/fm-afk-health.sh" "$dir/state/.last-watcher-beat")
-  for age in 300 301; do
-    for setting in 300 301 invalid; do
-      expected=healthy
-      if [ "$age" = 301 ] && [ "$setting" != 301 ]; then expected=orphaned; fi
-      out=$(FM_AFK_WATCHER_GRACE="$setting" TEST_NOW="$((stamp + age))" bash -c '
-        . "$1"
-        date() { printf "%s\n" "$TEST_NOW"; }
-        fm_afk_health "$2"
-        printf "%s\n" "$FM_AFK_HEALTH_VERDICT"
-      ' _ "$dir/bin/fm-afk-health.sh" "$dir/state")
-      [ "$out" = "$expected" ] || fail "watcher age=$age grace=$setting: expected $expected, got $out"
-    done
-  done
-  pass "fm-afk-health: watcher grace is inclusive, configurable, and defaults on invalid input"
-}
-
 test_verdict_off_without_flag() {
   local dir
   dir=$(make_home "$TMP_ROOT/v-off")
@@ -536,7 +512,6 @@ test_autoarm_stands_down_inside_the_start_window() {
 test_verdict_off_without_flag
 test_live_daemon_requires_watcher_progress
 test_live_daemon_watcher_start_grace
-test_watcher_grace_boundary_and_configuration
 test_verdict_healthy_with_live_daemon
 test_verdict_orphaned_flag_outlived_daemon
 test_verdict_starting_inside_the_measured_window

@@ -31,7 +31,7 @@
 #             gone. A live daemon with no recent watcher beat after its own
 #             startup window is also orphaned: process liveness is insufficient.
 #
-# Watcher grace: FM_AFK_WATCHER_GRACE, default 300 seconds, inclusive.
+# Watcher grace: 300 seconds, inclusive (matching FM_GUARD_GRACE).
 # Missing, unreadable or future-dated beats do not establish watcher progress.
 # This bounds detection of target-gone loops and watcher stalls without querying
 # a runtime backend; a fresh beat restores health automatically.
@@ -66,7 +66,6 @@ fi
 . "$FM_AFK_HEALTH_DIR/fm-afk-daemon-lock-lib.sh"
 
 FM_AFK_START_GRACE_DEFAULT=300
-FM_AFK_WATCHER_GRACE_DEFAULT=300
 
 fm_afk_start_grace() {
   local grace=${FM_AFK_START_GRACE:-$FM_AFK_START_GRACE_DEFAULT}
@@ -127,7 +126,7 @@ fm_afk_health_mtime() {  # <path>
 # Always returns 0: the verdict is the answer, and an unreadable home must not
 # be mistaken for a healthy one by a caller that only checks the status.
 fm_afk_health() {  # <state-dir>
-  local state=$1 grace age pid now stamp owner watcher_grace
+  local state=$1 grace age pid now stamp owner watcher_grace=300
   FM_AFK_HEALTH_VERDICT=off
   FM_AFK_HEALTH_PID=
   FM_AFK_HEALTH_DETAIL='away mode is not active.'
@@ -136,10 +135,6 @@ fm_afk_health() {  # <state-dir>
 
   if fm_afk_daemon_lock_live "$state"; then
     pid=$(fm_afk_daemon_lock_pid "$state" 2>/dev/null) || pid=
-    watcher_grace=${FM_AFK_WATCHER_GRACE:-$FM_AFK_WATCHER_GRACE_DEFAULT}
-    case "$watcher_grace" in
-      ''|*[!0-9]*) watcher_grace=$FM_AFK_WATCHER_GRACE_DEFAULT ;;
-    esac
     now=$(date '+%s') || now=
     stamp=
     if [ -f "$state/.last-watcher-beat" ]; then
@@ -212,7 +207,7 @@ fm_afk_owns_supervision() {  # <state-dir>
 
 # The exact repair the captain's session should take, as one line. Kept here so
 # the session digest, the turn-end guards and the skill quote one wording.
-FM_AFK_ORPHAN_REPAIR='If the daemon is still running, stop it with bin/fm-afk-launch.sh stop first. Then restart away-mode supervision with the /afk skill, or leave away mode and confirm the result with bin/fm-afk-health.sh.'
+FM_AFK_ORPHAN_REPAIR='If the daemon is still running, stop it with bin/fm-afk-launch.sh stop and then start again with the /afk skill. Otherwise, leave away mode with bin/fm-afk-launch.sh stop and confirm the result with bin/fm-afk-health.sh.'
 
 fm_afk_health_usage() {
   sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
