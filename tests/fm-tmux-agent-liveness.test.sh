@@ -24,6 +24,8 @@ pass() { printf 'ok - %s\n' "$1"; }
 
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 SLEEP_BIN=$(command -v sleep) || { echo "skip: sleep not found"; exit 0; }
+CC_BIN=$(command -v cc 2>/dev/null || command -v gcc 2>/dev/null || true)
+[ -n "$CC_BIN" ] || { echo "not ok - a C compiler is required for the liveness process fixtures" >&2; exit 1; }
 
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-liveness-$$"
@@ -47,24 +49,28 @@ chmod +x "$LAB/shim/tmux"
 PATH="$LAB/shim:$PATH"
 export PATH
 
-# Stand-in "harness" binaries. These are SYMLINKS to a real long-running system
-# binary, never copies: a copied platform binary fails code-signing validation
-# and is killed on macOS arm64. The symlink name is what the kernel records as
-# the executable identity, which is exactly the signal under test.
-ln -s "$SLEEP_BIN" "$LAB/bin/claude-link"
-ln -s "$SLEEP_BIN" "$LAB/bin/pi"
-ln -s "$SLEEP_BIN" "$LAB/bin/notaharness"
+# Stand-in "harness" binaries use our own long-running native executable.
+# System sleep may be a multicall binary (Ubuntu 26.04's uutils, or GNU
+# coreutils) that rejects a harness-named argv[0] and exits before the probe.
+# Compile locally instead of copying a platform binary, which fails code-signing
+# validation on macOS arm64. Symlinks preserve the identities under test.
+printf '%s\n' '#include <unistd.h>' 'int main(void){for(;;)sleep(60);return 0;}' > "$LAB/spin.c"
+"$CC_BIN" -o "$LAB/bin/spin" "$LAB/spin.c" \
+  || fail "could not compile the liveness process fixture"
+ln -s "$LAB/bin/spin" "$LAB/bin/claude-link"
+ln -s "$LAB/bin/spin" "$LAB/bin/pi"
+ln -s "$LAB/bin/spin" "$LAB/bin/notaharness"
 # muse's installed binary is muse-bin-<version>: the launcher execs it, so the
 # version is the LIVE process name and it changes on every auto-update. Unlike
 # Claude Code's version-named binary there is no `muse` path component to fall
 # back on (~/.local/bin/muse-bin-<version>), so the executable name is the ONLY
 # signal, and `muse` alone is a common English fragment that must not widen into
 # a substring match. The last two names are the decoys that would be misread.
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-bin-0.1.0-R708.1"
-ln -s "$SLEEP_BIN" "$LAB/bin/musescore"
-ln -s "$SLEEP_BIN" "$LAB/bin/amuse"
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-binary"
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-bind"
+ln -s "$LAB/bin/spin" "$LAB/bin/muse-bin-0.1.0-R708.1"
+ln -s "$LAB/bin/spin" "$LAB/bin/musescore"
+ln -s "$LAB/bin/spin" "$LAB/bin/amuse"
+ln -s "$LAB/bin/spin" "$LAB/bin/muse-binary"
+ln -s "$LAB/bin/spin" "$LAB/bin/muse-bind"
 
 # A launcher whose own process identity is a bare shell, running the harness as
 # a child in the same foreground process group - the shape the real Pi Launcher
@@ -177,13 +183,10 @@ pass "tmux liveness: unrelated muse-containing command names stay ambiguous"
 # Claude Code 2.1.220 reports drives the two sources apart on both supported
 # platforms and proves the surviving source carries the verdict. This needs a
 # real executable file rather than a symlink, because macOS takes the title
-# from the resolved target's name, so it is skipped where no C compiler exists.
+# from the resolved target's name.
 
-CC_BIN=$(command -v cc 2>/dev/null || command -v gcc 2>/dev/null || true)
-if [ -n "$CC_BIN" ] &&
-  printf '%s\n' '#include <unistd.h>' 'int main(void){for(;;)sleep(60);return 0;}' > "$LAB/spin.c" &&
-  "$CC_BIN" -o "$LAB/bin/claude/2.1.220" "$LAB/spin.c" 2>/dev/null &&
-  "$CC_BIN" -o "$LAB/bin/decoy/2.1.220" "$LAB/spin.c" 2>/dev/null; then
+if "$CC_BIN" -o "$LAB/bin/claude/2.1.220" "$LAB/spin.c" &&
+  "$CC_BIN" -o "$LAB/bin/decoy/2.1.220" "$LAB/spin.c"; then
   new_window titled "$LAB/bin/claude/2.1.220"
   wait_for_state "$SESSION:titled" alive \
     || fail "a version-named executable under a harness install path must classify alive"
@@ -195,7 +198,7 @@ if [ -n "$CC_BIN" ] &&
     || fail "a version-named executable without a whole harness path component must stay ambiguous"
   pass "tmux liveness: a version-named executable under a decoy path stays ambiguous"
 else
-  echo "skip: no C compiler, so the version-string process-name case cannot build its executable"
+  fail "could not compile the version-string process-name fixtures"
 fi
 
 # --- neither source names a harness: no invented agent ----------------------
@@ -268,8 +271,8 @@ pass "tmux liveness: an absent window classifies missing rather than inheriting 
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$ROOT/bin/fm-tmux-lib.sh"
 
-ln -s "$SLEEP_BIN" "$LAB/bin/cursor-agent"
-ln -s "$SLEEP_BIN" "$LAB/bin/notcursor"
+ln -s "$LAB/bin/spin" "$LAB/bin/cursor-agent"
+ln -s "$LAB/bin/spin" "$LAB/bin/notcursor"
 
 # Cursor's real screen shape: a BARE composer row carrying its U+2192 glyph, two
 # footer rows below it, and the terminal cursor left on a blank row past the
