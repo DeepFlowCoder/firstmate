@@ -577,7 +577,6 @@ Selected exact successful output:
 ```text
 ok - fm-afk-health: a live daemon cannot hide stale, missing, unreadable or future watcher progress
 ok - fm-afk-health: daemon restart gets a bounded watcher startup grace even with an old away flag
-ok - fm-afk-health: watcher grace is inclusive, configurable, and defaults on invalid input
 ok - AFK return interrupts real daemon target-gone and crash backoffs without a false shutdown failure
 ```
 
