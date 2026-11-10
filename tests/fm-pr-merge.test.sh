@@ -119,6 +119,7 @@ make_case() {
   # --squash this wrapper has always imposed.
   printf 'false\n' > "$case_dir/github-queue"
   : > "$case_dir/gh.log"
+  : > "$case_dir/gh-axi.log"
   # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
   # stat and simply skips the pr_head lookup via `gh` in that case, so give it
   # one that resolves for cases that want pr_head recorded.
@@ -157,6 +158,18 @@ gh_mock_fitness_prelude() {  # <head-sha>
   cat <<SH
 fm_fitness_answer() {
   case "\$*" in
+    *viewerMergeBodyText*)
+      case_dir=\$(dirname "\$FM_TEST_GH_LOG")
+      [ ! -e "\$case_dir/body-read-fails" ] || exit 1
+      [ ! -e "\$case_dir/body-read-invalid" ] || { printf 'null'; exit 0; }
+      printf 'body\\n'
+      if [ -f "\$case_dir/squash-body" ]; then
+        cat "\$case_dir/squash-body"
+      else
+        printf 'Ordinary squash body'
+      fi
+      printf '.'
+      exit 0 ;;
     *statusCheckRollup*)
       if [ -n "\${FM_TEST_GH_VIEW_FAIL:-}" ]; then
         [ -z "\${FM_TEST_GH_VIEW_STDERR:-}" ] || printf '%s\n' "\${FM_TEST_GH_VIEW_STDERR}" >&2
@@ -200,7 +213,21 @@ add_gh_mocks() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
 case "${1:-} ${2:-}" in
-  "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
+  "pr merge")
+    shift 3
+    body_file="$(dirname "$FM_TEST_GH_AXI_LOG")/merged-body"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --body) printf '%s' "$2" > "$body_file"; shift ;;
+        --body=*) printf '%s' "${1#--body=}" > "$body_file" ;;
+        --body-file) cat "$2" > "$body_file"; shift ;;
+        --body-file=*) cat "${1#--body-file=}" > "$body_file" ;;
+      esac
+      shift
+    done
+    [ -f "$body_file" ] || cp "$(dirname "$FM_TEST_GH_AXI_LOG")/squash-body" "$body_file" 2>/dev/null || true
+    printf 'merged:\n  status: ok\n'
+    ;;
   "pr view")
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
@@ -574,7 +601,7 @@ test_verified_merge_records_pr_and_head() {
     "records-before-merge: pr= was not recorded"
   assert_grep 'pr_head=deadbeefcafefeed0000000000000000deadbeef' "$case_dir/state/task-x1.meta" \
     "records-before-merge: pr_head= was not recorded"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 9 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "records-before-merge: gh-axi pr merge was not invoked with number, --repo, and default --squash"
   pass "fm-pr-merge records pr= and pr_head= for a verified GitHub merge"
 }
@@ -967,7 +994,7 @@ test_github_unreadable_queue_state_is_not_reported_as_no_queue() {
   expect_code 1 "$rc" "github-unreadable-queue-state: an unproved merge must fail"
   # An unreadable queue keeps the merge this wrapper has always attempted, so a
   # read that fails cannot quietly change what a queue-less repository does.
-  grep -qxF 'pr merge 71 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 71 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "github-unreadable-queue-state: an unreadable queue changed the attempted merge"
   assert_grep 'could not be read, so the usual --squash is used' "$case_dir/stderr" \
     "github-unreadable-queue-state: the operator was never told the queue could not be read"
@@ -1007,7 +1034,8 @@ test_github_fallback_view_refusal_says_the_queue_was_unobservable() {
   # check fitness is READ. The fitness gate needs gh for its reading and refuses
   # when it cannot measure (tests/fm-pr-merge.test.sh::test_missing_gh_binary_names_itself
   # owns that refusal), so reaching the execution path on a gh-less host is
-  # exactly what --captain-override-red is for. The override is passed here to
+  # exactly what --captain-override-red is for. Explicit --merge keeps squash
+  # message cleaning out of these outcome tests. The override is passed here to
   # get past the reading, never to weaken it: everything asserted below is
   # upstream's unchanged execution and outcome-verification behavior.
   case_dir=$(make_case github-fallback-unobservable-queue)
@@ -1153,7 +1181,8 @@ test_github_without_gh_still_uses_gh_axi_merge() {
   # check fitness is READ. The fitness gate needs gh for its reading and refuses
   # when it cannot measure (tests/fm-pr-merge.test.sh::test_missing_gh_binary_names_itself
   # owns that refusal), so reaching the execution path on a gh-less host is
-  # exactly what --captain-override-red is for. The override is passed here to
+  # exactly what --captain-override-red is for. Explicit --merge keeps squash
+  # message cleaning out of these outcome tests. The override is passed here to
   # get past the reading, never to weaken it: everything asserted below is
   # upstream's unchanged execution and outcome-verification behavior.
   case_dir=$(make_case github-without-gh)
@@ -1166,13 +1195,13 @@ test_github_without_gh_still_uses_gh_axi_merge() {
 
   set +e
   PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/60 --captain-override-red \
+    https://github.com/example/repo/pull/60 --captain-override-red -- --merge \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 0 "$rc" "github-without-gh: gh-axi can prove a landed merge without gh"
-  assert_grep 'pr merge 60 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  assert_grep 'pr merge 60 --repo example/repo --merge' "$case_dir/gh-axi.log" \
     "github-without-gh: the configured merge abstraction was not invoked"
   assert_grep 'pr view 60 --repo example/repo' "$case_dir/gh-axi.log" \
     "github-without-gh: the gh-axi fallback did not verify the landed state"
@@ -1187,7 +1216,8 @@ test_github_without_gh_failed_read_keeps_bookkeeping() {
   # check fitness is READ. The fitness gate needs gh for its reading and refuses
   # when it cannot measure (tests/fm-pr-merge.test.sh::test_missing_gh_binary_names_itself
   # owns that refusal), so reaching the execution path on a gh-less host is
-  # exactly what --captain-override-red is for. The override is passed here to
+  # exactly what --captain-override-red is for. Explicit --merge keeps squash
+  # message cleaning out of these outcome tests. The override is passed here to
   # get past the reading, never to weaken it: everything asserted below is
   # upstream's unchanged execution and outcome-verification behavior.
   case_dir=$(make_case github-without-gh-read-fails)
@@ -1208,13 +1238,13 @@ SH
 
   set +e
   PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
-    https://github.com/example/repo/pull/61 --captain-override-red \
+    https://github.com/example/repo/pull/61 --captain-override-red -- --merge \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 1 "$rc" "github-without-gh-read-fails: an unreadable outcome must fail"
-  assert_grep 'pr merge 61 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  assert_grep 'pr merge 61 --repo example/repo --merge' "$case_dir/gh-axi.log" \
     "github-without-gh-read-fails: the merge call did not happen before the failed read"
   assert_grep 'could not read the GitHub pull request outcome after the merge attempt' \
     "$case_dir/stderr" "github-without-gh-read-fails: the failed read was not reported"
@@ -1223,6 +1253,40 @@ SH
   assert_present "$case_dir/state/task-x1.check.sh" \
     "github-without-gh-read-fails: a landed merge lost its merge poll"
   pass "fm-pr-merge preserves bookkeeping when gh is absent and the fallback read fails"
+}
+
+test_github_without_gh_default_squash_refuses_with_guidance() {
+  local case_dir ghless_path rc
+  # Without gh the default squash path cannot read viewerMergeBodyText, so it
+  # must refuse before recording anything and name the --body/--body-file
+  # workaround rather than fail as an unexplained missing-gh error.
+  case_dir=$(make_case github-without-gh-squash-refuses)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 4343434343434343434343434343434343434343
+  rm "$case_dir/fakebin/gh"
+  ghless_path="$case_dir/path-without-gh"
+  mirror_path_without "$ghless_path" gh "$case_dir/fakebin"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  PATH="$ghless_path" run_pr_merge "$case_dir" task-x1 \
+    https://github.com/example/repo/pull/62 --captain-override-red \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "github-without-gh-squash-refuses: an unreadable squash body must refuse"
+  assert_grep 'nothing was merged' "$case_dir/stderr" \
+    "github-without-gh-squash-refuses: no refusal diagnostic"
+  assert_grep 'pass --body or --body-file' "$case_dir/stderr" \
+    "github-without-gh-squash-refuses: the refusal named no body workaround"
+  assert_no_grep 'pr=https://' "$case_dir/state/task-x1.meta" \
+    "github-without-gh-squash-refuses: refusal recorded pr="
+  assert_absent "$case_dir/state/task-x1.check.sh" \
+    "github-without-gh-squash-refuses: refusal armed a merge poll"
+  [ ! -s "$case_dir/gh-axi.log" ] \
+    || fail "github-without-gh-squash-refuses: a merge was attempted without a readable body"
+  pass "fm-pr-merge refuses a gh-less default squash and names the body workaround"
 }
 
 test_github_zero_exit_queue_required_refuses_with_a_methodless_retry() {
@@ -1252,7 +1316,7 @@ test_github_zero_exit_queue_required_refuses_with_a_methodless_retry() {
   assert_grep 'isMergeQueueEnabled' "$case_dir/gh.log" \
     "github-zero-exit-queue-required: the queue was never read from the pull request itself"
   grep -qxF 'pr merge 56 --repo example/repo' "$case_dir/gh-axi.log" \
-    || fail "github-zero-exit-queue-required: a merge method was imposed on a queue base"
+    || fail "github-zero-exit-queue-required: a merge method or body was imposed on a queue base"
   [ "$(wc -l < "$case_dir/gh-axi.log" | tr -d '[:space:]')" = 1 ] \
     || fail "github-zero-exit-queue-required: the wrapper attempted more than one merge"
   assert_no_grep --auto "$case_dir/gh-axi.log" \
@@ -1343,7 +1407,7 @@ test_github_queue_base_enqueues_without_imposing_a_method() {
 
   expect_code 0 "$rc" "github-queue-base-enqueues: an enqueued PR is a successful outcome"
   grep -qxF 'pr merge 76 --repo example/repo' "$case_dir/gh-axi.log" \
-    || fail "github-queue-base-enqueues: a merge method was imposed on a queue base"
+    || fail "github-queue-base-enqueues: a merge method or body was imposed on a queue base"
   assert_no_grep --squash "$case_dir/gh-axi.log" \
     "github-queue-base-enqueues: the default --squash the queue refuses was still sent"
   assert_grep 'verified: https://github.com/example/repo/pull/76 is queued' "$case_dir/stdout" \
@@ -1359,6 +1423,33 @@ test_github_queue_base_enqueues_without_imposing_a_method() {
   assert_absent "$case_dir/state/.wake-queue" \
     "github-queue-base-enqueues: a queued pull request was recorded as a landed outcome"
   pass "fm-pr-merge enqueues on a queue base without imposing a method and reports it as queued"
+}
+
+test_github_queue_base_skips_squash_body_read() {
+  local case_dir rc
+  case_dir=$(make_case github-queue-skips-body-read)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 3434343434343434343434343434343434343434
+  write_github_outcome "$case_dir" OPEN false true main
+  printf 'true\n' > "$case_dir/github-queue"
+  : > "$case_dir/body-read-fails"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/77 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "github-queue-skips-body-read: an enqueued PR is a successful outcome"
+  grep -qxF 'pr merge 77 --repo example/repo' "$case_dir/gh-axi.log" \
+    || fail "github-queue-skips-body-read: a merge method or body was imposed on a queue base"
+  assert_no_grep 'viewerMergeBodyText' "$case_dir/gh.log" \
+    "github-queue-skips-body-read: the squash body read ran on a methodless queue enqueue"
+  assert_grep 'verified: https://github.com/example/repo/pull/77 is queued' "$case_dir/stdout" \
+    "github-queue-skips-body-read: the outcome was not reported as queued"
+  pass "fm-pr-merge skips the squash body read on a methodless queue enqueue"
 }
 
 test_github_queue_required_refusal_names_the_methodless_retry() {
@@ -1385,7 +1476,7 @@ test_github_queue_required_refusal_names_the_methodless_retry() {
   assert_grep 'retry naming no merge method: ' "$case_dir/stderr" \
     "github-queue-required: refusal did not name a retry the queue can accept"
   grep -qxF 'pr merge 54 --repo example/repo' "$case_dir/gh-axi.log" \
-    || fail "github-queue-required: a merge method was imposed on a queue base"
+    || fail "github-queue-required: a merge method or body was imposed on a queue base"
   assert_present "$case_dir/state/task-x1.check.sh" \
     "github-queue-required: the failed forge call did not leave the merge poll armed"
   pass "fm-pr-merge explains the retry a GitHub merge queue can accept"
@@ -1401,7 +1492,7 @@ test_extra_merge_args_forwarded() {
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/15 -- --squash --delete-branch \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "extra-args: fm-pr-merge failed"
 
-  grep -qxF 'pr merge 15 --repo example/repo --squash --delete-branch' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 15 --repo example/repo --squash --delete-branch --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "extra-args: extra gh-axi pr merge flags were not forwarded"
   pass "fm-pr-merge forwards extra flags to gh-axi pr merge after the -- separator"
 }
@@ -1451,7 +1542,7 @@ test_cleaned_up_task_merges_through_the_gate() {
   set -e
 
   expect_code 0 "$rc" "cleaned-up-merge: a green PR of a cleaned-up task should merge, stderr: $(cat "$case_dir/stderr")"
-  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 21 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "cleaned-up-merge: gh-axi pr merge was not invoked for the PR"
   assert_absent "$case_dir/state/gone-x1.meta" \
     "cleaned-up-merge: a task record was recreated for a task already cleaned up"
@@ -1677,7 +1768,7 @@ test_bundled_repo_override_args_refuse_before_recording() {
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "bundled-non-repo-cluster: fm-pr-merge refused a short flag that overrides nothing"
 
-  grep -qxF 'pr merge 8 --repo example/repo --squash -d' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 8 --repo example/repo --squash -d --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "bundled-non-repo-cluster: a short flag carrying no repository override was not forwarded"
   pass "fm-pr-merge refuses a bundled short-option repo override and forwards other short flags"
 }
@@ -1722,7 +1813,7 @@ test_parses_pr_url_for_gh_axi() {
   run_pr_merge "$case_dir" task-x1 https://github.com/my-org/my-repo/pull/126 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "url-parsing: fm-pr-merge failed"
 
-  grep -qxF 'pr merge 126 --repo my-org/my-repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 126 --repo my-org/my-repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "url-parsing: gh-axi pr merge was not invoked as number + --repo + default --squash"
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
@@ -2037,7 +2128,7 @@ test_github_still_forwards_sha_arg() {
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/44 -- --sha abc123 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "github-sha-arg: fm-pr-merge failed"
 
-  grep -qxF 'pr merge 44 --repo example/repo --squash --sha abc123' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 44 --repo example/repo --squash --sha abc123 --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "github-sha-arg: the GitHub path stopped forwarding a caller --sha"
   pass "fm-pr-merge leaves GitHub extra-arg handling unchanged, including --sha"
 }
@@ -2502,7 +2593,7 @@ test_skipped_and_neutral_are_not_failures() {
   )
   case_dir=$(run_gate_case skipped-neutral)
   expect_code 0 "$(cat "$case_dir/rc")" "skipped-neutral: a skipped or neutral check must not refuse"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 9 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "skipped-neutral: the merge did not proceed for a green PR with skipped checks"
   pass "fm-pr-merge treats SKIPPED and NEUTRAL checks as not-failures"
 }
@@ -2553,7 +2644,7 @@ test_captain_override_merges_red_pr() {
   expect_code 0 "$(cat "$case_dir/rc")" "captain-override: the explicit override should merge a red PR"
   assert_grep 'captain-override-red' "$case_dir/stderr" \
     "captain-override: the override merged without saying so"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 9 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "captain-override: gh-axi pr merge was not invoked under the override"
   pass "fm-pr-merge merges a red PR under the explicit captain override"
 }
@@ -2629,7 +2720,7 @@ test_stale_green_warns_but_merges() {
     "stale-green: the staleness warning did not name how far behind the branch is"
   assert_grep 'older base' "$case_dir/stderr" \
     "stale-green: the warning did not say the green was measured against an older base"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 9 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "stale-green: the merge did not proceed"
   pass "fm-pr-merge warns loudly about a green measured against a moved base, and still merges"
 }
@@ -2668,7 +2759,7 @@ test_repo_without_ci_still_merges() {
   case_dir=$(run_gate_case no-ci)
   unset FM_TEST_PRIOR_PR_SHAS FM_TEST_PRIOR_CHECK_RUNS FM_TEST_PRIOR_STATUSES
   expect_code 0 "$(cat "$case_dir/rc")" "no-ci: a PR with no checks must still merge"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 9 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "no-ci: the merge did not proceed on a repo with no PR CI"
   pass "fm-pr-merge still merges a green PR on a repository whose pull requests receive no checks"
 }
@@ -2791,7 +2882,7 @@ test_compare_failure_warns_instead_of_going_silent() {
     "compare-fails: a failed compare call left the staleness signal silent"
   assert_grep 'the compare call to GitHub failed' "$case_dir/stderr" \
     "compare-fails: the warning did not name the failed call as the cause"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 9 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "compare-fails: the merge did not proceed"
   pass "fm-pr-merge warns that staleness could not be measured when the compare call fails"
 }
@@ -2816,7 +2907,7 @@ test_unreadable_behind_by_is_not_reported_as_a_failed_call() {
     "compare-unreadable: the warning did not name the unusable value as the cause"
   assert_no_grep 'the compare call to GitHub failed' "$case_dir/stderr" \
     "compare-unreadable: the warning blamed a failed call that in fact succeeded"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 9 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "compare-unreadable: the merge did not proceed"
   pass "fm-pr-merge distinguishes an unreadable behind_by from a compare call that failed"
 }
@@ -2905,7 +2996,7 @@ test_superseded_red_record_does_not_refuse() {
   case_dir=$(run_gate_case superseded-red)
   expect_code 0 "$(cat "$case_dir/rc")" \
     "superseded-red: a red left behind by an earlier run of the same check must not refuse"
-  grep -qxF 'pr merge 9 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+  grep -qxF 'pr merge 9 --repo example/repo --squash --body Ordinary squash body' "$case_dir/gh-axi.log" \
     || fail "superseded-red: the merge did not proceed for a check whose current run passed"
   # Merging past a record the pull request page still shows red has to be said
   # out loud, or the gate reads as having been bypassed.
@@ -3226,9 +3317,134 @@ test_fitness_gate_refuses_the_same_on_a_queue_base() {
 READING_LINES=()
 GATE_QUEUE=false
 
+test_squash_removes_agent_coauthors_and_keeps_humans() {
+  local case_dir
+  case_dir=$(make_case squash-coauthors)
+  add_gh_mocks "$case_dir" abcabcabcabcabcabcabcabcabcabcabcabcabca
+  cat > "$case_dir/squash-body" <<'BODY'
+* Fix a regression
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Co-Authored-By: Codex <codex@openai.com>
+Co-Authored-By: Alice Example <alice@example.invalid>
+Co-Authored-By: Claude Martin <claude@example.invalid>
+Co-Authored-By: Claude <claude@example.invalid>
+Co-Authored-By: Claude Sonnet <sonnet@example.invalid>
+Co-Authored-By: Renamed Assistant <noreply@openai.com>
+Co-Authored-By: github copilot <tool@example.invalid>
+Co-Authored-By: gemini[bot] <123@users.noreply.github.com>
+Co-Authored-By: Alice <alice@openai.com>
+BODY
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "squash coauthors: merge refused"
+  assert_no_grep 'noreply@anthropic.com' "$case_dir/merged-body" \
+    "squash coauthors: agent trailers reached the squash message"
+  assert_no_grep 'codex@openai.com' "$case_dir/merged-body" \
+    "squash coauthors: Codex trailer reached the squash message"
+  assert_grep 'Co-Authored-By: Alice Example <alice@example.invalid>' "$case_dir/merged-body" \
+    "squash coauthors: human attribution was removed"
+  assert_grep 'Co-Authored-By: Claude Martin <claude@example.invalid>' "$case_dir/merged-body" \
+    "squash coauthors: a human sharing an agent first name was removed"
+  assert_grep 'Co-Authored-By: Claude <claude@example.invalid>' "$case_dir/merged-body" \
+    "squash coauthors: a human first name was treated as an agent identity"
+  assert_grep 'Co-Authored-By: Claude Sonnet <sonnet@example.invalid>' "$case_dir/merged-body" \
+    "squash coauthors: a human named after a model was removed"
+  assert_grep 'Co-Authored-By: Alice <alice@openai.com>' "$case_dir/merged-body" \
+    "squash coauthors: an entire provider domain was treated as an agent identity"
+  assert_no_grep 'Renamed Assistant' "$case_dir/merged-body" 'known agent email was not filtered'
+  assert_no_grep 'github copilot' "$case_dir/merged-body" 'exact agent tool name was not filtered'
+  assert_no_grep 'gemini[bot]' "$case_dir/merged-body" '[bot] account was not filtered'
+  assert_grep '* Fix a regression' "$case_dir/merged-body" "squash coauthors: prose was lost"
+  pass "squash messages remove agent coauthors and preserve human trailers and prose"
+}
+
+test_squash_body_inputs_and_failures() {
+  local case_dir variant body rc
+  body=$'Keep this prose about Claude.\nco-authored-by: Claude <noreply@anthropic.com>\nCo-Authored-By: Alice <alice@example.invalid>\n\n'
+  for variant in default squash method method-equals method-case method-equals-ws body body-equals file file-equals stdin clean-stdin agent-only clean empty unreadable invalid missing-file; do
+    case_dir=$(make_case "squash-body-$variant")
+    add_gh_mocks "$case_dir" abcabcabcabcabcabcabcabcabcabcabcabcabca
+    printf '%s' "$body" > "$case_dir/squash-body"
+    set --
+    case "$variant" in
+      squash) set -- --squash ;;
+      method) set -- --method squash ;;
+      method-equals) set -- --method=squash ;;
+      method-case) set -- --method SQUASH ;;
+      method-equals-ws) set -- --method=squash' ' ;;
+      body) set -- --body "$body" ;;
+      body-equals) set -- "--body=$body" ;;
+      file) set -- --body-file "$case_dir/squash-body" ;;
+      file-equals) set -- "--body-file=$case_dir/squash-body" ;;
+      stdin) set -- --body-file - ;;
+      clean-stdin)
+        printf 'Human prose\nCo-Authored-By: Alice <alice@example.invalid>\n\n' > "$case_dir/squash-body"
+        set -- --body-file - ;;
+      agent-only) printf 'Co-Authored-By: Claude <noreply@anthropic.com>' > "$case_dir/squash-body" ;;
+      clean) printf 'Human prose\n\nCo-Authored-By: Alice <alice@example.invalid>\n\n' > "$case_dir/squash-body" ;;
+      empty) : > "$case_dir/squash-body" ;;
+      unreadable) : > "$case_dir/body-read-fails" ;;
+      invalid) : > "$case_dir/body-read-invalid" ;;
+      missing-file) set -- --body-file "$case_dir/absent" ;;
+    esac
+    rc=0
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 -- "$@" \
+      < "$case_dir/squash-body" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    case "$variant" in
+      unreadable|invalid|missing-file)
+        expect_code 1 "$rc" "squash $variant: unreadable body must refuse"
+        assert_no_grep 'pr merge' "$case_dir/gh-axi.log" "squash $variant: merge was attempted"
+        assert_grep 'nothing was merged' "$case_dir/stderr" "squash $variant: no diagnostic"
+        assert_no_grep 'pr=https://' "$case_dir/state/task-x1.meta" "squash $variant: refusal recorded pr="
+        assert_absent "$case_dir/state/task-x1.check.sh" "squash $variant: refusal armed a merge poll"
+        ;;
+      agent-only)
+        expect_code 0 "$rc" "agent-only body refused"
+        [ ! -s "$case_dir/merged-body" ] || fail 'agent-only body was not explicitly emptied'
+        assert_grep '--body ' "$case_dir/gh-axi.log" 'empty cleaned body was not supplied'
+        ;;
+      clean|empty|clean-stdin)
+        expect_code 0 "$rc" "clean/empty body refused"
+        cmp -s "$case_dir/squash-body" "$case_dir/merged-body" || fail 'clean body was modified'
+        assert_grep '--body ' "$case_dir/gh-axi.log" 'clean snapshot was not explicitly supplied'
+        ;;
+      *)
+        expect_code 0 "$rc" "squash $variant: merge refused"
+        printf 'Keep this prose about Claude.\nCo-Authored-By: Alice <alice@example.invalid>\n\n' > "$case_dir/expected-body"
+        cmp -s "$case_dir/expected-body" "$case_dir/merged-body" || fail "squash $variant: incorrect cleaned message"
+        assert_grep '--repo example/repo' "$case_dir/gh-axi.log" 'squash message lost repository binding'
+        ;;
+    esac
+  done
+  pass "squash bodies support explicit methods, text/files/stdin, empty messages and failed reads"
+}
+
+test_squash_short_method_flag_is_not_parsed() {
+  local case_dir
+  case_dir=$(make_case squash-short-method-flag)
+  add_gh_mocks "$case_dir" cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+  printf 'Human prose\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n' > "$case_dir/squash-body"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 -- -m \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "squash-short-method-flag: merge refused"
+  assert_no_grep 'noreply@anthropic.com' "$case_dir/merged-body" \
+    "squash-short-method-flag: agent trailer reached the squash message"
+  assert_grep 'Human prose' "$case_dir/merged-body" \
+    "squash-short-method-flag: prose was lost"
+  assert_grep 'pr merge 9 --repo example/repo --squash -m' "$case_dir/gh-axi.log" \
+    "squash-short-method-flag: -m was not forwarded or squash was not imposed"
+  assert_grep '--body ' "$case_dir/gh-axi.log" \
+    "squash-short-method-flag: cleaned body was not explicitly sent"
+  pass "a short merge flag is forwarded, not parsed, so squash cleaning still runs"
+}
+
+test_squash_removes_agent_coauthors_and_keeps_humans
+test_squash_body_inputs_and_failures
+test_squash_short_method_flag_is_not_parsed
 test_github_zero_exit_queue_required_refuses_with_a_methodless_retry
 test_github_closed_unqueued_outcome_omits_retry_flags
 test_github_queue_base_enqueues_without_imposing_a_method
+test_github_queue_base_skips_squash_body_read
 test_fitness_gate_refuses_the_same_on_a_queue_base
 test_verified_merge_records_pr_and_head
 test_pr_metadata_is_recorded_before_the_forge_call
@@ -3249,6 +3465,7 @@ test_github_failed_gh_read_falls_back_to_gh_axi
 test_github_failed_merge_names_an_observed_landed_state
 test_github_without_gh_still_uses_gh_axi_merge
 test_github_without_gh_failed_read_keeps_bookkeeping
+test_github_without_gh_default_squash_refuses_with_guidance
 test_github_merged_outcome_is_verified
 test_github_verified_merge_requires_poll_recording
 test_github_queued_outcome_is_verified

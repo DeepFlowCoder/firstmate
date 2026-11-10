@@ -175,6 +175,20 @@
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
 #
+# GitHub squash bodies are read from viewerMergeBodyText(mergeType: SQUASH),
+# the same composed text gh uses in its message editor, or from the caller's
+# --body/--body-file. Known agent Co-Authored-By identities are removed before
+# gh-axi receives the body; human trailers and other text are preserved.
+# Agent identities are recognized by known agent email addresses, exact tool
+# names (claude code, openai codex, github copilot, cursor agent, gemini cli,
+# opencode), or [bot] accounts, never by name alone or entire provider domain,
+# so a human whose name resembles a tool keeps attribution. An unreadable body
+# refuses even under the fitness override, since that override grants no
+# agent-attribution exception. Explicit merge/rebase methods, methodless
+# merge-queue enqueues, and GitLab keep their existing message handling. A
+# message a merge queue composes itself is not cleaned by this change; that gap
+# is tracked separately as fm-coautores-por-fila-de-fusion.
+#
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
 # is open, detailed_merge_status is mergeable, has_conflicts is false,
@@ -280,14 +294,105 @@ reject_override_in_passthrough() {
 
 reject_override_in_passthrough "$@" || exit 1
 
-caller_has_merge_method() {
-  local arg
-  for arg in "$@"; do
+# The single place the long-form merge-method flags are recognized, so method
+# detection and the squash-vs-other body-cleaning choice read the same list.
+# Prints the caller's method (squash, merge, rebase, or a --method value),
+# lowercased and whitespace-trimmed, and returns 0, or returns 1 having printed
+# nothing when the caller named none.
+github_caller_merge_method() {
+  local arg value
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    shift
     case "$arg" in
-      --squash|--merge|--rebase|--method|--method=*) return 0 ;;
+      --squash) value=squash ;;
+      --merge) value=merge ;;
+      --rebase) value=rebase ;;
+      --method) value=${1-} ;;
+      --method=*) value=${arg#--method=} ;;
+      *) continue ;;
     esac
+    value=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+    value=${value//[[:space:]]/}
+    printf '%s' "$value"
+    return 0
   done
   return 1
+}
+
+caller_has_merge_method() {
+  github_caller_merge_method "$@" >/dev/null
+}
+
+github_strip_agent_coauthors() {
+  awk '
+    {
+      line = tolower($0)
+      if (line ~ /^[[:space:]]*co-authored-by:[[:space:]]*/) {
+        identity = line
+        sub(/^[[:space:]]*co-authored-by:[[:space:]]*/, "", identity)
+        if (identity ~ /<(noreply@anthropic[.]com|noreply@openai[.]com|codex@openai[.]com|copilot@github[.]com|cursoragent@cursor[.]com|noreply@cursor[.]com)>[[:space:]]*$/) next
+        if (identity ~ /^(claude code|openai codex|github copilot|cursor agent|gemini cli|opencode)[[:space:]]*</) next
+        if (identity ~ /\[bot\][[:space:]]*</) next
+      }
+      printf "%s%s", separator, $0
+      separator = "\n"
+    }'
+}
+
+# Send the cleaned snapshot explicitly, including an empty body, so the forge
+# cannot compose a different body after this read. Other flags pass through. Body reads
+# carry a marker to distinguish a valid empty string from absent/malformed API
+# data, without adding jq as a dependency on the GitHub path.
+github_prepare_squash_body() {
+  local method body='' cleaned='' body_set=0 body_file='' file_set=0 arg
+  local -a args
+  args=()
+  if ! method=$(github_caller_merge_method "$@"); then
+    method=squash
+  fi
+  [ "$method" = squash ] || return 0
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    shift
+    case "$arg" in
+      --body|--body-file)
+        [ "$#" -gt 0 ] || { echo "error: $arg requires a value" >&2; return 1; }
+        body_set=1
+        case "$arg" in
+          --body) body=$1; file_set=0 ;;
+          *) body_file=$1; file_set=1 ;;
+        esac
+        shift ;;
+      --body=*) body_set=1; file_set=0; body=${arg#--body=} ;;
+      --body-file=*) body_set=1; file_set=1; body_file=${arg#--body-file=} ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  if [ "$file_set" -eq 1 ]; then
+    body=$(cat -- "$body_file" && printf '.') || {
+      echo 'error: the squash body file could not be read; nothing was merged' >&2
+      return 1
+    }
+    body=${body%.}
+  fi
+  if [ "$body_set" -eq 0 ]; then
+    # shellcheck disable=SC2016 # GraphQL variables belong to the query, not the shell.
+    if ! body=$(gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){viewerMergeBodyText(mergeType:SQUASH)}}}' \
+      -f owner="$PR_OWNER" -f repo="$PR_REPO" -F number="$PR_NUMBER" \
+      -q '.data.repository.pullRequest.viewerMergeBodyText | if type == "string" then "body\n" + . + "." else error("invalid squash body") end'); then
+      echo 'error: the composed squash body could not be read; nothing was merged' >&2
+      echo 'error: pass --body or --body-file to supply the message explicitly, or --merge/--rebase to skip squash cleaning' >&2
+      return 1
+    fi
+    case "$body" in
+      body$'\n'*.) body=${body#*$'\n'}; body=${body%.} ;;
+      *) echo 'error: the composed squash body was invalid; nothing was merged' >&2; return 1 ;;
+    esac
+  fi
+  cleaned=$(printf '%s\n' "$body" | github_strip_agent_coauthors && printf '.') || return 1
+  cleaned=${cleaned%.}
+  FM_PR_GITHUB_EXTRA_ARGS=("${args[@]+"${args[@]}"}" --body "$cleaned")
 }
 
 # Whether the caller's own extra arguments asked for auto-merge, including the
@@ -964,6 +1069,38 @@ gitlab_confirm_merged() {
   [ "$state" = merged ]
 }
 
+# The squash-body read and validation run before the recording step, so a
+# refusal here (an unreadable or invalid composed body) changes no state at all,
+# matching every other refusal in this script.
+if [ "$PROVIDER" = github ]; then
+  merge_args=()
+  if ! caller_has_merge_method "$@"; then
+    github_read_queue_enabled
+    case "$FM_PR_GITHUB_QUEUE_ENABLED" in
+      true)
+        FM_PR_GITHUB_METHOD_SENT=false
+        printf 'notice: the base branch of %s runs a merge queue, which sets the merge method itself; none is imposed, and the result to expect is a queued pull request rather than a landed one\n' \
+          "$URL" >&2
+        ;;
+      false)
+        merge_args=(--squash)
+        ;;
+      *)
+        merge_args=(--squash)
+        printf 'warn: whether the base branch of %s runs a merge queue could not be read, so the usual --squash is used; a merge queue refuses an imposed method, so this run would land nothing and report it\n' \
+          "$URL" >&2
+        ;;
+    esac
+  fi
+  if caller_requested_auto_merge "$@"; then
+    FM_PR_GITHUB_AUTO_REQUESTED=true
+  fi
+  FM_PR_GITHUB_EXTRA_ARGS=("$@")
+  if [ "$FM_PR_GITHUB_METHOD_SENT" = true ]; then
+    github_prepare_squash_body "$@" || exit 1
+  fi
+fi
+
 # Record before either forge call. This arms the merge poll without claiming a
 # landed outcome, so even a provider read failure after a real merge cannot
 # leave teardown without the PR identity it needs to verify the result.
@@ -979,30 +1116,8 @@ fi
 case "$PROVIDER" in
   github)
     merge_output=
-    merge_args=()
-    if ! caller_has_merge_method "$@"; then
-      github_read_queue_enabled
-      case "$FM_PR_GITHUB_QUEUE_ENABLED" in
-        true)
-          FM_PR_GITHUB_METHOD_SENT=false
-          printf 'notice: the base branch of %s runs a merge queue, which sets the merge method itself; none is imposed, and the result to expect is a queued pull request rather than a landed one\n' \
-            "$URL" >&2
-          ;;
-        false)
-          merge_args=(--squash)
-          ;;
-        *)
-          merge_args=(--squash)
-          printf 'warn: whether the base branch of %s runs a merge queue could not be read, so the usual --squash is used; a merge queue refuses an imposed method, so this run would land nothing and report it\n' \
-            "$URL" >&2
-          ;;
-      esac
-    fi
-    if caller_requested_auto_merge "$@"; then
-      FM_PR_GITHUB_AUTO_REQUESTED=true
-    fi
     if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
-      "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1); then
+      "${merge_args[@]+"${merge_args[@]}"}" "${FM_PR_GITHUB_EXTRA_ARGS[@]+"${FM_PR_GITHUB_EXTRA_ARGS[@]}"}" 2>&1); then
       FM_PR_GITHUB_MERGE_ACCEPTED=true
     else
       merge_status=$?

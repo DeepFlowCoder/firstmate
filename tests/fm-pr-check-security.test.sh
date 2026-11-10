@@ -127,6 +127,9 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case "${1:-} ${2:-}" in
   "api graphql")
+    case "$*" in
+      *viewerMergeBodyText*) printf 'body\nOrdinary squash body.'; exit 0 ;;
+    esac
     printf '%s\n' \
       'state=MERGED' \
       'merged=true' \
