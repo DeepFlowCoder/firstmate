@@ -535,6 +535,25 @@ fm_nm_verdict_state() {  # <run-word>
   esac
 }
 
+# 0 only when the worktree's HEAD is POSITIVELY established to carry no change
+# against its base, 1 when it carries one, 2 when that could not be established
+# (no worktree, no resolvable base, a diff that errored). Unknown is never
+# reported as empty: a caller treats only 0 as "nothing was delivered".
+# Local refs only, because the timer-driven readers of a run word may not touch
+# the network; a stale base can only miss an empty branch, never invent one.
+fm_nm_branch_carries_no_change() {  # <worktree>
+  local wt=${1:-} base rc
+  [ -n "$wt" ] && [ -d "$wt" ] || return 2
+  git -C "$wt" rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null 2>&1 || return 2
+  for base in origin/main origin/master main master; do
+    git -C "$wt" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 || continue
+    git -C "$wt" diff --quiet "$base...HEAD" -- 2>/dev/null
+    rc=$?
+    case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+  done
+  return 2
+}
+
 # 0 when the word says the run REACHED a terminal state, which is a different
 # question from what it translates to: `cancelled` is terminal and still reports
 # `unknown`. The terminal vocabulary is the one fm_nm_runs_word_for_terminal

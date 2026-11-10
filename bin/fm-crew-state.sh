@@ -1705,6 +1705,19 @@ if [ "$HAVE_RUN" = 1 ]; then
     esac
   fi
 
+  # A green run that named no pull request and left its branch with no change
+  # against its base delivered nothing. "There was nothing to do" and "it was
+  # done and passed" are different facts, and the pipeline's outcome word does
+  # not tell them apart, so the branch itself is asked. Only a POSITIVE empty
+  # reading degrades: an unestablished one keeps the run's own verdict, since
+  # the exemption above exists so a finished run is never left unsettleable. A
+  # run that names a pull request is answered by the checks above instead.
+  if [ "$VERDICT_STANDING" = current ] && [ "$RUN_IS_TERMINAL" = 1 ] && [ "$RUN_STATE" = "done" ] \
+    && [ -z "$RUN_PR" ] && fm_nm_branch_carries_no_change "$WT"; then
+    RUN_STATE=unknown
+    RUN_DETAIL="$RUN_DETAIL${SEP}but the branch carries no change against its base${SEP}nothing was delivered by this run"
+  fi
+
   # Reconcile the status log. A needs-decision/blocked line under an ACTIVE run
   # is deterministically stale: the gate resolved and the run resumed. Under a
   # finished run it is not, and treating it as stale is how the same 2026-08-30

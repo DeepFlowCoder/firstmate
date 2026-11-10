@@ -3563,6 +3563,11 @@ test_a_passed_run_with_no_pull_request_keeps_its_own_verdict() {
   local d short out calls
   d=$(new_case passed-no-pr-recorded)
   make_repo_on_branch "$d/wt" fm/feat-noprrecorded
+  git -C "$d/wt" branch -q base-ref HEAD
+  echo change > "$d/wt/changed.txt"
+  git -C "$d/wt" add changed.txt
+  git -C "$d/wt" commit -q -m "a real change"
+  FM_FAKE_RUN_HEAD=$(git -C "$d/wt" rev-parse HEAD)
   short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
   calls="$d/gh.calls"; : > "$calls"
@@ -3578,6 +3583,31 @@ test_a_passed_run_with_no_pull_request_keeps_its_own_verdict() {
   assert_contains "$out" "run passed" "the run's own words stay on the line"
   assert_not_contains "$out" "pull request" "and nothing is said about one it never recorded"
   pass "a passed run with no pull request keeps its own verdict"
+}
+
+# A `passed` run that names no pull request on a branch carrying NO change
+# against its base delivered nothing: "there was nothing to do" and "it was done
+# and passed" are different facts and must not share the word `done`. Driven
+# with a stubbed passed outcome and no daemon. The first direction is the empty
+# branch (unknown, says why); the second is the same run on a branch that does
+# carry a change (done, as before), so the guard cannot go vacuous.
+test_a_passed_run_over_an_empty_branch_is_not_delivered_work() {
+  reset_fakes
+  local d short out
+  d=$(new_case passed-empty-branch)
+  make_repo_on_branch "$d/wt" fm/feat-emptybranch
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/emptybranch.meta" "window=fm:fm-emptybranch" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_passed_without_pr fm/feat-emptybranch)"
+  FM_FAKE_RUNS_LIST="  completed  fm/feat-emptybranch ${short}  2026-08-30 07:45"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" emptybranch
+  out=$(run_crew_state "$d" emptybranch)
+  assert_contains "$out" "state: unknown" "a passed run that changed nothing is not reported as done"
+  assert_contains "$out" "run passed" "the run's own verdict stays on the line"
+  assert_contains "$out" "carries no change against" "the line says why it is not delivered work"
+  pass "a passed run over an empty branch is not reported as delivered work"
 }
 
 # A `passed` run whose recorded `pr:` is on a host neither provider shape
@@ -3689,6 +3719,9 @@ test_a_coarse_row_without_a_pull_request_has_no_delivery_to_decline() {
   local d short out
   d=$(new_case coarse-no-pr)
   make_repo_on_branch "$d/wt" fm/feat-coarsenopr
+  echo change > "$d/wt/changed.txt"
+  git -C "$d/wt" add changed.txt
+  git -C "$d/wt" commit -q -m "a real change"
   short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/coarsenopr.meta" "window=fm:fm-coarsenopr" "worktree=$d/wt" "kind=ship" "harness=claude"
@@ -4669,6 +4702,7 @@ test_a_closed_unmerged_pull_request_is_never_done_on_the_unasked_path
 test_a_locally_recorded_merge_is_done_without_asking_the_forge
 test_a_merge_record_for_another_pull_request_does_not_land_this_run
 test_a_passed_run_with_no_pull_request_keeps_its_own_verdict
+test_a_passed_run_over_an_empty_branch_is_not_delivered_work
 test_an_unreadable_pull_request_url_names_itself_as_the_reason
 test_a_coarse_row_naming_a_pull_request_is_not_done_unverified
 test_a_coarse_row_reaches_done_from_the_local_merge_record
