@@ -1097,6 +1097,215 @@ test_concurrent_runs_are_ordered_longest_first() {
   pass "a concurrent run starts the longest-hint script first"
 }
 
+test_serial_output_does_not_wait_for_orphan_eof() {
+  local tmp
+  tmp=$(fm_test_tmproot fm-test-run-orphan)
+  # The fixture loses its EXIT trap to SIGKILL, leaving a real descendant
+  # holding stderr. The outer deadline is only a test safety net: the runner
+  # must finish while that descendant is still alive, preserving exit 137.
+  python3 - "$RUNNER" "$tmp" <<'PY' || fail "serial runner waited for an orphan's inherited output"
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+
+runner, tmp = sys.argv[1], Path(sys.argv[2])
+# The dependency-free replay path gets the same orphan regression. Every
+# command is real; this PATH simply omits Python and external timeout tools.
+fakebin = tmp / "no-python"
+fakebin.mkdir()
+for name in ("bash", "date", "dirname", "mkdir", "mktemp", "rm", "basename",
+             "awk", "grep", "sort", "head", "wc", "sleep", "cat", "mv"):
+    (fakebin / name).symlink_to(shutil.which(name))
+for mode, bound, code in ((mode, bound, code)
+                          for mode in ("live", "buffered")
+                          for bound in (0, 30)
+                          for code in (0, 7, 137)):
+    case = tmp / f"{mode}-{bound}-{code}"
+    case.mkdir()
+    fixture = case / "orphan.test.sh"
+    fixture.write_text('''#!/usr/bin/env bash
+trap 'echo unexpected-cleanup >&2' EXIT
+sleep 120 >&2 &
+echo "$!" >"$ORPHAN_PID"
+printf 'fixture stdout\\n'
+printf 'fixture stderr without newline' >&2
+''')
+    with fixture.open("a") as output:
+        output.write('kill -KILL "$$"\n' if code == 137 else f"exit {code}\n")
+    pid_file = case / "orphan.pid"
+    artifact = case / "timing.json"
+    env = dict(os.environ, ORPHAN_PID=str(pid_file))
+    if mode == "buffered":
+        env["PATH"] = str(fakebin)
+    args = [runner, "--per-script-timeout-secs", str(bound)]
+    if mode == "live":
+        args += ["--json", str(artifact)]
+    proc = subprocess.Popen(
+        args + [str(fixture)], env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+    )
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            raise AssertionError(f"bound={bound}: direct test exited but runner still waits for EOF")
+        assert proc.returncode == (1 if code else 0), (mode, bound, code, proc.returncode, stdout, stderr)
+        os.kill(int(pid_file.read_text()), 0)
+        assert (b"unexpected-cleanup" in stdout) == (code != 137), stdout
+        assert stdout.count(b"fixture stdout\n") == 1, stdout
+        assert stdout.count(b"fixture stderr without newline") == 1, stdout
+        assert f"exit={code} ".encode() in stdout, stdout
+        assert f"FM_TEST_SUMMARY total=1 failed={int(code != 0)}".encode() in stdout, stdout
+        if mode == "live":
+            record = json.loads(artifact.read_text())["scripts"][0]
+            assert record["exit"] == code, record
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        # On timeout, stop the private runner group too. Once it has exited,
+        # macOS can report EPERM for an empty group instead of ESRCH.
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        proc.communicate()
+PY
+  pass "serial output finishes on test exit even when SIGKILL skips cleanup"
+}
+
+test_serial_output_streams_and_drains_bytes() {
+  local tmp
+  tmp=$(fm_test_tmproot fm-test-run-stream)
+  python3 - "$RUNNER" "$tmp" <<'PY' || fail "serial output lost live streaming or final bytes"
+import os
+from pathlib import Path
+import select
+import signal
+import subprocess
+import sys
+import time
+
+runner, tmp = sys.argv[1], Path(sys.argv[2])
+release = tmp / "release"
+fixture = tmp / "stream.test.sh"
+fixture.write_text('''#!/usr/bin/env bash
+printf 'live-ready'
+while [ ! -f "$RELEASE" ]; do sleep 0.05; done
+python3 -c 'import sys; sys.stdout.buffer.write(b"final\\x00" + b"z" * 262144)'
+''')
+proc = subprocess.Popen([runner, str(fixture)], env=dict(os.environ, RELEASE=str(release)),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+try:
+    before = b""
+    deadline = time.monotonic() + 15
+    while b"live-ready" not in before:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0 and select.select([proc.stdout], [], [], remaining)[0], "live output was buffered"
+        chunk = os.read(proc.stdout.fileno(), 65536)
+        assert chunk, "runner exited before streaming live output"
+        before += chunk
+    assert proc.poll() is None, "test must still be running when output arrives"
+    release.touch()
+    after, stderr = proc.communicate(timeout=15)
+    stdout = before + after
+    assert proc.returncode == 0, (stdout, stderr)
+    assert stdout.count(b"live-ready") == 1, stdout
+    assert b"final\x00" + b"z" * 262144 in stdout, "final drain lost bytes"
+    assert b"FM_TEST_SUMMARY total=1 failed=0" in stdout, stdout[-1000:]
+finally:
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    proc.communicate()
+
+# A broken optional live reader must fail visibly rather than certifying a
+# successful test whose output it never delivered. Preserve a test's failure.
+fakebin = tmp / "broken-reader"
+fakebin.mkdir()
+shim = fakebin / "python3"
+shim.write_text('''#!/usr/bin/env bash
+if [ "$1" = -c ]; then exec "$REAL_PYTHON" "$@"; fi
+exit 19
+''')
+shim.chmod(0o755)
+for code in (0, 9):
+    fixture.write_text(f"exit {code}\n")
+    result = subprocess.run([runner, str(fixture)], capture_output=True, timeout=15,
+                            env=dict(os.environ, PATH=str(fakebin) + os.pathsep + os.environ["PATH"],
+                                     REAL_PYTHON=sys.executable))
+    assert result.returncode == 1, result
+    assert b"output streaming failed" in result.stderr, result
+    assert f"exit={code or 1} ".encode() in result.stdout, result
+PY
+  pass "serial output streams before test exit and drains binary output exactly once"
+}
+
+test_follower_exits_when_runner_is_killed() {
+  local tmp
+  tmp=$(fm_test_tmproot fm-test-run-runner-killed)
+  python3 - "$RUNNER" "$tmp" <<'PY' || fail "follower did not exit when runner was killed"
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+runner, tmp = sys.argv[1], Path(sys.argv[2])
+fixture = tmp / "runner-kill.test.sh"
+fixture.write_text('''#!/usr/bin/env bash
+echo 'started'
+sleep 30
+''')
+start_time = time.monotonic()
+proc = subprocess.Popen([runner, str(fixture)], env=dict(os.environ, TMPDIR=str(tmp)),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+import fcntl
+fcntl.fcntl(proc.stdout, fcntl.F_SETFL, os.O_NONBLOCK)
+try:
+    output = b""
+    deadline = time.monotonic() + 15
+    while b"started\n" not in output:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, "fixture never started"
+        try:
+            chunk = os.read(proc.stdout.fileno(), 1024)
+            if chunk:
+                output += chunk
+        except BlockingIOError:
+            time.sleep(0.01)
+            continue
+    assert proc.poll() is None, "runner exited before fixture started"
+    assert b"started\n" in output, output
+    proc.send_signal(signal.SIGTERM)
+    try:
+        stdout, stderr = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("runner did not exit after SIGTERM to runner")
+    elapsed = time.monotonic() - start_time
+    assert elapsed < 10, f"runner took {elapsed}s to finish after kill, likely hung waiting for follower"
+    assert proc.returncode != 0, "killed runner should not succeed"
+finally:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if proc.poll() is None:
+        proc.communicate()
+PY
+  pass "follower exits when runner process is killed and releases the pipe"
+}
+
 # --max-wall-ms is checked after the run, so it cannot end a run that never
 # finishes. A hung script has to become a bounded failure, because an unbounded
 # suite is exactly what silently outruns its caller's invocation budget.
@@ -1455,6 +1664,9 @@ test_ci_timing_producers_match_the_runner_expectation
 test_jobs_requires_proven_isolated
 test_jobs_admits_a_concurrent_safe_family
 test_concurrent_runs_are_ordered_longest_first
+test_serial_output_does_not_wait_for_orphan_eof
+test_serial_output_streams_and_drains_bytes
+test_follower_exits_when_runner_is_killed
 test_per_script_timeout_bounds_a_hang
 test_max_wall_ms_is_a_result_not_advice
 test_jobs_parallel_scheduler_and_failure_propagation

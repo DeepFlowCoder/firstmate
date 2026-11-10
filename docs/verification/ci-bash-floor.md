@@ -116,22 +116,46 @@ Any runtime command substitution inside a sourced function is a window.
 A failed trap parse is not fatal.
 Bash prints the error and carries on, so `exit 1` never runs and the process survives a SIGTERM it was supposed to die on.
 
-The portable serial lane streams each script through a pipe:
+The runner measured on 2026-09-22 streamed each portable serial script through a pipe:
 
 ```sh
 bash -c 'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
 ```
 
-(`run_script_bounded` in [`../../bin/fm-test-run.sh`](../../bin/fm-test-run.sh).)
-A surviving descendant keeps the write end of that pipe open, the reader never sees EOF, and the lane emits nothing until the job cap cancels it.
+This was the `run_script_bounded` path in [`../../bin/fm-test-run.sh`](../../bin/fm-test-run.sh), whose header owns the current output-capture contract.
+A surviving descendant kept the write end of that pipe open, the reader never saw EOF, and the lane emitted nothing until the job cap cancelled it.
 The watcher's own background children already redirect both streams, but the watcher itself is spawned as `"$WATCH" > "$out" &` in the suites, which redirects stdout only, so its stderr is the lane's.
 
 ## What raising the floor does not fix
 
 Raising the floor removes the only known trigger of the swallowed signal.
-It does not change what happens if a trap fails to run for any other reason: bash still prints and continues, the handler still does not run, and a survivor still holds the lane's pipe.
-`reap` in [`../../tests/lib.sh`](../../tests/lib.sh) bounds this for pids a suite explicitly reaps, by escalating to SIGKILL, but a SIGKILL skips the EXIT cleanup and orphaned descendants keep the inherited pipe.
-That residual exposure is tracked separately and is deliberately not addressed here.
+It does not change what happens if a trap fails to run for any other reason: bash still prints and continues, and the handler still does not run.
+`reap` in [`../../tests/lib.sh`](../../tests/lib.sh) bounds this for pids a suite explicitly reaps, by escalating to SIGKILL, but a SIGKILL skips the EXIT cleanup, so orphaned descendants kept the lane's pipe open.
+Raising the floor alone did not address that residual exposure; the runner change that closed it now writes serial output to a regular file, so a surviving descendant cannot hold the lane open.
+The independent runner regression is [`../../tests/fm-test-run.test.sh`](../../tests/fm-test-run.test.sh), specifically `test_serial_output_does_not_wait_for_orphan_eof`, `test_serial_output_streams_and_drains_bytes`, and `test_follower_exits_when_runner_is_killed`.
+
+## Independent output-capture verification
+
+Date: 2026-11-05 (regular-file capture only; predates the follower parent-death change).
+Measured on Darwin arm64 with GNU Bash 5.3.9 and Python 3.12.5.
+The orphan cases retained exit 0, exit 7, and SIGKILL status 137 while their descendant was still alive, both with a 30-second per-script bound and without a bound, with and without Python available to the runner.
+The streaming case checked output arriving before test completion, a final binary payload larger than the reader's buffer, and visible failure when the output reader could not run.
+
+Command:
+
+```sh
+bin/fm-test-run.sh tests/fm-test-run.test.sh
+```
+
+Relevant exact output from the 2026-11-05 run:
+
+```text
+ok - serial output finishes on test exit even when SIGKILL skips cleanup
+ok - serial output streams before test exit and drains binary output exactly once
+FM_TEST_END 2026-11-05T15:42:40Z tests/fm-test-run.test.sh exit=0 duration_ms=544092 gate_skip=false
+```
+
+This run is not evidence for the runner-killed case: `test_follower_exits_when_runner_is_killed` (follower exits on parent death, so the pipe reaches EOF) was added afterwards and has not been re-measured here.
 
 ## Accepted cost
 

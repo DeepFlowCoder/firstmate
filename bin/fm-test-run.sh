@@ -2,6 +2,12 @@
 # fm-test-run.sh - single owner of Firstmate's behavior-test runner, lane
 # composition for portable CI shards, local --jobs for proven-concurrent work,
 # timing markers, and the complete-regression coverage guard.
+# Serial scripts write to regular files so an orphan inheriting their output
+# cannot delay completion past the test shell's exit. With python3, output is
+# followed live and drained to a fixed snapshot on exit; without it, that
+# snapshot is printed after the script finishes. The live follower also exits
+# when the runner dies or RUN_TMP vanishes, so a killed runner cannot leave it
+# holding the caller's pipe. Orphan cleanup remains the suite's responsibility.
 #
 # Selection modes (exactly one of: --all, --family, --changed, --lane,
 # --proven-isolated, or script paths):
@@ -2116,22 +2122,46 @@ record_script_result() {
 # because an unbounded suite is what silently outruns its caller's budget.
 run_script_bounded() {  # <script> <out> <stream> <id>
   local script=$1 out=$2 stream=$3 id=$4
-  local rc
-  : "$id"
+  local rc follower='' done_file="$RUN_TMP/$id.output-done"
   set +e
-  if [ "$stream" -eq 1 ]; then
-    if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-      # Expansion is intentionally deferred to the child bash passed to -c.
-      # shellcheck disable=SC2016
-      fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
-        'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
-      rc=$?
-    else
-      bash "$script" 2>&1 | tee "$out"
-      rc=${PIPESTATUS[0]}
-    fi
-  elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash "$script" >"$out" 2>&1
+  : >"$out" || return 1
+  if [ "$stream" -eq 1 ] && command -v python3 >/dev/null 2>&1; then
+    # Only this reader inherits the lane's output pipe. Test descendants inherit
+    # a regular file instead, so neither EOF nor their liveness owns completion.
+    python3 - "$out" "$done_file" <<'PY' &
+import os
+import sys
+import time
+
+original_ppid = os.getppid()
+run_tmp = os.path.dirname(sys.argv[2])
+with open(sys.argv[1], "rb", buffering=0) as source:
+    end = None
+    while True:
+        if os.getppid() != original_ppid or not os.path.exists(run_tmp):
+            break
+        if end is None and os.path.exists(sys.argv[2]):
+            end = os.fstat(source.fileno()).st_size
+        size = 65536 if end is None else min(65536, end - source.tell())
+        if size == 0:
+            break
+        chunk = source.read(size)
+        if chunk:
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+        elif end is not None:
+            raise RuntimeError("test output truncated during final drain")
+        else:
+            time.sleep(0.05)
+PY
+    follower=$!
+  fi
+  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+    # Keep a shell status boundary: the timeout helper's perl fallback only
+    # decodes normal exits, so a directly signaled test would otherwise be 0.
+    # shellcheck disable=SC2016
+    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
+      'bash "$1"; exit "$?"' _ "$script" >"$out" 2>&1
     rc=$?
   else
     bash "$script" >"$out" 2>&1
@@ -2140,7 +2170,23 @@ run_script_bounded() {  # <script> <out> <stream> <id>
   if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
     printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
       "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
-    [ "$stream" -eq 1 ] && tail -1 "$out"
+  fi
+  if [ -n "$follower" ]; then
+    if ! : >"$done_file"; then
+      log "cannot signal output completion for $script"
+      kill "$follower" 2>/dev/null || true
+      [ "$rc" -ne 0 ] || rc=1
+    fi
+    if ! wait "$follower"; then
+      log "output streaming failed for $script"
+      [ "$rc" -ne 0 ] || rc=1
+    fi
+  elif [ "$stream" -eq 1 ]; then
+    # Bound the read even if an orphan keeps appending after the shell exits.
+    if ! head -c "$(wc -c <"$out")" "$out"; then
+      log "output replay failed for $script"
+      [ "$rc" -ne 0 ] || rc=1
+    fi
   fi
   return "$rc"
 }
