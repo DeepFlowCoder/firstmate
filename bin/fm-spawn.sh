@@ -2722,7 +2722,7 @@ fi
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/fm-worktree-owner-lib.sh"
 if [ "$KIND" != secondmate ]; then
-  fm_worktree_owner_acquire "$WT" || exit 1
+  fm_worktree_owner_acquire "$WT" wait || exit 1
   SPAWN_COPY_OWNER_LOCK=$FM_WORKTREE_OWNER_LOCK
   if [ "$REUSE" -eq 0 ]; then
     fm_worktree_owner_publish "$STATE" "$ID" || exit 1

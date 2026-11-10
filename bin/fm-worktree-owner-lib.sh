@@ -17,8 +17,8 @@
 # Secondmate homes themselves are not task copies; their child copies are.
 # Requires fm_lock_* and fm_meta_get from the caller's existing libraries.
 
-fm_worktree_owner_acquire() {  # <worktree>; sets RECORD and LOCK globals
-  local wt=$1 actual top gitdir
+fm_worktree_owner_acquire() {  # <worktree> [wait]; sets RECORD and LOCK globals
+  local wt=$1 mode=${2:-try} actual top gitdir
   FM_WORKTREE_OWNER_RECORD=
   FM_WORKTREE_OWNER_LOCK=
   if ! actual=$(cd -- "$wt" 2>/dev/null && pwd -P) \
@@ -32,7 +32,13 @@ fm_worktree_owner_acquire() {  # <worktree>; sets RECORD and LOCK globals
   fi
   FM_WORKTREE_OWNER_RECORD="$gitdir/fm-task-owner"
   FM_WORKTREE_OWNER_LOCK="$gitdir/fm-task-owner.lock"
-  if ! fm_lock_try_acquire "$FM_WORKTREE_OWNER_LOCK"; then
+  if [ "$mode" = wait ]; then
+    fm_lock_acquire_wait "$FM_WORKTREE_OWNER_LOCK" || {
+      echo "REFUSED: task-copy occupancy is locked for $wt; cannot acquire after bounded wait." >&2
+      FM_WORKTREE_OWNER_LOCK=
+      return 1
+    }
+  elif ! fm_lock_try_acquire "$FM_WORKTREE_OWNER_LOCK"; then
     echo "REFUSED: task-copy occupancy is locked for $wt; another allocation or cleanup is in progress." >&2
     FM_WORKTREE_OWNER_LOCK=
     return 1
