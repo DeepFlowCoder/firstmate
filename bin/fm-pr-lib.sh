@@ -285,6 +285,9 @@ fm_pr_regular_destination_on_device_or_absent() {
   [ ! -e "$path" ] || [ "$(fm_pr_file_device "$path")" = "$device" ]
 }
 
+# pr= starts the final metadata block: only a valid pr_head= and the explicitly
+# named Relay fields below may follow it. Writers must place other fields before
+# that block rather than broadening this identity parser's trailing-data check.
 fm_pr_metadata_identity_parse() {
   local file=$1 line value pr_count=0 seen_pr=0 post_pr_invalid=0
   FM_PR_META_PROVIDER=

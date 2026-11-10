@@ -3243,11 +3243,13 @@ preserve_relaunch_meta() {
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-  if [ "$REUSE" -eq 1 ]; then
-    preserve_relaunch_meta
-  fi
+  # Control-owned fields precede the preserved PR suffix; its allowed fields
+  # are defined by fm_pr_metadata_identity_parse in bin/fm-pr-lib.sh.
   if [ "$SPAWN_CONTROL_PARENT" = 1 ] && [ -n "${FM_CONTROL_RELAUNCH_TX:-}" ]; then
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
+  fi
+  if [ "$REUSE" -eq 1 ]; then
+    preserve_relaunch_meta
   fi
 } > "$SPAWN_META_PATH"
 if [ "$REUSE" -eq 1 ]; then
