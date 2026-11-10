@@ -1386,11 +1386,11 @@ axi_overview() {  # <row>...  (each: id|branch|status|head)
 
 # fm-listado-de-corridas-sin-id. Two `failed` rows used to identify nothing, so a
 # cut reported for one of them degraded to the failure word. The overview names
-# the reported run by id, so the cut is asserted exactly where that id is on this
-# branch with the reported word - and nowhere else.
+# the reported run by id, so the cut is asserted exactly where that id is the
+# branch's NEWEST row with the reported word - and nowhere else.
 test_a_cut_among_two_failed_rows_is_identified_by_run_id() {
   reset_fakes
-  local d short two_rows other_branch fell_off; d=$(new_case cut-by-id)
+  local d short two_rows older other_branch fell_off; d=$(new_case cut-by-id)
   make_repo_on_branch "$d/wt" fm/feat-id
   short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
   make_fakebin "$d" >/dev/null
@@ -1399,16 +1399,22 @@ test_a_cut_among_two_failed_rows_is_identified_by_run_id() {
   FM_FAKE_RUNS_LIST="  failed  fm/feat-id ${short}  2026-09-22 21:40
   failed  fm/feat-id ${short}  2026-09-22 20:12"
 
-  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01OTHER|fm/feat-id|failed|${short}" "01RUN|fm/feat-id|failed|${short}")"
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01RUN|fm/feat-id|failed|${short}" "01OTHER|fm/feat-id|failed|${short}")"
   two_rows=$(run_crew_state "$d" id)
+  # A lagging status answering with the OLDER cut while a newer failed run exists
+  # must not assert the cut over that newer run.
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01OTHER|fm/feat-id|failed|${short}" "01RUN|fm/feat-id|failed|${short}")"
+  older=$(run_crew_state "$d" id)
   FM_FAKE_AXI_OVERVIEW="$(axi_overview "01RUN|fm/other|failed|${short}")"
   other_branch=$(run_crew_state "$d" id)
   FM_FAKE_AXI_OVERVIEW="$(axi_overview "01OTHER|fm/feat-id|failed|${short}")"
   fell_off=$(run_crew_state "$d" id)
 
   assert_contains "$two_rows" "cut off by its own 30m0s time cap" \
-    "a cut whose id the overview names on this branch is identified despite two failed rows"
+    "a cut whose id is the newest overview row on this branch is identified despite two failed rows"
   assert_contains "$two_rows" "state: unknown" "an identified cut reports the state nothing established"
+  assert_not_contains "$older" "time cap" "a reported run older than the newest failed row is not identified"
+  assert_contains "$older" "state: failed" "an unidentified older cut keeps the failure word"
   assert_not_contains "$other_branch" "time cap" "the same id on another branch proves nothing"
   assert_not_contains "$fell_off" "time cap" "an id absent from the overview window proves nothing"
   assert_contains "$fell_off" "state: failed" "an unproven cut keeps the failure word"

@@ -52,7 +52,7 @@
 #      print `failed` where that id cannot be had
 #      (`fm-corte-por-tope-fuera-del-brazo-de-lista`), and on this read the cut is
 #      named only where the reported run is IDENTIFIED - by exactly one row of its
-#      word in the runs list, or by its own id in that overview - which it is not
+#      word in the runs list, or by its own id as the branch's newest row in that overview - which it is not
 #      when neither answers or the run's row fell past their windows
 #      (`fm-listado-de-corridas-sin-id`). Every unproven reading keeps the
 #      ordinary failure phrase inside whatever wrapper its own arm produces.
@@ -1392,7 +1392,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   # carries no run id and `axi status` carries no timestamp, so a branch with more
   # than one row of the reported word offers the count nothing to match, but the
   # `no-mistakes axi` overview carries the id, branch and status of each row, and a
-  # row with the reported run's own id proves which run it is. A run whose row fell
+  # newest row carrying the reported run's own id proves which run it is. A run whose row fell
   # past the overview's window, or an overview that did not answer, proves nothing
   # and keeps the failure word. Tracked as `fm-listado-de-corridas-sin-id`.
   # It is a different limit from the runs-list arms above, whose rows carry no

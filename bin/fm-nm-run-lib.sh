@@ -435,24 +435,21 @@ fm_nm_runs_row_identifies_run() {  # <runs-output> <branch> <word>
 # prints runs[N]{id,branch,status,head,pr}, newest first and capped repo-wide
 # (measured v1.106.1: 10 of 245). Each row is `"<id>",<branch>,<status>,<head>,"<pr>"`.
 # That id is the key the text listing lacks, so a reported run (whose `axi status`
-# carries its id) can be MATCHED to a row instead of counted against its siblings.
+# carries its id) can be MATCHED to the branch's newest row instead of counted.
 #
-# 0 only when a row carries exactly this id AND this branch AND this status word.
-# The cap makes absence meaningless - a run whose row fell off the window looks
-# like a run that never existed - so every other answer, including an overview
-# that did not answer, is "not established", never "not this run".
+# 0 only when the branch's NEWEST row carries exactly this id and this status
+# word. Any-row matching would let a lagging `axi status` answering with an older
+# cut X match X's own row while the branch's newest failed run Y is a real
+# rejection, asserting the stronger reading over the newer run. The cap makes
+# absence meaningless - a run whose row fell off the window looks like a run that
+# never existed - so every other answer, including an overview that did not
+# answer, is "not established", never "not this run".
 fm_nm_overview_row_identifies_run() {  # <overview> <branch> <run-id> <word>
-  local out=${1:-} branch=${2:-} id=${3:-} word=${4:-} row rid rbr rst
+  local out=${1:-} branch=${2:-} id=${3:-} word=${4:-} row rid rst
   [ -n "$out" ] && [ -n "$branch" ] && [ -n "$id" ] && [ -n "$word" ] || return 1
-  while IFS= read -r row; do
-    row=$(fm_nm_trim "$row")
-    IFS=, read -r rid rbr rst _ <<< "$row"
-    rid=$(fm_nm_strip_quotes "$rid")
-    [ "$rid" = "$id" ] || continue
-    [ "$rbr" = "$branch" ] && [ "$(fm_nm_strip_quotes "$rst")" = "$word" ] && return 0
-    return 1
-  done <<< "$out"
-  return 1
+  row=$(fm_nm_overview_newest_for_branch "$out" "$branch") || return 1
+  IFS=$'\t' read -r rid rst _ <<< "$row"
+  [ "$rid" = "$id" ] && [ "$rst" = "$word" ]
 }
 
 # This branch's NEWEST row in an overview, as "<id><TAB><status><TAB><head>", or
