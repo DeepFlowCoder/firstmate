@@ -54,7 +54,7 @@ batched digest rather than per-wake injections.
    - `starting` means the daemon or its watcher is still coming up.
      Never acknowledge away mode on `starting`: read it again, and if it will not reach `healthy`, stop away mode and report the failure.
    - `orphaned` means the flag remains without healthy supervision, as defined by `bin/fm-afk-health.sh`.
-     Restart it or leave away mode; do not proceed.
+     If the daemon is still running, stop it with `bin/fm-afk-launch.sh stop` first, then restart it with `/afk`. Otherwise, leave away mode and try again. Do not proceed while orphaned.
 
    After that the state is checked for you rather than remembered.
    The session digest's AFK section, both turn-end guards, and Claude's Stop-owned re-arm all read this same verdict, so they report an orphaned away mode rather than standing down for it.

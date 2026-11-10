@@ -212,7 +212,7 @@ fm_afk_owns_supervision() {  # <state-dir>
 
 # The exact repair the captain's session should take, as one line. Kept here so
 # the session digest, the turn-end guards and the skill quote one wording.
-FM_AFK_ORPHAN_REPAIR='Restart away-mode supervision with the /afk skill, or leave away mode with bin/fm-afk-launch.sh stop, and confirm the result with bin/fm-afk-health.sh.'
+FM_AFK_ORPHAN_REPAIR='If the daemon is still running, stop it with bin/fm-afk-launch.sh stop first. Then restart away-mode supervision with the /afk skill, or leave away mode and confirm the result with bin/fm-afk-health.sh.'
 
 fm_afk_health_usage() {
   sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
