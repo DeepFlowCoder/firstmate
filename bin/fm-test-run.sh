@@ -2132,9 +2132,13 @@ import os
 import sys
 import time
 
+original_ppid = os.getppid()
+run_tmp = os.path.dirname(sys.argv[2])
 with open(sys.argv[1], "rb", buffering=0) as source:
     end = None
     while True:
+        if os.getppid() != original_ppid or not os.path.exists(run_tmp):
+            break
         if end is None and os.path.exists(sys.argv[2]):
             end = os.fstat(source.fileno()).st_size
         size = 65536 if end is None else min(65536, end - source.tell())

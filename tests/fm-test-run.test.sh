@@ -1250,6 +1250,64 @@ PY
   pass "serial output streams before test exit and drains binary output exactly once"
 }
 
+test_follower_exits_when_runner_is_killed() {
+  local tmp
+  tmp=$(fm_test_tmproot fm-test-run-runner-killed)
+  python3 - "$RUNNER" "$tmp" <<'PY' || fail "follower did not exit when runner was killed"
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+runner, tmp = sys.argv[1], Path(sys.argv[2])
+release = tmp / "release"
+fixture = tmp / "runner-kill.test.sh"
+fixture.write_text('''#!/usr/bin/env bash
+echo 'started'
+while [ ! -f "$RELEASE" ]; do sleep 0.05; done
+echo 'continuing'
+sleep 30
+''')
+start_time = time.monotonic()
+proc = subprocess.Popen([runner, str(fixture)], env=dict(os.environ, RELEASE=str(release)),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+try:
+    try:
+        output = b""
+        deadline = time.monotonic() + 15
+        while b"started\n" not in output:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "fixture never started"
+            time.sleep(0.01)
+            try:
+                chunk = os.read(proc.stdout.fileno(), 1024)
+                if chunk:
+                    output += chunk
+            except BlockingIOError:
+                continue
+        assert proc.poll() is None, "runner exited before fixture started"
+        assert b"started\n" in output, output
+        proc.send_signal(signal.SIGTERM)
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            raise AssertionError("runner did not exit after SIGTERM to runner")
+        elapsed = time.monotonic() - start_time
+        assert elapsed < 10, f"runner took {elapsed}s to finish after kill, likely hung waiting for follower"
+        assert proc.returncode != 0, "killed runner should not succeed"
+finally:
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    proc.communicate()
+PY
+  pass "follower exits when runner process is killed and releases the pipe"
+}
+
 # --max-wall-ms is checked after the run, so it cannot end a run that never
 # finishes. A hung script has to become a bounded failure, because an unbounded
 # suite is exactly what silently outruns its caller's invocation budget.
