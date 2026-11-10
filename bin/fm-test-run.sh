@@ -5,8 +5,9 @@
 # Serial scripts write to regular files so an orphan inheriting their output
 # cannot delay completion past the test shell's exit. With python3, output is
 # followed live and drained to a fixed snapshot on exit; without it, that
-# snapshot is printed after the script finishes. Orphan cleanup remains the
-# suite's responsibility.
+# snapshot is printed after the script finishes. The live follower also exits
+# when the runner dies or RUN_TMP vanishes, so a killed runner cannot leave it
+# holding the caller's pipe. Orphan cleanup remains the suite's responsibility.
 #
 # Selection modes (exactly one of: --all, --family, --changed, --lane,
 # --proven-isolated, or script paths):

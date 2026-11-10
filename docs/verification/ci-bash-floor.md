@@ -132,15 +132,14 @@ Raising the floor removes the only known trigger of the swallowed signal.
 It does not change what happens if a trap fails to run for any other reason: bash still prints and continues, and the handler still does not run.
 `reap` in [`../../tests/lib.sh`](../../tests/lib.sh) bounds this for pids a suite explicitly reaps, by escalating to SIGKILL, but a SIGKILL skips the EXIT cleanup, so orphaned descendants kept the lane's pipe open.
 Raising the floor alone did not address that residual exposure; the runner change that closed it now writes serial output to a regular file, so a surviving descendant cannot hold the lane open.
-The independent runner regression is [`../../tests/fm-test-run.test.sh`](../../tests/fm-test-run.test.sh), specifically `test_serial_output_does_not_wait_for_orphan_eof` and `test_serial_output_streams_and_drains_bytes`.
+The independent runner regression is [`../../tests/fm-test-run.test.sh`](../../tests/fm-test-run.test.sh), specifically `test_serial_output_does_not_wait_for_orphan_eof`, `test_serial_output_streams_and_drains_bytes`, and `test_follower_exits_when_runner_is_killed`.
 
 ## Independent output-capture verification
 
-Date: 2026-11-05 (core implementation); runner-killed regression test added 2026-11-10.
+Date: 2026-11-05 (regular-file capture only; predates the follower parent-death change).
 Measured on Darwin arm64 with GNU Bash 5.3.9 and Python 3.12.5.
 The orphan cases retained exit 0, exit 7, and SIGKILL status 137 while their descendant was still alive, both with a 30-second per-script bound and without a bound, with and without Python available to the runner.
 The streaming case checked output arriving before test completion, a final binary payload larger than the reader's buffer, and visible failure when the output reader could not run.
-The runner-killed case verifies that when the runner dies by signal without executing its EXIT trap, the follower detects parent death and exits, allowing the pipe to close and the caller to receive EOF.
 
 Command:
 
@@ -148,7 +147,7 @@ Command:
 bin/fm-test-run.sh tests/fm-test-run.test.sh
 ```
 
-Relevant exact output from the 2026-11-05 run (before runner-killed test integration):
+Relevant exact output from the 2026-11-05 run:
 
 ```text
 ok - serial output finishes on test exit even when SIGKILL skips cleanup
@@ -156,7 +155,7 @@ ok - serial output streams before test exit and drains binary output exactly onc
 FM_TEST_END 2026-11-05T15:42:40Z tests/fm-test-run.test.sh exit=0 duration_ms=544092 gate_skip=false
 ```
 
-The runner-killed regression test (`test_follower_exits_when_runner_is_killed`) is now invoked as part of this suite and must pass to prevent reintroduction of the parent-death hang.
+This run is not evidence for the runner-killed case: `test_follower_exits_when_runner_is_killed` (follower exits on parent death, so the pipe reaches EOF) was added afterwards and has not been re-measured here.
 
 ## Accepted cost
 

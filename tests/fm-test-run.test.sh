@@ -1273,29 +1273,28 @@ proc = subprocess.Popen([runner, str(fixture)], env=dict(os.environ, TMPDIR=str(
 import fcntl
 fcntl.fcntl(proc.stdout, fcntl.F_SETFL, os.O_NONBLOCK)
 try:
-    try:
-        output = b""
-        deadline = time.monotonic() + 15
-        while b"started\n" not in output:
-            remaining = deadline - time.monotonic()
-            assert remaining > 0, "fixture never started"
-            try:
-                chunk = os.read(proc.stdout.fileno(), 1024)
-                if chunk:
-                    output += chunk
-            except BlockingIOError:
-                time.sleep(0.01)
-                continue
-        assert proc.poll() is None, "runner exited before fixture started"
-        assert b"started\n" in output, output
-        proc.send_signal(signal.SIGTERM)
+    output = b""
+    deadline = time.monotonic() + 15
+    while b"started\n" not in output:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, "fixture never started"
         try:
-            stdout, stderr = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            raise AssertionError("runner did not exit after SIGTERM to runner")
-        elapsed = time.monotonic() - start_time
-        assert elapsed < 10, f"runner took {elapsed}s to finish after kill, likely hung waiting for follower"
-        assert proc.returncode != 0, "killed runner should not succeed"
+            chunk = os.read(proc.stdout.fileno(), 1024)
+            if chunk:
+                output += chunk
+        except BlockingIOError:
+            time.sleep(0.01)
+            continue
+    assert proc.poll() is None, "runner exited before fixture started"
+    assert b"started\n" in output, output
+    proc.send_signal(signal.SIGTERM)
+    try:
+        stdout, stderr = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("runner did not exit after SIGTERM to runner")
+    elapsed = time.monotonic() - start_time
+    assert elapsed < 10, f"runner took {elapsed}s to finish after kill, likely hung waiting for follower"
+    assert proc.returncode != 0, "killed runner should not succeed"
 finally:
     try:
         os.killpg(proc.pid, signal.SIGKILL)
