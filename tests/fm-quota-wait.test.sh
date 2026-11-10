@@ -64,3 +64,13 @@ fm_quota_wait_task "$dir/state" quota || fail "Herdr's visible quota viewport no
 printf 'worker resumed; the quota error remains only in scrollback\n' > "$FM_FAKE_TMUX_CAPTURE"
 fm_quota_wait_task "$dir/state" quota && fail "resumed viewport retained quota wait"
 pass "Herdr quota observation uses its visible viewport and releases on resume"
+
+screen_without_modal="You've hit your usage limit
+Approaching rate limits
+Some unrelated output the worker prints"
+fm_quota_wait_screen codex "$screen_without_modal" && fail "quota strings without the modal option block were mistaken for quota wait"
+
+screen_with_modal_text_only="You've hit your usage limit Approaching rate limits Switch to gpt-5.6-luna"
+fm_quota_wait_screen codex "$screen_with_modal_text_only" && fail "quota strings without confirmation text were mistaken for quota wait"
+
+pass "quota match is anchored to the modal to prevent false positives"

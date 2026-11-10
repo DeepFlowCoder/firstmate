@@ -14,7 +14,7 @@ fm_quota_wait_screen() {  # <harness> <visible-capture>
   [ "${1-}" = codex ] || return 1
   flat=$(printf '%s' "${2-}" | tr '\n\r\t' '   ' | tr -s ' ')
   case "$flat" in
-    *"You've hit your usage limit"*'Approaching rate limits'*) return 0 ;;
+    *"You've hit your usage limit"*'Approaching rate limits'*'Press enter to confirm or esc to go back'*) return 0 ;;
   esac
   return 1
 }
