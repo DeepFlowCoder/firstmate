@@ -181,6 +181,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-forge-pr-state-lib.sh` | Single owner of a pull request's forge-resolved state, answering merged, closed, open, or an explicit unresolved with its reason |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
+| `fm-pr-state.sh`         | Read-only: print one line per GitHub pull-request blocker it can see, reporting on checks that have reported rather than verdicting merge-readiness |
 | `fm-pr-fitness-lib.sh`   | Own which forge check values count as a pass: a merge-fitness verdict for the merge gate, and one summary word over a whole check list for a reporting surface |
 | `fm-nm-attestation-delta.sh` | Hand the `Require no-mistakes` check an attested ancestor when the only commits since it are the pipeline's own CI-fix commits |
 | `fm-nm-mirror.sh`       | Diagnose a no-mistakes gate mirror ref that a rebased branch no longer contains, naming the cause and the exit, and take that exit without deleting a commit: preserve the mirror lineage under a tag and move the live head to a fresh branch ([push-mirror-custody.md](verification/push-mirror-custody.md)) |
