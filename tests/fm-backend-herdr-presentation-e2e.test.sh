@@ -1391,9 +1391,10 @@ do
   # reassigned a surviving task's copy to a later task. Cleaning that stale
   # record must refuse and name the current occupant; any other failure is real.
   if ! teardown_task "$TASK_ID" "$TASK_HOME" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err"; then
-    grep -F "REFUSED: task $TASK_ID does not own " "$TMP_ROOT/td-$TASK_ID.err" >/dev/null 2>&1 \
-      && grep -F "current occupant is " "$TMP_ROOT/td-$TASK_ID.err" >/dev/null 2>&1 \
-      || fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
+    if ! grep -F "REFUSED: task $TASK_ID does not own " "$TMP_ROOT/td-$TASK_ID.err" >/dev/null 2>&1 \
+      || ! grep -F "current occupant is " "$TMP_ROOT/td-$TASK_ID.err" >/dev/null 2>&1; then
+      fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
+    fi
   fi
 done
 assert_focus_is "$CAPTAIN_FOCUS" "multi-home teardown"
