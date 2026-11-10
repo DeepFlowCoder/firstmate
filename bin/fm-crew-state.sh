@@ -1134,15 +1134,13 @@ if [ "$HAVE_RUN" = 1 ]; then
     # branch's push binding was bound by a signal about the BRANCH, so the line
     # says so rather than leaving a reader to assume the row's own head matched.
     #
-    # A bare word is also all the evidence a CAP CUT could be told from an
-    # ordinary failure by, and the runs list carries no `error:` column at all
-    # (its rows are status, branch, sha, date, pull request). So a cut read on
-    # this arm - and on the superseding-failed-row arm below, which reads the
-    # same list - still reports `failed`. That is a bound of the SOURCE and not a
-    # second opinion about the word: the moment `axi status` answers for this
-    # branch again the full arm reads the run's own account and reports the cut.
-    # Buying the distinction here would cost a second bounded call per row, out
-    # of the one deadline the verdict itself is already competing for.
+    # A bare word is also all the evidence an ordinary failure could be told from
+    # by, and the runs list carries no `error:` column at all (its rows are
+    # status, branch, sha, date, pull request). Where the overview is silent or
+    # the reported run does not match, a cut read on this arm and on the
+    # superseding-failed-row arm below still reports `failed`. But the overview
+    # names the branch's newest row's id, so a cut is read through that id: the
+    # moment the run is identified as a cap cut, the state is reported `unknown`.
     RUN_WORD=$COARSE_STATUS
     RUN_STATE=$(fm_nm_verdict_state "$RUN_WORD")
     COARSE_QUALIFIER="background run"
@@ -1433,6 +1431,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         # column either, so a cut that replaced the reading is read through the
         # overview id. A cut is not a verdict on the work, so it is `unknown`.
         if [ "$BRANCH_NEWEST_STATUS" = failed ] && nm_newest_row_cut "$BRANCH_NEWEST_SHA"; then
+          RUN_CAP_CUT=1
           emit unknown run-step \
             "a failed run on $CREW_BRANCH supersedes $SUPERSEDED_SUBJECT ($CUT_ROW_DETAIL)"
         fi
