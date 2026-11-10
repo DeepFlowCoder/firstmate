@@ -380,8 +380,7 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # problem. A `no-mistakes runs` row carries status, branch, short sha, date and
 # pull request and NO run id (v1.75.2 exposes only `--limit` on that command,
 # with no branch and no status filter); `axi status` carries the run id and no
-# timestamp. So a reported run and a listing row can never be MATCHED to one
-# identity, and no reading that has to match them may be asserted at all.
+# timestamp. Without a shared key, direct identity matching is unavailable.
 # Tracked as `fm-listado-de-corridas-sin-id`.
 #
 # Two identities that look available are ruled out by measurement, not by taste:
@@ -399,24 +398,25 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # What is left is COUNTING, which matches nothing and therefore needs no key: if
 # <branch> carries exactly ONE row whose status is <word>, there is no second row
 # the reported run could be, so identity is established without ever asking which
-# row it is. More than one row of the word is the tie above, and nothing here can
-# break it.
+# row it is. More than one row of the word is the tie above.
 #
 # THAT SOUNDNESS HAS A CONDITION: the reported run's OWN row must fall inside the
 # listing this was handed. `axi status` can answer with a run that is not the
 # newest, so a reported run whose row has already fallen past the scanned window,
 # while a newer row of the same word is still inside it, counts as ONE and would
 # be called identified when it is not - asserting the stronger reading over the
-# newer run instead. Nothing here can detect that: with no key joining the two
-# surfaces, a reported run absent from the listing looks exactly like a reported
-# run present in it. So this is an unclosed residual of the SAME root cause,
-# recorded under `fm-listado-de-corridas-sin-id` rather than as a limit of its
-# own.
+# newer run instead. This is an unclosed residual of the SAME root cause: the
+# count-of-one proof makes the identity guess without checking whether the
+# reported run's own row is present or has fallen out, and with no key joining
+# the two surfaces, a reported run absent from the listing looks exactly like one
+# present in it. Recorded under `fm-listado-de-corridas-sin-id`.
 #
-# THE OVERVIEW ID BREAKS THIS TIE: `fm_nm_overview_row_identifies_run` uses the
-# run id from `axi status` to require the reported run be the branch's NEWEST
-# overview row with the reported word. This establishes identity in both the
-# count-of-one and the lagging-status shapes, closing both residuals.
+# THE OVERVIEW ID BREAKS THE TIE WHEN THE COUNT FAILS: `fm_nm_overview_row_identifies_run`
+# uses the run id from `axi status` to require the reported run be the branch's
+# NEWEST overview row with the reported word. The overview is consulted only
+# when `fm_nm_runs_row_identifies_run` fails (more than one row or zero rows),
+# so it does not close the count-of-one residual where the reported run's row
+# fell past the window while one newer failed run remains.
 #
 # 0 ONLY when identity is established. Every other answer - a missing argument, a
 # word that matches no row, a word that matches more than one - is "not

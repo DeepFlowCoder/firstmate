@@ -4625,8 +4625,8 @@ test_a_superseding_cut_is_recognised_by_inactive_reconcile() {
   FM_FAKE_AXI_OVERVIEW="$(axi_overview "01CUT|fm/feat-sia|failed|${short}")"
   out=$(run_crew_state "$d" sia)
 
-  assert_contains "$out" "state: unknown" "superseding cut reports unknown"
-  assert_contains "$out" "validation was cut off by its own" "the superseding cut detail opens with the marker"
+  fm_nm_state_line_is_cap_cut "$out" \
+    || fail "the superseding cut is not recognised by fm_nm_state_line_is_cap_cut"$'\n'"--- output ---"$'\n'"$out"
   pass "a superseding cut is recognised by the detail marker"
 }
 
@@ -4644,7 +4644,6 @@ test_a_superseding_cut_with_mismatched_head_does_not_identify() {
   FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-smh | sed 's/01RUN/01CUT/')"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" smh
-  out=$(run_crew_state "$d" smh)
   FM_FAKE_AXI_OVERVIEW="$(axi_overview "01CUT|fm/feat-smh|failed|bbbbbbbb")"
   out=$(run_crew_state "$d" smh)
   assert_not_contains "$out" "time cap" "a superseding cut with mismatched head does not prove the cut"
@@ -4666,7 +4665,6 @@ test_a_superseding_cut_with_non_cut_error_does_not_identify() {
   FM_FAKE_AXI_STATUS_RUN="$(run_failed fm/feat-snce | sed 's/01RUN/01SNCE/')"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" snce
-  out=$(run_crew_state "$d" snce)
   FM_FAKE_AXI_OVERVIEW="$(axi_overview "01SNCE|fm/feat-snce|failed|${short}")"
   out=$(run_crew_state "$d" snce)
   assert_not_contains "$out" "time cap" "a superseding cut guard failing on non-cap-cut error does not prove the cut"
@@ -4688,7 +4686,6 @@ test_a_superseding_cut_where_run_returns_different_id_does_not_identify() {
   FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-swri | sed 's/01RUN/01WRONG/')"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" swri
-  out=$(run_crew_state "$d" swri)
   FM_FAKE_AXI_OVERVIEW="$(axi_overview "01EXP|fm/feat-swri|failed|${short}")"
   out=$(run_crew_state "$d" swri)
   assert_not_contains "$out" "time cap" "a superseding cut guard failing on id mismatch does not prove the cut"
@@ -4710,7 +4707,6 @@ test_a_superseding_cut_where_run_returns_different_branch_does_not_identify() {
   FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/other-crew | sed 's/01RUN/01WRB/')"
   FM_FAKE_BUSY=0
   arm_idle_record "$d/state" swrb
-  out=$(run_crew_state "$d" swrb)
   FM_FAKE_AXI_OVERVIEW="$(axi_overview "01WRB|fm/feat-swrb|failed|${short}")"
   out=$(run_crew_state "$d" swrb)
   assert_not_contains "$out" "time cap" "a superseding cut guard failing on branch mismatch does not prove the cut"
