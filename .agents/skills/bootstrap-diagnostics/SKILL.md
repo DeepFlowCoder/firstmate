@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, UPSTREAM_ANCESTRY, GNHF_RECONCILE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, CAPACITY, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, UPSTREAM_ANCESTRY, GNHF_RECONCILE, DONE_RECONCILE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, DISK_SPACE, CAPACITY, GH_BASE_REPO, FLEET_SYNC, NETWORK_CHECKS, HOME_SUMMARY, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -43,6 +43,10 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Landing that work follows the project's ordinary delivery path like any other change, and the line goes quiet on its own once the branch's commits reach the default branch.
   Silence never means the book is reconciled: the guard matches only when a run's commit SUBJECT names the task id, so keep naming the task id in the prompt of any `gnhf` run dispatched against backlog work.
   [`bin/fm-gnhf-reconcile.sh`](../../../bin/fm-gnhf-reconcile.sh) owns that contract and its bounds, and [`docs/verification/gnhf-run-contract.md`](../../../docs/verification/gnhf-run-contract.md) records the measurements behind it.
+- `DONE_RECONCILE: <id> is <queued|in_flight> in the book, but its worker's last status line is "done: <note>"` - a worker's own status log ends in `done:` while the backlog still lists its task open, so reading the book alone will tell the captain finished work is pending.
+  Read the worker's record with `bin/fm-crew-state.sh <id>` and its report, never the book, before saying anything about that task to the captain.
+  An investigation closes only after the `captain-hold-lifecycle` inventory of the calls its report leaves the captain, never in bulk; a ship closes through its own landing path.
+  The line never closes anything, and `bin/fm-done-reconcile.sh` owns what counts as finished.
 - `STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>` - the visible startup-memory budget is not a safe one-line positive decimal file; do not infer the default or propagate it.
   Correct the local primary file, then rerun session start so the normal convergence path can deliver the validated value to secondmate homes.
 - `CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>` - the optional dispatch profile file exists but failed low-cost bootstrap validation; stop profile-based dispatch, report the actionable error, and require correction of the malformed schema, unverified harness name, or invalid harness/effort pair rather than falling back around it or selecting a bad profile.

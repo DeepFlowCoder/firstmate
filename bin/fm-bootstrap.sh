@@ -29,6 +29,8 @@
 #                 "UPSTREAM_ANCESTRY: <remediation>",
 #                 "GNHF_RECONCILE: <id> is queued in the book, but published
 #                 branch <branch> in <repo> names it - <commit subject>",
+#                 "DONE_RECONCILE: <id> is <queued|in_flight> in the book, but its
+#                 worker's last status line is \"done: <note>\"",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: secondmate <id>: send failed: <reason>",
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
@@ -78,6 +80,12 @@
 #          bin/fm-gnhf-reconcile.sh owns how a task id is recovered from a
 #          branch's commit subjects, why the branch NAME cannot carry one, and
 #          its bounds; like UPSTREAM_ANCESTRY it degrades to silence, so an
+#          absent line never means the book is reconciled.
+#          A DONE_RECONCILE line means a worker's own status log ends in
+#          `done:` while the backlog still lists its task as queued or
+#          in_flight. It reads only local status files and the book, and it
+#          reports without ever closing anything; bin/fm-done-reconcile.sh owns
+#          what counts and degrades to silence like the checks above, so an
 #          absent line never means the book is reconciled.
 #          A DISK_SPACE report line means free space on this home's filesystem is
 #          below the configured refusal threshold; above it, and when the space
@@ -1409,6 +1417,19 @@ gnhf_reconcile_detect() {
   done < <("$SCRIPT_DIR/fm-gnhf-reconcile.sh" report 2>/dev/null || true)
 }
 
+# Work a finished worker's own status log says is done that the backlog still
+# lists as queued or in_flight. It reads only local state files and the book, so
+# it adds no network call. bin/fm-done-reconcile.sh owns what counts, its bounds,
+# and the fact that it only reports - closing the item is firstmate's own
+# decision, and for an investigation it follows the captain-hold-lifecycle
+# inventory of the calls the report leaves the captain.
+done_reconcile_detect() {
+  [ -x "$SCRIPT_DIR/fm-done-reconcile.sh" ] || return 0
+  while IFS= read -r line; do
+    [ -z "$line" ] || echo "DONE_RECONCILE: $line"
+  done < <("$SCRIPT_DIR/fm-done-reconcile.sh" report 2>/dev/null || true)
+}
+
 detect_local_config() {
   # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
   # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
@@ -1449,6 +1470,7 @@ detect_local_config() {
   fi
   crew_dispatch_validate
   gnhf_reconcile_detect
+  done_reconcile_detect
   disk_space_detect
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
     && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then

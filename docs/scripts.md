@@ -64,6 +64,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-doc-audience-check.sh` | Validate the tracked documentation audience inventory's structure                    |
 | `fm-scripts-inventory-check.sh` | Refuse any drift between this file's toolbelt table and the files under `bin/`   |
 | `fm-ensure-agents-md.sh` | Ensure a project's real `AGENTS.md`, its `CLAUDE.md` `@AGENTS.md` pointer, and the canonical self-governance section |
+| `fm-done-reconcile.sh`   | Report backlog tasks the book still lists open whose worker status log already ends in `done:`, without reconciling anything |
 | `fm-gnhf-reconcile.sh`   | Report published overnight `gnhf` work for backlog tasks the book still lists as queued, without reconciling anything |
 | `fm-guard.sh`            | Warn on primary-checkout tangles, pending queued wakes, and unhealthy supervision    |
 | `fm-primary-scope-lib.sh` | Shared marker-or-plain-checkout primary-home predicate for the tracked hooks and the self-update |
