@@ -893,7 +893,7 @@ App-server partial methods and raw socket experiments do not satisfy that bridge
 On 2026-11-05, codex-cli 0.165.0 on macOS arm64 initialized two isolated real stdio app-servers, one with `--managed-daemon` and one without it, without submitting model turns.
 The file credential store, private `HOME` and `CODEX_HOME`, and refusing `security` and `op` stubs isolated the probe from operator credentials.
 The session classifier accepted the ordinary stdio process and rejected the managed host; public lock status preserved a legacy managed-host lock as requiring recovery.
-`bin/fm-lock.sh`'s header owns the recovery procedure and its session-scoped owner requirement.
+`bin/fm-lock.sh`'s header owns the recovery procedure and the read-only boundary for sessions hosted inside a managed daemon.
 
 Refresh this version-scoped proof after upgrading Codex:
 
