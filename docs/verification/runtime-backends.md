@@ -912,6 +912,30 @@ Observed guarantee: a Desktop-owned thread can write Firstmate lifecycle files w
 The missing guarantee remains a supported shell-callable bridge that lets Firstmate perform those operations against the same visible Desktop endpoint.
 App-server partial methods and raw socket experiments do not satisfy that bridge contract.
 
+### Session-lock process identity
+
+On 2026-11-05, codex-cli 0.165.0 on macOS arm64 initialized two isolated real stdio app-servers, one with `--managed-daemon` and one without it, without submitting model turns.
+The file credential store, private `HOME` and `CODEX_HOME`, and refusing `security` and `op` stubs isolated the probe from operator credentials.
+The session classifier accepted the ordinary stdio process and rejected the managed host; public lock status preserved a legacy managed-host lock as requiring recovery.
+`bin/fm-lock.sh`'s header owns the recovery procedure and the read-only boundary for sessions hosted inside a managed daemon.
+
+Refresh this version-scoped proof after upgrading Codex:
+
+```sh
+FM_CODEX_SESSION_LOCK_DRIFT=1 bin/fm-test-run.sh tests/fm-codex-session-lock-live-e2e.test.sh
+```
+
+Observed output, excluding runner timings:
+
+```text
+ok - codex-cli 0.165.0: stdio session recognized
+ok - codex-cli 0.165.0: managed daemon excluded
+ok - Codex session-lock drift guard initialized both real processes without model turns
+```
+
+The portable regression in `tests/fm-session-lock-ancestry.test.sh` drives real process trees through lock acquisition, failed recovery while the host lives, recovery after host exit, live competitor refusal, and process-table read failures.
+This proves process classification and guarded recovery, not ownership of an individual Desktop conversation inside a shared daemon.
+
 ## Cursor Agent CLI
 
 Cursor runs crewmate, scout, secondmate, and primary work; [`supervision.md`](supervision.md#cursor-primary-park-2026-08-13) owns the primary evidence.

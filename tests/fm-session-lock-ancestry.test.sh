@@ -252,6 +252,9 @@ case "$pid:$field" in
   660:comm=) printf '%s\n' sleep ;;
   660:args=) printf '%s\n' 'sleep 60' ;;
   660:ppid=) printf '%s\n' 1 ;;
+  670:comm=) printf '%s\n' codex ;;
+  670:args=) printf '%s\n' 'codex app-server --managed-daemon' ;;
+  670:ppid=) printf '%s\n' 1 ;;
   690:*) exit 1 ;;
   *:comm=) printf '%s\n' bash ;;
   *:args=) printf '%s\n' bash ;;
@@ -279,6 +282,10 @@ SH
     fail "a live process that is no harness was reported as another session"
   fi
 
+  printf '670\n' > "$dir/state/.lock"
+  lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'" \
+    || fail "a live managed Codex daemon holding the lock was treated as a repairable home"
+
   printf 'not-a-pid\n' > "$dir/state/.lock"
   if lib_eval "$fakebin" "fm_session_lock_held_by_other '$dir/state'"; then
     fail "a malformed lock was reported as another session"
@@ -300,6 +307,56 @@ SH
   FM_TEST_SESSION_PID=1 lib_eval "$fakebin" 'fm_harness_pid_alive 600' \
     || fail "the fixture's competing session was not live for the unresolvable-ancestry case"
   pass "session-lock: another live session holding the home is proved, never assumed"
+}
+
+test_managed_codex_identity_sources() {
+  local comm args
+  for comm in codex codex-aarch64 /opt/codex/bin/engine node python; do
+    case "$comm" in
+      node|python) args="$comm /opt/codex/bin/cli.js app-server --managed-daemon" ;;
+      *) args="$comm app-server --managed-daemon" ;;
+    esac
+    if lib_eval "$FAKEBIN" "fm_harness_process_matches '$comm' '$args'"; then
+      fail "$comm: managed Codex daemon was recognized as a session"
+    fi
+    lib_eval "$FAKEBIN" "fm_harness_process_matches '$comm' '$comm /opt/codex/bin/cli.js app-server --stdio'" \
+      || fail "$comm: ordinary Codex process identity was lost"
+  done
+  lib_eval "$FAKEBIN" "fm_harness_process_matches claude 'claude app-server --managed-daemon'" \
+    || fail "Codex daemon exclusion changed another harness's identity"
+  pass "session-lock: managed Codex identity is excluded through every supported name source"
+}
+
+test_managed_daemon_matcher_is_anchored_to_the_subcommand() {
+  local prompt='codex exec fix the lock when codex app-server --managed-daemon holds it'
+  local node_claude='node /opt/claude/cli.js -p investigate app-server --managed-daemon codex'
+  lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches codex 'codex app-server --listen unix:// --managed-daemon'" \
+    || fail "a real managed daemon argv was not recognized as the daemon"
+  lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches node 'node /usr/local/lib/node_modules/@openai/codex/bin/codex.js app-server --managed-daemon'" \
+    || fail "a node-hosted managed Codex daemon was not recognized as the daemon"
+  if lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches codex '$prompt'"; then
+    fail "a Codex session whose prompt names the daemon flags was classified as the managed daemon"
+  fi
+  lib_eval "$FAKEBIN" "fm_harness_process_matches codex '$prompt'" \
+    || fail "a Codex session whose prompt names the daemon flags lost its harness identity"
+  if lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches node '$node_claude'"; then
+    fail "a node-hosted Claude session whose prompt names the daemon flags was classified as the managed daemon"
+  fi
+  lib_eval "$FAKEBIN" "fm_harness_process_matches node '$node_claude'" \
+    || fail "a node-hosted Claude session whose prompt names the daemon flags lost its harness identity"
+  pass "session-lock: managed daemon identity is anchored to the app-server subcommand, not any argv token"
+}
+
+test_managed_daemon_matcher_skips_global_option_values() {
+  local argv
+  for argv in \
+    'codex -c cli_auth_credentials_store="file" app-server --listen stdio:// --managed-daemon' \
+    'codex -m gpt-5 app-server --managed-daemon' \
+    'codex --profile x app-server --managed-daemon'; do
+    lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches codex '$argv'" \
+      || fail "a managed daemon behind a global option value was not recognized: $argv"
+  done
+  pass "session-lock: managed daemon identity survives Codex global options that take a value"
 }
 
 # --- end-to-end layer: the real Stop auto-arm in real process trees ----------
@@ -440,6 +497,200 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+test_eperm_lock_recovery_follows_process_identity() {
+  local dir fakebin real_ps out want
+  dir="$TMP_ROOT/eperm-readable-ps"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  ln -s /bin/bash "$dir/codex"
+  real_ps=$(command -v ps)
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+field= pid=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -o) field=\$2; shift 2 ;;
+    -p) pid=\$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "\$pid:\$field" in
+  1:comm=) printf '%s\n' codex ;;
+  1:args=) printf '%s\n' 'codex app-server --managed-daemon' ;;
+  2:comm=) printf '%s\n' sleep ;;
+  2:args=) printf '%s\n' 'sleep 3600' ;;
+  *) exec "$real_ps" -o "\$field" -p "\$pid" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  cat > "$dir/run-lock.sh" <<'SH'
+kill() {
+  if [ "${1:-}" = -0 ] && [ "${2:-}" = 2 ]; then
+    echo "kill: (2) - Operation not permitted" >&2
+    return 1
+  fi
+  builtin kill "$@"
+}
+export -f kill
+"$FM_LOCK" "$@"
+SH
+  run_lock() {
+    env PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+      FM_LOCK="$ROOT/bin/fm-lock.sh" "$dir/codex" "$dir/run-lock.sh" 2>&1
+  }
+
+  printf '2\n' > "$dir/state/.lock"
+  out=$(run_lock) || fail "a stale lock naming a readable non-daemon pid under EPERM was not replaced: $out"
+  case "$out" in "lock acquired: harness pid "*) ;; *) fail "unexpected acquire output: $out" ;; esac
+  want=${out##* }
+  [ "$(cat "$dir/state/.lock")" = "$want" ] || fail "the lock does not name the acquiring session $want"
+
+  printf '1\n' > "$dir/state/.lock"
+  out=$(run_lock) && fail "a lock naming the managed daemon was replaced: $out"
+  case "$out" in *"recovery required"*) ;; *) fail "managed daemon lock was not refused for recovery: $out" ;; esac
+  [ "$(cat "$dir/state/.lock")" = 1 ] || fail "the managed daemon lock was overwritten"
+
+  pass "session-lock: EPERM lock recovery follows process identity; daemon lock still refused"
+}
+
+# A managed app-server hosts many conversations in one process. Use real
+# processes with its actual argv shape, then drive the public lock command.
+# Python only supplies a request/reply fixture, so there is no polling or
+# dependency on the harness running this suite.
+test_managed_codex_daemon_never_owns_a_session() {
+  local dir
+  # The neutral request runner is a bare interpreter, so harness names in its argv
+  # would make fm_harness_process_matches read it as a session owner. The request
+  # travels in the environment, and the home dir name stays harness-free.
+  dir="$TMP_ROOT/managed-host"
+  mkdir -p "$dir/state"
+  ln -s /bin/bash "$dir/codex"
+  mkdir -p "$dir/ps-bin"
+  cat > "$dir/ps-bin/ps" <<'SH'
+#!/usr/bin/env bash
+if [ "${4:-}" = "$FM_BLIND_PID" ] && [ "${2:-}" = "$FM_BLIND_FIELD" ]; then
+  [ "$FM_BLIND_MODE" = empty ] && exit 0
+  exit 1
+fi
+exec "$FM_REAL_PS" "$@"
+SH
+  chmod +x "$dir/ps-bin/ps"
+  cat > "$dir/app-server" <<'SH'
+printf '%s\n' "$$"
+while IFS= read -r request; do
+  FM_REQUEST=$request python3 - <<'PY'
+import json, os, subprocess
+result = subprocess.run(json.loads(os.environ["FM_REQUEST"]), capture_output=True, text=True, timeout=15)
+print(json.dumps([result.returncode, result.stdout + result.stderr]), flush=True)
+PY
+done
+SH
+  if ! python3 - "$dir" "$ROOT" <<'PY'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+home, root = sys.argv[1:]
+env = dict(os.environ, FM_HOME=home, FM_STATE_OVERRIDE=home + "/state")
+lib = root + "/bin/fm-session-lock-lib.sh"
+lock = root + "/bin/fm-lock.sh"
+processes = []
+
+def start(*args):
+    process = subprocess.Popen(
+        [home + "/codex", "app-server", *args],
+        cwd=home, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    processes.append(process)
+    assert int(process.stdout.readline()) == process.pid, "fixture failed to start"
+    return process
+
+def run(process, *command):
+    process.stdin.write(json.dumps(command) + "\n")
+    process.stdin.flush()
+    return json.loads(process.stdout.readline())
+
+def query(process, expression):
+    return run(process, "bash", "-c", '. "$1"; ' + expression, "_", lib)
+
+try:
+    daemon = start("--listen", "unix://", "--managed-daemon")
+    args = subprocess.check_output(["ps", "-o", "args=", "-p", str(daemon.pid)], text=True)
+    assert "app-server --listen unix:// --managed-daemon" in args, args
+    rc, out = query(daemon, "fm_harness_ancestry_pid")
+    assert rc != 0, f"daemon-hosted conversation should fail to identify a harness: {out}"
+    rc, _ = query(daemon, f"fm_harness_pid_alive {daemon.pid}")
+    assert rc != 0, "managed daemon was recognized as a live session"
+    rc, out = run(daemon, lock)
+    assert rc != 0 and "session-scoped" in out, f"daemon should fail to acquire lock: {out}"
+    assert not Path(home, "state/.lock").exists(), "daemon published a session lock"
+
+    # An existing daemon lock is unsafe, rather than proof that conversations
+    # are gone. Recovery must wait for that exact daemon to exit.
+    holder = Path(home, "state/.lock")
+    holder.write_text(f"{daemon.pid}\n")
+    assert holder.read_text() == f"{daemon.pid}\n"
+    session = start("--stdio")
+    rc, out = run(session, lock, "status")
+    assert rc == 0 and "recovery required" in out, out
+    rc, out = run(session, lock)
+    assert rc != 0 and "stop" in out and "daemon" in out, out
+    assert holder.read_text() == f"{daemon.pid}\n", "live daemon lock was overwritten"
+    rc, _ = query(daemon, f"fm_session_lock_owned_by_self '{home}/state'")
+    assert rc != 0, "a daemon claimed its legacy lock as a session"
+
+    # Losing a process-table channel must never permit replacing the live host.
+    for field in ("comm=", "args="):
+        for mode in ("failure", "empty"):
+            prefix = ["env", "PATH=" + home + "/ps-bin:" + os.environ["PATH"],
+                      "FM_REAL_PS=" + shutil.which("ps"), "FM_BLIND_PID=" + str(daemon.pid),
+                      "FM_BLIND_FIELD=" + field, "FM_BLIND_MODE=" + mode]
+            rc, out = run(session, *prefix, lock)
+            assert rc != 0 and "cannot establish" in out, (field, mode, out)
+            assert holder.read_text() == f"{daemon.pid}\n", "unreadable live lock was replaced"
+            rc, out = run(session, *prefix, lock, "status")
+            assert rc == 0 and "recovery required" in out, (field, mode, out)
+            rc, out = run(daemon, *prefix, "bash", "-c",
+                          '. "$1"; fm_harness_ancestry_pid', "_", lib)
+            assert rc != 0, ("unreadable host escaped the ancestry boundary", field, mode, out)
+
+    daemon.stdin.close()
+    assert daemon.wait(timeout=10) == 0
+    rc, out = run(session, lock)
+    assert rc == 0, out
+    assert holder.read_text() == f"{session.pid}\n", "stdio session did not own the lock"
+    rc, _ = query(session, f"fm_session_lock_owned_by_self '{home}/state'")
+    assert rc == 0, "stdio session could not recognize its own lock"
+
+    competitor = start("--stdio")
+    rc, out = run(competitor, lock)
+    assert rc != 0 and "another live firstmate session" in out, out
+    assert holder.read_text() == f"{session.pid}\n", "live session lock was overwritten"
+    session.stdin.close()
+    assert session.wait(timeout=10) == 0
+    rc, out = run(competitor, lock)
+    assert rc == 0, out
+    assert holder.read_text() == f"{competitor.pid}\n", "closed session left a permanent lock"
+finally:
+    for process in processes:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=10)
+PY
+  then
+    fail "managed Codex daemon session-lock recovery failed"
+  fi
+  pass "session-lock: managed Codex daemon is never an owner; recovery proves it exited"
+}
+
+test_eperm_lock_recovery_follows_process_identity
+test_managed_codex_daemon_never_owns_a_session
+test_managed_codex_identity_sources
+test_managed_daemon_matcher_is_anchored_to_the_subcommand
+test_managed_daemon_matcher_skips_global_option_values
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock

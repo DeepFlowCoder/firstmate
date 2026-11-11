@@ -8,6 +8,14 @@
 # lock-owning primary session before it may arm or rewake;
 # bin/fm-guard.sh uses it to tell an unowned home, which this session may repair,
 # from a home another live session holds, which it must leave alone.
+# A managed Codex app-server daemon is never a harness, a session owner, or a live
+# session. A session hosted inside it is deliberately read-only: the ancestry walk
+# stops at the daemon and no takeover is offered. The earlier requirement to record
+# the hosted conversation or offer a guided takeover is retired for this change.
+# Known limit: the managed-daemon recognizer reads the flattened `ps args=` string, so
+# it does not recognize an executable whose path contains spaces, and it cannot tell
+# apart a prompt that itself begins with `app-server`. The robust fix is the follow-up
+# card fm-reconocedor-daemon-fuente-de-procesos, which needs a different process source.
 # This file is sourced by scripts and has no side effects on source.
 
 # Cursor process identity is NOT expressible as a command-name pattern and is
@@ -47,6 +55,42 @@ fm_harness_path_name() {  # <path>
   return 1
 }
 
+# A managed Codex app-server is a shared conversation host, not a session.
+# Keep this separate from harness identity: a legacy lock naming a live host
+# needs recovery, but must never count as proof of session ownership.
+fm_codex_managed_daemon_matches() {  # <comm> <args>
+  local comm=$1 args=$2 candidate sub='' script='' interp=0 found=0 i j
+  local -a argv
+  read -r -a argv <<<"$args"
+  [ "${#argv[@]}" -gt 1 ] || return 1
+  case "$comm" in *node*|*python*) interp=1 ;; esac
+  for ((i = 1; i < ${#argv[@]}; i++)); do
+    case "${argv[i]}" in
+      -c|--config|--enable|--disable|--remote|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval) i=$((i + 1)); continue ;;
+      -*) continue ;;
+    esac
+    if [ "$interp" -eq 1 ]; then
+      script=${argv[i]}
+      interp=0
+      continue
+    fi
+    sub=${argv[i]}
+    break
+  done
+  [ "$sub" = app-server ] || return 1
+  for ((j = i + 1; j < ${#argv[@]}; j++)); do
+    if [ "${argv[j]}" = --managed-daemon ]; then found=1; break; fi
+  done
+  [ "$found" -eq 1 ] || return 1
+  for candidate in "$comm" "$script"; do
+    [ -n "$candidate" ] || continue
+    case "$(basename -- "$candidate")" in *codex*) return 0 ;; esac
+    case "$(fm_harness_path_name "$candidate")" in codex) return 0 ;; esac
+  done
+  case "$(fm_harness_path_name "${argv[0]}")" in codex) return 0 ;; esac
+  return 1
+}
+
 # True when the process described by command name $1 and full argument string $2
 # is a verified harness. Sets FM_HARNESS_IS_CLAUDE for the ancestry walk.
 #
@@ -63,6 +107,7 @@ FM_HARNESS_IS_CLAUDE=0
 fm_harness_process_matches() {  # <comm> <args>
   local comm=$1 args=$2 base argv0 name
   FM_HARNESS_IS_CLAUDE=0
+  fm_codex_managed_daemon_matches "$comm" "$args" && return 1
   base=$(basename -- "$comm")
   if printf '%s' "$base" | grep -qE "$FM_HARNESS_RE"; then
     case "$base" in *claude*) FM_HARNESS_IS_CLAUDE=1 ;; esac
@@ -112,7 +157,10 @@ fm_harness_ancestry_pids() {
   local pid=$$ comm args extending=0 printed=0
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break
-    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || break
+    [ -n "$args" ] || break
+    # Do not climb through a shared host into an unrelated launching session.
+    fm_codex_managed_daemon_matches "$comm" "$args" && break
     if fm_harness_process_matches "$comm" "$args"; then
       printf '%s\n' "$pid"
       printed=1
@@ -150,8 +198,30 @@ fm_harness_pid_alive() {
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  args=$(ps -o args= -p "$pid" 2>/dev/null)
+  args=$(ps -o args= -p "$pid" 2>/dev/null) || return 1
+  [ -n "$args" ] || return 1
   fm_harness_process_matches "$comm" "$args"
+}
+
+# Print the state of pid $1: dead, unknown, daemon, or alive (a readable
+# non-daemon process). Only ESRCH proves a pid is gone. Any other kill failure,
+# such as EPERM for a process owned by another user, is decided by its ps
+# identity. An identity ps cannot read is unknown: fm-lock.sh refuses to replace
+# that lock, while the guard deliberately does not count it as another session.
+fm_pid_daemon_state() {  # <pid>
+  local pid=$1 comm args probe_error
+  if ! probe_error=$(LC_ALL=C kill -0 "$pid" 2>&1); then
+    case "$probe_error" in *'No such process'*) printf 'dead\n'; return 0 ;; esac
+  fi
+  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || { printf 'unknown\n'; return 0; }
+  args=$(ps -o args= -p "$pid" 2>/dev/null) || { printf 'unknown\n'; return 0; }
+  if [ -z "$comm" ] || [ -z "$args" ]; then
+    printf 'unknown\n'
+  elif fm_codex_managed_daemon_matches "$comm" "$args"; then
+    printf 'daemon\n'
+  else
+    printf 'alive\n'
+  fi
 }
 
 # True when the newline-separated pid list $1 contains pid $2. One owner of the
@@ -199,13 +269,15 @@ fm_session_lock_pid() {
 }
 
 # True when state dir $1 holds a session lock naming a LIVE harness process that
-# is NOT in this process's harness ancestry: ANOTHER firstmate session owns this
-# home right now, so nothing running here may repair, drain, or otherwise mutate
-# its fleet state.
-# This is the exact complement of fm_session_lock_owned_by_self for the one case
+# is NOT in this process's harness ancestry, or a live managed Codex app-server
+# daemon: another firstmate session owns this home right now, or a shared host's
+# legacy lock requires recovery (read-only), so nothing running here may repair,
+# drain, or otherwise mutate its fleet state.
+# This is the exact complement of fm_session_lock_owned_by_self for the cases
 # that can be proved, and it requires positive proof in both directions: an
-# absent, malformed, dead, or non-harness lock is not another session, and an
-# ancestry this process cannot resolve is not proof of foreignness either.
+# absent, malformed, dead, or non-harness lock (other than a live managed
+# daemon) is not another session, and an ancestry this process cannot resolve is
+# not proof of foreignness either.
 # That second requirement is deliberate rather than incidental. The away-mode
 # daemon and other detached helpers act FOR the lock-owning session from outside
 # its process tree, where the ancestry walk finds no harness at all; treating
@@ -222,6 +294,11 @@ fm_session_lock_held_by_other() {
   local state=$1 lock_pid pids
   FM_SESSION_LOCK_OTHER_PID=
   lock_pid=$(fm_session_lock_pid "$state") || return 1
+  if [ "$(fm_pid_daemon_state "$lock_pid")" = daemon ]; then
+    # shellcheck disable=SC2034 # Read by callers after the function returns.
+    FM_SESSION_LOCK_OTHER_PID=$lock_pid
+    return 0
+  fi
   fm_harness_pid_alive "$lock_pid" || return 1
   pids=$(fm_harness_ancestry_pids) || return 1
   if fm_pid_list_contains "$pids" "$lock_pid"; then
