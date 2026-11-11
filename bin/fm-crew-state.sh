@@ -122,8 +122,8 @@
 #      A DECLARED LIMIT, not a promise this read keeps everywhere: the coarse
 #      runs-list arm CANNOT make that distinction. fm_nm_runs_word_for_terminal
 #      collapses `passed`, `checks-passed` and `completed` into the single list
-#      word `completed`, and a runs-list row carries no run id (`no-mistakes runs`
-#      accepts only --limit), so there is nothing to ask `axi status --run` about.
+#      word `completed`, and the overview id is deliberately not read for the
+#      completed bucket (balance/merge claim out of scope).
 #      So ON THE READ THAT ASKS NO FORGE that arm declines for the WHOLE bucket -
 #      a `completed` row naming a pull request with no local merge record reads
 #      `unknown` - and a ready delivery that missed direct attribution reads

@@ -411,7 +411,7 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # the two surfaces, a reported run absent from the listing looks exactly like one
 # present in it. Recorded under `fm-listado-de-corridas-sin-id`.
 #
-# THE OVERVIEW ID BREAKS THE TIE WHEN THE COUNT FAILS: `fm_nm_overview_row_identifies_run`
+# THE OVERVIEW ID BREAKS A TIE THE COUNT CANNOT SETTLE: `fm_nm_overview_row_identifies_run`
 # uses the run id from `axi status` to require the reported run be the branch's
 # NEWEST overview row with the reported word. The overview is consulted only
 # when the runs list answered AND carries more than one row of the reported word for the branch.
@@ -419,38 +419,30 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # so the count-of-one residual stays open where the reported run's row fell past the window
 # while one newer failed run remains.
 #
-# Count how many rows of a given word exist for a branch in the runs output.
-# Stores the count in the caller's output variable.
-fm_nm_runs_count_for_branch() {  # <out-var> <runs-output> <branch> <word>
-  local outvar=${1:-} out=${2:-} branch=${3:-} word=${4:-}
-  local row parsed st br n=0
-  [ -n "$outvar" ] && [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
-  while IFS= read -r row; do
-    parsed=$(fm_nm_runs_parse_row "$row") || continue
-    IFS=$'\t' read -r st br _ <<< "$parsed"
-    if [ "$br" = "$branch" ] && [ "$st" = "$word" ]; then
-      n=$((n + 1))
-    fi
-  done <<< "$out"
-  printf -v "$outvar" '%d' "$n"
-}
-
 # 0 ONLY when identity is established. Every other answer - a missing argument, a
 # word that matches no row, a word that matches more than one - is "not
 # established", because a caller asks this to decide whether it may make a
 # STRONGER claim and silence must never read as permission.
 fm_nm_runs_row_identifies_run() {  # <runs-output> <branch> <word>
-  local out=${1:-} branch=${2:-} word=${3:-}
-  local row parsed st br hits=0
+  local out=${1:-} branch=${2:-} word=${3:-} n=0
   [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
+  fm_nm_runs_count_for_branch n "$out" "$branch" "$word"
+  [ "$n" = 1 ]
+}
+
+# Counts the rows of <word> on <branch> into <out-var>: the one owner of that rule.
+fm_nm_runs_count_for_branch() {  # <out-var> <runs-output> <branch> <word>
+  local outvar=${1:-} out=${2:-} branch=${3:-} word=${4:-}
+  local row parsed st br count=0
+  [ -n "$outvar" ] && [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
   while IFS= read -r row; do
     parsed=$(fm_nm_runs_parse_row "$row") || continue
     IFS=$'\t' read -r st br _ <<< "$parsed"
     if [ "$br" = "$branch" ] && [ "$st" = "$word" ]; then
-      hits=$((hits + 1))
+      count=$((count + 1))
     fi
   done <<< "$out"
-  [ "$hits" = 1 ]
+  printf -v "$outvar" '%d' "$count"
 }
 
 # The one listing that DOES carry a run id: `no-mistakes axi` with no subcommand
