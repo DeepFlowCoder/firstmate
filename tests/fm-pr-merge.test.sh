@@ -218,8 +218,16 @@ case "${1:-} ${2:-}" in
     body_file="$(dirname "$FM_TEST_GH_AXI_LOG")/merged-body"
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --body) printf '%s' "$2" > "$body_file"; shift ;;
-        --body=*) printf '%s' "${1#--body=}" > "$body_file" ;;
+        # The real CLI rejects a blank inline body (VALIDATION_ERROR), so the mock does too.
+        --body|--body=*)
+          inline=${2-}
+          [ "$1" = --body ] || inline=${1#--body=}
+          case "$inline" in
+            *[![:space:]]*) ;;
+            *) printf 'error: "--body requires text"\ncode: VALIDATION_ERROR\n'; exit 1 ;;
+          esac
+          printf '%s' "$inline" > "$body_file"
+          [ "$1" != --body ] || shift ;;
         --body-file) cat "$2" > "$body_file"; shift ;;
         --body-file=*) cat "${1#--body-file=}" > "$body_file" ;;
       esac
@@ -3402,12 +3410,16 @@ test_squash_body_inputs_and_failures() {
       agent-only)
         expect_code 0 "$rc" "agent-only body refused"
         [ ! -s "$case_dir/merged-body" ] || fail 'agent-only body was not explicitly emptied'
-        assert_grep '--body ' "$case_dir/gh-axi.log" 'empty cleaned body was not supplied'
+        assert_grep '--body-file /dev/null' "$case_dir/gh-axi.log" 'empty cleaned body was not supplied as an empty file'
         ;;
       clean|empty|clean-stdin)
         expect_code 0 "$rc" "clean/empty body refused"
         cmp -s "$case_dir/squash-body" "$case_dir/merged-body" || fail 'clean body was modified'
-        assert_grep '--body ' "$case_dir/gh-axi.log" 'clean snapshot was not explicitly supplied'
+        if [ -s "$case_dir/squash-body" ]; then
+          assert_grep '--body ' "$case_dir/gh-axi.log" 'clean snapshot was not explicitly supplied'
+        else
+          assert_grep '--body-file /dev/null' "$case_dir/gh-axi.log" 'empty snapshot was not supplied as an empty file'
+        fi
         ;;
       *)
         expect_code 0 "$rc" "squash $variant: merge refused"
