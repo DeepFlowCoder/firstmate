@@ -12,6 +12,10 @@
 # session. A session hosted inside it is deliberately read-only: the ancestry walk
 # stops at the daemon and no takeover is offered. The earlier requirement to record
 # the hosted conversation or offer a guided takeover is retired for this change.
+# Known limit: the managed-daemon recognizer reads the flattened `ps args=` string, so
+# it does not recognize an executable whose path contains spaces, and it cannot tell
+# apart a prompt that itself begins with `app-server`. The robust fix is the follow-up
+# card fm-reconocedor-daemon-fuente-de-procesos, which needs a different process source.
 # This file is sourced by scripts and has no side effects on source.
 
 # Cursor process identity is NOT expressible as a command-name pattern and is
