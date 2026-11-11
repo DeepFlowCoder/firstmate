@@ -55,18 +55,33 @@ fm_harness_path_name() {  # <path>
 # Keep this separate from harness identity: a legacy lock naming a live host
 # needs recovery, but must never count as proof of session ownership.
 fm_codex_managed_daemon_matches() {  # <comm> <args>
-  local comm=$1 args=$2 argv0 name
-  case " $args " in *" app-server "*) ;; *) return 1 ;; esac
-  case " $args " in *" --managed-daemon "*) ;; *) return 1 ;; esac
-  case "$(basename -- "$comm")" in *codex*) return 0 ;; esac
-  case "$comm" in
-    *node*|*python*)
-      printf '%s' "$args" | grep -q codex && return 0
-      ;;
-  esac
-  argv0=${args%% *}
-  name=$(fm_harness_path_name "$comm") || name=$(fm_harness_path_name "$argv0") || return 1
-  [ "$name" = codex ]
+  local comm=$1 args=$2 candidate sub='' script='' interp=0 found=0 i j
+  local -a argv
+  read -r -a argv <<<"$args"
+  [ "${#argv[@]}" -gt 1 ] || return 1
+  case "$comm" in *node*|*python*) interp=1 ;; esac
+  for ((i = 1; i < ${#argv[@]}; i++)); do
+    case "${argv[i]}" in -*) continue ;; esac
+    if [ "$interp" -eq 1 ]; then
+      script=${argv[i]}
+      interp=0
+      continue
+    fi
+    sub=${argv[i]}
+    break
+  done
+  [ "$sub" = app-server ] || return 1
+  for ((j = i + 1; j < ${#argv[@]}; j++)); do
+    if [ "${argv[j]}" = --managed-daemon ]; then found=1; break; fi
+  done
+  [ "$found" -eq 1 ] || return 1
+  for candidate in "$comm" "$script"; do
+    [ -n "$candidate" ] || continue
+    case "$(basename -- "$candidate")" in *codex*) return 0 ;; esac
+    case "$(fm_harness_path_name "$candidate")" in codex) return 0 ;; esac
+  done
+  case "$(fm_harness_path_name "${argv[0]}")" in codex) return 0 ;; esac
+  return 1
 }
 
 # True when the process described by command name $1 and full argument string $2

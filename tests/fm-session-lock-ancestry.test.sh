@@ -327,6 +327,26 @@ test_managed_codex_identity_sources() {
   pass "session-lock: managed Codex identity is excluded through every supported name source"
 }
 
+test_managed_daemon_matcher_is_anchored_to_the_subcommand() {
+  local prompt='codex exec fix the lock when codex app-server --managed-daemon holds it'
+  local node_claude='node /opt/claude/cli.js -p investigate app-server --managed-daemon codex'
+  lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches codex 'codex app-server --listen unix:// --managed-daemon'" \
+    || fail "a real managed daemon argv was not recognized as the daemon"
+  lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches node 'node /usr/local/lib/node_modules/@openai/codex/bin/codex.js app-server --managed-daemon'" \
+    || fail "a node-hosted managed Codex daemon was not recognized as the daemon"
+  if lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches codex '$prompt'"; then
+    fail "a Codex session whose prompt names the daemon flags was classified as the managed daemon"
+  fi
+  lib_eval "$FAKEBIN" "fm_harness_process_matches codex '$prompt'" \
+    || fail "a Codex session whose prompt names the daemon flags lost its harness identity"
+  if lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches node '$node_claude'"; then
+    fail "a node-hosted Claude session whose prompt names the daemon flags was classified as the managed daemon"
+  fi
+  lib_eval "$FAKEBIN" "fm_harness_process_matches node '$node_claude'" \
+    || fail "a node-hosted Claude session whose prompt names the daemon flags lost its harness identity"
+  pass "session-lock: managed daemon identity is anchored to the app-server subcommand, not any argv token"
+}
+
 # --- end-to-end layer: the real Stop auto-arm in real process trees ----------
 
 install_autoarm_scripts() {
@@ -657,6 +677,7 @@ PY
 test_eperm_lock_recovery_follows_process_identity
 test_managed_codex_daemon_never_owns_a_session
 test_managed_codex_identity_sources
+test_managed_daemon_matcher_is_anchored_to_the_subcommand
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
