@@ -465,50 +465,60 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
-test_lock_recovery_safe_with_eperm_and_readable_ps() {
-  local dir fakebin
+test_eperm_lock_recovery_follows_process_identity() {
+  local dir fakebin real_ps out want
   dir="$TMP_ROOT/eperm-readable-ps"
   fakebin=$(fm_fakebin "$dir")
   mkdir -p "$dir/state"
-
-  cat > "$fakebin/ps" <<'SH'
+  ln -s /bin/bash "$dir/codex"
+  real_ps=$(command -v ps)
+  cat > "$fakebin/ps" <<SH
 #!/usr/bin/env bash
 field= pid=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o) field=$2; shift 2 ;;
-    -p) pid=$2; shift 2 ;;
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -o) field=\$2; shift 2 ;;
+    -p) pid=\$2; shift 2 ;;
     *) shift ;;
   esac
 done
-case "$pid:$field" in
+case "\$pid:\$field" in
   1:comm=) printf '%s\n' codex ;;
   1:args=) printf '%s\n' 'codex app-server --managed-daemon' ;;
   2:comm=) printf '%s\n' sleep ;;
   2:args=) printf '%s\n' 'sleep 3600' ;;
-  *) exit 1 ;;
+  *) exec "$real_ps" -o "\$field" -p "\$pid" ;;
 esac
 SH
   chmod +x "$fakebin/ps"
-
-  printf '1\n' > "$dir/state/.lock"
-  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" PATH="$fakebin:$PATH" "$ROOT/bin/fm-lock.sh" status 2>&1 | grep -q "recovery required" \
-    || fail "lock naming daemon pid should require recovery"
+  cat > "$dir/run-lock.sh" <<'SH'
+kill() {
+  if [ "${1:-}" = -0 ] && [ "${2:-}" = 2 ]; then
+    echo "kill: (2) - Operation not permitted" >&2
+    return 1
+  fi
+  builtin kill "$@"
+}
+export -f kill
+"$FM_LOCK" "$@"
+SH
+  run_lock() {
+    env PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" \
+      FM_LOCK="$ROOT/bin/fm-lock.sh" "$dir/codex" "$dir/run-lock.sh" 2>&1
+  }
 
   printf '2\n' > "$dir/state/.lock"
-  FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" PATH="$fakebin:$PATH" bash -c '
-    kill() {
-      if [ "${1:-}" = "-0" ] && [ "${2:-}" = "2" ]; then
-        return 1
-      fi
-      /bin/kill "$@"
-    }
-    export -f kill
-    "$1" status 2>&1 | grep -q "stale"
-  ' _ "$ROOT/bin/fm-lock.sh" \
-    || fail "lock naming non-daemon pid should be stale despite EPERM from kill -0"
+  out=$(run_lock) || fail "a stale lock naming a readable non-daemon pid under EPERM was not replaced: $out"
+  case "$out" in "lock acquired: harness pid "*) ;; *) fail "unexpected acquire output: $out" ;; esac
+  want=${out##* }
+  [ "$(cat "$dir/state/.lock")" = "$want" ] || fail "the lock does not name the acquiring session $want"
 
-  pass "session-lock: lock_recovery_safe allows recovery for EPERM when ps can read non-daemon process"
+  printf '1\n' > "$dir/state/.lock"
+  out=$(run_lock) && fail "a lock naming the managed daemon was replaced: $out"
+  case "$out" in *"recovery required"*) ;; *) fail "managed daemon lock was not refused for recovery: $out" ;; esac
+  [ "$(cat "$dir/state/.lock")" = 1 ] || fail "the managed daemon lock was overwritten"
+
+  pass "session-lock: EPERM lock recovery follows process identity; daemon lock still refused"
 }
 
 # A managed app-server hosts many conversations in one process. Use real
@@ -517,10 +527,9 @@ SH
 # dependency on the harness running this suite.
 test_managed_codex_daemon_never_owns_a_session() {
   local dir
-  # The home path is embedded in the request-runner's argv through the env
-  # PATH prefix below. Keep it free of harness names: a path component such as
-  # "codex-managed" would trip fm_harness_process_matches' bare-interpreter
-  # rule and make the neutral python fixture read as a session owner.
+  # The neutral request runner is a bare interpreter, so harness names in its argv
+  # would make fm_harness_process_matches read it as a session owner. The request
+  # travels in the environment, and the home dir name stays harness-free.
   dir="$TMP_ROOT/managed-host"
   mkdir -p "$dir/state"
   ln -s /bin/bash "$dir/codex"
@@ -537,9 +546,9 @@ SH
   cat > "$dir/app-server" <<'SH'
 printf '%s\n' "$$"
 while IFS= read -r request; do
-  python3 - "$request" <<'PY'
-import json, subprocess, sys
-result = subprocess.run(json.loads(sys.argv[1]), capture_output=True, text=True, timeout=15)
+  FM_REQUEST=$request python3 - <<'PY'
+import json, os, subprocess
+result = subprocess.run(json.loads(os.environ["FM_REQUEST"]), capture_output=True, text=True, timeout=15)
 print(json.dumps([result.returncode, result.stdout + result.stderr]), flush=True)
 PY
 done
@@ -645,7 +654,7 @@ PY
   pass "session-lock: managed Codex daemon is never an owner; recovery proves it exited"
 }
 
-test_lock_recovery_safe_with_eperm_and_readable_ps
+test_eperm_lock_recovery_follows_process_identity
 test_managed_codex_daemon_never_owns_a_session
 test_managed_codex_identity_sources
 test_version_named_session_is_identified_on_both_platforms

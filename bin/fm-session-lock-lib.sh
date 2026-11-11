@@ -8,6 +8,10 @@
 # lock-owning primary session before it may arm or rewake;
 # bin/fm-guard.sh uses it to tell an unowned home, which this session may repair,
 # from a home another live session holds, which it must leave alone.
+# A managed Codex app-server daemon is never a harness, a session owner, or a live
+# session. A session hosted inside it is deliberately read-only: the ancestry walk
+# stops at the daemon and no takeover is offered. The earlier requirement to record
+# the hosted conversation or offer a guided takeover is retired for this change.
 # This file is sourced by scripts and has no side effects on source.
 
 # Cursor process identity is NOT expressible as a command-name pattern and is
@@ -177,18 +181,25 @@ fm_harness_pid_alive() {
   fm_harness_process_matches "$comm" "$args"
 }
 
-# True if $1 is a live managed Codex app-server daemon. A shared host is
-# deliberately not a harness (fm_harness_process_matches excludes it) and never
-# a session owner, but a lock naming a live host is still not this session's to
-# repair: it requires recovery (read-only) until that exact process exits, the
-# same rule lock_recovery_safe in bin/fm-lock.sh enforces for acquire.
-fm_codex_managed_daemon_pid_alive() {
-  local pid=$1 comm args
-  kill -0 "$pid" 2>/dev/null || return 1
-  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  args=$(ps -o args= -p "$pid" 2>/dev/null) || return 1
-  [ -n "$comm" ] && [ -n "$args" ] || return 1
-  fm_codex_managed_daemon_matches "$comm" "$args"
+# Print the state of pid $1: dead, unknown, daemon, or alive (a readable
+# non-daemon process). Only ESRCH proves a pid is gone. Any other kill failure,
+# such as EPERM for a process owned by another user, is decided by its ps
+# identity. An identity ps cannot read is unknown: fm-lock.sh refuses to replace
+# that lock, while the guard deliberately does not count it as another session.
+fm_pid_daemon_state() {  # <pid>
+  local pid=$1 comm args probe_error
+  if ! probe_error=$(LC_ALL=C kill -0 "$pid" 2>&1); then
+    case "$probe_error" in *'No such process'*) printf 'dead\n'; return 0 ;; esac
+  fi
+  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || { printf 'unknown\n'; return 0; }
+  args=$(ps -o args= -p "$pid" 2>/dev/null) || { printf 'unknown\n'; return 0; }
+  if [ -z "$comm" ] || [ -z "$args" ]; then
+    printf 'unknown\n'
+  elif fm_codex_managed_daemon_matches "$comm" "$args"; then
+    printf 'daemon\n'
+  else
+    printf 'alive\n'
+  fi
 }
 
 # True when the newline-separated pid list $1 contains pid $2. One owner of the
@@ -261,7 +272,7 @@ fm_session_lock_held_by_other() {
   local state=$1 lock_pid pids
   FM_SESSION_LOCK_OTHER_PID=
   lock_pid=$(fm_session_lock_pid "$state") || return 1
-  if fm_codex_managed_daemon_pid_alive "$lock_pid"; then
+  if [ "$(fm_pid_daemon_state "$lock_pid")" = daemon ]; then
     # shellcheck disable=SC2034 # Read by callers after the function returns.
     FM_SESSION_LOCK_OTHER_PID=$lock_pid
     return 0

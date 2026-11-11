@@ -9,7 +9,9 @@
 # inside a managed daemon is deliberately read-only: the daemon boundary breaks
 # ancestry walks, and the daemon itself is excluded from harness identity. No
 # takeover is offered; recovery requires stopping the daemon instance through
-# Codex, then retry from a session-scoped CLI or stdio app-server.
+# Codex, then retry from a session-scoped CLI or stdio app-server. The earlier
+# requirement to record the hosted conversation or offer a guided takeover is
+# retired for this change.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,22 +35,18 @@ mkdir -p "$STATE" 2>/dev/null || {
 # An unreadable live process cannot supply that proof either.
 LOCK_RECOVERY_REASON=
 lock_recovery_safe() {  # <recorded-pid>
-  local pid=$1 comm args probe_error
+  local pid=$1 state
   LOCK_RECOVERY_REASON=
   case "$pid" in ''|*[!0-9]*) return 0 ;; esac
-  if ! probe_error=$(LC_ALL=C kill -0 "$pid" 2>&1); then
-    case "$probe_error" in *'No such process'*) return 0 ;; esac
-  fi
-  if ! comm=$(ps -o comm= -p "$pid" 2>/dev/null) ||
-     ! args=$(ps -o args= -p "$pid" 2>/dev/null) ||
-     [ -z "$comm" ] || [ -z "$args" ]; then
-    LOCK_RECOVERY_REASON="cannot establish the identity of lock pid $pid; operate read-only until resolved"
-    return 1
-  fi
-  if fm_codex_managed_daemon_matches "$comm" "$args"; then
-    LOCK_RECOVERY_REASON="legacy lock names managed Codex daemon pid $pid, not a session; close its conversations, stop that daemon instance through Codex, then retry from a session-scoped CLI or stdio app-server; operate read-only until that process exits"
-    return 1
-  fi
+  state=$(fm_pid_daemon_state "$pid")
+  case "$state" in
+    unknown)
+      LOCK_RECOVERY_REASON="cannot establish the identity of live lock pid $pid; operate read-only until resolved"
+      return 1 ;;
+    daemon)
+      LOCK_RECOVERY_REASON="legacy lock names managed Codex daemon pid $pid, not a session; close its conversations, stop that daemon instance through Codex, then retry from a session-scoped CLI or stdio app-server; operate read-only until that process exits"
+      return 1 ;;
+  esac
 }
 
 if [ "${1:-}" = "status" ]; then

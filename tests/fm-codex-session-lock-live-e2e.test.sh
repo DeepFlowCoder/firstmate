@@ -4,6 +4,7 @@
 # the protocol without a model turn, and checks the public lock status.
 # All Codex state and credentials are isolated; security/op are refusing stubs.
 # Portable recovery coverage lives in fm-session-lock-ancestry.test.sh.
+# Kept opt-in under firstmate-coding-guidelines' 'Harness-dependent checks' rule: a harness-dependent process-name check requires an opt-in live guard and a dated registry entry in docs/verification/runtime-backends.md.
 set -u
 
 if [ "${FM_CODEX_SESSION_LOCK_DRIFT:-0}" != 1 ]; then
