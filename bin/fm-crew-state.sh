@@ -52,8 +52,10 @@
 #      print `failed` where that id cannot be had
 #      (`fm-corte-por-tope-fuera-del-brazo-de-lista`), and on this read the cut is
 #      named only where the reported run is IDENTIFIED - by exactly one row of its
-#      word in the runs list, or by its own id as the branch's newest row in that overview - which it is not
-#      when neither answers or the run's row fell past their windows
+#      word in the runs list (the count-of-one case), or - only when the list answered
+#      with more than one such row, a tie the count cannot break - by its own id as the branch's
+#      newest row in that overview. It is not identified when the list answered with zero rows,
+#      did not answer, or the overview is silent or non-matching
 #      (`fm-listado-de-corridas-sin-id`). Every unproven reading keeps the
 #      ordinary failure phrase inside whatever wrapper its own arm produces.
 #      EXCEPT: while the active step is ci, `axi status` alone cannot tell "still
@@ -898,14 +900,10 @@ nm_newest_row_cut() {  # <row-sha>
 # other case (list unanswered, no row, silent or non-matching overview) is not
 # proven, so the caller degrades to the failure word as it always did.
 nm_cut_identity_proven() {  # <reported-terminal-word>
-  local word=${1:-} row parsed st br n=0
+  local word=${1:-} n=0
   fm_nm_runs_row_identifies_run "$RUNS_LIST_OUT" "$CREW_BRANCH" "$word" && return 0
   [ "$RUNS_ANSWERED" = 1 ] || return 1
-  while IFS= read -r row; do
-    parsed=$(fm_nm_runs_parse_row "$row") || continue
-    IFS=$'\t' read -r st br _ <<< "$parsed"
-    [ "$br" = "$CREW_BRANCH" ] && [ "$st" = "$word" ] && n=$((n + 1))
-  done <<< "$RUNS_LIST_OUT"
+  fm_nm_runs_count_for_branch n "$RUNS_LIST_OUT" "$CREW_BRANCH" "$word"
   [ "$n" -gt 1 ] || return 1
   nm_overview_identifies_reported_run "$word"
 }
@@ -1408,10 +1406,11 @@ if [ "$HAVE_RUN" = 1 ]; then
   # AND WHERE THE TIE HAS TO BE BROKEN, THE OVERVIEW BREAKS IT: a runs-list row
   # carries no run id and `axi status` carries no timestamp, so a branch with more
   # than one row of the reported word offers the count nothing to match, but the
-  # `no-mistakes axi` overview carries the id, branch and status of each row, and a
-  # newest row carrying the reported run's own id proves which run it is. A run whose row fell
-  # past the overview's window, or an overview that did not answer, proves nothing
-  # and keeps the failure word. Tracked as `fm-listado-de-corridas-sin-id`.
+  # `no-mistakes axi` overview carries the id, branch and status of each row. The overview is
+  # consulted only when the list answered with more than one such row for the branch.
+  # A newest overview row carrying the reported run's own id proves which run it is in a tie.
+  # Zero rows, an unanswered list, or a silent/non-matching overview all degrade to the
+  # failure word, so the count-of-one residual stays open. Tracked as `fm-listado-de-corridas-sin-id`.
   # It is a different limit from the runs-list arms above, whose rows carry no
   # error column - they read the cut through the same overview id - and neither
   # limit stands in for the other.

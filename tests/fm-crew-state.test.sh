@@ -1421,6 +1421,26 @@ test_a_cut_among_two_failed_rows_is_identified_by_run_id() {
   pass "a cut among two failed rows is identified by run id"
 }
 
+test_a_cut_with_zero_runs_list_rows_is_not_identified_by_overview_alone() {
+  reset_fakes
+  local d short out; d=$(new_case cut-zero-rows-overview-carries-id)
+  make_repo_on_branch "$d/wt" fm/feat-zr
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/zr.meta" "window=fm:fm-zr" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_failed_cap_cut fm/feat-zr)"
+  # The runs list answered with zero rows of the word for the branch.
+  FM_FAKE_RUNS_LIST="  failed  fm/other-a aaaaaaa  2026-09-22 21:40
+  failed  fm/other-b bbbbbbbb  2026-09-22 20:12"
+  # The overview has the reported run as the branch's newest failed row.
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01RUN|fm/feat-zr|failed|${short}")"
+  out=$(run_crew_state "$d" zr)
+
+  assert_not_contains "$out" "time cap" "zero rows in the list means n != gt 1, so overview is not consulted"
+  assert_contains "$out" "state: failed" "a zero-row case degrades to the failure word"
+  pass "a cut with zero runs-list rows is not identified by overview alone"
+}
+
 # fm-corte-por-tope-fuera-del-brazo-de-lista. The coarse arm reads a listing with
 # no error column, so a cut printed as `failed`. The overview names the newest
 # row's id, and `axi status --run <id>` carries the error.
@@ -1540,6 +1560,44 @@ test_a_coarse_cut_where_run_returns_different_branch_does_not_identify() {
   assert_not_contains "$out" "time cap" "a cut guard failing on branch mismatch does not prove the cut"
   assert_contains "$out" "state: failed" "an unproven cut keeps the failure word"
   pass "a coarse cut where axi status --run returns different branch does not identify"
+}
+
+test_a_coarse_cut_where_overview_carries_only_another_branch_does_not_identify() {
+  reset_fakes
+  local d short out; d=$(new_case coarse-cut-overview-other-branch)
+  make_repo_on_branch "$d/wt" fm/feat-cob
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cob.meta" "window=fm:fm-cob" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="  running  fm/other-crew aaaaaaa  2026-09-22 22:00
+  failed  fm/feat-cob ${short}  2026-09-22 20:12"
+  FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-cob | sed 's/01RUN/01CUT/')"
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01CUT|fm/other-crew|failed|aaaaaaa")"
+  out=$(run_crew_state "$d" cob)
+
+  assert_not_contains "$out" "time cap" "coarse cut where overview has only another branch's row does not prove the cut"
+  assert_contains "$out" "state: failed" "an unproven coarse cut keeps the failure word"
+  pass "a coarse cut where overview carries only another branch's row does not identify"
+}
+
+test_a_coarse_cut_where_overview_newest_has_running_status_does_not_identify() {
+  reset_fakes
+  local d short out; d=$(new_case coarse-cut-overview-running)
+  make_repo_on_branch "$d/wt" fm/feat-cor
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/cor.meta" "window=fm:fm-cor" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="  running  fm/other-crew aaaaaaa  2026-09-22 22:00
+  failed  fm/feat-cor ${short}  2026-09-22 20:12"
+  FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-cor | sed 's/01RUN/01CUT/')"
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01X|fm/feat-cor|running|${short}")"
+  out=$(run_crew_state "$d" cor)
+
+  assert_not_contains "$out" "time cap" "coarse cut where overview newest is running does not prove the cut"
+  assert_contains "$out" "state: failed" "an unproven coarse cut keeps the failure word"
+  pass "a coarse cut where overview's newest row for the branch has running status does not identify"
 }
 
 # THE IDENTITY PROOF MUST NOT CARRY AN EXPIRY DATE. `no-mistakes runs` is
@@ -4731,6 +4789,50 @@ test_a_superseding_cut_where_run_returns_different_branch_does_not_identify() {
   assert_not_contains "$out" "time cap" "a superseding cut guard failing on branch mismatch does not prove the cut"
   assert_contains "$out" "state: failed" "an unproven superseding cut keeps the failure word"
   pass "a superseding cut where axi status --run returns different branch does not identify"
+}
+
+test_a_superseding_cut_where_overview_carries_only_another_branch_does_not_identify() {
+  reset_fakes
+  local d short out; d=$(new_case superseding-cut-overview-other-branch)
+  make_repo_on_branch "$d/wt" fm/feat-scob
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/scob.meta" "window=fm:fm-scob" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/scob.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-scob)"
+  FM_FAKE_RUNS_LIST="  failed   fm/feat-scob ${short}  2026-09-22 20:12
+  running  fm/feat-scob ${short}  2026-09-22 09:05"
+  FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-scob | sed 's/01RUN/01CUT/')"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" scob
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01CUT|fm/other-crew|failed|aaaaaaa")"
+  out=$(run_crew_state "$d" scob)
+
+  assert_not_contains "$out" "time cap" "superseding cut where overview has only another branch's row does not prove the cut"
+  assert_contains "$out" "state: failed" "an unproven superseding cut keeps the failure word"
+  pass "a superseding cut where overview carries only another branch's row does not identify"
+}
+
+test_a_superseding_cut_where_overview_newest_has_running_status_does_not_identify() {
+  reset_fakes
+  local d short out; d=$(new_case superseding-cut-overview-running)
+  make_repo_on_branch "$d/wt" fm/feat-scor
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/scor.meta" "window=fm:fm-scor" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating\n' > "$d/state/scor.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-scor)"
+  FM_FAKE_RUNS_LIST="  failed   fm/feat-scor ${short}  2026-09-22 20:12
+  running  fm/feat-scor ${short}  2026-09-22 09:05"
+  FM_FAKE_AXI_STATUS_RUN="$(run_failed_cap_cut fm/feat-scor | sed 's/01RUN/01CUT/')"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" scor
+  FM_FAKE_AXI_OVERVIEW="$(axi_overview "01X|fm/feat-scor|running|${short}")"
+  out=$(run_crew_state "$d" scor)
+
+  assert_not_contains "$out" "time cap" "superseding cut where overview newest is running does not prove the cut"
+  assert_contains "$out" "state: failed" "an unproven superseding cut keeps the failure word"
+  pass "a superseding cut where overview's newest row for the branch has running status does not identify"
 }
 
 test_a_superseding_cut_with_terminal_reported_run_keeps_unknown_state() {

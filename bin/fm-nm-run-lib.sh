@@ -414,10 +414,27 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # THE OVERVIEW ID BREAKS THE TIE WHEN THE COUNT FAILS: `fm_nm_overview_row_identifies_run`
 # uses the run id from `axi status` to require the reported run be the branch's
 # NEWEST overview row with the reported word. The overview is consulted only
-# when `fm_nm_runs_row_identifies_run` fails (more than one row or zero rows),
-# so it does not close the count-of-one residual where the reported run's row
-# fell past the window while one newer failed run remains.
+# when the runs list answered AND carries more than one row of the reported word for the branch.
+# Zero rows, an unanswered list, or a silent/non-matching overview all degrade to the failure word,
+# so the count-of-one residual stays open where the reported run's row fell past the window
+# while one newer failed run remains.
 #
+# Count how many rows of a given word exist for a branch in the runs output.
+# Stores the count in the caller's output variable.
+fm_nm_runs_count_for_branch() {  # <out-var> <runs-output> <branch> <word>
+  local outvar=${1:-} out=${2:-} branch=${3:-} word=${4:-}
+  local row parsed st br n=0
+  [ -n "$outvar" ] && [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    IFS=$'\t' read -r st br _ <<< "$parsed"
+    if [ "$br" = "$branch" ] && [ "$st" = "$word" ]; then
+      n=$((n + 1))
+    fi
+  done <<< "$out"
+  printf -v "$outvar" '%d' "$n"
+}
+
 # 0 ONLY when identity is established. Every other answer - a missing argument, a
 # word that matches no row, a word that matches more than one - is "not
 # established", because a caller asks this to decide whether it may make a
