@@ -61,7 +61,10 @@ fm_codex_managed_daemon_matches() {  # <comm> <args>
   [ "${#argv[@]}" -gt 1 ] || return 1
   case "$comm" in *node*|*python*) interp=1 ;; esac
   for ((i = 1; i < ${#argv[@]}; i++)); do
-    case "${argv[i]}" in -*) continue ;; esac
+    case "${argv[i]}" in
+      -c|--config|--enable|--disable|--remote|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval) i=$((i + 1)); continue ;;
+      -*) continue ;;
+    esac
     if [ "$interp" -eq 1 ]; then
       script=${argv[i]}
       interp=0

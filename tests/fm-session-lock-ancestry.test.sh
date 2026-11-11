@@ -347,6 +347,18 @@ test_managed_daemon_matcher_is_anchored_to_the_subcommand() {
   pass "session-lock: managed daemon identity is anchored to the app-server subcommand, not any argv token"
 }
 
+test_managed_daemon_matcher_skips_global_option_values() {
+  local argv
+  for argv in \
+    'codex -c cli_auth_credentials_store="file" app-server --listen stdio:// --managed-daemon' \
+    'codex -m gpt-5 app-server --managed-daemon' \
+    'codex --profile x app-server --managed-daemon'; do
+    lib_eval "$FAKEBIN" "fm_codex_managed_daemon_matches codex '$argv'" \
+      || fail "a managed daemon behind a global option value was not recognized: $argv"
+  done
+  pass "session-lock: managed daemon identity survives Codex global options that take a value"
+}
+
 # --- end-to-end layer: the real Stop auto-arm in real process trees ----------
 
 install_autoarm_scripts() {
@@ -678,6 +690,7 @@ test_eperm_lock_recovery_follows_process_identity
 test_managed_codex_daemon_never_owns_a_session
 test_managed_codex_identity_sources
 test_managed_daemon_matcher_is_anchored_to_the_subcommand
+test_managed_daemon_matcher_skips_global_option_values
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
