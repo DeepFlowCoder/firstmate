@@ -380,8 +380,7 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # problem. A `no-mistakes runs` row carries status, branch, short sha, date and
 # pull request and NO run id (v1.75.2 exposes only `--limit` on that command,
 # with no branch and no status filter); `axi status` carries the run id and no
-# timestamp. So a reported run and a listing row can never be MATCHED to one
-# identity, and no reading that has to match them may be asserted at all.
+# timestamp. Without a shared key, direct identity matching is unavailable.
 # Tracked as `fm-listado-de-corridas-sin-id`.
 #
 # Two identities that look available are ruled out by measurement, not by taste:
@@ -399,36 +398,88 @@ fm_nm_runs_newest_for_branch() {  # <runs-output> <branch>
 # What is left is COUNTING, which matches nothing and therefore needs no key: if
 # <branch> carries exactly ONE row whose status is <word>, there is no second row
 # the reported run could be, so identity is established without ever asking which
-# row it is. More than one row of the word is the tie above, and nothing here can
-# break it.
+# row it is. More than one row of the word is the tie above.
 #
 # THAT SOUNDNESS HAS A CONDITION: the reported run's OWN row must fall inside the
 # listing this was handed. `axi status` can answer with a run that is not the
 # newest, so a reported run whose row has already fallen past the scanned window,
 # while a newer row of the same word is still inside it, counts as ONE and would
 # be called identified when it is not - asserting the stronger reading over the
-# newer run instead. Nothing here can detect that: with no key joining the two
-# surfaces, a reported run absent from the listing looks exactly like a reported
-# run present in it. So this is an unclosed residual of the SAME root cause,
-# recorded under `fm-listado-de-corridas-sin-id` rather than as a limit of its
-# own.
+# newer run instead. This is an unclosed residual of the SAME root cause: the
+# count-of-one proof makes the identity guess without checking whether the
+# reported run's own row is present or has fallen out, and with no key joining
+# the two surfaces, a reported run absent from the listing looks exactly like one
+# present in it. Recorded under `fm-listado-de-corridas-sin-id`.
+#
+# THE OVERVIEW ID BREAKS A TIE THE COUNT CANNOT SETTLE: `fm_nm_overview_row_identifies_run`
+# uses the run id from `axi status` to require the reported run be the branch's
+# NEWEST overview row with the reported word. The overview is consulted only
+# when the runs list answered AND carries more than one row of the reported word for the branch.
+# Zero rows, an unanswered list, or a silent/non-matching overview all degrade to the failure word,
+# so the count-of-one residual stays open where the reported run's row fell past the window
+# while one newer failed run remains.
 #
 # 0 ONLY when identity is established. Every other answer - a missing argument, a
 # word that matches no row, a word that matches more than one - is "not
 # established", because a caller asks this to decide whether it may make a
 # STRONGER claim and silence must never read as permission.
 fm_nm_runs_row_identifies_run() {  # <runs-output> <branch> <word>
-  local out=${1:-} branch=${2:-} word=${3:-}
-  local row parsed st br hits=0
+  local out=${1:-} branch=${2:-} word=${3:-} n=0
   [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
+  fm_nm_runs_count_for_branch n "$out" "$branch" "$word"
+  [ "$n" = 1 ]
+}
+
+# Counts the rows of <word> on <branch> into <out-var>: the one owner of that rule.
+fm_nm_runs_count_for_branch() {  # <out-var> <runs-output> <branch> <word>
+  local outvar=${1:-} out=${2:-} branch=${3:-} word=${4:-}
+  local row parsed st br count=0
+  [ -n "$outvar" ] && [ -n "$out" ] && [ -n "$branch" ] && [ -n "$word" ] || return 1
   while IFS= read -r row; do
     parsed=$(fm_nm_runs_parse_row "$row") || continue
     IFS=$'\t' read -r st br _ <<< "$parsed"
     if [ "$br" = "$branch" ] && [ "$st" = "$word" ]; then
-      hits=$((hits + 1))
+      count=$((count + 1))
     fi
   done <<< "$out"
-  [ "$hits" = 1 ]
+  printf -v "$outvar" '%d' "$count"
+}
+
+# The one listing that DOES carry a run id: `no-mistakes axi` with no subcommand
+# prints runs[N]{id,branch,status,head,pr}, newest first and capped repo-wide
+# (measured v1.106.1: 10 of 245). Each row is `"<id>",<branch>,<status>,<head>,"<pr>"`.
+# That id is the key the text listing lacks, so a reported run (whose `axi status`
+# carries its id) can be MATCHED to the branch's newest row instead of counted.
+#
+# 0 only when the branch's NEWEST row carries exactly this id and this status
+# word. Any-row matching would let a lagging `axi status` answering with an older
+# cut X match X's own row while the branch's newest failed run Y is a real
+# rejection, asserting the stronger reading over the newer run. The cap makes
+# absence meaningless - a run whose row fell off the window looks like a run that
+# never existed - so every other answer, including an overview that did not
+# answer, is "not established", never "not this run".
+fm_nm_overview_row_identifies_run() {  # <overview> <branch> <run-id> <word>
+  local out=${1:-} branch=${2:-} id=${3:-} word=${4:-} row rid rst
+  [ -n "$out" ] && [ -n "$branch" ] && [ -n "$id" ] && [ -n "$word" ] || return 1
+  row=$(fm_nm_overview_newest_for_branch "$out" "$branch") || return 1
+  IFS=$'\t' read -r rid rst _ <<< "$row"
+  [ "$rid" = "$id" ] && [ "$rst" = "$word" ]
+}
+
+# This branch's NEWEST row in an overview, as "<id><TAB><status><TAB><head>", or
+# nothing. Newest-first is the order the text listing uses too, so the first row
+# for the branch is the same run in both.
+fm_nm_overview_newest_for_branch() {  # <overview> <branch>
+  local out=${1:-} branch=${2:-} row rid rbr rst rhd
+  [ -n "$out" ] && [ -n "$branch" ] || return 1
+  while IFS= read -r row; do
+    row=$(fm_nm_trim "$row")
+    IFS=, read -r rid rbr rst rhd _ <<< "$row"
+    [ "$rbr" = "$branch" ] || continue
+    printf '%s\t%s\t%s' "$(fm_nm_strip_quotes "$rid")" "$(fm_nm_strip_quotes "$rst")" "$(fm_nm_strip_quotes "$rhd")"
+    return 0
+  done <<< "$out"
+  return 1
 }
 
 # 0 when captured list output $1 carries EVIDENCE - at least one line that parses
