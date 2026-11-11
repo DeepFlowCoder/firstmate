@@ -891,6 +891,25 @@ nm_newest_row_cut() {  # <row-sha>
   CUT_ROW_DETAIL=$(fm_nm_cap_cut_detail "$(strip_quotes "$(fm_nm_field "$out" error)")")
 }
 
+# Whether the cut's reported run is IDENTIFIED. Two proofs, and nothing else:
+# exactly one row of the word on the branch in the runs list (the count), or - only
+# when the list answered and carries MORE THAN ONE such row, the tie the count
+# cannot break - the reported id being the branch's newest overview row. Every
+# other case (list unanswered, no row, silent or non-matching overview) is not
+# proven, so the caller degrades to the failure word as it always did.
+nm_cut_identity_proven() {  # <reported-terminal-word>
+  local word=${1:-} row parsed st br n=0
+  fm_nm_runs_row_identifies_run "$RUNS_LIST_OUT" "$CREW_BRANCH" "$word" && return 0
+  [ "$RUNS_ANSWERED" = 1 ] || return 1
+  while IFS= read -r row; do
+    parsed=$(fm_nm_runs_parse_row "$row") || continue
+    IFS=$'\t' read -r st br _ <<< "$parsed"
+    [ "$br" = "$CREW_BRANCH" ] && [ "$st" = "$word" ] && n=$((n + 1))
+  done <<< "$RUNS_LIST_OUT"
+  [ "$n" -gt 1 ] || return 1
+  nm_overview_identifies_reported_run "$word"
+}
+
 # THE decision point for "may this verdict be asserted as this branch's current
 # one?". Every path that would report a run-step verdict passes through here, and
 # every piece of evidence is an INPUT to it rather than a branch of its own, so
@@ -1397,10 +1416,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   # error column - they read the cut through the same overview id - and neither
   # limit stands in for the other.
   if [ "$RUN_CAP_CUT" = 1 ] && [ "$RUN_CUT_PROVEN" != 1 ] \
-    && ! fm_nm_runs_row_identifies_run "$RUNS_LIST_OUT" "$CREW_BRANCH" "$RUN_TERMINAL_WORD" \
-    && [ "$RUNS_ANSWERED" = 1 ] \
-    && { nm_overview_read; fm_nm_overview_newest_for_branch "$OVERVIEW_OUT" "$CREW_BRANCH" >/dev/null; } \
-    && ! nm_overview_identifies_reported_run "$RUN_TERMINAL_WORD"; then
+    && ! nm_cut_identity_proven "$RUN_TERMINAL_WORD"; then
     RUN_STATE=failed
     RUN_DETAIL=$RUN_FAILED_DETAIL
     RUN_CAP_CUT=0
