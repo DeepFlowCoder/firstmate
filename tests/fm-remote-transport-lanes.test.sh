@@ -118,33 +118,59 @@ export FM_REMOTE_JOB_STAGE_REAP_SECONDS=1
 # shellcheck source=bin/fm-remote-job-lib.sh
 . "$ROOT/bin/fm-remote-job-lib.sh"
 
+assert_concurrent_sequences() {
+  local i pid results expected
+  local -a pids=()
+  rm -f -- "$FM_REMOTE_JOB_STATE/seq"
+  for i in $(seq 1 20); do
+    fm_remote_job_next_seq > "$TMP_ROOT/seq-$i" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || fail "a concurrent sequence allocator failed"
+  done
+  results=$(cat "$TMP_ROOT"/seq-* | sort -n)
+  expected=$(seq 1 20)
+  [ "$results" = "$expected" ] \
+    || fail "concurrent sequence claims were not unique and monotonic: $results"
+  [ "$(find "$FM_REMOTE_JOB_SEQ_CLAIMS" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 20 ] \
+    || fail "concurrent sequence allocations did not retain every durable claim"
+}
+
 fm_remote_job_prepare_state "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
-rm -f -- "$STATE_ROOT/seq"
-SEQ_PIDS=()
-for i in $(seq 1 20); do
-  fm_remote_job_next_seq > "$TMP_ROOT/seq-$i" &
-  SEQ_PIDS+=("$!")
-done
-for pid in "${SEQ_PIDS[@]}"; do
-  wait "$pid" || fail "a concurrent sequence allocator failed"
-done
-SEQ_RESULTS=$(cat "$TMP_ROOT"/seq-* | sort -n)
-SEQ_EXPECTED=$(seq 1 20)
-[ "$SEQ_RESULTS" = "$SEQ_EXPECTED" ] \
-  || fail "concurrent sequence claims were not unique and monotonic: $SEQ_RESULTS"
-[ "$(find "$STATE_ROOT/.seq-claims" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 20 ] \
-  || fail "concurrent sequence allocations did not retain every durable claim"
+assert_concurrent_sequences
+(
+  FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/racy-mkdir-state"
+  fm_remote_job_prepare_state "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+  # Model uutils 0.10.0 reporting success to multiple mkdir contenders.
+  mkdir() { command mkdir -p "$@"; }
+  mkdir "$FM_REMOTE_JOB_SEQ_CLAIMS" || fail "the mkdir race fixture did not accept an existing directory"
+  assert_concurrent_sequences
+) || fail "sequence ownership depended on mkdir's exit status"
+mkdir "$STATE_ROOT/.seq-claims/21"
+[ "$(fm_remote_job_next_seq)" = 22 ] || fail "a legacy directory claim was reused"
+printf '20\n' > "$STATE_ROOT/seq"
+[ "$(fm_remote_job_next_seq)" = 23 ] || fail "a stale hint reused a durable claim"
+ln -s /dev/null "$STATE_ROOT/.seq-claims/24"
+if fm_remote_job_next_seq >/dev/null; then fail "a symlink was accepted as a sequence claim"; fi
+rm -f -- "$STATE_ROOT/.seq-claims/24"
+touch -t 200001010000 "$STATE_ROOT/.seq-claims/1"
 mkdir "$STATE_ROOT/.seq-claims/999998" "$STATE_ROOT/.seq-claims/999999"
 touch -t 200001010000 "$STATE_ROOT/.seq-claims/999998"
 fm_remote_job_reap_stale "$ACCOUNT_HOME" || fail "sequence claim reaping failed"
+assert_absent "$STATE_ROOT/.seq-claims/1" "an expired file claim survived stale reaping"
+assert_present "$STATE_ROOT/.seq-claims/20" "a fresh file claim was reaped"
 assert_absent "$STATE_ROOT/.seq-claims/999998" "an expired sequence claim survived stale reaping"
 assert_present "$STATE_ROOT/.seq-claims/999999" "a fresh sequence claim was reaped"
 mkdir "$STATE_ROOT/.seq-claims/999997"
 touch -t 200001010000 "$STATE_ROOT/.seq-claims/999997"
+touch -t 200001010000 "$STATE_ROOT/.seq-claims/2"
 fm_remote_job_reap_stale "$ACCOUNT_HOME" || fail "rate-limited sequence claim reaping failed"
+assert_present "$STATE_ROOT/.seq-claims/2" "file claims were rescanned before the hourly interval"
 assert_present "$STATE_ROOT/.seq-claims/999997" "sequence claims were rescanned before the hourly interval"
 touch -t 200001010000 "$STATE_ROOT/.seq-claims-reaped"
 fm_remote_job_reap_stale "$ACCOUNT_HOME" || fail "expired sequence claim reaping failed"
+assert_absent "$STATE_ROOT/.seq-claims/2" "an expired file claim survived the next hourly scan"
 assert_absent "$STATE_ROOT/.seq-claims/999997" "an expired sequence claim survived the next hourly scan"
 rmdir "$STATE_ROOT/.seq-claims/999999"
 pass "atomic sequence claims remain unique and reap only after expiry"
