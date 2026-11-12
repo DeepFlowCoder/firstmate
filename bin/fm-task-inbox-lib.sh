@@ -135,14 +135,16 @@ fm_task_inbox_next_seq() {  # <inbox-dir>
 
 fm_task_inbox_lock_acquire() {  # <lock-path>
   local lock=$1 wait=${FM_TASK_INBOX_LOCK_WAIT_SECS:-$FM_TASK_INBOX_LOCK_WAIT_DEFAULT}
-  local deadline probe
+  local deadline probe create_rc=0
   case "$wait" in ''|*[!0-9]*) wait=$FM_TASK_INBOX_LOCK_WAIT_DEFAULT ;; esac
   probe=$(mktemp "${lock%/*}/.lock-probe.XXXXXX") || return 1
   rm -f "$probe" || return 1
-  if [ ! -e "$lock" ] && [ ! -L "$lock" ]; then
-    fm_lock_try_create "$lock" && return 0
-    [ -e "$lock" ] || [ -L "$lock" ] || return 1
-  fi
+  # Only status 2 means the directory is unwritable. Status 1 is contention, and
+  # the holder may release before this call looks again, so it must go on to the
+  # wait loop rather than be read as failure from the lock path being absent.
+  fm_lock_try_create "$lock" || create_rc=$?
+  [ "$create_rc" -ne 0 ] || return 0
+  [ "$create_rc" -ne 2 ] || return 1
   deadline=$(( $(date +%s) + wait ))
   while ! fm_lock_try_acquire "$lock"; do
     [ "$(date +%s)" -lt "$deadline" ] || return 1

@@ -321,6 +321,30 @@ SH
   pass "fm-control relaunch: existing merge polls stay authenticated, including after historical broken ordering"
 }
 
+test_trace_relaunch_keeps_merge_poll_authenticated() {
+  local dir out rc state
+  dir=$(new_case merge-poll-trace rl35)
+  add_ship_task "$dir" rl35 claude
+  state="$dir/home/state"
+  printf '%s\n' "$$" > "$state/.lock"
+  printf '%s on\n' "$$" > "$state/.trace-context-effective"
+  cat > "$dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 0123456789abcdef0123456789abcdef01234567
+SH
+  chmod +x "$dir/fakebin/gh"
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-pr-check.sh" rl35 https://github.com/example/repo/pull/35 > "$dir/poll.out" 2>&1 \
+    || fail "could not arm the fixture merge poll: $(cat "$dir/poll.out")"
+  out=$(run_control "$dir" rl35 relaunch --note "continue watching the PR"); rc=$?
+  expect_code 0 "$rc" "relaunch with a merge poll and trace context should succeed"$'\n'"$out"
+  fm_trace_context_valid "$(meta_field "$dir" rl35 traceparent)" \
+    || fail "the relaunch must record a trace carrier for this case to mean anything"
+  fm_pr_poll_artifacts_valid "$state" rl35 "$ROOT/bin/fm-pr-poll.sh" \
+    || fail "a trace-context relaunch invalidated the merge poll"
+  pass "fm-control relaunch: a trace-context relaunch keeps the merge poll authenticated"
+}
+
 test_relaunch_preserves_durable_task_metadata() {
   local dir out rc
   dir=$(new_case durable-meta rl19)
@@ -362,7 +386,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
     FM_FAKE_TRACE_EXPORTED="$exported" \
     run_control "$dir" rl28 relaunch --note "continue after publication" > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$prepare" ] && [ "$i" -lt 200 ]; do
+  while [ ! -e "$prepare" ] && [ "$i" -lt 3000 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -380,7 +404,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
       --carry-platform x --carry-max 280 > "$dir/link.out" 2>&1 &
   link_pid=$!
   i=0
-  while { [ ! -e "$ready" ] || [ ! -e "$exported" ]; } && [ "$i" -lt 200 ]; do
+  while { [ ! -e "$ready" ] || [ ! -e "$exported" ]; } && [ "$i" -lt 3000 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -1362,6 +1386,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_keeps_merge_poll_authenticated
+test_trace_relaunch_keeps_merge_poll_authenticated
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
