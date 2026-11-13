@@ -81,7 +81,27 @@ test_existing_singleton_watcher_is_not_success() {
   pass "checkpoint rejects an existing watcher singleton as unowned"
 }
 
+# Pin the timeout boundary independently of watcher cleanup timing.
+test_published_wake_at_timeout_still_completes() {
+  local home out status
+  home=$(make_home wake-timeout)
+  home=$(cd "$home" && pwd -P)
+  jq -cn --arg home "$home" '{home:$home,session:"boundary",request:"timeout-request"}' > "$home/state/.codex-stop-boundary"
+  mkdir -p "$home/stubs"
+  printf '#!/usr/bin/env bash\nprintf "heartbeat: durable wake published\\n"\nexit 124\n' > "$home/stubs/timeout"
+  chmod +x "$home/stubs/timeout"
+  status=0
+  out=$(FM_HOME="$home" CODEX_THREAD_ID=boundary PATH="$home/stubs:$PATH" "$CHECKPOINT" --seconds 1) || status=$?
+  expect_code 0 "$status" "published wake at deliberate timeout"
+  assert_contains "$out" "heartbeat: durable wake published" "published timeout wake was dropped"
+  jq -es 'length == 2 and .[0] == .[1]' "$home/state/.codex-stop-boundary" "$home/state/.codex-checkpoint-boundary" >/dev/null \
+    || fail "published timeout wake omitted its completed-checkpoint receipt"
+  pass "checkpoint completes a published wake and receipt even when timeout lands during watcher cleanup"
+}
+
 test_quiet_checkpoint_exits_124_cleanly
 test_signal_passes_through_and_exits_zero
 test_registered_check_uses_preserved_watcher_environment
 test_existing_singleton_watcher_is_not_success
+
+test_published_wake_at_timeout_still_completes

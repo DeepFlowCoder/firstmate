@@ -4,6 +4,12 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-codex-continuity-lib.sh
+. "$SCRIPT_DIR/fm-codex-continuity-lib.sh"
 SECONDS_ARG=${FM_CODEX_WATCH_CHECKPOINT:-180}
 
 usage() {
@@ -43,6 +49,10 @@ case "$SECONDS_ARG" in
   ''|*[!0-9]*) echo "error: --seconds must be a positive integer" >&2; exit 2 ;;
   0) echo "error: --seconds must be greater than zero" >&2; exit 2 ;;
 esac
+
+# Snapshot before watching, so a checkpoint already in flight when Stop asks
+# for repair cannot masquerade as progress made in response to that request.
+CODEX_REQUEST=$(fm_codex_checkpoint_request)
 
 OUT=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.out.XXXXXX") || exit 1
 ERR=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.err.XXXXXX") || {
@@ -89,6 +99,10 @@ set -e
 if grep -E '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" >/dev/null 2>&1; then
   cat "$OUT"
   [ ! -s "$ERR" ] || cat "$ERR" >&2
+  # The timeout can land after a wake was published but before watcher cleanup
+  # exits. Both 0 and the deliberate checkpoint bound 124 complete this cycle.
+  case "$RC" in 0|124) ;; *) exit "$RC" ;; esac
+  fm_codex_checkpoint_complete "$CODEX_REQUEST" || exit 1
   exit 0
 fi
 
@@ -100,6 +114,7 @@ if grep -E '^watcher: already running' "$OUT" "$ERR" >/dev/null 2>&1; then
 fi
 
 if [ "$RC" -eq 124 ]; then
+  fm_codex_checkpoint_complete "$CODEX_REQUEST" || exit 1
   printf 'checkpoint: no actionable wake within %ss\n' "$SECONDS_ARG"
   exit 124
 fi

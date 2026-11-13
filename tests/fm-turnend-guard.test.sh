@@ -108,6 +108,7 @@ install_guard_scripts() {
   local dir=$1
   mkdir -p "$dir/bin"
   cp "$ROOT/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard.sh"
+  cp "$ROOT/bin/fm-codex-continuity-lib.sh" "$dir/bin/fm-codex-continuity-lib.sh"
   cp "$ROOT/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-turnend-guard-grok.sh"
   cp "$ROOT/bin/fm-operational-input.sh" "$dir/bin/fm-operational-input.sh"
   cp "$ROOT/bin/fm-supervision-instructions.sh" "$dir/bin/fm-supervision-instructions.sh"
@@ -909,6 +910,111 @@ EOF
   assert_contains "$out" "guard=$expected_root/bin/fm-turnend-guard.sh" "codex hook must keep using the outer firstmate guard"
   assert_not_contains "$out" "nested guard executed" "codex hook must not execute nested project code"
   pass ".codex/hooks.json: Stop hook ignores nested git root guard scripts"
+}
+
+# Execute the actual tracked registration, including its shell-startup boundary.
+codex_stop() {
+  local dir=$1 active=$2 session=${3:-codex-progress} command payload
+  command=$(jq -r '.hooks.Stop[0].hooks[0].command' "$ROOT/.codex/hooks.json")
+  payload=$(jq -cn --arg session "$session" --argjson active "$active" '{session_id:$session,stop_hook_active:$active}')
+  printf '%s' "$payload" | (cd "$dir" && FM_HOME="$dir" env -u FM_ROOT_OVERRIDE sh -c "$command")
+}
+
+test_codex_clean_json_and_progress_continuity() {
+  local dir out status saved request session old_command
+  dir=$(make_primary_dir "$TMP_ROOT/codex-progress")
+  mark_codex_hook_root "$dir"
+  mkdir -p "$dir/user-home"
+  printf 'printf "login startup noise\\n"\n' > "$dir/user-home/.bash_profile"
+  printf 'printf "BASH_ENV startup noise\\n"\n' > "$dir/bash-env"
+  # The outer sh is deliberately not bash, so the hostile BASH_ENV challenges
+  # the registration's shell, not the test harness before it reaches the hook.
+  old_command=$(jq -r '.hooks.Stop[0].hooks[0].command' "$ROOT/.codex/hooks.json")
+  old_command=${old_command/env -u BASH_ENV bash --noprofile --norc -c/bash -lc}
+  out=$(printf '{"stop_hook_active":false}' | (cd "$dir" && HOME="$dir/user-home" BASH_ENV="$dir/bash-env" sh -c "$old_command") 2>/dev/null)
+  assert_contains "$out" "startup noise" "counterfactual login hook did not encounter the hostile startup file"
+  if printf '%s' "$out" | jq -es 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; then
+    fail "old login-shell hook unexpectedly honored the Stop JSON contract"
+  fi
+  out=$(HOME="$dir/user-home" BASH_ENV="$dir/bash-env" codex_stop "$dir" false)
+  printf '%s' "$out" | jq -es 'length == 1 and (.[0] | type == "object" and length == 0)' >/dev/null     || fail "no-work Stop must emit exactly one JSON object with no shell-startup noise: $out"
+  : > "$dir/state/task.meta"
+  out=$(codex_stop "$dir" false)
+  printf '%s' "$out" | jq -es 'length == 1 and (.[0] | .decision == "block" and (.reason | contains("foreground checkpoint")))' >/dev/null     || fail "initial Codex stop must request foreground repair"
+  saved=$(cat "$dir/state/.codex-stop-codex-progress")
+  out=$(codex_stop "$dir" true)
+  printf '%s' "$out" | jq -es 'length == 1 and (.[0] | .systemMessage | contains("no completed foreground checkpoint"))' >/dev/null     || fail "a repeated stop with no progress must emit a bounded visible warning"
+  [ "$(cat "$dir/state/.codex-stop-codex-progress")" = "$saved" ]     || fail "no-progress stop must not mint another request"
+  for session in codex-progress codex-progress; do
+    status=0
+    FM_HOME="$dir" CODEX_THREAD_ID="$session" FM_POLL=1 FM_CHECK_INTERVAL=999999       "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 1 > "$dir/checkpoint.out" 2> "$dir/checkpoint.err" || status=$?
+    case "$status" in 0|124) ;; *) fail "Codex checkpoint failed: $status" ;; esac
+    out=$(codex_stop "$dir" true)
+    printf '%s' "$out" | jq -es 'length == 1 and (.[0] | .decision == "block")' >/dev/null       || { printf 'request=%s\nreceipt=%s\ncheckpoint=%s\nstderr=%s\n' "$(cat "$dir/state/.codex-stop-codex-progress")" "$(cat "$dir/state/.codex-checkpoint-codex-progress" 2>/dev/null)" "$(cat "$dir/checkpoint.out")" "$(cat "$dir/checkpoint.err")"; fail "each completed checkpoint must renew the foreground continuation: $out"; }
+    request=$(cat "$dir/state/.codex-stop-codex-progress")
+    [ "$request" != "$saved" ] || fail "continuation must rotate the single-use request"
+    saved=$request
+  done
+  # The just-consumed receipt must not replay on another Stop.
+  out=$(codex_stop "$dir" true)
+  printf '%s' "$out" | jq -es 'length == 1 and (.[0] | has("systemMessage") and (has("decision") | not))' >/dev/null     || fail "stale checkpoint receipt renewed a continuation"
+  # Copying a receipt between sessions cannot establish that session's progress.
+  out=$(codex_stop "$dir" false other-session)
+  cp "$dir/state/.codex-checkpoint-codex-progress" "$dir/state/.codex-checkpoint-other-session"
+  out=$(codex_stop "$dir" true other-session)
+  printf '%s' "$out" | jq -es 'length == 1 and (.[0] | has("systemMessage"))' >/dev/null     || fail "cross-session checkpoint receipt renewed a continuation"
+  # A real failed checkpoint must not acknowledge the outstanding request.
+  mkdir "$dir/state/.watch.lock"
+  printf '%s\n' "$$" > "$dir/state/.watch.lock/pid"
+  status=0
+  FM_HOME="$dir" CODEX_THREAD_ID=codex-progress     "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 1 > "$dir/failed.out" 2> "$dir/failed.err" || status=$?
+  expect_code 1 "$status" "failed singleton checkpoint"
+  out=$(codex_stop "$dir" true)
+  printf '%s' "$out" | jq -es 'length == 1 and (.[0] | has("systemMessage"))' >/dev/null     || fail "failed checkpoint renewed the continuation"
+  rm -rf "$dir/state/.watch.lock"
+  # Interrupt the whole foreground process group, as a cancelled shell call
+  # does, before it can issue a completion receipt.
+  if ! FM_HOME="$dir" CODEX_THREAD_ID=codex-progress python3 - "$ROOT" "$dir" <<'PYTEST'
+import os, signal, subprocess, sys, time
+from pathlib import Path
+root, home = sys.argv[1:]
+receipt = Path(home, 'state/.codex-checkpoint-codex-progress')
+before = receipt.read_bytes()
+env = dict(os.environ, FM_POLL='1', FM_CHECK_INTERVAL='999999')
+# No task metadata means the watcher remains quiet until cancellation.
+Path(home, 'state/task.meta').unlink()
+p = subprocess.Popen([root + '/bin/fm-watch-checkpoint.sh', '--seconds', '30'],
+    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+try:
+    deadline = time.monotonic() + 5
+    while not Path(home, 'state/.watch.lock/pid').exists():
+        assert p.poll() is None, 'checkpoint exited before interruption'
+        assert time.monotonic() < deadline, 'watcher never started'
+        time.sleep(.05)
+    os.killpg(p.pid, signal.SIGTERM)
+    p.communicate(timeout=5)
+    assert p.returncode != 0 and receipt.read_bytes() == before, 'interrupted checkpoint acknowledged progress'
+finally:
+    if p.poll() is None:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.communicate(timeout=5)
+PYTEST
+  then
+    fail "interrupted checkpoint acknowledged progress or left a process running"
+  fi
+  # A queued wake alone still requires handling after the last task disappears.
+  printf 'pending wake\n' > "$dir/state/.wake-queue"
+  out=$(codex_stop "$dir" false pending-session)
+  printf '%s' "$out" | jq -es 'length == 1 and (.[0] | .decision == "block" and (.reason | contains("Durable wakes remain pending")))' >/dev/null \
+    || fail "queued wakes were abandoned after the last task ended"
+  # The health classifier owns daemon identity; this boundary must obey its
+  # positive ownership verdict even when the queue is still pending.
+  printf 'fm_afk_health() { FM_AFK_HEALTH_VERDICT=healthy; }\n' > "$dir/bin/fm-afk-health.sh"
+  out=$(codex_stop "$dir" true away-session)
+  printf '%s' "$out" | jq -es 'length == 1 and (.[0] | type == "object" and length == 0)' >/dev/null \
+    || fail "Codex competed with healthy away-mode ownership"
+  assert_absent "$dir/state/.codex-stop-away-session" "away-owned stop created a foreground request"
+  pass "Codex Stop: clean JSON, progress-bound cycles, replay/failure/interruption bounds, pending wakes and away ownership"
 }
 
 test_opencode_plugin_anchors_guard_to_worktree() {
@@ -1797,6 +1903,7 @@ test_grok_adapter_missing_jq_and_no_supervision_allow
 test_tracked_claude_entries_inert_under_grok
 test_codex_hook_uses_process_pwd_when_payload_cwd_is_outside_root
 test_codex_hook_ignores_nested_git_root_guard
+test_codex_clean_json_and_progress_continuity
 test_opencode_plugin_anchors_guard_to_worktree
 test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
