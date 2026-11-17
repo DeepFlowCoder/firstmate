@@ -73,6 +73,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-turnend-guard.sh`    | Shared primary turn-end guard predicate so no turn ends blind (docs/turnend-guard.md) |
 | `fm-turnend-guard-grok.sh` | Grok Stop-hook adapter for the primary turn-end guard                              |
 | `fm-turnend-guard-cursor.sh` | Cursor Stop-hook adapter for the primary turn-end guard (the park model)             |
+| `fm-codex-continuity-lib.sh` | Codex single-use Stop request and checkpoint receipt contract shared by the turn-end guard and the foreground checkpoint |
 | `fm-hook-host-lib.sh`    | Shared "which harness delivered this hook payload?" predicate for the tracked Claude-shaped hook entries |
 | `fm-kimi-turnend-hook.sh` | Surgically install or remove Kimi's guarded global crew turn-end hook                |
 | `fm-kimi-trust-lib.sh`   | One owner of Kimi Code's workspace-trust dialog contract: recognition, the only selectable row, the grant postcondition, and the MCP-declaring refusal |

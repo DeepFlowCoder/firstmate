@@ -1261,3 +1261,20 @@ The focused extension suite also exercised the installed Pi 0.84.4 picker and ou
 
 Scope of the earlier evidence: the installed signed `pi` CLI (0.82.0 at verification time) is a compiled binary whose bundled SDK is not importable from Node, so the importable npm package is the only surface the guard and the typecheck can pin.
 The extension executes inside the signed CLI's own runtime, so a CLI upgrade can drift ahead of the pinned npm surface; refresh this record after every Pi upgrade by re-running the live guard, picker regression, and strict typecheck above (point `FM_PI_PACKAGE_DIR` at a matching npm install when one exists) and by watching the branch's own fallback line - every branch failure degrades to the pre-branch wake-to-main path by construction, which `tests/fm-pi-branch-extension.test.sh` holds with a broken generator and the live guard holds with the real SDK.
+
+## Codex native Stop continuity
+
+Verified 2026-11-12 with codex-cli 0.167.2 against a disposable plain primary, the tracked Stop registration, and the real native JSON consumer.
+This also verifies that tool `CODEX_THREAD_ID` matches native Stop `session_id`; request renewal depends on that equality.
+
+```sh
+FM_CODEX_LIVE_E2E=1 bash tests/fm-codex-continuity-live-e2e.test.sh
+```
+
+```text
+ok - codex-cli 0.167.2: native JSON Stop consumed two progress-bound foreground continuations and allowed idle stop; session identity matches
+```
+
+The portable registration, replay, no-progress, interruption, pending-wake and other-harness regressions are in `tests/fm-turnend-guard.test.sh`.
+The guard remains backend-neutral: tmux, Herdr, zellij, Orca and cmux endpoints all feed the existing shared supervision predicate; the Codex receipt records no backend identity.
+Claude, OpenCode, Pi, Grok and Cursor keep their existing turn-end adapters and loop semantics.

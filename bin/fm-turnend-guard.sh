@@ -10,7 +10,8 @@
 # fleet-touching command itself, can sit blind for hours.
 # This script is push-based: verified harness turn-end hooks invoke it every time
 # the primary is about to end a turn.
-# Claude and codex can block directly by preserving exit status 2 and stderr.
+# Claude blocks directly with exit status 2 and stderr; --codex emits native
+# JSON decisions and renews continuations only after checkpoint progress.
 # OpenCode and pi adapters use the same predicate and force one bounded
 # follow-up because their turn-end events are passive. Grok delegates native
 # blocking when its running Stop payload advertises that capability, with one
@@ -32,8 +33,8 @@
 # primary checkout - the main home or a genuinely marked secondmate home - and
 # stay a silent, fast no-op inside child task worktrees.
 #
-# Loop-guard, codex/Grok (default) mode: never block twice in the same turn.
-# Codex uses stop_hook_active and Grok uses stopHookActive; typed camel-case
+# Loop-guard, Grok/default mode: never block twice in the same turn.
+# Payloads use stop_hook_active or stopHookActive; typed camel-case
 # takes precedence when both spellings are present. A true value means the
 # current stop attempt already follows a block, so this guard always allows it.
 # Passive harness adapters provide their own one-follow-up guard before calling
@@ -75,6 +76,8 @@ GRACE=${FM_GUARD_GRACE:-300}
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 CLAUDE_MODE=0
 CURSOR_MODE=0
+CODEX_MODE=0
+CODEX_OUTPUT=0
 SYNC_WAIT_MS=${FM_CLAUDE_AUTOARM_SYNC_WAIT_MS:-800}
 EPOCH_FRESH=${FM_CLAUDE_AUTOARM_EPOCH_FRESH:-15}
 BLOCK_BUDGET=${FM_CLAUDE_TURNEND_BLOCK_BUDGET:-3}
@@ -86,9 +89,16 @@ for arg in "$@"; do
   case "$arg" in
     --claude) CLAUDE_MODE=1 ;;
     --cursor) CURSOR_MODE=1 ;;
-    *) echo "usage: $(basename "$0") [--claude|--cursor]" >&2; exit 2 ;;
+    --codex) CODEX_MODE=1 ;;
+    *) echo "usage: $(basename "$0") [--claude|--cursor|--codex]" >&2; exit 2 ;;
   esac
 done
+
+# Stop stdout is a JSON protocol, including no-op paths. The Codex registration
+# runs without login profiles or BASH_ENV, which could print unrelated text.
+if [ "$CODEX_MODE" -eq 1 ]; then
+  trap '[ "$CODEX_OUTPUT" -eq 1 ] || printf "{}\n"' EXIT
+fi
 
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
@@ -125,7 +135,7 @@ STOP_HOOK_ACTIVE=$(printf '%s' "$PAYLOAD" | jq -r '
   else false
   end
 ' 2>/dev/null) || exit 0
-if [ "$CLAUDE_MODE" -eq 0 ] && [ "$STOP_HOOK_ACTIVE" = "true" ]; then
+if [ "$CLAUDE_MODE" -eq 0 ] && [ "$CODEX_MODE" -eq 0 ] && [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
@@ -163,7 +173,7 @@ budget_reset() {
 }
 
 fm_supervision_status "$STATE" "$GRACE"
-if [ "$FM_SUP_NEEDED" = false ]; then
+if [ "$FM_SUP_NEEDED" = false ] && { [ "$CODEX_MODE" -eq 0 ] || [ "$FM_SUP_QUEUE_PENDING" = false ]; }; then
   [ -e "$FAILURE_NOTICE" ] || budget_reset
   exit 0
 fi
@@ -183,30 +193,41 @@ case "$FM_AFK_HEALTH_VERDICT" in
   healthy|starting) AFK_OWNS=1 ;;
 esac
 
-if [ "$AFK_ORPHANED" -eq 0 ] && fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
+# A healthy/starting away daemon owns both queued wakes and watcher renewal.
+# Codex must not compete with it by asking for a foreground checkpoint.
+if [ "$CODEX_MODE" -eq 1 ] && [ "$AFK_OWNS" -eq 1 ]; then
+  exit 0
+fi
+
+if { [ "$CODEX_MODE" -eq 0 ] || [ "$FM_SUP_QUEUE_PENDING" = false ]; } &&
+  [ "$AFK_ORPHANED" -eq 0 ] && fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0
   fm_failure_episode_reset "$STATE" && exit 0
   exit 2
 fi
 
 block_stop() {
-  local afk x_mode reason rule
+  local afk x_mode reason rule banner harness
+  harness=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
+  [ "$CODEX_MODE" -eq 0 ] || harness=codex
   # --afk means "the away daemon owns supervision", which is exactly what an
   # orphaned away mode is not: passing it there would answer a blind turn with
   # an instruction to leave the watcher to a daemon that is gone.
   afk=$AFK_OWNS
   x_mode=0
   [ -f "$CONFIG/x-mode.env" ] && x_mode=1
-  reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
+  reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --harness "$harness" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
     || printf '%s\n' 'tasks in flight, no live watcher - repair missing watcher supervision according to the session-start operating block before ending the turn')
   rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-  {
+  banner=$({
     printf '●%s\n' "$rule"
     printf '●  TURN WOULD END BLIND - SUPERVISION IS OFF\n'
     if [ "$AFK_ORPHANED" -eq 1 ]; then
       printf '●  AWAY MODE IS FLAGGED WITHOUT HEALTHY SUPERVISION: %s\n' "$FM_AFK_HEALTH_DETAIL"
       printf '●  Every other supervision path stands down for that flag, so nothing is watching this home.\n'
       printf '●  %s\n' "$FM_AFK_ORPHAN_REPAIR"
+    elif [ "$CODEX_MODE" -eq 1 ] && [ "$FM_SUP_QUEUE_PENDING" = true ]; then
+      printf '●  Durable wakes remain pending; drain and handle them before ending supervision.\n'
     elif [ "$FM_SUP_IN_FLIGHT" -gt 0 ]; then
       printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
     elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
@@ -219,9 +240,26 @@ block_stop() {
     fi
     printf '●  %s\n' "$reason"
     printf '●%s\n' "$rule"
-  } >&2
+  })
+  if [ "$CODEX_MODE" -eq 1 ]; then
+    CODEX_OUTPUT=1
+    jq -cn --arg reason "$banner" '{decision:"block",reason:$reason}'
+    exit 0
+  fi
+  printf '%s\n' "$banner" >&2
   exit 2
 }
+
+if [ "$CODEX_MODE" -eq 1 ]; then
+  # shellcheck source=bin/fm-codex-continuity-lib.sh
+  . "$SCRIPT_DIR/fm-codex-continuity-lib.sh"
+  if ! printf '%s' "$PAYLOAD" | jq -e '(.session_id | type) == "string" and (.session_id | length) > 0' >/dev/null 2>&1 ||
+    ! fm_codex_continue "$SESSION_ID" "$STOP_HOOK_ACTIVE"; then
+    CODEX_OUTPUT=1
+    jq -cn '{systemMessage:"FIRSTMATE SUPERVISION IS DOWN: no completed foreground checkpoint renewed this session after the previous Stop continuation. Automatic continuation is bounded to verified checkpoint progress. Keep this session attended; drain pending wakes and repair the checkpoint before relying on supervision."}'
+    exit 0
+  fi
+fi
 
 if [ "$CLAUDE_MODE" -eq 0 ]; then
   block_stop
