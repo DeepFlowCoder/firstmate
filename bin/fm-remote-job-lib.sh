@@ -14,8 +14,9 @@
 # supervisor, supervisor_start, group, group_start, and armed records while
 # work executes.
 # Stage writes state=queued last. seq is a queue-wide monotonic staging
-# sequence reserved atomically by its persistent .seq-claims directory; the
-# counter is only a forward-moving allocation hint. If the bounded hint walk
+# sequence reserved atomically by an exclusive-create file in .seq-claims;
+# legacy directory claims remain reserved until expiry. The counter is only a
+# forward-moving allocation hint. If the bounded hint walk
 # is exhausted, allocation rescans the claims for the maximum and continues
 # above it. Expired claims are reaped by an independently hourly-rate-limited
 # sweep. seq is the worker's FIFO ordering key within a home, with the job id
@@ -540,6 +541,10 @@ fm_remote_job_advance_seq_hint() { # <value>
   fi
 }
 
+fm_remote_job_seq_claim_valid() { # <claim>
+  [ ! -L "$1" ] && { [ -f "$1" ] || [ -d "$1" ]; }
+}
+
 fm_remote_job_next_seq() { # [stage-dir destination]
   local stage=${1:-} destination=${2:-} counter value claim attempt=0 recovered=0 maximum entry
   [ -n "$FM_REMOTE_JOB_STATE" ] && [ -n "$FM_REMOTE_JOB_SEQ_CLAIMS" ] || return 1
@@ -551,7 +556,7 @@ fm_remote_job_next_seq() { # [stage-dir destination]
       [ "$recovered" -eq 0 ] || return 1
       maximum=0
       for entry in "$FM_REMOTE_JOB_SEQ_CLAIMS"/*; do
-        [ -d "$entry" ] && [ ! -L "$entry" ] || continue
+        fm_remote_job_seq_claim_valid "$entry" || continue
         entry=${entry##*/}
         case "$entry" in ''|*[!0-9]*|0) continue ;; esac
         [ "$entry" -le "$maximum" ] || maximum=$entry
@@ -563,8 +568,13 @@ fm_remote_job_next_seq() { # [stage-dir destination]
     attempt=$((attempt + 1))
     value=$((value + 1))
     claim="$FM_REMOTE_JOB_SEQ_CLAIMS/$value"
-    if (umask 077; mkdir "$claim") 2>/dev/null; then
-      chmod 700 "$claim" || return 1
+    if [ -e "$claim" ] || [ -L "$claim" ]; then
+      fm_remote_job_seq_claim_valid "$claim" || return 1
+      continue
+    fi
+    # Bash noclobber uses exclusive creation. Some mkdir implementations report
+    # success on a concurrent EEXIST, so their status cannot establish ownership.
+    if (umask 077; set -C; : > "$claim") 2>/dev/null; then
       fm_remote_job_advance_seq_hint "$value" || true
       if [ -n "$stage" ]; then
         if ! fm_remote_job_write_number "$stage" seq "$value" \
@@ -578,7 +588,7 @@ fm_remote_job_next_seq() { # [stage-dir destination]
       printf '%s\n' "$value"
       return 0
     fi
-    [ -d "$claim" ] && [ ! -L "$claim" ] || return 1
+    fm_remote_job_seq_claim_valid "$claim" || return 1
   done
 }
 
@@ -797,13 +807,17 @@ fm_remote_job_reap_stale() { # <account-home>
     if [ -n "$tmp" ] && printf '%s\n' "$now" > "$tmp" && chmod 600 "$tmp" \
       && mv -f -- "$tmp" "$marker"; then
       for claim in "$FM_REMOTE_JOB_SEQ_CLAIMS"/*; do
-        [ -d "$claim" ] && [ ! -L "$claim" ] || continue
+        fm_remote_job_seq_claim_valid "$claim" || continue
         value=${claim##*/}
         case "$value" in ''|*[!0-9]*|0) continue ;; esac
         mtime=$(fm_remote_job_path_mtime "$claim" 2>/dev/null || true)
         case "$mtime" in ''|*[!0-9]*) continue ;; esac
         [ $((now - mtime)) -ge "$FM_REMOTE_JOB_SEQ_CLAIM_REAP_SECONDS" ] || continue
-        rmdir "$claim" 2>/dev/null || true
+        if [ -d "$claim" ]; then
+          rmdir "$claim" 2>/dev/null || true
+        else
+          rm -f -- "$claim" 2>/dev/null || true
+        fi
       done
     else
       [ -z "$tmp" ] || rm -f -- "$tmp"
