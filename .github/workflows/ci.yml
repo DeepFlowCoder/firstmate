@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# Only the newest head of a PR needs a verdict. Main pushes get a unique group
+# per run: cancel-in-progress alone would still let a shared group replace a
+# pending main run, losing coverage for an intermediate merge.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # This lane used to lose runs to "The runner has received a shutdown signal"
   # (exit 143) and the earlier reading of that was that the runner was being
@@ -655,6 +662,10 @@ jobs:
 
   macos-stock-bash:
     name: Stock macOS Bash snapshot compatibility
+    # macOS minutes count 10x. Keep the complete stock Bash 3.2 parse sweep and
+    # snapshot suites on EVERY push to main, instead of paying for them again
+    # on every PR head. Keep the job/name present on PRs as a skipped check.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
