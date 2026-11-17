@@ -192,11 +192,11 @@ test_handling_successor_does_not_go_blind() {
   printf 'done: crew finished its task\n' >> "$state/crew.status"
   event_start=$(date +%s)
   now=0
-  while [ "$now" -lt 60 ]; do
+  while [ "$now" -lt 5 ]; do
     if grep -q '^signal:' "$out" 2>/dev/null; then
       break
     fi
-    sleep 0.25
+    sleep 0.5
     now=$((now + 1))
   done
   if ! grep -q '^signal:' "$out" 2>/dev/null; then
