@@ -174,7 +174,7 @@ git rev-parse --git-common-dir
 ```
 commit
 not an ancestor
-/Users/ramongarcia/github/dotfiles/firstmate/.git
+/Users/fmoperator/github/firstmate/.git
 ```
 
 The pushed head resolves here - the worktree shares one object store with the whole checkout, and the remote had been fetched since the push - and it is still not bindable, because the pipeline's rebase left this worktree's commit off its ancestry.

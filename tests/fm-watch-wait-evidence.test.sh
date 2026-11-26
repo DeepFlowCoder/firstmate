@@ -358,7 +358,7 @@ test_backlog_captain_hold_absorbs_and_an_unheld_pane_surfaces() {
 # Backlog
 - [ ] held - published the text, the captain owes a verdict (repo: demo) (hold: awaiting the captain's word) (hold-kind: captain)
 EOF
-  printf 'ramon@mac firstmate %% ' > "$capture_file"
+  printf 'fmuser@mac firstmate %% ' > "$capture_file"
   printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/held.meta"
   # Deliberately NON-terminal and NOT a declared wait: the worker's own last
   # word was routine, and firstmate stopped it before anything else was written.

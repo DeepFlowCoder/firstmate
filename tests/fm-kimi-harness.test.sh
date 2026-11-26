@@ -1054,7 +1054,7 @@ kimi_real_trust_capture() {  # [pointer-row: accept|refuse|none]
   printf ' ─────────────────────────────────────────\n'
   printf '  Trust this folder?\n'
   printf '  ↑↓ navigate · Enter select · Esc exit\n'
-  printf '  /Users/ramongarcia/.treehouse/proj-0096/1/proj\n'
+  printf '  /Users/fmtestuser1/.treehouse/proj-0096/1/proj\n'
   printf '  Project-level MCP servers are disabled until you explicitly choose Trust. Trust starts the listed project MCP targets and remembers this folder.\n'
   printf '   %s Trust this folder\n' "$accept"
   printf '     Enable project MCP servers. Remembered for this folder.\n'
@@ -1074,7 +1074,7 @@ kimi_real_trust_capture_narrow() {  # [declares-mcp]
   printf '  Trust this folder?\n'
   printf '  ↑↓ navigate · Enter select · Esc exit\n'
   printf '\n'
-  printf '  /Users/ramongarcia/.treehouse/proj-0096/1/proj-with-a-lo\n'
+  printf '  /Users/fmtestuser1/.treehouse/proj-0096/1/proj-with-a-lo\n'
   printf '  ng-enough-name-to-wrap\n'
   printf '\n'
   printf '  Project-level MCP servers are disabled until you\n'
@@ -1084,7 +1084,7 @@ kimi_real_trust_capture_narrow() {  # [declares-mcp]
     printf '  Project MCP targets:\n'
     printf '    payments-admin (stdio): command=/usr/bin/false\n'
     printf '    args=["--serve"]\n'
-    printf '    cwd=/Users/ramongarcia/.treehouse/proj-0096/1/proj-wi\n'
+    printf '    cwd=/Users/fmtestuser1/.treehouse/proj-0096/1/proj-wi\n'
     printf '    th-a-long-enough-name-to-wrap\n'
   fi
   printf '\n'

@@ -542,7 +542,7 @@ test_pr_cleans_up_refs_in_a_clone_whose_path_has_a_quote() {
   # cleanup handler is built by pasting the path into a command string, this
   # path makes that string unparseable, so the handler silently never runs and
   # the private ref stays in the operator's clone while the run reports success.
-  repo="ramon's-proj"
+  repo="tester's-proj"
   dir=$(panel_project "$root" "$repo")
   panel_branch "$dir" fm/pr-work 300
   pr_head=$(git -C "$dir" rev-parse fm/pr-work)

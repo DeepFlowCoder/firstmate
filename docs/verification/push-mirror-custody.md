@@ -80,7 +80,7 @@ bin/fm-nm-mirror.sh check -C <scratch> \
 
 ```
 mirror: diverged
-mirror ref: /Users/ramongarcia/.no-mistakes/repos/14f712cb403a.git refs/heads/fm/fm-un-solo-veredicto-para-codigo-malo-y-revisor-cortado at 711f87d6f4fbaa55b09fdac43eb034068d807eb3
+mirror ref: /Users/fmoperator/.no-mistakes/repos/14f712cb403a.git refs/heads/fm/fm-un-solo-veredicto-para-codigo-malo-y-revisor-cortado at 711f87d6f4fbaa55b09fdac43eb034068d807eb3
 live head: c15550f1541aefb0d926d3d63ebb05de438fe668
 at-risk commits (2 on the mirror lineage, not on the live head):
   unproven c5ac8de486bddb85303e4b97521447ce7f8a69d1 fix(bin): stop reporting a time-cap cut with the word a code verdict uses
